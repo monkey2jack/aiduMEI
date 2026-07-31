@@ -1,0 +1,60 @@
+"""ducky.salience.db — 表结构 / 迁移"""
+from __future__ import annotations
+
+import logging
+
+from ducky.utils import get_salience_conn
+
+logger = logging.getLogger("aiduMEM.salience")
+
+def _ensure_db():
+    """确保 salience 数据库存在 + v8.3.0 迁移"""
+    conn = get_salience_conn()
+
+    # 主表
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS salience (
+            memory_id TEXT PRIMARY KEY,
+            salience REAL NOT NULL DEFAULT 0.5,
+            last_access REAL NOT NULL,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_salience ON salience(salience)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_last_access ON salience(last_access)")
+
+    # v8.3.0 迁移: 添加 lane 列
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(salience)").fetchall()]
+    if "lane" not in cols:
+        conn.execute("ALTER TABLE salience ADD COLUMN lane TEXT DEFAULT 'general'")
+        logger.info("✅ salience 表已添加 lane 列")
+
+    # v8.3.0 迁移: 添加内容缓存列（用于矛盾检测）
+    if "content_preview" not in cols:
+        conn.execute("ALTER TABLE salience ADD COLUMN content_preview TEXT DEFAULT ''")
+        logger.info("✅ salience 表已添加 content_preview 列")
+
+    # v8.3.0 每日生长指标表
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_metrics (
+            date TEXT PRIMARY KEY,
+            total_memories INTEGER NOT NULL,
+            avg_confidence REAL NOT NULL,
+            active_lanes INTEGER NOT NULL,
+            high_confidence_count INTEGER NOT NULL,
+            recall_rate REAL NOT NULL,
+            salience_avg REAL NOT NULL,
+            salience_low_count INTEGER NOT NULL,
+            decayed_count INTEGER NOT NULL,
+            evicted_count INTEGER NOT NULL
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def ensure_db() -> None:
+    """公开别名（模块 import 时自动调用）。"""
+    _ensure_db()

@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Data — sensitive / large (DO NOT commit)
+data/
+logs/
+chroma_data/
+backups/
+.deps/
+
+# Secrets & config (local only)
+.sf_key
+.llm_key
+.opencode_zen_key
+mem0_config_local.json
+
+# Legacy archives
+*.bak*
+*.old*
+legacy/archive/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+.env
+*.log
+.sensenova_key

@@ -1,0 +1,15 @@
+# Phase 4C — Shell Hook 方案
+
+把下面这段加到 `~/.hermes/config.yaml` 末尾：
+
+```yaml
+# ═══════ Phase 4C: mem0 inject-context (pre_llm_call) ═══════
+hooks:
+  pre_llm_call:
+    - command: "~/.hermes/agent-hooks/mem0-inject.sh"
+      timeout: 5
+
+hooks_auto_accept: true
+```
+
+启用前请先读 `integrations/INTEGRATION_GUIDE.md`。
