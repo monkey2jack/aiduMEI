@@ -63,6 +63,21 @@ aiduMEM（优忆思）是一个 **AI 思想引擎** —— 为 AI Agent 提供�
 
 ## 快速开始
 
+### 方式一：从 PyPI 安装（最快捷）
+
+```bash
+pip install aidumem
+```
+
+### 方式二：Docker 容器运行（GitHub Packages / GHCR）
+
+```bash
+docker pull ghcr.io/monkey2jack/aidumem:latest
+docker run -d -p 8767:8767 --name aidumem ghcr.io/monkey2jack/aidumem:latest
+```
+
+### 方式三：源码克隆运行
+
 ```bash
 # 1. 克隆
 git clone https://github.com/monkey2jack/aiduMEM.git
