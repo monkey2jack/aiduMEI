@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aidumem"
+version = "14.0.1"
+description = "Hermes aiduMEM: Advanced High-Performance Memory System with Multi-Tier Recall, FTS5 & Qdrant Engine"
+readme = "README.md"
+authors = [
+    { name = "Jack & Dudu (aiduHER)", email = "iamjw9@gmail.com" }
+]
+license = { text = "MIT" }
+keywords = ["memory", "mem0", "hermes", "aiduMEM", "ai", "rag", "qdrant", "fts5"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mem0ai>=2.0.15",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "pydantic>=2.0.0",
+    "qdrant-client>=1.7.0",
+    "requests>=2.28.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/monkey2jack/aiduMEM"
+Documentation = "https://github.com/monkey2jack/aiduMEM#readme"
+Repository = "https://github.com/monkey2jack/aiduMEM.git"
+
+[project.scripts]
+aidumem = "api_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ducky*", "scripts*"]

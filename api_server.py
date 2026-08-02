@@ -128,15 +128,17 @@ def _start_background() -> None:
     )
 
 
-if __name__ == "__main__":
+def main():
     _start_background()
     host = os.environ.get("AIDUMEM_HOST", "127.0.0.1")
     port = int(os.environ.get("AIDUMEM_API_PORT") or os.environ.get("MEM0_API_PORT") or 8767)
-    # 默认只监听回环：aiduMEM 无内建鉴权，暴露到 0.0.0.0 等于把全部记忆公开。
-    # 需要外部访问时请显式设置 AIDUMEM_HOST=0.0.0.0，并自行在前面加反代 + 鉴权。
     if host != "127.0.0.1":
         logger.warning(
             "⚠️ 监听地址为 %s（非回环）。aiduMEM 自身不做鉴权，"
             "请确保前置反向代理已配置认证与 TLS。", host
         )
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()
