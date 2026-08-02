@@ -10,7 +10,7 @@ v14.0 Aegis（埃癸斯 · 神盾）
     仓库里只留能力，不留主人的痕迹。
 """
 
-SERVICE_VERSION = "14.0.0"
+SERVICE_VERSION = "14.0.1"
 CODENAME = "Aegis"
 CODENAME_ZH = "埃癸斯"
 

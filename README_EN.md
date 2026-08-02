@@ -6,7 +6,7 @@
 > *Memory is not记事, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-14.0.0%20·%20Aegis-blue.svg)](https://github.com/monkey2jack/aiduMEM)
+[![Version](https://img.shields.io/badge/version-14.0.1%20·%20Aegis-blue.svg)](https://github.com/monkey2jack/aiduMEM)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
 [![Built on mem0](https://img.shields.io/badge/built%20on-mem0-orange.svg)](https://github.com/mem0ai/mem0)
