@@ -59,6 +59,21 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEM adds a complete 
 
 ## Quick Start
 
+### Method 1: Install via PyPI
+
+```bash
+pip install aidumem
+```
+
+### Method 2: Run via Docker (GitHub Packages / GHCR)
+
+```bash
+docker pull ghcr.io/monkey2jack/aidumem:latest
+docker run -d -p 8767:8767 --name aidumem ghcr.io/monkey2jack/aidumem:latest
+```
+
+### Method 3: Clone & Run from Source
+
 ```bash
 # 1. Clone
 git clone https://github.com/monkey2jack/aiduMEM.git
