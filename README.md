@@ -11,6 +11,7 @@
 ```
 
 [![Version](https://img.shields.io/badge/version-14.0.1%20·%20Aegis·埃癸斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
+[![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
 [![Built on mem0](https://img.shields.io/badge/built%20on-mem0-orange.svg)](https://github.com/mem0ai/mem0)
