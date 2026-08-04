@@ -160,6 +160,51 @@
 
 ---
 
+## v15.0 — "Iris"（2026-08-04）
+
+**一句话**：伊里斯彩虹桥——接上 Hermes 官方记忆通道，并让所有「静默失效」全部出声。
+
+### 🌈 官方通道（Native Provider Bridge）
+
+- **新增 Hermes MemoryProvider 插件**（`integrations/hermes-plugin/aidumem/`）：
+  `cp -r` 到 `~/.hermes/plugins/` + `hermes config set memory.provider aidumem` 即接入
+- 拿到全套生命周期钩子，此前走 shell hook 一个都拿不到：
+  - `prefetch` — turn 开头注入 CoreMemory 常驻块 + 本轮相关检索
+  - `sync_turn` — 每轮对话后台归档，不阻塞对话
+  - `on_pre_compress` — **压缩前把即将被丢掉的轮次先落进长期记忆**
+  - `on_memory_write` — 镜像宿主内置 MEMORY.md / USER.md 写入
+  - `on_session_end` — 触发服务端归档与反思
+  - `get_tool_schemas` — `aidumem_search` / `aidumem_remember` / `aidumem_status` 三个工具
+  - `backup_paths` — 数据目录纳入宿主备份流程
+- 所有调用失败一律降级为「无记忆」，绝不影响宿主对话
+
+### 🔊 静默失效清零
+
+三类「不报错但一直没生效」的坑，本版全部堵上：
+
+- **注入链断了不出声** → shell hook 的 payload 解析从只认顶层 `messages` 改为三层兼容
+  （`extra.conversation_history` / 顶层 / 旧 `messages`）。宿主 payload 形状变过一次，
+  旧脚本因此长期返回空却退出码 0，谁都发现不了
+- **词表漏配不出声** → 相关性闸门（`memory_gate.py`）与实体抽取（`hot/legacy.py`）的
+  关键词正则从 import 时固化改为**惰性编译 + 热更新**。systemd 漏写 `Environment=` 时，
+  旧版会静默把涉及自定义人名/项目代号的查询判成 no_signal 直接零召回
+- **启动缺配置不出声** → `AIDUMEM_ENTITY_KEYWORDS` 未设置时，启动日志与 `/health` 探针
+  都明确告警
+
+### 🔧 其他
+
+- 新增 `integrations/aidumem-inject.sh` 通用 hook（零硬编码，端口/身份/阈值全走环境变量），
+  替换并删除旧 `integrations/mem0-inject.sh`（仓库版本长期停留在 v9，与运行版本已分叉）
+- 新增 `reset_gate_cache()` 可测试性钩子，暴露闸门热缓存（`_GATE_CACHE_TTL=15s`）
+- 新增 `.env.example`（带注释的全量环境变量清单）与 `deploy/aidumem-api.service` systemd 模板
+- `/health` 探针加实体词表状态字段，部署方一眼看到词表是否生效
+- 新增 20 个单元测试：`test_inject_hook.py`（8 个，三种 payload 形状 + 边界）、
+  `test_memory_gate_entities.py`（12 个，词表惰性加载 + 热更新 + 正则元字符 + 缓存隔离）
+- 文档：中英 README 补「接入 Hermes Agent」章节与**服务无鉴权安全警告**，
+  重写 `integrations/INTEGRATION_GUIDE.md` 覆盖两种接入方式与回滚
+
+---
+
 ## v14.0.1 — "Aegis Patch 1"（2026-08-02）
 
 **一句话**：基座升级——同步升级 upstream mem0ai 至 2.0.15 稳定版。
@@ -227,7 +272,8 @@
 | v11.1 | 07-29 | Hyperion | 光之泰坦：线程本地连接池 · 性能纪元 |
 | v12.0 | 07-30 | Chronos | 时间泰坦：双时间轴 valid_from/valid_to · 失效降权不删除 |
 | v13.0 | 07-31 | Pantheon | 万神殿：多 Agent 联邦 · MoE 门控 · 分层衰减 · 自动去重 |
-| **v14.0** | **08-01** | **Aegis** | **埃癸斯：零硬编码 · 32 个环境变量 · 隐私护盾 · 克隆即跑 ★** |
+| v14.0 | 08-01 | Aegis | 埃癸斯：零硬编码 · 32 个环境变量 · 隐私护盾 · 克隆即跑 |
+| **v15.0** | **08-04** | **Iris** | **伊里斯：Hermes 官方 MemoryProvider 插件 · 静默失效清零 · 惰性热载词表 ★** |
 
 ---
 
@@ -251,6 +297,7 @@ mem0 裸壳 (v0)
                             → Chronos: 双时间轴有效期 (v12.0)
                               → Pantheon: 多 Agent 联邦 + MoE 门控 (v13.0)
                                 → Aegis: 零硬编码 + 环境注入 + 可移植 (v14.0)
+                                  → Iris: Hermes 官方 provider 通道 + 静默失效清零 (v15.0)
 ```
 
 ## 借鉴融合

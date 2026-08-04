@@ -10,7 +10,7 @@
 思考不是 reasoning，而是做所有事都有 reason，有 result。
 ```
 
-[![Version](https://img.shields.io/badge/version-14.0.1%20·%20Aegis·埃癸斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
+[![Version](https://img.shields.io/badge/version-15.0.0%20·%20Iris·伊里斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
 [![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEM/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -37,6 +37,7 @@ aiduMEM（优忆思）是一个 **AI 思想引擎** —— 为 AI Agent 提供�
 | 🕰️ **克罗诺斯** | 时间感知的有效期 | 双时间轴（valid_from / valid_to），过期事实降权 |
 | 🏛️ **万神殿** | 多 Agent 共享一套记忆 | 联邦身份 + MoE 门控 + 四级降级检索 |
 | 🛡️ **埃癸斯** | 零硬编码，换机即跑 | 身份/路径/词表全部环境变量注入 |
+| 🌈 **伊里斯** | 走宿主官方记忆通道 | Hermes MemoryProvider 插件：压缩前抢救 · 记忆镜像 · 工具直连 |
 
 ---
 
@@ -175,8 +176,44 @@ curl "http://localhost:8767/federation/recall?query=项目截止日期&agent_id=
 
 仓库里没有任何硬编码的身份、绝对路径、服务器地址或密钥。仓库根由 `__file__` 自动解析，一切可变项走环境变量注入（见 [环境变量](#环境变量)）。克隆到任何目录、任何机器，`python api_server.py` 直接跑。
 
+### 🌈 伊里斯彩虹桥（Iris · v15 新增）
+> 信使不只送信，还要确认信真的送到了。
+
+v15 起 aiduMEM 提供 **Hermes Agent 官方 MemoryProvider 插件**，不再依赖 shell hook
+解析 payload 字段：
+
+```bash
+cp -r integrations/hermes-plugin/aidumem ~/.hermes/plugins/
+hermes config set memory.provider aidumem
+```
+
+接通后拿到全套生命周期钩子——turn 开头注入常驻块与相关检索、每轮后台归档、
+**压缩前把即将丢掉的对话先落进长期记忆**、镜像宿主内置 MEMORY.md 写入、
+三个可直接调用的工具（`aidumem_search` / `aidumem_remember` / `aidumem_status`）、
+数据目录纳入宿主备份。详见 [integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md)。
+
+同版本一并修掉了三类**静默失效**——注入链断了不出声、词表漏配了不出声、
+启动缺配置不出声。现在都会明确告警：
+
+- shell hook 的 payload 解析改为三层兼容（`extra.conversation_history` / 顶层 / 旧 `messages`）
+- 相关性闸门与实体抽取的词表改为**惰性编译 + 热更新**，不再在 import 时定死
+- `AIDUMEM_ENTITY_KEYWORDS` 未配置时，启动日志与 `/health` 探针都会显式提示
+
 ### 🔧 零配置混合检索
 BM25 trigram（零延迟兜底） + BGE-M3 向量 + Reranker 重排序 + 召回漏斗相关性排序。向量服务超时自动热切换到本地全文搜索。
+
+## 接入 Hermes Agent
+
+| 方式 | 能力 | 何时用 |
+|------|------|--------|
+| **A. MemoryProvider 插件**（推荐） | 全生命周期钩子 + 工具 + 备份 | 默认选这个 |
+| **B. Shell Hook** | 仅 turn 开头注入 | 宿主不方便装插件时 |
+
+两种方式**不要同时开**（会重复注入白烧 token）。完整步骤、验证方法与回滚见
+[integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md)。
+
+> ⚠️ **安全**：aiduMEM 服务自身不做鉴权，默认只监听 `127.0.0.1`。要跨机访问请在前面
+> 挂带认证 + TLS 的反向代理，别把服务直接暴露到公网——那等于把全部记忆公开可读可写。
 
 ## 技术栈
 
@@ -245,6 +282,12 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 | `AIDUMEM_HOST_STATE_DB` | 空 | 宿主 Agent 的 state.db，用于自动记忆抽取；不设则跳过 |
 | `AIDUMEM_HOST_MEMORY_MD` | 空 | 宿主 MEMORY.md 路径，用于 `mem0_sync.py` |
 | `AIDUMEM_ROUTER_*` | 空 | 可选的上游 LLM 网关用量采集（见 `ducky/router_usage.py` 头注释） |
+| `AIDUMEM_URL` | `http://127.0.0.1:8767` | Hermes 插件 / hook 访问服务的地址 |
+| `AIDUMEM_USER_ID` | `default` | Hermes 插件 / hook 使用的记忆命名空间 |
+| `AIDUMEM_MIN_HISTORY` | `6` | shell hook：会话历史少于这个条数就不注入 |
+
+完整清单连注释见仓库根的 [`.env.example`](.env.example)，`cp .env.example .env` 起步。
+systemd 单元模板见 [`deploy/aidumem-api.service`](deploy/aidumem-api.service)。
 
 例：把数据放到独立盘、自定义实体词表
 
@@ -259,6 +302,7 @@ python api_server.py
 - [ ] MCP（Model Context Protocol）服务端模式
 - [x] 多 Agent / 多 Profile 联邦记忆（v13.0 Pantheon ✅）
 - [x] 零硬编码可移植部署（v14.0 Aegis ✅）
+- [x] Hermes 官方 MemoryProvider 插件（v15.0 Iris ✅）
 - [ ] 跨机器联邦（HTTP 对端拉取，非同库）
 - [ ] 多用户工作区隔离
 - [ ] 记忆整合仪表盘
@@ -276,5 +320,5 @@ MIT 许可证 — 详见 [LICENSE](LICENSE)。
 ---
 
 <p align="center">
-  <sub>思考版本 · Aegis·埃癸斯 | 由 <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/Aowen-Nowor">Aowen</a> 构建</sub>
+  <sub>思考版本 · Iris·伊里斯 | 由 <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/Aowen-Nowor">Aowen</a> 构建</sub>
 </p>

@@ -6,7 +6,7 @@
 > *Memory is not记事, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-14.0.1%20·%20Aegis-blue.svg)](https://github.com/monkey2jack/aiduMEM)
+[![Version](https://img.shields.io/badge/version-15.0.0%20·%20Iris-blue.svg)](https://github.com/monkey2jack/aiduMEM)
 [![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEM/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -33,6 +33,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEM adds a complete 
 | 🕰️ **Chronos** | Time-aware validity | Dual timeline (valid_from / valid_to), expired facts deprioritized |
 | 🏛️ **Pantheon** | Many agents, one memory | Federated identity + MoE gating + 4-tier graceful degradation |
 | 🛡️ **Aegis** | Zero hardcoding, clone and run | Identity / paths / keyword lists all injected via env vars |
+| 🌈 **Iris** | Rides the host's native memory channel | Hermes MemoryProvider plugin: pre-compress rescue · memory mirroring · direct tools |
 
 ---
 
@@ -169,6 +170,49 @@ curl "http://localhost:8767/federation/recall?query=project+deadline&agent_id=ag
 ### 🔧 Zero-Config Hybrid Search
 BM25 trigram (zero-latency fallback) + BGE-M3 vectors + Reranker reranking + recall funnel relevance ranking. Vector service timeout auto-switches to local full-text search.
 
+### 🌈 Iris Rainbow Bridge (v15, new)
+> A messenger's job isn't just delivering — it's confirming the message arrived.
+
+v15 ships a native **Hermes Agent MemoryProvider plugin**, so memory injection no
+longer depends on a shell script parsing payload fields:
+
+```bash
+cp -r integrations/hermes-plugin/aidumem ~/.hermes/plugins/
+hermes config set memory.provider aidumem
+```
+
+That wires up the full lifecycle: turn-start injection of the resident CoreMemory
+block plus per-turn recall, background archiving of every turn, **rescuing
+about-to-be-dropped turns into long-term memory right before compaction**,
+mirroring of the host's built-in MEMORY.md writes, three callable tools
+(`aidumem_search` / `aidumem_remember` / `aidumem_status`), and the data directory
+registered with the host's backup flow. See
+[integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md).
+
+The same release kills three classes of **silent failure** — a broken injection
+chain, a missing keyword list, and missing startup config all used to fail without
+a word. Now each one speaks up:
+
+- shell hook payload parsing accepts three shapes (`extra.conversation_history` / top-level / legacy `messages`)
+- the relevance gate and entity extractor compile keyword lists **lazily with hot reload**, instead of freezing them at import time
+- when `AIDUMEM_ENTITY_KEYWORDS` is unset, both the startup log and the `/health` probe say so explicitly
+
+## Hooking into Hermes Agent
+
+| Method | Capability | When |
+|--------|-----------|------|
+| **A. MemoryProvider plugin** (recommended) | Full lifecycle hooks + tools + backup | Default choice |
+| **B. Shell hook** | Turn-start injection only | When you can't install plugins on the host |
+
+**Don't enable both** — you'd inject twice and burn tokens for nothing. Full setup,
+verification and rollback steps live in
+[integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md).
+
+> ⚠️ **Security**: the aiduMEM service has no built-in authentication and listens on
+> `127.0.0.1` by default. For cross-machine access, put an authenticating TLS reverse
+> proxy in front — exposing the service directly to the internet makes every memory
+> publicly readable and writable.
+
 ## Tech Stack
 
 - **Runtime**: Python 3.12+, FastAPI, Uvicorn
@@ -213,11 +257,27 @@ aiduMEM reads configuration from `mem0_config_local.json`. Key sections:
 }
 ```
 
+## Environment Variables
+
+All deployment-specific settings are injected via env vars and **every one is
+optional** — unset means a safe default. Annotated full list in
+[`.env.example`](.env.example); start with `cp .env.example .env`.
+A systemd unit template is at [`deploy/aidumem-api.service`](deploy/aidumem-api.service).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AIDUMEM_DATA_DIR` | `<repo>/data` | Where databases and vectors land |
+| `AIDUMEM_ENTITY_KEYWORDS` | empty | Custom entity list for the relevance gate, `\|`-separated (e.g. `Alice\|Bob\|ProjectX`). **Leave this unset and queries about your own names/projects silently return nothing.** |
+| `AIDUMEM_URL` | `http://127.0.0.1:8767` | Service address used by the Hermes plugin / hook |
+| `AIDUMEM_USER_ID` | `default` | Memory namespace for the plugin / hook |
+| `AIDUMEM_MIN_HISTORY` | `6` | Shell hook: skip injection below this many history messages |
+
 ## Roadmap
 
 - [ ] MCP (Model Context Protocol) server mode
 - [x] Multi-agent / multi-profile federated memory (v13.0 Pantheon ✅)
 - [x] Zero-hardcode portable deployment (v14.0 Aegis ✅)
+- [x] Native Hermes MemoryProvider plugin (v15.0 Iris ✅)
 - [ ] Cross-machine federation (HTTP peer pull, not shared DB)
 - [ ] Multi-user workspace isolation
 - [ ] Memory consolidation dashboard
@@ -235,5 +295,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  <sub>Thinking Version · Aegis | Built by <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/Aowen-Nowor">Aowen</a></sub>
+  <sub>Thinking Version · Iris | Built by <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/Aowen-Nowor">Aowen</a></sub>
 </p>
