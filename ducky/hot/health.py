@@ -77,7 +77,7 @@ def register_health_routes(app: FastAPI) -> None:
             "v2.1_envelope":  _can_import("ducky.tool_envelope"),
         })
 
-        probes = {
+        probes: dict[str, object] = {
             "facts_db": os.path.exists(FACTS_DB),
             "text_fts_db": os.path.exists(TEXT_FTS_DB),
             "mem0_singleton": is_mem_ready(),
@@ -94,6 +94,23 @@ def register_health_routes(app: FastAPI) -> None:
             probes["fts_ok"] = False
             probes["fts_error"] = str(e)[:120]
 
+        # 实体词表探针 —— 漏配时闸门会把自己人名/项目代号的查询判成
+        # no_signal 并静默零召回，这是最难自查的一类故障，必须上报。
+        warnings: list[str] = []
+        try:
+            from ducky.pipeline.memory_gate import entity_keywords_status
+            ek = entity_keywords_status()
+            probes["entity_keywords"] = ek["count"]
+            probes["entity_keywords_ok"] = ek["configured"]
+            if not ek["configured"]:
+                warnings.append(
+                    f"{ek['env_var']} 未配置：涉及自定义人名/项目代号的查询会零召回，"
+                    "参考 .env.example 配置后重启服务"
+                )
+        except Exception as e:
+            probes["entity_keywords_ok"] = False
+            probes["entity_keywords_error"] = str(e)[:120]
+
         degraded = [k for k, v in module_ok.items() if not v]
         if not probes.get("fts_ok"):
             degraded.append("fts")
@@ -107,6 +124,7 @@ def register_health_routes(app: FastAPI) -> None:
             modules=module_ok,
             probes=probes,
             degraded=degraded,
+            warnings=warnings,
             health_status=status,
         )
 

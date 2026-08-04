@@ -93,8 +93,19 @@ def _env_pattern(env_key: str) -> "re.Pattern | None":
 
 
 # 可选的部署方自定义实体（服务器代号 / 纪念日期）
-_RE_SERVER      = _env_pattern("AIDUMEM_SERVER_KEYWORDS")
-_RE_DATE        = _env_pattern("AIDUMEM_DATE_KEYWORDS")
+#
+# 血训（v15）：这两个正则原本在 import 时就固化，一旦模块比 setenv 先加载
+# （或 systemd 单元漏了 Environment=），自定义实体就永久不参与抽取，
+# 且全程静默。改为惰性 + 环境变量变化自动重建。
+_ENV_PATTERN_CACHE: dict = {}
+
+
+def _env_pattern_cached(env_key: str) -> "re.Pattern | None":
+    raw = (os.environ.get(env_key) or "").strip().strip("|")
+    cached = _ENV_PATTERN_CACHE.get(env_key)
+    if cached is None or cached[0] != raw:
+        _ENV_PATTERN_CACHE[env_key] = (raw, _env_pattern(env_key))
+    return _ENV_PATTERN_CACHE[env_key][1]
 
 def _extract_entities(text: str) -> list[str]:
     """原生的实体提取 — 保持首次出现顺序去重"""
@@ -104,7 +115,9 @@ def _extract_entities(text: str) -> list[str]:
         if n and n.lower() not in seen: seen.add(n.lower()); candidates.append(n)
     for m in _RE_QUOTED.finditer(text):       _add(m.group(1))
     for m in _RE_AKA.finditer(text):          _add(m.group(1)); _add(m.group(2))
-    for pat in [_RE_USER, _RE_AI, _RE_PROJECT, _RE_SERVER, _RE_TECH, _RE_DATE]:
+    _re_server = _env_pattern_cached("AIDUMEM_SERVER_KEYWORDS")
+    _re_date = _env_pattern_cached("AIDUMEM_DATE_KEYWORDS")
+    for pat in [_RE_USER, _RE_AI, _RE_PROJECT, _re_server, _RE_TECH, _re_date]:
         if pat is None: continue
         for m in pat.finditer(text):          _add(m.group(0))
     return candidates

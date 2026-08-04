@@ -65,9 +65,9 @@ _BASE_SELF_REFERENCE = (
 )
 
 
-def _build_self_reference() -> re.Pattern:
-    extra = (os.environ.get("AIDUMEM_ENTITY_KEYWORDS") or "").strip().strip("|")
+def _build_self_reference(extra: str = "") -> re.Pattern:
     pattern = _BASE_SELF_REFERENCE
+    extra = (extra or "").strip().strip("|")
     if extra:
         # 每个自定义词单独转义，避免部署方误输入的元字符破坏整条正则
         safe = "|".join(re.escape(w.strip()) for w in extra.split("|") if w.strip())
@@ -76,11 +76,73 @@ def _build_self_reference() -> re.Pattern:
     return re.compile(pattern, re.IGNORECASE)
 
 
-SELF_REFERENCE = _build_self_reference()
+# 实体词表在「首次用到时」构建，并跟随环境变量热更新。
+#
+# 血训（v15）：早期版本在 import 时就把 SELF_REFERENCE 定死，
+# 于是「先 import ducky、后 setenv」或「systemd 漏配 Environment=」
+# 都会让实体词永久为空 —— 闸门对部署方自己的核心词全判 no_signal，
+# 检索静默返回 0 结果，且不报任何错。必须惰性构建 + 缓存键校验。
+_SELF_REF_CACHE: dict = {"key": None, "pattern": None}
+_ENTITY_WARNED = False
+
+
+def _entity_keywords() -> str:
+    return (os.environ.get("AIDUMEM_ENTITY_KEYWORDS") or "").strip().strip("|")
+
+
+def get_self_reference() -> re.Pattern:
+    """取当前实体词正则；环境变量变化时自动重建。"""
+    global _ENTITY_WARNED
+    key = _entity_keywords()
+    if _SELF_REF_CACHE["key"] != key or _SELF_REF_CACHE["pattern"] is None:
+        _SELF_REF_CACHE["key"] = key
+        _SELF_REF_CACHE["pattern"] = _build_self_reference(key)
+        if key:
+            logger.info(
+                "闸门实体词已加载：%d 个自定义词", len([w for w in key.split("|") if w.strip()])
+            )
+    if not key and not _ENTITY_WARNED:
+        _ENTITY_WARNED = True
+        logger.warning(
+            "⚠️ AIDUMEM_ENTITY_KEYWORDS 未设置 —— 相关性闸门只认通用自指模式，"
+            "涉及你自己的人名/项目代号的查询会被判 no_signal 而不召回记忆。"
+            "请参考 .env.example 配置后重启服务。"
+        )
+    return _SELF_REF_CACHE["pattern"]
+
+
+def entity_keywords_status() -> dict:
+    """供 /health 与启动自检使用的实体词表状态。"""
+    key = _entity_keywords()
+    words = [w.strip() for w in key.split("|") if w.strip()] if key else []
+    return {
+        "configured": bool(words),
+        "count": len(words),
+        "env_var": "AIDUMEM_ENTITY_KEYWORDS",
+    }
+
+
+def __getattr__(name):
+    # 兼容老代码 `from ducky.pipeline.memory_gate import SELF_REFERENCE`
+    if name == "SELF_REFERENCE":
+        return get_self_reference()
+    raise AttributeError(name)
 
 # ── v9 优化：近几轮会话上下文门控缓存 ──
 _LAST_GATE_DECISION = {"time": 0.0, "query": "", "needs_memory": False}
 _GATE_CACHE_TTL = 15.0  # 15秒缓存过期
+
+
+def reset_gate_cache() -> None:
+    """清空门控热缓存。
+
+    热缓存会让「上一轮判了要记忆 + 本轮是 <12 字追问」直接沿用上轮结论，
+    这在真实会话里是对的，但会掩盖单条查询的真实判定。测试与诊断脚本
+    需要逐条独立判定时先调这个。
+    """
+    global _LAST_GATE_DECISION
+    _LAST_GATE_DECISION = {"time": 0.0, "query": "", "needs_memory": False}
+
 
 def relevance_check(query: str) -> dict:
     """
@@ -113,7 +175,7 @@ def relevance_check(query: str) -> dict:
             return {"needs_memory": True, "reason": "session_followup_hot", "scope": "episode"}
 
     # 3. 自我/身份指代 & 实体命中 → Identity scope
-    if SELF_REFERENCE.search(q):
+    if get_self_reference().search(q):
         res = {"needs_memory": True, "reason": "self_reference", "scope": "identity"}
         _LAST_GATE_DECISION = {"time": now, "query": q, "needs_memory": True}
         return res
