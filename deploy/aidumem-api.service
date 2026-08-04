@@ -1,0 +1,40 @@
+# aiduMEM REST API —— systemd 单元模板
+#
+# 安装：
+#   sudo cp deploy/aidumem-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aidumem-api
+#
+# 改环境变量建议用 override 而不是直接改本文件（升级不会被覆盖）：
+#   sudo systemctl edit aidumem-api
+#
+# ★ 注意 EnvironmentFile 那行：把 .env.example 复制成 .env 并填好
+#   AIDUMEM_ENTITY_KEYWORDS，否则涉及你自己人名/项目代号的查询会
+#   静默零召回。装完用 `curl -s localhost:8767/health | jq .warnings`
+#   确认没有告警。
+
+[Unit]
+Description=aiduMEM Memory Engine REST API
+Documentation=https://github.com/monkey2jack/aiduMEM
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/aidumem
+
+# 环境变量集中放在 .env，`-` 前缀表示文件缺失不阻止启动
+EnvironmentFile=-/opt/aidumem/.env
+Environment=MEM0_API_PORT=8767
+Environment=MEM0_TELEMETRY=false
+
+ExecStart=/opt/aidumem/venv/bin/python3 /opt/aidumem/api_server.py
+Restart=always
+RestartSec=5
+
+StandardOutput=append:/opt/aidumem/logs/api_server.log
+StandardError=append:/opt/aidumem/logs/api_server.log
+
+[Install]
+WantedBy=multi-user.target
