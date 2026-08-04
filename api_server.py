@@ -111,6 +111,23 @@ def _start_background() -> None:
     _init_text_fts()
     init_core_memory()
 
+    # 启动自检：实体词表漏配是「静默故障」——闸门会把涉及自定义人名/
+    # 项目代号的查询判成 no_signal 而零召回，不报错也不留痕。v15 起
+    # 在启动日志里显式告警，别再让部署方自己去猜为什么查不到。
+    try:
+        from ducky.pipeline.memory_gate import entity_keywords_status
+        _ek = entity_keywords_status()
+        if _ek["configured"]:
+            logger.info("🎯 相关性闸门实体词表已加载：%d 个词条", _ek["count"])
+        else:
+            logger.warning(
+                "⚠️ %s 未配置 —— 涉及自定义人名/项目代号的查询会被闸门判为"
+                " no_signal 并静默零召回。请参考 .env.example 配置后重启服务。",
+                _ek["env_var"],
+            )
+    except Exception as exc:
+        logger.warning("⚠️ 实体词表自检失败: %s", exc)
+
     for name, loop_fn in _BACKGROUND_LOOPS.items():
         thread = threading.Thread(
             target=loop_fn,
