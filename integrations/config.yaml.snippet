@@ -1,15 +1,56 @@
-# Phase 4C — Shell Hook 方案
+# 两种接入方式 —— 选一个，别两个都开
 
-把下面这段加到 `~/.hermes/config.yaml` 末尾：
+aiduMEM v15 起支持两条接入 Hermes Agent 的路径。**推荐 A（插件）**，
+B 只留给不方便装插件的场合（比如宿主 Hermes 不是自己管的）。
+
+---
+
+## A. 官方 MemoryProvider 插件（推荐）
+
+拿到全部生命周期钩子：开局注入、逐轮归档、压缩前抢救、内置 memory 镜像、
+三个工具（search / remember / status）、备份路径。
+
+```bash
+cp -r integrations/hermes-plugin/aidumem ~/.hermes/plugins/
+hermes config set memory.provider aidumem
+```
+
+环境变量（可选，见仓库 `.env.example`）：
+
+```bash
+export AIDUMEM_URL=http://127.0.0.1:8767
+export AIDUMEM_USER_ID=default
+export AIDUMEM_DATA_DIR=~/aidumem      # 交给 Hermes 备份流程
+```
+
+验证：
+
+```bash
+hermes tools | grep aidumem            # 应看到 aidumem_search / remember / status
+```
+
+---
+
+## B. Shell Hook（兜底方案）
+
+只有「turn 开头注入」这一个能力，没有压缩前抢救、没有工具、没有备份。
+
+```bash
+cp integrations/aidumem-inject.sh ~/.hermes/agent-hooks/
+chmod +x ~/.hermes/agent-hooks/aidumem-inject.sh
+```
+
+加到 `~/.hermes/config.yaml`：
 
 ```yaml
-# ═══════ Phase 4C: mem0 inject-context (pre_llm_call) ═══════
 hooks:
   pre_llm_call:
-    - command: "~/.hermes/agent-hooks/mem0-inject.sh"
-      timeout: 5
+    - command: "~/.hermes/agent-hooks/aidumem-inject.sh"
+      timeout: 8
 
 hooks_auto_accept: true
 ```
 
-启用前请先读 `integrations/INTEGRATION_GUIDE.md`。
+⚠️ 改过脚本内容后 Hermes 会因 mtime 校验要求重新批准 hook，这是设计如此。
+
+细节读 `integrations/INTEGRATION_GUIDE.md`。
