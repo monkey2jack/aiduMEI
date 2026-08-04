@@ -42,3 +42,10 @@ aidumem = "api_server:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ducky*", "scripts*"]
+
+# 服务入口是仓库根的单文件模块，不在 ducky/ 包里。不显式声明的话
+# wheel 只装 ducky/ + scripts/，而 [project.scripts] 的 aidumem 指向
+# api_server:main —— 装完一执行就 ModuleNotFoundError: api_server。
+# v15 之前的 wheel 就是这个状态（入口点从来没跑起来过）。
+[tool.setuptools]
+py-modules = ["api_server", "mcp_server", "mem0_sync"]
