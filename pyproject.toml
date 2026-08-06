@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumem"
-version = "17.0.0"
+version = "17.0.1"
 description = "aiduMEM: self-hosted multi-tier memory for Hermes Agent — native MemoryProvider bridge, CoreMemory, FTS5 & Qdrant recall"
 readme = "README.md"
 authors = [
@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "mem0ai>=2.0.15",
+    "mem0ai>=2.0.17",
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
     "pydantic>=2.0.0",

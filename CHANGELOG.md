@@ -1,6 +1,28 @@
 # aiduMEM 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v17.0 Themis 治理秩序纪元。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v17.0.1 Themis 治理秩序纪元。
+
+---
+
+## v17.0.1 — Themis 忒弥斯 补丁（2026-08-07）
+
+> 基座升级：mem0ai 2.0.15 → 2.0.17，获取最新 SDK 特性和安全修复
+
+### 变更
+
+- **mem0ai 基座**: `2.0.15` → `2.0.17`
+  - 2.0.16: 新增 `reference_date` / `latest_only` / `keyword_search` 搜索选项
+  - 2.0.16: Core 修复 metadata 剥离 (`user_id`/`agent_id`/`run_id`/`actor_id`)，防止身份范围被意外篡改
+  - 2.0.16: 向量库修复（Upstash filter 校验、Supabase/Elasticsearch 分页边界）
+  - 2.0.17: 新增 `agent_custom_instructions`，支持 agent 级别的自定义提取指令
+- **依赖锁定**: `requirements.txt` + `pyproject.toml` 中 `mem0ai>=2.0.15` → `>=2.0.17`
+- **版本号**: `17.0.0` → `17.0.1`（补丁版本，Themis 忒弥斯主线不变）
+
+### 升级清单
+
+1. `pip install --upgrade mem0ai==2.0.17`
+2. `systemctl restart dudu-mem0-api.service mem0-sync.service`
+3. 验证 `/health` 返回 `"health_status":"ok"`
 
 ---
 
