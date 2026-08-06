@@ -1,6 +1,17 @@
 # aiduMEM 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v16.0 Opus Octopod 自进化记忆操作系统。
+
+---
+
+## v16.0 — "Opus Octopod · opus八爪鱼"（2026-08-06）
+
+**一句话**：借鉴 MemOS 三大优势，实现显式冲突消解、树状记忆图谱与碎片记忆向标准化技能自动结晶。
+
+- **ConflictResolver 显式冲突消解器** (`ducky/conflict_resolver.py`)：Key-Value 覆盖 + 规则匹配（如域名迁移、名称变动），`valid_to` 降权失效
+- **TreeMemory 树状记忆图谱** (`ducky/tree_memory.py`)：`memory_nodes` 表 + `node_path` 层级追溯与 Facts 节点挂载
+- **SkillCrystallizer 技能自动结晶器** (`ducky/skill_crystallizer.py`)：后台 consolidator 自动感知高频重复事实并提炼为 Skill 候选项
+- **专属 REST 端点**：`/conflict/resolve`、`/tree/nodes`、`/tree/node`、`/crystals`、`/crystals/detect`
 
 ---
 

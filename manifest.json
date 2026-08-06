@@ -1,8 +1,8 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEM",
-  "version": "15.1.0",
-  "description": "Kalliope 卡利俄佩版 AI 记忆引擎：Native Provider Bridge + FTS5 trigram + Qdrant 向量召回 + 双时间轴有效期",
+  "version": "16.0.0",
+  "description": "Opus Octopod opus八爪鱼版 AI 记忆操作系统：显式冲突消解 + 树状记忆图谱 + 技能自动结晶",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",
   "authors": ["aidu Team"],

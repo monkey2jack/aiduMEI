@@ -23,6 +23,7 @@ from ducky.utils import DEFAULT_USER_ID, LOG_DIR
 from ducky.memory_salience import (decay_all, get_stats, detect_conflicts,
                                     resolve_conflict_salience, record_daily_metrics,
                                     audit_health_anomalies)
+from ducky.skill_crystallizer import detect_and_crystallize_patterns
 
 logging.basicConfig(
     level=logging.INFO,
@@ -158,6 +159,13 @@ def run_consolidation():
                         f"报警强拉 {verify_res.get('boosted', 0)} 条, 归档 {verify_res.get('closed', 0)} 条")
         except Exception as e:
             logger.warning(f"教训闭环验证失败: {e}")
+
+        # ── Step 5c: 🐙 v16.0 Opus Octopod (opus八爪鱼) 技能结晶感知 ──
+        try:
+            crystals = detect_and_crystallize_patterns()
+            logger.info(f"🐙 [Opus Octopod] 技能结晶感知完成: 生成 {len(crystals)} 个候选项")
+        except Exception as e:
+            logger.warning(f"🐙 技能结晶感知失败: {e}")
 
         # ── Step 6: v8.3.0 噩梦推演（5% 概率）──
         if random.random() < 0.05:

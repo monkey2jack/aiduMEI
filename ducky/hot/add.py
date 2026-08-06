@@ -98,6 +98,13 @@ def register_add_routes(app: FastAPI) -> None:
 
             text_preview = messages_to_text(messages_json)[:120]
 
+            # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
+            try:
+                from ducky.conflict_resolver import scan_and_resolve_text_conflicts
+                scan_and_resolve_text_conflicts(text_preview, user_id=req.user_id)
+            except Exception as _ce:
+                logger.warning(f"🐙 [ConflictResolver] 隐式检测异常: {_ce}")
+
             def _run_pipeline(uid, msgs, meta):
                 try:
                     return lazy_import_layer1()(mem, msgs, uid, meta)

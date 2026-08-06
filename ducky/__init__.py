@@ -1,7 +1,7 @@
 """
 ducky — aiduMEM 思想引擎智能模块包
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v15.1 Kalliope — Native Provider Bridge
+v16.0 Opus Octopod (opus八爪鱼) — Self-Evolving Memory OS
 """
 
 from .layer1_selfcheck import (

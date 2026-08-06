@@ -3,23 +3,25 @@ ducky.version — aiduMEM 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v15.1 Kalliope（卡利俄佩 · 缪斯之首）
-    代码瘦身 · FTS去重 · legacy精简
-    在 v15.0 官方通道的基础上做一轮内功修炼：
-    legacy 808行瘦身 ~80行（FTS函数归一到 text_fts），
-    消除 _compute_similarity / bare except / 过期 build 产物，
-    让代码更干净、维护更轻松。
+v16.0 Opus Octopod (opus八爪鱼)
+    三大核心吸收与重大突破：
+    1. ConflictResolver: 属性与规则级显式冲突消解 (valid_to 失效降权)
+    2. TreeMemory: 层级与树状节点表达 (node_path / 树状记忆图谱)
+    3. SkillCrystallizer: 碎片记忆向标准化 Skill 候选项的自动演进结晶
 """
 
-SERVICE_VERSION = "15.1.0"
-CODENAME = "Kalliope"
-CODENAME_ZH = "卡利俄佩"
+SERVICE_VERSION = "16.0.0"
+FULL_VERSION = f"v{SERVICE_VERSION}"
+CODENAME = "Opus Octopod"
+CODENAME_ZH = "opus八爪鱼"
+DISPLAY_NAME = f"aiduMEM {FULL_VERSION} · {CODENAME_ZH}"
 
-# 架构代号：接入宿主官方记忆通道的可移植记忆引擎
-ARCHITECTURE = "Native Provider Bridge"
+# 架构代号：八爪延伸 · 自消解 · 树状图谱 · 经验结晶
+ARCHITECTURE = "Self-Evolving Multi-Dimensional Memory OS"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
+    ("16.0", "Opus Octopod", "opus八爪鱼", "冲突消解 · 树状记忆 · 技能结晶"),
     ("15.1", "Kalliope", "卡利俄佩", "代码瘦身 · FTS去重 · legacy精简"),
     ("15.0", "Iris", "伊里斯", "官方通道 · 惰性热载 · 静默归零"),
     ("14.0", "Aegis", "埃癸斯", "零硬编码 · 隐私护盾 · 开箱可部署"),
@@ -28,7 +30,3 @@ LINEAGE = (
     ("11.0", "Hyperion", "海伯利安", "线程本地连接池 · 性能纪元"),
     ("9.1", "Mnemosyne", "谟涅摩绪涅", "潮浪并忆 · 双策分档"),
 )
-
-# 完整版本字符串
-FULL_VERSION = f"v{SERVICE_VERSION}-{CODENAME}"
-DISPLAY_NAME = f"aiduMEM v{SERVICE_VERSION} {CODENAME}"
