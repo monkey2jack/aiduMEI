@@ -39,11 +39,11 @@ from ducky.hot.legacy import (
     _extract_entities,
     _extract_key_facts,
     _get_db,
-    _init_text_fts,
 )
 from ducky.mem0_runtime import get_memory
 from ducky.routes_registry import register_all_routes
 from ducky.schema_bootstrap import ensure_core_schema
+from ducky.text_fts import _init_text_fts
 from ducky.utils import LOG_DIR
 from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH, DISPLAY_NAME
 

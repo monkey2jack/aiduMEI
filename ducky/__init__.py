@@ -1,7 +1,7 @@
 """
-aiduMEM ducky — 思想引擎智能模块包
+ducky — aiduMEM 思想引擎智能模块包
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v9.3 "Aletheia" — J-space 启发式思想引擎
+v15.1 Kalliope — Native Provider Bridge
 """
 
 from .layer1_selfcheck import (

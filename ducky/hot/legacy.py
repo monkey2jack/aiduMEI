@@ -9,10 +9,10 @@ v8 重构 (2026-07-13):
   - 导出 helper 函数供 api_server §11-§14 引用
 """
 
-import json, logging, os, sys, sqlite3, time, math, hashlib, re, uuid
+import json, logging, os, sqlite3, time, re
 import datetime as _dt
 from typing import Optional
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from collections import defaultdict
 
 from fastapi import HTTPException, Form, Query
@@ -23,7 +23,6 @@ from ducky.utils import (
     FACTS_DB,
     OBS_DB,
     SCENES_DB,
-    TEXT_FTS_DB,
     _get_thread_conn,
 )
 
@@ -61,7 +60,6 @@ def _get_db(path: str) -> sqlite3.Connection:
 def _get_facts_conn():  return _get_db(FACTS_DB)
 def _get_obs_conn():    return _get_db(OBS_DB)
 def _get_scenes_conn(): return _get_db(SCENES_DB)
-def _get_text_conn() -> sqlite3.Connection: return _get_db(TEXT_FTS_DB)
 
 # ═══════════════════════════════════════════════
 # §6  共享 helper（_extract_entities, _extract_key_facts 等）
@@ -146,7 +144,7 @@ def _auto_extract_and_link(fact_id: int, text: str, conn=None) -> list[str]:
         try:
             cur.execute("INSERT OR IGNORE INTO fact_entities (fact_id,entity_id) VALUES (?,?)", (fact_id, eid))
             linked.append(ent_name)
-        except: pass
+        except Exception: pass
     conn.commit()
     if should_close: conn.close()
     return linked
@@ -214,7 +212,7 @@ CONTRADICTION_WORDS = [
 def _load_tags() -> dict:
     if os.path.exists(TAGS_FILE):
         try: return json.loads(open(TAGS_FILE).read())
-        except: pass
+        except (json.JSONDecodeError, OSError): pass
     return {}
 
 def _save_tags(tags: dict):
@@ -238,71 +236,16 @@ def _save_patterns(patterns: dict):
 
 # ═══════════════════════════════════════════════
 # §7  FTS5 全文搜索 + 混合检索
+#     v15.1: 归一到 ducky.text_fts（D 档真源），此处只做 re-export 兼容。
 # ═══════════════════════════════════════════════
-def _init_text_fts():
-    conn = _get_text_conn()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY, content TEXT, user_id TEXT, category TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, content=memories, content_rowid=rowid);
-        CREATE TRIGGER IF NOT EXISTS mem_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;
-    """)
-    conn.commit()
-    conn.close()
-
-def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category=""):
-    conn = _get_text_conn()
-    conn.execute("INSERT OR REPLACE INTO memories (id,content,user_id,category) VALUES (?,?,?,?)",
-                (memory_id, content, user_id, category))
-    conn.commit(); conn.close()
-
-def _unindex_memory(memory_id):
-    conn = _get_text_conn()
-    conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
-    conn.commit(); conn.close()
-
-def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID) -> list:
-    conn = _get_text_conn()
-    terms = query.split()
-    try:
-        rows = conn.execute(
-            f"SELECT id, content, category FROM memories_fts WHERE memories_fts MATCH ? AND user_id=? LIMIT ?",
-            (" AND ".join(terms), user_id, top_k)
-        ).fetchall()
-    except:
-        rows = conn.execute("SELECT id, content, category FROM memories WHERE user_id=? LIMIT ?",
-                          (user_id, top_k)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-def _like_search(terms, user_id, top_k, conn=None):
-    should_close = conn is None
-    if should_close: conn = _get_text_conn()
-    if not terms:
-        rows = conn.execute("SELECT id,content,category FROM memories WHERE user_id=? LIMIT ?",
-                          (user_id, top_k)).fetchall()
-    else:
-        clauses = ["content LIKE ?" for _ in terms]
-        params = [f"%{t}%" for t in terms] + [user_id, top_k]
-        rows = conn.execute(f"SELECT id,content,category FROM memories WHERE ({' OR '.join(clauses)}) AND user_id=? LIMIT ?",
-                          params).fetchall()
-    if should_close: conn.close()
-    return [dict(r) for r in rows]
-
-def _hybrid_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID,
-                   vector_weight: float = 0.7):
-    """旧接口 → 委托给 aiduMEM-v7 混合召回（向后兼容）"""
-    try:
-        from ducky.hybrid_recall import hybrid_search
-        from api_server import get_memory
-        results = hybrid_search(get_memory(), query, user_id, top_k)
-        return results
-    except Exception:
-        return _bm25_keyword_search(query, top_k, user_id)
+from ducky.text_fts import (
+    _init_text_fts,
+    _index_memory,
+    _unindex_memory,
+    _bm25_keyword_search,
+    _like_search,
+    _hybrid_search,
+)
 
 # ═══════════════════════════════════════════════
 # §8  Observations + Reflect（Hindsight 移植）
@@ -322,7 +265,7 @@ def _get_recent_memories(limit=100, user_id=DEFAULT_USER_ID) -> list:
         from api_server import get_memory
         mem = get_memory()
         return mem.get_all(filters={"user_id": user_id}, limit=limit)
-    except: return []
+    except Exception: return []
 
 def _run_consolidation(user_id=DEFAULT_USER_ID, max_obs=50):
     """聚合近期记忆为观察（占位——由 Layer1/Instinct 模块接管）"""

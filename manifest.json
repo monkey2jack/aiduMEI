@@ -1,8 +1,8 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEM",
-  "version": "9.3.0",
-  "description": "Aletheia 阿勒忒亚版 AI 思想引擎：Ebbinghaus遗忘曲线 + 知识演化追踪 + 相关性闸门 + 用户纠正感知",
+  "version": "15.1.0",
+  "description": "Kalliope 卡利俄佩版 AI 记忆引擎：Native Provider Bridge + FTS5 trigram + Qdrant 向量召回 + 双时间轴有效期",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",
   "authors": ["aidu Team"],
