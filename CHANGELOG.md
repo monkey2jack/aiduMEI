@@ -1,8 +1,49 @@
 # aiduMEM 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v16.0 Opus Octopod 自进化记忆操作系统。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v17.0 Themis 治理秩序纪元。
 
 ---
+
+## v17.0.0 — Themis 忒弥斯（2026-08-06）
+
+> 治理秩序纪元：将 Mímir 联邦记忆系统的三大治理理念融入 aiduMEM
+
+### 核心新特性（借鉴 Mímir v9.1）
+
+**🏛️ 变更事件账本 (fact_events)**
+- 新建 `fact_events` 表，冲突消解动作自动留审计记录
+- 记录 event_type / category / fact_key / new_value / affected_ids
+- `schema_bootstrap.py` 开箱即建，新库无需手动迁移
+
+**🔒 敏感级别分档 (sensitivity)**
+- facts 表新增 `sensitivity` 列（internal / confidential / restricted）
+- 默认 `internal`，现有数据无影响
+- 为未来外发策略控制预留结构基础
+
+**🛡️ SkillCrystallizer 治理铁律**
+- 结晶候选项遵循"LLM 只能建议，人工 approve 才能落地"
+- 新增 `approve_crystal()` 接口，status: candidate → approved
+- 新增 `source_categories` / `sample_keys` 字段，过滤噪声分类（Experience/emotion/session 等）
+
+### 代码质量修复
+
+**ConflictResolver**
+- 快速路径：先在内存做规则匹配，无命中不查 DB（避免冗余全表扫描）
+- 规则集脱敏：MUTUAL_EXCLUSION_PATTERNS 改为通用占位符，运行时可注入业务规则
+- 新增 `load_custom_exclusion_patterns()` 供 api_server 启动时配置
+
+**TreeMemory**
+- `fact_count` 改为精确匹配 `category`，去除 `tags LIKE %name%` 误匹配
+- 新增 `get_ancestors()` 向上追溯接口
+- 根节点改为通用模板，可自定义注入
+
+**SkillCrystallizer**
+- `procedure` 只记录操作键摘要，不再 GROUP_CONCAT 完整 Experience 内容
+- 结晶阈值：分类下 ≥ 3 条有效 fact 才触发，减少无意义结晶
+- 新增 `candidate_count` 字段追踪候选事实数量
+
+---
+
 
 ## v16.0 — "Opus Octopod · opus八爪鱼"（2026-08-06）
 
