@@ -1,7 +1,7 @@
 """
 ducky — aiduMEM 思想引擎智能模块包
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v16.0 Opus Octopod (opus八爪鱼) — Self-Evolving Memory OS
+v17.0 Themis (忒弥斯) — Governed Self-Evolving Memory OS
 """
 
 from .layer1_selfcheck import (

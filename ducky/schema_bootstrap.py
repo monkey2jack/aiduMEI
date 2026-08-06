@@ -66,7 +66,10 @@ CREATE TABLE IF NOT EXISTS facts (
     recorded_at      TIMESTAMP,
     tags             TEXT DEFAULT '',
     decay_at         TEXT,
-    shared           INTEGER DEFAULT 1
+    shared           INTEGER DEFAULT 1,
+    -- Mímir 借鉴：敏感级别分档（v17）
+    -- internal: 授权范围内可用 | confidential: 限制 owner/外发 | restricted: 本地仅限
+    sensitivity      TEXT DEFAULT 'internal'
 )
 """
 
@@ -90,11 +93,26 @@ CREATE TABLE IF NOT EXISTS fact_entities (
 )
 """
 
+# 变更事件账本（借鉴 Mímir 事件账本设计，v17）
+_FACT_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS fact_events (
+    event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type   TEXT NOT NULL,
+    category     TEXT DEFAULT '',
+    fact_key     TEXT DEFAULT '',
+    new_value    TEXT DEFAULT '',
+    affected_ids TEXT DEFAULT '[]',
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 _INDEXES = (
     "CREATE INDEX        IF NOT EXISTS idx_facts_category ON facts(category)",
     "CREATE INDEX        IF NOT EXISTS idx_facts_key      ON facts(fact_key)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_unique   ON facts(category, fact_key)",
     "CREATE INDEX        IF NOT EXISTS idx_entities_name  ON entities(name)",
+    "CREATE INDEX        IF NOT EXISTS idx_fevents_type   ON fact_events(event_type)",
+    "CREATE INDEX        IF NOT EXISTS idx_fevents_cat    ON fact_events(category)",
 )
 
 _lock = threading.Lock()
@@ -115,6 +133,7 @@ def ensure_core_schema(force: bool = False) -> dict:
                 ("facts", _FACTS_DDL),
                 ("entities", _ENTITIES_DDL),
                 ("fact_entities", _FACT_ENTITIES_DDL),
+                ("fact_events", _FACT_EVENTS_DDL),
             ):
                 existed = conn.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",

@@ -1,53 +1,70 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEM",
-  "version": "16.0.0",
-  "description": "Opus Octopod opus八爪鱼版 AI 记忆操作系统：显式冲突消解 + 树状记忆图谱 + 技能自动结晶",
+  "version": "17.0.0",
+  "description": "Themis 忒弥斯版 AI 记忆操作系统：治理秩序 · 事件账本 · 敏感分档 · Mímir三借鉴融合",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",
-  "authors": ["aidu Team"],
+  "authors": [
+    "aidu Team"
+  ],
   "capabilities": {
     "tools": [
       {
         "name": "mem0_search",
         "description": "搜索记忆（内置相关性闸门）",
-        "requirements": ["filesystem"],
+        "requirements": [
+          "filesystem"
+        ],
         "permission_policy": "auto"
       },
       {
         "name": "mem0_add",
         "description": "添加记忆（自动注册显著性）",
-        "requirements": ["network", "filesystem"],
+        "requirements": [
+          "network",
+          "filesystem"
+        ],
         "permission_policy": "auto"
       },
       {
         "name": "mem0_recent",
         "description": "获取最近记忆",
-        "requirements": ["filesystem"],
+        "requirements": [
+          "filesystem"
+        ],
         "permission_policy": "auto"
       },
       {
         "name": "mem0_stats",
         "description": "记忆统计（含显著性报告）",
-        "requirements": ["filesystem"],
+        "requirements": [
+          "filesystem"
+        ],
         "permission_policy": "auto"
       },
       {
         "name": "mem0_delete",
         "description": "删除指定记忆",
-        "requirements": ["filesystem"],
+        "requirements": [
+          "filesystem"
+        ],
         "permission_policy": "ask"
       },
       {
         "name": "mem0_delete_all",
         "description": "删除所有记忆（危险操作）",
-        "requirements": ["filesystem"],
+        "requirements": [
+          "filesystem"
+        ],
         "permission_policy": "ask"
       },
       {
         "name": "mem0_update",
         "description": "更新指定记忆",
-        "requirements": ["filesystem"],
+        "requirements": [
+          "filesystem"
+        ],
         "permission_policy": "auto"
       }
     ],
