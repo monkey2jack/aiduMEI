@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumem"
-version = "15.1.0"
+version = "16.0.0"
 description = "aiduMEM: self-hosted multi-tier memory for Hermes Agent — native MemoryProvider bridge, CoreMemory, FTS5 & Qdrant recall"
 readme = "README.md"
 authors = [
