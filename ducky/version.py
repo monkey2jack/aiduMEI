@@ -15,7 +15,7 @@ v17.0 Themis (忒弥斯 · 正义女神 · 治理秩序纪元)
     - SkillCrystallizer: 过滤噪声分类 + procedure 只记操作键不塞完整内容 + approve 接口
 """
 
-SERVICE_VERSION = "17.0.0"
+SERVICE_VERSION = "17.0.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Themis"
 CODENAME_ZH = "忒弥斯"
