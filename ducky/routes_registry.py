@@ -15,6 +15,8 @@ from ducky.hot.legacy import register_legacy_routes
 from ducky.extended.routes import register_extended_routes
 from ducky.federation.routes import register_federation_routes
 from ducky.routes_octopus import register_octopus_routes
+from ducky.hot.raw_drawer import register_raw_drawer_routes
+from ducky.code_graph import register_code_graph_routes
 
 logger = logging.getLogger("aiduMEM.RoutesRegistry")
 
@@ -42,4 +44,10 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
     # 7. 注册 Octopus (v16.0) 专属三大特性路由 (ConflictResolver, TreeMemory, SkillCrystallizer)
     register_octopus_routes(app)
 
-    logger.info("✅ 所有路由线注册完毕 (含 v16.0 Opus Octopod)")
+    # 8. 注册 Zeus (v18.0) Raw Drawer 原味抽屉路由
+    register_raw_drawer_routes(app)
+
+    # 9. 注册 Zeus (v18.0) Code Graph 代码图谱路由
+    register_code_graph_routes(app)
+
+    logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus Raw Drawer + Code Graph)")
