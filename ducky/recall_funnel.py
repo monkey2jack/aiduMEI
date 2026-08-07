@@ -17,6 +17,7 @@ from .salience.core import _detect_lane
 from .memory_workspace import ws_lookup, ws_feed_from_results, ws_push
 from .memory_jlens import collect_jlens_report, enhance_funnel_trace
 from .memory_broadcast import broadcast_chain, broadcast_expand
+from .evolve_mem import log_search_quality as _evolve_log_search
 
 logger = logging.getLogger("aiduMEM.funnel")
 
@@ -206,6 +207,13 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     stages.append({"name": "final", "count": len(final), "from_ignition": sum(1 for f in final if f.get("_ignited")), "ms": int((time.time()-t0)*1000)})
 
     total_ms = int((time.time() - start) * 1000)
+
+    # ── EvolveMem: 记录搜索质量信号（异步安全）──
+    try:
+        _evolve_log_search(query, final, latency_ms=total_ms, gate_passed=True)
+    except Exception:
+        pass
+
     return {
         "results": final,
         "trace": {

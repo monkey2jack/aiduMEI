@@ -29,6 +29,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from ducky.autodream import autodream_background_loop
+from ducky.evolve_mem import evolve_background_loop
 from ducky.core_memory import init_core_memory
 from ducky.extended import _auto_expire_loop, auto_memory_background_loop
 from ducky.extended.routes import register_extended_routes
@@ -87,6 +88,7 @@ _BACKGROUND_LOOPS = {
     "auto_memory": auto_memory_background_loop,
     "auto_expire": _auto_expire_loop,
     "autodream": autodream_background_loop,
+        "evolve_mem": evolve_background_loop,
 }
 
 
