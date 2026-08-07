@@ -295,5 +295,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  <sub>Thinking Version · Iris | Built by <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/Aowen-Nowor">Aowen</a></sub>
+  <sub>Thinking Version · Iris | Built by <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/monkey2jack">dudu</a></sub>
 </p>
