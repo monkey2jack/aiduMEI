@@ -1,6 +1,17 @@
 # aiduMEM 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v17.0.1 Themis 治理秩序纪元。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v17.0.2 Themis 治理秩序纪元。
+
+---
+
+## v17.0.2 — Themis 忒弥斯 Docker构建构建顺序修复（2026-08-07）
+
+> Docker 构建优化：调整 Dockerfile 中 COPY 源码与 pip install . 的顺序，解决容器构建时入口点 api_server 缺失导致的 ModuleNotFoundError。
+
+### 变更
+
+- **Dockerfile 构建顺序**: 调整 `COPY . /app` 优先于 `pip install .`，确保 setuptools 打包时 `api_server.py` 已入场。
+- **版本号**: `17.0.1` → `17.0.2`（补丁版本，Themis 忒弥斯主线不变）
 
 ---
 
