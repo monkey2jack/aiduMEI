@@ -48,8 +48,8 @@ aiduMEM（优忆思）是一个 **AI 思想引擎** —— 为 AI Agent 提供�
 
 | 版本 | 代号 | 神格 | 核心使命 |
 |------|------|------|----------|
-| **v18.1** | **Hera** · 赫拉 | 天后 · 检索自进化 | EvolveMem 反馈闭环，38 MCP 工具，质量审计全覆盖 |
-| **v18.0** | **Zeus** · 宙斯 | 众神之王 | 原味抽屉 · 代码图谱 · 五大竞品精华融合 |
+| **v18.1** | **Zeus** · 宙斯 | 众神之王 · 检索自进化 | EvolveMem 反馈闭环，38 MCP 工具，质量审计全覆盖 |
+| **v18.0** | **Zeus** · 宙斯 | 众神之王 · 吸星大法 | 原味抽屉 · 代码图谱 · 五大竞品精华融合 · MCP×36 · IDE 钩子 |
 | **v17.0** | **Themis** · 忒弥斯 | 秩序女神 | 事件账本 · 敏感分档 · 治理铁律 |
 | **v16.0** | **Opus Octopod** · 八爪鱼 | 深海智者 | 冲突消解 · 树状记忆 · 技能结晶 |
 | **v15.0** | **Iris** · 伊里斯 | 彩虹信使 | 官方 MemoryProvider 通道 · 惰性热载 |
@@ -148,7 +148,7 @@ python api_server.py
 | `POST` | `/code/impact` | 分析文件改动波及范围（爆炸半径） |
 | `GET` | `/code/graph` | 查看全项目代码依赖图 |
 
-### 检索自进化（Hera v18.1）
+### 检索自进化（Zeus v18.1）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -226,7 +226,7 @@ curl -s -X POST http://localhost:8767/evolve/feedback \
 ### 🔍 代码图谱（Code Graph — Zeus v18.0）
 借鉴 code-review-graph (29k⭐) 的 AST 爆炸半径分析。用 Python 标准库 `ast` 解析项目依赖关系，改一个文件一秒告诉你影响范围。724 函数 · 936 import 关系，468ms 全图扫描。
 
-### 📈 检索自进化（EvolveMem — Hera v18.1）
+### 📈 检索自进化（EvolveMem — Zeus v18.1）
 借鉴 SimpleMem (3.7k⭐) 的进化理念。用户可对每次检索结果打分（useful / useless / correction），后台每 6 小时自动计算衰减/提权。高频优质词条自动沉淀，低质词条温柔降权。**闭环反馈，越用越聪明。**
 
 ### 🏛️ 万神殿联邦记忆（Pantheon Federation）
@@ -390,7 +390,7 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 
 ## 路线图
 
-- [x] **v18.1 Hera** — EvolveMem 检索自进化闭环
+- [x] **v18.1 Zeus** — EvolveMem 检索自进化闭环
 - [x] **v18.0 Zeus** — Raw Drawer · Code Graph · MCP×36 · IDE 钩子
 - [x] **v17.0 Themis** — 事件账本 · 敏感分档 · 治理铁律
 - [x] **v16.0 Opus Octopod** — 冲突消解 · 树状记忆 · 技能结晶

@@ -48,8 +48,8 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEM adds a ten-layer
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
-| **v18.1** | **Hera** | Queen of Gods | EvolveMem feedback loop · 38 MCP tools · quality audit |
-| **v18.0** | **Zeus** | King of the Gods | Raw Drawer · Code Graph · 5 competitor精华 fusion |
+| **v18.1** | **Zeus** | King of the Gods · Self-Evolving | EvolveMem feedback loop · 38 MCP tools · quality audit |
+| **v18.0** | **Zeus** | King of the Gods · Power Absorption | Raw Drawer · Code Graph · 5 competitors精华 fusion · MCP×36 · IDE hooks |
 | **v17.0** | **Themis** | Goddess of Order | Event ledger · sensitivity tiers · governance rules |
 | **v16.0** | **Opus Octopod** | Deep-sea Sage | Conflict resolution · tree memory · skill crystallization |
 | **v15.0** | **Iris** | Rainbow Messenger | Official MemoryProvider channel · lazy hot-reload |
@@ -149,7 +149,7 @@ python api_server.py
 | `POST` | `/code/impact` | Analyze file change blast radius |
 | `GET` | `/code/graph` | View full project dependency graph |
 
-### Retrieval Evolution (Hera v18.1)
+### Retrieval Evolution (Zeus v18.1)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -227,7 +227,7 @@ Inspired by MemPalace's (58k⭐) Verbatim Storage. Zero-LLM raw text storage —
 ### 🔍 Code Graph (Zeus v18.0)
 Inspired by code-review-graph's (29k⭐) AST blast radius analysis. Uses Python's standard `ast` library to parse project dependencies. Change one file, instantly see the impact. 724 functions · 936 imports, full-graph scan in 468ms.
 
-### 📈 EvolveMem Self-Evolving Retrieval (Hera v18.1)
+### 📈 EvolveMem Self-Evolving Retrieval (Zeus v18.1)
 Inspired by SimpleMem's (3.7k⭐) evolution concept. Users rate each retrieval result (useful / useless / correction). Background thread runs every 6 hours to auto-compute decay/boost. High-quality frequent entries auto-consolidate, low-quality ones gently deprioritize. **Closed-loop feedback — gets smarter with use.**
 
 ### 🏛️ Pantheon Federation
@@ -389,7 +389,7 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 
 ## Roadmap
 
-- [x] **v18.1 Hera** — EvolveMem self-evolving retrieval feedback loop
+- [x] **v18.1 Zeus** — EvolveMem self-evolving retrieval feedback loop
 - [x] **v18.0 Zeus** — Raw Drawer · Code Graph · MCP×36 · IDE hooks
 - [x] **v17.0 Themis** — Event ledger · sensitivity tiers · governance rules
 - [x] **v16.0 Opus Octopod** — Conflict resolution · tree memory · skill crystallization

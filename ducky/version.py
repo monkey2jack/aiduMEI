@@ -3,7 +3,7 @@ ducky.version — aiduMEM 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v18.1 Zeus (赫拉 · 检索自进化纪元)
+v18.1 Zeus (宙斯 · 检索自进化纪元)
     核心主题: SimpleMem 核心理念 EvolveMem 融合，建立闭环反馈
     1. EvolveMem 引擎: /evolve/feedback 与周期性 boost/decay 权重调整
     2. MCP 工具扩充: expose evolve_feedback 与 evolve_report
@@ -27,7 +27,7 @@ ARCHITECTURE = "Feedback-driven Evolving Memory OS"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
-    ("18.1", "Hera", "赫拉", "检索自进化 · EvolveMem 反馈闭环"),
+    ("18.1", "Zeus", "宙斯", "检索自进化 · EvolveMem 反馈闭环"),
     ("18.0", "Zeus", "宙斯", "原味抽屉 · 代码图谱 · 五大竞品精华融合"),
     ("17.0", "Themis", "忒弥斯", "治理秩序 · 事件账本 · 敏感分档 · Mímir三借鉴"),
     ("16.0", "Opus Octopod", "opus八爪鱼", "冲突消解 · 树状记忆 · 技能结晶"),

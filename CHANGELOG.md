@@ -1,6 +1,6 @@
 # aiduMEM 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.1.0 Hera 检索自进化纪元。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.1.0 Zeus 检索自进化纪元。
 
 ---
 
@@ -26,10 +26,7 @@
 - 修复 `ducky/hot/health.py` 中遗漏的环境变量探针
 
 ### 三大借鉴圆满收官
-通过 v18.0 (Zeus) 和 v18.1 (Hera)，全面完成了用户交代的“吸星大法”：
-# aiduMEM 版本演进史
-
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.0.0 Zeus 众神之王纪元。
+通过 v18.0 (Zeus) 和 v18.1 (Zeus)，全面完成了用户交代的“吸星大法”：
 
 ---
 
