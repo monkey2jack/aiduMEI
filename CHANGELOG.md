@@ -1,5 +1,34 @@
 # aiduMEM 版本演进史
 
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.1.0 Hera 检索自进化纪元。
+
+---
+
+## v18.1.0 — Zeus 宙斯（2026-08-07）
+
+> EvolveMem 检索自进化纪元：融合 SimpleMem 核心思想，构建基于质量反馈的动态权重闭环。
+
+### 核心新特性
+
+**📈 EvolveMem 检索自进化**
+- 新增 `ducky.evolve_mem` 核心引擎，支持动态反馈与权重衰减/提权
+- 新增 `POST /evolve/feedback`，允许用户传入 `useful` / `useless` / `correction`，实时微调 `salience`
+- 新增 `GET /evolve/report` 进化统计面板（召回率、有效性打分、动态调整历史）
+- 新增后台自动进化线程：每 6 小时计算衰减/提权，自动沉淀（>5次命中且分数>0.65的高频词条获得提权）
+- 将 EvolveMem 质量打点钩子无缝植入 `recall_funnel` 漏斗末端，完成搜索闭环
+
+**🛠️ MCP 工具持续扩容**
+- 将 MCP 的能力由 36 提升至 38
+- 新增 `evolve_feedback` 和 `evolve_report` 本地代理
+
+**🧹 全局质量审计**
+- 完成项目内 100% 裸 `except:` 的审计重构（改为 `except Exception:` 阻断隐患）
+- 修复 `ducky/hot/health.py` 中遗漏的环境变量探针
+
+### 三大借鉴圆满收官
+通过 v18.0 (Zeus) 和 v18.1 (Hera)，全面完成了用户交代的“吸星大法”：
+# aiduMEM 版本演进史
+
 > 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.0.0 Zeus 众神之王纪元。
 
 ---

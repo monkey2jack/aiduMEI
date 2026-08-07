@@ -3,31 +3,31 @@ ducky.version — aiduMEM 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v18.0 Zeus (宙斯 · 众神之王 · 吸星大法纪元)
-    核心主题: 吸收全网 Top 5 AI 记忆系统精华，跨代架构融合升级
-    1. Raw Drawer 原味抽屉: 吸收 MemPalace Verbatim Storage，长代码/日志零 LLM 直入
-    2. Code Graph 代码图谱: 吸收 code-review-graph AST 爆炸半径，依赖感知精准追踪
-    3. 健康探针扩展: raw_drawer + code_graph 双探针
+v18.1 Hera (赫拉 · 检索自进化纪元)
+    核心主题: SimpleMem 核心理念 EvolveMem 融合，建立闭环反馈
+    1. EvolveMem 引擎: /evolve/feedback 与周期性 boost/decay 权重调整
+    2. MCP 工具扩充: expose evolve_feedback 与 evolve_report
+    3. 全方位质量审计: 清理架构遗留瑕疵，确保高稳定性
+    4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
 
     竞品融合来源:
     - MemPalace (58k⭐): Verbatim Storage → Raw Drawer
     - code-review-graph (29k⭐): AST blast radius → Code Graph
-    - SimpleMem (3.7k⭐): EvolveMem → 检索自进化 (Phase 3)
-    - Engram (5.8k⭐): 零依赖理念 → 部署收敛
-    - OpenViking (27.7k⭐): 统一上下文 DB → Skills-Memory 融合 (长远)
+    - SimpleMem (3.7k⭐): EvolveMem → 检索自进化 (Phase 3 闭环)
 """
 
-SERVICE_VERSION = "18.0.0"
+SERVICE_VERSION = "18.1.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
-CODENAME = "Zeus"
-CODENAME_ZH = "宙斯"
+CODENAME = "Hera"
+CODENAME_ZH = "赫拉"
 DISPLAY_NAME = f"aiduMEM {FULL_VERSION} · {CODENAME_ZH}"
 
-# 架构代号：吸星大法 · 原味抽屉 · 代码图谱 · 众神融合
-ARCHITECTURE = "Cross-Pollinated Self-Evolving Memory OS"
+# 架构代号：检索自进化 · 反馈闭环 · 核心重构
+ARCHITECTURE = "Feedback-driven Evolving Memory OS"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
+    ("18.1", "Hera", "赫拉", "检索自进化 · EvolveMem 反馈闭环"),
     ("18.0", "Zeus", "宙斯", "原味抽屉 · 代码图谱 · 五大竞品精华融合"),
     ("17.0", "Themis", "忒弥斯", "治理秩序 · 事件账本 · 敏感分档 · Mímir三借鉴"),
     ("16.0", "Opus Octopod", "opus八爪鱼", "冲突消解 · 树状记忆 · 技能结晶"),
@@ -39,3 +39,4 @@ LINEAGE = (
     ("11.0", "Hyperion", "海伯利安", "线程本地连接池 · 性能纪元"),
     ("9.1", "Mnemosyne", "谟涅摩绪涅", "潮浪并忆 · 双策分档"),
 )
+

@@ -705,3 +705,31 @@ if __name__ == "__main__":
     else:
         logger.info("📟 stdio 模式启动")
         mcp.run(transport="stdio")
+
+# ═══════════════════════════════════════════════════════
+# ⑬ EvolveMem 检索自进化（v18.1 新增）
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def evolve_feedback(memory_id: str, signal: str, query: str = "", correction_text: str = "") -> str:
+    """提交对某条记忆的调用反馈，用于自动调整记忆权重。
+
+    Args:
+        memory_id: 记忆 UUID
+        signal:    反馈信号 ('useful' | 'useless' | 'correction')
+        query:     触发该记忆的搜索词（可选）
+        correction_text: 若为 'correction'，填入修正后的内容（可选）
+    """
+    body = {"memory_id": memory_id, "signal": signal}
+    if query:
+        body["query"] = query
+    if correction_text:
+        body["correction_text"] = correction_text
+    result = _api_post("/evolve/feedback", body)
+    return _ok(result)
+
+@mcp.tool()
+def evolve_report() -> str:
+    """获取 EvolveMem 检索自进化的近期统计报告（搜索命中率、动态权重调整）。"""
+    result = _api_get("/evolve/report")
+    return _ok(result)
