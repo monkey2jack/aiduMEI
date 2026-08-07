@@ -1,5 +1,6 @@
 """ducky.hot.health — GET /health"""
 from __future__ import annotations
+import os
 
 import logging
 import os
@@ -132,6 +133,14 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as e:
             probes["code_graph_ok"] = False
             probes["code_graph_error"] = str(e)[:120]
+
+        # Zeus v18.1: EvolveMem 探针
+        try:
+            from ducky.utils import DATA_DIR
+            probes["evolve_mem_ok"] = os.path.exists(os.path.join(DATA_DIR, "evolve_mem.db"))
+        except Exception as e:
+            probes["evolve_mem_ok"] = False
+            probes["evolve_mem_error"] = str(e)[:120]
 
         degraded = [k for k, v in module_ok.items() if not v]
         if not probes.get("fts_ok"):

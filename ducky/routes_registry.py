@@ -17,6 +17,7 @@ from ducky.federation.routes import register_federation_routes
 from ducky.routes_octopus import register_octopus_routes
 from ducky.hot.raw_drawer import register_raw_drawer_routes
 from ducky.code_graph import register_code_graph_routes
+from ducky.routes_evolve import register_evolve_routes
 
 logger = logging.getLogger("aiduMEM.RoutesRegistry")
 
@@ -50,4 +51,7 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
     # 9. 注册 Zeus (v18.0) Code Graph 代码图谱路由
     register_code_graph_routes(app)
 
-    logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus Raw Drawer + Code Graph)")
+        # 10. 注册 EvolveMem (v18.1) 检索自进化路由
+    register_evolve_routes(app)
+
+    logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus + v18.1 EvolveMem)")
