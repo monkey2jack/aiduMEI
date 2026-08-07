@@ -1,8 +1,52 @@
 # aiduMEM 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v17.0.2 Themis 治理秩序纪元。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.0.0 Zeus 众神之王纪元。
 
 ---
+
+## v18.0.0 — Zeus 宙斯（2026-08-07）
+
+> 吸星大法纪元：吸收全网 Top 5 AI 记忆系统精华，跨代架构融合升级。
+
+### 核心新特性
+
+**⚡ Raw Drawer 原味抽屉（吸收 MemPalace Verbatim Storage）**
+- 新增 `POST /add/raw` 端点，零 LLM 直存原始文本
+- FTS5 全文索引 + Qdrant 向量 + facts 登记，三路并行
+- 适合存入代码片段、完整对话记录、原始日志等原文内容
+- 健康探针：`raw_drawer_ok`
+
+**🔍 Code Graph 代码图谱（吸收 code-review-graph AST 爆炸半径）**
+- 新增 `POST /code/impact` — 分析文件改动波及范围（爆炸半径）
+- 新增 `GET /code/graph` — 查看全项目代码依赖图
+- AST 静态分析 + import 关系追踪
+- 健康探针：`code_graph_ok`
+
+**🛠️ MCP Server 重构（6工具 → 36工具）**
+- 完全解耦：所有工具统一通过 HTTP 调用 api_server，消除 Qdrant 锁冲突
+- 新增工具分组：Core CRUD / Facts / Code Graph / Session / Reflect / Core Memory / AutoDream / Raw Drawer / Knowledge Tree / Crystals / Conflict
+- 工具接口与 REST API 保持一致
+
+**🔗 IDE 集成（Cursor & Claude Code Hook）**
+- 新增 `integrations/cursor-hook/` 目录
+- `cursor-aidumem.mdc` — Cursor Rules 规则文件
+- `aidumem-on-save.sh` — 文件保存时自动存入 Raw Drawer
+- `claude-code-hook.py` — Claude Code 集成 CLI（store/search/impact/health）
+
+### 代码质量
+- 修复 `ducky/extended/routes.py` 裸 `except:` → `except Exception:`
+- MCP Server 彻底移除直接 ducky 模块依赖，改为 HTTP 代理模式
+
+### 竞品融合来源
+- **MemPalace (58k⭐)**: Verbatim Storage → Raw Drawer
+- **code-review-graph (29k⭐)**: AST blast radius → Code Graph
+- **SimpleMem (3.7k⭐)**: EvolveMem → 检索自进化（Phase 3 规划）
+- **Engram (5.8k⭐)**: 零依赖理念 → 部署收敛
+- **OpenViking (27.7k⭐)**: 统一上下文 DB → Skills-Memory 融合（长远规划）
+
+---
+
+
 
 ## v17.0.2 — Themis 忒弥斯 Docker构建构建顺序修复（2026-08-07）
 

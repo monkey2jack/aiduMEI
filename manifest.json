@@ -1,7 +1,7 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEM",
-  "version": "17.0.2",
+  "version": "18.0.0",
   "description": "Themis 忒弥斯版 AI 记忆操作系统：治理秩序 · 事件账本 · 敏感分档 · Mímir三借鉴融合",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",

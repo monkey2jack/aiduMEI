@@ -111,6 +111,28 @@ def register_health_routes(app: FastAPI) -> None:
             probes["entity_keywords_ok"] = False
             probes["entity_keywords_error"] = str(e)[:120]
 
+        # Zeus v18.0: Raw Drawer 探针
+        try:
+            from ducky.utils import get_text_conn
+            conn2 = get_text_conn()
+            raw_count = conn2.execute(
+                "SELECT COUNT(*) FROM memories WHERE id LIKE 'raw-%'"
+            ).fetchone()[0]
+            conn2.close()
+            probes["raw_drawer_count"] = int(raw_count)
+            probes["raw_drawer_ok"] = True
+        except Exception as e:
+            probes["raw_drawer_ok"] = False
+            probes["raw_drawer_error"] = str(e)[:120]
+
+        # Zeus v18.0: Code Graph 探针
+        try:
+            from ducky.code_graph import build_dependency_graph
+            probes["code_graph_ok"] = True
+        except Exception as e:
+            probes["code_graph_ok"] = False
+            probes["code_graph_error"] = str(e)[:120]
+
         degraded = [k for k, v in module_ok.items() if not v]
         if not probes.get("fts_ok"):
             degraded.append("fts")

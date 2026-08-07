@@ -1,0 +1,38 @@
+---
+description: aiduMEM integration — store code changes into long-term memory
+globs: ["**/*.py", "**/*.ts", "**/*.js", "**/*.go", "**/*.rs", "**/*.java"]
+alwaysApply: false
+---
+
+# aiduMEM Code Memory Hook
+
+When you make significant code changes (new functions, refactors, bug fixes), automatically store them to aiduMEM's Raw Drawer for long-term recall.
+
+## Trigger
+
+After completing a meaningful code change (not trivial one-liners), call:
+
+```
+POST http://127.0.0.1:8767/add/raw
+Content-Type: application/json
+
+{
+  "content": "FILE: <relative_path>\n\n<code_snippet_or_summary>",
+  "source": "cursor_hook",
+  "user_id": "default"
+}
+```
+
+## What to Store
+
+✅ Store:
+- New functions/classes with their docstrings
+- Bug fix descriptions with before/after
+- Architectural decisions ("moved X to Y because...")
+- API endpoint implementations
+- Configuration changes with rationale
+
+❌ Skip:
+- Trivial whitespace/formatting changes
+- Single-line variable renames
+- Auto-generated code
