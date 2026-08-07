@@ -3,7 +3,7 @@ ducky.version — aiduMEM 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v18.1 Hera (赫拉 · 检索自进化纪元)
+v18.1 Zeus (赫拉 · 检索自进化纪元)
     核心主题: SimpleMem 核心理念 EvolveMem 融合，建立闭环反馈
     1. EvolveMem 引擎: /evolve/feedback 与周期性 boost/decay 权重调整
     2. MCP 工具扩充: expose evolve_feedback 与 evolve_report
@@ -18,8 +18,8 @@ v18.1 Hera (赫拉 · 检索自进化纪元)
 
 SERVICE_VERSION = "18.1.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
-CODENAME = "Hera"
-CODENAME_ZH = "赫拉"
+CODENAME = "Zeus"
+CODENAME_ZH = "宙斯"
 DISPLAY_NAME = f"aiduMEM {FULL_VERSION} · {CODENAME_ZH}"
 
 # 架构代号：检索自进化 · 反馈闭环 · 核心重构
