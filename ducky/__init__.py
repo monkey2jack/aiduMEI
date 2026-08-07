@@ -1,7 +1,7 @@
 """
 ducky — aiduMEM 思想引擎智能模块包
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v17.0 Themis (忒弥斯) — Governed Self-Evolving Memory OS
+v18.0 Zeus (宙斯) — Cross-Pollinated Self-Evolving Memory OS
 """
 
 from .layer1_selfcheck import (

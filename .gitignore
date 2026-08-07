@@ -53,3 +53,4 @@ Thumbs.db
 .env
 *.log
 .sensenova_key
+.local/
