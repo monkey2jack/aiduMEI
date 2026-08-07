@@ -1,64 +1,54 @@
 #!/usr/bin/env python3
 """
-mem0 MCP Server — AI Thought Engine
+aiduMEM MCP Server — v18.0.0 Zeus
 ==============================================
-通过 stdio 模式直接暴露 mem0 工具给宿主 Agent。
-内置后台自动记忆线程，定期从宿主会话库提取新记忆，不受模型影响。
+通过 stdio/SSE 模式暴露 aiduMEM 工具给宿主 Agent。
 
-宿主相关路径通过环境变量配置（均为可选，未配置时自动记忆线程静默跳过）：
+架构说明：
+  MCP 工具统一通过 HTTP 调用本地 api_server（默认 127.0.0.1:8767），
+  不再直接 import ducky 内部模块，实现完全解耦：
+    - api_server 可独立重启/升级，MCP 无需重启
+    - 减少 Qdrant 锁冲突风险（只有一个进程持有锁）
+    - 工具接口与 REST API 保持一致，便于测试
+
+后台自动记忆线程仍走宿主会话库直读（无需 HTTP），保持低延迟。
+
+环境变量（均可选）：
     AIDUMEM_HOST_STATE_DB    宿主 Agent 的会话 SQLite 路径
     AIDUMEM_HOST_LAST_ID     增量游标文件路径
+    AIDUMEM_API_BASE         api_server 地址（默认 http://127.0.0.1:8767）
 """
 
-import json, logging, os, sys, argparse, threading, time, sqlite3
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sqlite3
+import sys
+import argparse
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
+from typing import Any
 
-# ── ducky 模块 ──
+# ── 路径 bootstrap（先于 ducky import）──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ducky.memory_gate import relevance_check
-from ducky.memory_salience import on_memory_accessed, on_memory_added
-from ducky.tool_envelope import success, error, format_response
 from ducky.utils import BASE_DIR, DATA_DIR, DEFAULT_USER_ID, LOG_DIR
+from ducky.tool_envelope import success, error, format_response
 
-# ── 路径常量 ──
+# ── 常量 ──
 STATE_DB = os.environ.get("AIDUMEM_HOST_STATE_DB", "")
 LAST_ID_FILE = os.environ.get(
-    "AIDUMEM_HOST_LAST_ID", os.path.join(DATA_DIR, "auto_memory_last_id.txt")
+    "AIDUMEM_HOST_LAST_ID",
+    os.path.join(DATA_DIR, "auto_memory_last_id.txt"),
 )
-MEM0_CONFIG = os.path.join(BASE_DIR, "mem0_config_local.json")
+API_BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 
-# ── Qdrant 锁清理 ──
-def _cleanup_zombie_lock():
-    """启动时清理僵死的 Qdrant 锁——杀掉其他 mcp_server 僵尸进程"""
-    import subprocess
-    current_pid = os.getpid()
-    try:
-        # 找所有 mcp_server.py 进程（排除自己）
-        result = subprocess.run(
-            ["pgrep", "-f", "mcp_server.py"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            for pid_str in result.stdout.strip().split():
-                pid = int(pid_str.strip())
-                if pid != current_pid:
-                    os.kill(pid, 9)
-                    print(f"[startup] 🔪 杀掉僵尸MCP进程 PID={pid}", file=sys.stderr)
-    except (subprocess.TimeoutExpired, ProcessLookupError, ValueError, OSError):
-        pass
-    # 等锁释放
-    time.sleep(0.5)
-    # 清理可能残留的 .lock 文件
-    qdrant_dir = os.path.join(DATA_DIR, "qdrant")
-    lock_file = os.path.join(qdrant_dir, ".lock")
-    if os.path.exists(lock_file):
-        try:
-            os.remove(lock_file)
-            print(f"[startup] 🧹 清理残留 .lock 文件", file=sys.stderr)
-        except OSError:
-            pass
-
-_cleanup_zombie_lock()
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # ── 日志 ──
 logging.basicConfig(
@@ -69,281 +59,540 @@ logging.basicConfig(
         logging.StreamHandler(sys.stderr),
     ],
 )
-logger = logging.getLogger("mem0-mcp")
+logger = logging.getLogger("aiduMEM-mcp")
 
-# ── mem0 ──
-try:
-    from mem0 import Memory
-    logger.info("✅ mem0 SDK loaded")
-except ImportError:
-    logger.error("❌ mem0 not installed")
-    sys.exit(1)
 
-# 全局实例
-_memory = None
+# ═══════════════════════════════════════════════════════
+# HTTP 客户端辅助（轻量，无第三方依赖）
+# ═══════════════════════════════════════════════════════
 
-def get_memory():
-    global _memory
-    if _memory is not None:
-        return _memory
-    config_path = Path(MEM0_CONFIG)
-    if config_path.exists():
-        with open(config_path) as f:
-            cfg = json.load(f)
-        # 从文件注入 SiliconFlow key
-        if cfg.get("embedder", {}).get("config", {}).get("api_key") == "__SF_KEY__":
-            kp = os.path.join(os.path.dirname(MEM0_CONFIG), ".sf_key")
-            if os.path.exists(kp):
-                with open(kp) as f:
-                    cfg["embedder"]["config"]["api_key"] = f.read().strip()
-                logger.info("✅ SiliconFlow key injected from file")
-        # LLM key 从 .llm_key 文件注入（OpenAI 兼容接口）
-        with open(os.path.join(BASE_DIR, ".llm_key")) as _kf:
-            llm_key = _kf.read().strip()
-        if cfg.get("llm", {}).get("config", {}).get("api_key") == "__SF_KEY__":
-            cfg["llm"]["config"]["api_key"] = llm_key
-            # base_url 保持 config 文件中的 https://opencode.ai/zen/go/v1，不覆盖
-            if llm_key:
-                logger.info("✅ LLM key injected from .llm_key (opencode-go)")
-            else:
-                logger.warning("⚠️ .llm_key 为空，LLM key 注入失败")
-        _memory = Memory.from_config(cfg)
-        logger.info("✅ mem0 初始化完成")
-    else:
-        _memory = Memory()
-        logger.warning("⚠️ 使用默认配置")
-    return _memory
+def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
+    """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
+    url = f"{API_BASE}{path}"
+    if params:
+        qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
+        url = f"{url}?{qs}"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        return {"error": f"HTTP {e.code}", "detail": body}
+    except Exception as e:
+        return {"error": str(e)}
 
-# ── FastMCP ──
+
+def _api_post(path: str, body: dict | None = None, timeout: int = 30) -> dict:
+    """POST 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
+    url = f"{API_BASE}{path}"
+    data = json.dumps(body or {}).encode()
+    try:
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode(errors="replace")
+        return {"error": f"HTTP {e.code}", "detail": body_text}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _ok(data: Any) -> str:
+    """把 dict 序列化为 MCP 工具返回字符串。"""
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _err(msg: str) -> str:
+    return json.dumps({"error": msg}, ensure_ascii=False)
+
+
+# ═══════════════════════════════════════════════════════
+# FastMCP 初始化
+# ═══════════════════════════════════════════════════════
+
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("aidumem", log_level="INFO")
 
 
-# ═══════════════════════════════════════════════
-# MCP 工具
-# ═══════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════
+# ① 核心记忆 CRUD
+# ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def mem0_add(messages: str, user_id: str = DEFAULT_USER_ID) -> str:
-    """添加记忆到 AI Agent 的大脑。
+def mem_add(messages: str, user_id: str = DEFAULT_USER_ID) -> str:
+    """添加记忆到 aiduMEM（自动提炼 + 向量化存储）。
 
     Args:
         messages: JSON 字符串，格式 [{"role": "user/assistant", "content": "..."}]
-        user_id: 用户标识，默认取 AIDUMEM_DEFAULT_USER_ID 环境变量
+        user_id:  用户标识，默认取 AIDUMEM_DEFAULT_USER_ID 环境变量
     """
     try:
-        mem = get_memory()
         msg_list = json.loads(messages)
-        result = mem.add(msg_list, user_id=user_id)
-        # Phase 1.1: 注册 salience
-        mids = []
-        for r in result.get("results", []):
-            mid = r.get("id", "")
-            if mid:
-                mids.append(mid)
-                try:
-                    on_memory_added(mid)
-                except Exception:
-                    pass
-        return format_response(success({"stored": len(mids), "ids": mids}))
     except json.JSONDecodeError as e:
-        return format_response(error("invalid_args", f"messages JSON 解析失败: {e}"))
-    except Exception as e:
-        logger.error(f"mem0_add 失败: {e}")
-        return format_response(error("execution_error", str(e)))
+        return _err(f"messages JSON 解析失败: {e}")
+    result = _api_post("/add", {"messages": msg_list, "user_id": user_id})
+    return _ok(result)
 
 
 @mcp.tool()
-def mem0_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5) -> str:
-    """搜索记忆。Phase 1.3: 内置相关性闸门 + 显著性 boost。
+def mem_add_raw(content: str, source: str = "mcp", user_id: str = DEFAULT_USER_ID) -> str:
+    """原味抽屉（Raw Drawer）— 零 LLM 直存原始文本，不经过提炼压缩。
+
+    适合存入代码片段、完整对话记录、原始日志等需要原文检索的内容。
+
+    Args:
+        content: 要存储的原始文本内容
+        source:  来源标识（如 cursor_hook / claude_code / manual）
+        user_id: 用户标识
+    """
+    result = _api_post("/add/raw", {"content": content, "source": source, "user_id": user_id})
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5) -> str:
+    """语义搜索记忆（内置相关性闸门 + 显著性 boost）。
+
+    Args:
+        query:   搜索关键词或自然语言问题
+        user_id: 用户标识
+        top_k:   返回结果数量，默认 5
+    """
+    result = _api_post("/search", {"query": query, "user_id": user_id, "top_k": top_k})
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_search_deep(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 10) -> str:
+    """深度搜索 — 同时检索向量库 + FTS5 全文索引 + facts 结构化知识库，三路并行召回。
+
+    比 mem_search 召回更全面，适合知识库查询和精确事实检索。
+
+    Args:
+        query:   搜索关键词
+        user_id: 用户标识
+        top_k:   每路返回结果数，默认 10
+    """
+    result = _api_post("/search/deep", {"query": query, "user_id": user_id, "top_k": top_k})
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_recent(user_id: str = DEFAULT_USER_ID, limit: int = 10) -> str:
+    """获取最近添加的记忆列表。
+
+    Args:
+        user_id: 用户标识
+        limit:   返回条数，默认 10
+    """
+    result = _api_get("/recent", {"user_id": user_id, "limit": limit})
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_update(memory_id: str, data: str) -> str:
+    """更新指定 ID 的记忆内容。
+
+    Args:
+        memory_id: 记忆 UUID
+        data:      新的记忆文本
+    """
+    result = _api_post("/update", {"memory_id": memory_id, "data": data})
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_delete(memory_id: str) -> str:
+    """删除指定 ID 的记忆。
+
+    Args:
+        memory_id: 记忆 UUID
+    """
+    result = _api_post("/delete", {"memory_id": memory_id})
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_delete_all(user_id: str = DEFAULT_USER_ID) -> str:
+    """⚠️ 危险：清空指定用户的全部记忆。操作不可逆，请谨慎使用。
+
+    Args:
+        user_id: 用户标识
+    """
+    result = _api_post("/delete_all", {"user_id": user_id})
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ② 统计与健康
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def mem_stats(user_id: str = DEFAULT_USER_ID) -> str:
+    """查看记忆统计信息（总数、用户分布、显著性统计等）。
+
+    Args:
+        user_id: 用户标识
+    """
+    result = _api_get("/stats", {"user_id": user_id})
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_health() -> str:
+    """检查 aiduMEM 服务健康状态，包含所有子模块探针结果和版本信息。"""
+    result = _api_get("/health")
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_usage() -> str:
+    """查看 API 使用量统计（各模型调用次数、Token 消耗等）。"""
+    result = _api_get("/usage")
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ③ Facts 结构化知识库
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def facts_search(query: str, limit: int = 10) -> str:
+    """搜索结构化知识事实库（facts）。
+
+    Facts 是经过实体提取的高质量结构化知识，与向量记忆互补。
 
     Args:
         query: 搜索关键词
-        user_id: 用户标识，默认取 AIDUMEM_DEFAULT_USER_ID 环境变量
-        top_k: 返回结果数量，默认 5
+        limit: 返回条数，默认 10
     """
-    try:
-        # ── Phase 1.3: 相关性闸门 ──
-        gate = relevance_check(query)
-        if not gate["needs_memory"]:
-            return format_response(success({
-                "count": 0,
-                "results": [],
-                "gate": gate
-            }, warnings=[f"闸门跳过: {gate['reason']}"]))
-        
-        mem = get_memory()
-        result = mem.search(query, filters={"user_id": user_id}, top_k=top_k)
-        memories = result.get("results", [])
-        
-        # ── Phase 1.2: 显著性 boost（每次访问） ──
-        for m in memories:
-            mid = m.get("id", "")
-            if mid:
-                try:
-                    on_memory_accessed(mid)
-                except Exception:
-                    pass
-        
-        return format_response(success({
-            "count": len(memories),
-            "results": memories,
-            "gate": gate
-        }))
-    except Exception as e:
-        return format_response(error("execution_error", str(e)))
+    result = _api_get("/facts/search", {"query": query, "limit": limit})
+    return _ok(result)
 
 
 @mcp.tool()
-def mem0_recent(user_id: str = DEFAULT_USER_ID, limit: int = 10) -> str:
-    """获取最近的记忆记录。"""
-    try:
-        mem = get_memory()
-        result = mem.search("", filters={"user_id": user_id}, top_k=limit)
-        memories = result.get("results", [])
-        return format_response(success({"count": len(memories), "results": memories}))
-    except Exception as e:
-        return format_response(error("execution_error", str(e)))
-
-
-@mcp.tool()
-def mem0_stats(user_id: str = DEFAULT_USER_ID) -> str:
-    """查看记忆统计信息。"""
-    try:
-        import sqlite3
-        db_path = os.path.join(DATA_DIR, "qdrant", "collection", "mem0", "storage.sqlite")
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # 总记录数
-        cursor.execute("SELECT COUNT(*) FROM points")
-        total = cursor.fetchone()[0]
-        
-        # 解析所有点的payload，统计user_id分布
-        cursor.execute("SELECT point FROM points")
-        rows = cursor.fetchall()
-        
-        user_counts = {}
-        hash_counts = {}
-        tag_counts = {}
-        
-        for (point_blob,) in rows:
-            try:
-                point = json.loads(point_blob)
-                payload = point.get('payload', {})
-                uid = payload.get('user_id', 'unknown')
-                h = payload.get('hash', '')
-                mem_text = payload.get('data', '')
-                
-                user_counts[uid] = user_counts.get(uid, 0) + 1
-                if h:
-                    hash_counts[h] = hash_counts.get(h, 0) + 1
-                
-                if mem_text.startswith('['):
-                    tag = mem_text.split(']')[0] + ']'
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
-            except:
-                pass
-        
-        conn.close()
-        
-        dupes = {h: c for h, c in hash_counts.items() if c > 1}
-        total_dupes = sum(c - 1 for c in dupes.values())
-        
-        # Phase 1.2: 也返回 salience 统计
-        from ducky.memory_salience import get_stats as salience_stats
-        sal = salience_stats()
-        
-        return format_response(success({
-            "user_id": user_id,
-            "total_memories": total,
-            "user_distribution": user_counts,
-            "unique_hashes": len(hash_counts),
-            "duplicate_hashes": len(dupes),
-            "duplicate_count": total_dupes,
-            "after_dedup": total - total_dupes,
-            "top_tags": dict(sorted(tag_counts.items(), key=lambda x: -x[1])[:10]),
-            "salience": sal
-        }))
-    except Exception as e:
-        return format_response(error("execution_error", str(e)))
-
-
-@mcp.tool()
-def mem0_delete(memory_id: str) -> str:
-    """删除指定记忆。
+def facts_list(category: str = "", limit: int = 20) -> str:
+    """列出结构化知识事实。
 
     Args:
-        memory_id: 记忆ID
+        category: 筛选类别（如 preference / event / skill / identity）
+        limit:    返回条数，默认 20
     """
-    try:
-        mem = get_memory()
-        result = mem.delete(memory_id)
-        return format_response(success({"deleted": memory_id}))
-    except Exception as e:
-        logger.error(f"mem0_delete 失败: {e}")
-        return format_response(error("execution_error", str(e)))
+    params: dict = {"limit": limit}
+    if category:
+        params["category"] = category
+    result = _api_get("/facts", params)
+    return _ok(result)
 
 
 @mcp.tool()
-def mem0_delete_all(user_id: str = DEFAULT_USER_ID) -> str:
-    """删除所有记忆（危险操作！）。"""
-    try:
-        mem = get_memory()
-        result = mem.delete_all(user_id=user_id)
-        return format_response(success({"cleared": True}))
-    except Exception as e:
-        logger.error(f"mem0_delete_all 失败: {e}")
-        return format_response(error("execution_error", str(e)))
-
-
-@mcp.tool()
-def mem0_update(memory_id: str, data: str) -> str:
-    """更新指定记忆。
+def facts_add(content: str, category: str = "general", source: str = "mcp") -> str:
+    """向结构化知识库添加一条 Fact。
 
     Args:
-        memory_id: 记忆ID
-        data: 新的记忆内容
+        content:  事实内容文本
+        category: 分类（preference / event / skill / identity / general）
+        source:   来源标识
+    """
+    result = _api_post("/facts/add", {"content": content, "category": category, "source": source})
+    return _ok(result)
+
+
+@mcp.tool()
+def facts_entities(entity: str = "") -> str:
+    """查询 facts 实体图谱。
+
+    Args:
+        entity: 实体名称（为空则返回所有实体列表）
+    """
+    if entity:
+        result = _api_get("/facts/related", {"entity": entity})
+    else:
+        result = _api_get("/facts/entities/list")
+    return _ok(result)
+
+
+@mcp.tool()
+def facts_preferences() -> str:
+    """获取用户偏好 facts（category=preference 的结构化知识）。"""
+    result = _api_get("/facts/preferences")
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ④ 代码图谱（Zeus v18.0 新增）
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def code_impact(file_path: str) -> str:
+    """分析修改指定文件的波及范围（爆炸半径）。
+
+    在修改代码前调用，快速了解哪些其他文件依赖此文件，防止意外破坏。
+
+    Args:
+        file_path: 要分析的文件路径（相对或绝对路径）
+    """
+    result = _api_post("/code/impact", {"file_path": file_path})
+    return _ok(result)
+
+
+@mcp.tool()
+def code_graph_view(path: str = "") -> str:
+    """查看代码依赖图谱。
+
+    Args:
+        path: 筛选路径前缀（为空则返回全图摘要）
+    """
+    params: dict = {}
+    if path:
+        params["path"] = path
+    result = _api_get("/code/graph", params or None)
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑤ Session 会话持久化
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def session_start(session_id: str, metadata: str = "{}") -> str:
+    """开始一个新会话，建立记忆锚点。
+
+    Args:
+        session_id: 会话唯一标识（如时间戳字符串）
+        metadata:   JSON 字符串，附加元数据（如 {"source": "feishu"}）
     """
     try:
-        mem = get_memory()
-        result = mem.update(memory_id, data)
-        return format_response(success({"updated": memory_id}))
-    except Exception as e:
-        logger.error(f"mem0_update 失败: {e}")
-        return format_response(error("execution_error", str(e)))
+        meta = json.loads(metadata)
+    except json.JSONDecodeError:
+        meta = {}
+    result = _api_post("/session/start", {"session_id": session_id, "metadata": meta})
+    return _ok(result)
 
 
-# ═══════════════════════════════════════════════
-# 后台自动记忆线程
-# ═══════════════════════════════════════════════
+@mcp.tool()
+def session_end(session_id: str) -> str:
+    """结束会话，触发记忆沉淀和显著性更新。
 
-def _read_last_id():
+    Args:
+        session_id: 要结束的会话标识
+    """
+    result = _api_post("/session/end", {"session_id": session_id})
+    return _ok(result)
+
+
+@mcp.tool()
+def session_list() -> str:
+    """列出所有已记录的历史会话摘要。"""
+    result = _api_get("/session/list")
+    return _ok(result)
+
+
+@mcp.tool()
+def session_report(session_id: str) -> str:
+    """获取指定会话的详细记忆报告。
+
+    Args:
+        session_id: 会话标识
+    """
+    result = _api_post("/session/report", {"session_id": session_id})
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑥ 观察与反思（Observe & Reflect）
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def mem_observe(query: str = "", user_id: str = DEFAULT_USER_ID) -> str:
+    """观察记忆全景 — 返回高层次记忆摘要和热点话题。
+
+    Args:
+        query:   可选筛选关键词
+        user_id: 用户标识
+    """
+    params: dict = {"user_id": user_id}
+    if query:
+        params["query"] = query
+    result = _api_get("/observe", params)
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_reflect(topic: str, user_id: str = DEFAULT_USER_ID) -> str:
+    """对某个话题进行深度反思 — 联结相关记忆，生成洞察。
+
+    Args:
+        topic:   反思话题
+        user_id: 用户标识
+    """
+    result = _api_post("/reflect", {"topic": topic, "user_id": user_id})
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑦ 核心记忆块（Core Memory / Persona）
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def core_memory_list() -> str:
+    """列出所有核心记忆块（高优先级、永不过期的结构化事实）。"""
+    result = _api_get("/api/core-memory")
+    return _ok(result)
+
+
+@mcp.tool()
+def core_memory_get(block_key: str) -> str:
+    """获取指定核心记忆块。
+
+    Args:
+        block_key: 记忆块键名（如 user_profile / preferences / identity）
+    """
+    result = _api_get(f"/api/core-memory/{urllib.parse.quote(block_key)}")
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_persona() -> str:
+    """获取 AI 自我人设定义（ai-self persona block）。"""
+    result = _api_get("/persona/ai-self")
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑧ AutoDream 自动梦境（后台自演化）
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def autodream_status() -> str:
+    """查看 AutoDream 自动记忆演化的当前状态。"""
+    result = _api_get("/api/autodream/status")
+    return _ok(result)
+
+
+@mcp.tool()
+def autodream_report() -> str:
+    """获取最近一次 AutoDream 的执行报告（合并、蒸馏、归档摘要）。"""
+    result = _api_get("/api/autodream/report")
+    return _ok(result)
+
+
+@mcp.tool()
+def autodream_trigger() -> str:
+    """手动触发一次 AutoDream 演化（正常由定时任务驱动，此工具用于调试）。"""
+    result = _api_post("/api/autodream/trigger", {})
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑨ Raw Drawer 统计
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def raw_stats() -> str:
+    """查看原味抽屉（Raw Drawer）的存储统计。"""
+    result = _api_get("/raw/stats")
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑩ 知识树与场景
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def knowledge_tree() -> str:
+    """查看记忆知识树结构（按话题层级组织的记忆全景）。"""
+    result = _api_get("/knowledge/tree")
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_scene(query: str = "") -> str:
+    """查看场景记忆簇（自动聚类的话题场景）。
+
+    Args:
+        query: 可选筛选关键词
+    """
+    params: dict = {}
+    if query:
+        params["query"] = query
+    result = _api_get("/scene", params or None)
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑪ 技能结晶（Skill Crystallizer — v16.0 Octopus）
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def crystals_list() -> str:
+    """列出已结晶的技能（从高频解决方案中自动提炼的可复用模式）。"""
+    result = _api_get("/crystals")
+    return _ok(result)
+
+
+@mcp.tool()
+def crystals_detect() -> str:
+    """手动触发技能结晶检测（分析近期记忆，识别可提炼为技能的高频模式）。"""
+    result = _api_post("/crystals/detect", {})
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# ⑫ 冲突解决（Conflict Resolver — v16.0 Octopus）
+# ═══════════════════════════════════════════════════════
+
+@mcp.tool()
+def conflict_resolve(topic: str = "", user_id: str = DEFAULT_USER_ID) -> str:
+    """检测并解决记忆冲突（矛盾的记忆会影响召回质量）。
+
+    Args:
+        topic:   可选，聚焦在某个话题范围内检测冲突
+        user_id: 用户标识
+    """
+    body: dict = {"user_id": user_id}
+    if topic:
+        body["topic"] = topic
+    result = _api_post("/conflict/resolve", body)
+    return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# 后台自动记忆线程（直读宿主 state.db，不走 HTTP）
+# ═══════════════════════════════════════════════════════
+
+def _read_last_id() -> int:
     if os.path.exists(LAST_ID_FILE):
-        with open(LAST_ID_FILE) as f:
-            return int(f.read().strip())
+        try:
+            return int(Path(LAST_ID_FILE).read_text().strip())
+        except (ValueError, OSError):
+            return 0
     return 0
 
-def _write_last_id(msg_id):
-    os.makedirs(os.path.dirname(LAST_ID_FILE), exist_ok=True)
-    with open(LAST_ID_FILE, "w") as f:
-        f.write(str(msg_id))
 
-def _fetch_new_messages(last_id, limit=200):
-    """获取未处理的新消息"""
+def _write_last_id(msg_id: int) -> None:
+    os.makedirs(os.path.dirname(LAST_ID_FILE), exist_ok=True)
+    Path(LAST_ID_FILE).write_text(str(msg_id))
+
+
+def _fetch_new_messages(last_id: int, limit: int = 200) -> tuple[list, int]:
+    """从宿主 state.db 增量读取新对话消息。"""
     if not STATE_DB:
-        logger.info("未配置 AIDUMEM_HOST_STATE_DB，跳过宿主会话自动记忆")
-        return [], 0
+        return [], last_id
     if not os.path.exists(STATE_DB):
         logger.warning(f"宿主会话库不存在: {STATE_DB}")
-        return [], 0
-
+        return [], last_id
     try:
         conn = sqlite3.connect(STATE_DB)
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(
+        cur = conn.cursor()
+        cur.execute(
             """
             SELECT m.id, m.session_id, m.role, m.content, m.timestamp, s.source
             FROM messages m
@@ -358,123 +607,98 @@ def _fetch_new_messages(last_id, limit=200):
             """,
             (last_id, limit),
         )
-        rows = cursor.fetchall()
+        rows = cur.fetchall()
         conn.close()
-
-        messages = [{
-            "id": r["id"],
-            "session_id": r["session_id"],
-            "role": r["role"],
-            "content": r["content"][:2000],
-            "timestamp": r["timestamp"],
-            "source": r["source"],
-        } for r in rows]
-
+        messages = [
+            {
+                "id": r["id"],
+                "session_id": r["session_id"],
+                "role": r["role"],
+                "content": r["content"][:2000],
+                "timestamp": r["timestamp"],
+                "source": r["source"],
+            }
+            for r in rows
+        ]
         max_id = max((m["id"] for m in messages), default=last_id)
         return messages, max_id
     except Exception as e:
         logger.error(f"读取 state.db 失败: {e}")
         return [], last_id
 
-def _group_by_session(messages):
-    """按 session 分组"""
-    sessions = {}
+
+def _group_by_session(messages: list) -> dict:
+    sessions: dict = {}
     for msg in messages:
         sid = msg["session_id"]
-        if sid not in sessions:
-            sessions[sid] = []
-        sessions[sid].append(msg)
+        sessions.setdefault(sid, []).append(msg)
     for sid in sessions:
         sessions[sid].sort(key=lambda x: x["id"])
     return sessions
 
-def _format_conversation(messages):
-    """格式化成对话文本"""
+
+def _format_conversation(messages: list) -> str:
     parts = []
     for msg in messages:
         label = "User" if msg["role"] == "user" else "Assistant"
         parts.append(f"{label}: {msg['content']}")
     return "\n\n".join(parts)
 
-def run_auto_memory():
-    """执行一次自动记忆提取"""
-    mem = get_memory()
+
+def run_auto_memory() -> None:
+    """执行一次自动记忆提取（通过 HTTP 调用 /add 端点）。"""
     last_id = _read_last_id()
     messages, max_id = _fetch_new_messages(last_id)
-
     if not messages:
-        logger.info(f"📭 自动记忆: 无新消息（上次 ID {last_id}）")
         return
 
     sessions = _group_by_session(messages)
-    cron_sessions = sum(1 for s in sessions if any(m.get("source") == "cron" for m in sessions[s]))
-    total_stored = 0
-
+    stored_total = 0
     for sid, msgs in sessions.items():
-        # 跳过 cron 输出（避免自己记自己）
-        if any(m.get("source") == "cron" for m in msgs):
-            continue
-        # 至少一问一答才有记忆价值
         if len(msgs) < 2:
             continue
-
         conversation = _format_conversation(msgs)
-        try:
-            result = mem.add(
-                [
-                    {"role": "system", "content": "你是 AI 助手，正在和用户聊天。"},
-                    {"role": "user", "content": conversation},
-                ],
-                user_id=DEFAULT_USER_ID,
-                metadata={"source": "auto_memory", "session_id": sid},
-            )
-            memories = result.get("results", [])
-            if memories:
-                total_stored += len(memories)
-                for mem_entry in memories:
-                    logger.info(f"  📝 自动记忆: {mem_entry.get('memory', '')[:100]}")
-        except Exception as e:
-            logger.warning(f"  ⚠️ session {sid} 记忆失败: {e}")
+        msg_list = [{"role": "user", "content": conversation}]
+        resp = _api_post("/add", {"messages": msg_list, "user_id": DEFAULT_USER_ID}, timeout=60)
+        if "error" not in resp:
+            n = len(resp.get("results", []))
+            stored_total += n
+            logger.info(f"[auto-memory] 会话 {sid[:8]}… → {n} 条记忆")
+        else:
+            logger.warning(f"[auto-memory] 会话 {sid[:8]}… 存入失败: {resp.get('error')}")
 
     _write_last_id(max_id)
-    logger.info(f"✅ 自动记忆完成: 新增 {total_stored} 条记忆，下次从 ID {max_id} 开始")
+    if stored_total:
+        logger.info(f"[auto-memory] 本轮共存入 {stored_total} 条记忆（游标→{max_id}）")
 
-def auto_memory_loop():
-    """自动记忆后台线程"""
-    logger.info("🕐 自动记忆线程已启动（首次执行在10分钟后，之后每小时一次）")
-    time.sleep(600)  # 首次延迟10分钟，让系统先稳定
+
+def auto_memory_loop() -> None:
     while True:
         try:
-            run_auto_memory()
+            if STATE_DB:
+                run_auto_memory()
         except Exception as e:
             logger.error(f"❌ 自动记忆异常: {e}", exc_info=True)
-        time.sleep(21600)  # 每6小时执行一次
+        time.sleep(21600)  # 每 6 小时一次
 
 
-# ═══════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════
 # 主入口
-# ═══════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sse", action="store_true")
+    parser = argparse.ArgumentParser(description="aiduMEM MCP Server v18.0.0 Zeus")
+    parser.add_argument("--sse", action="store_true", help="以 SSE HTTP 模式启动（默认 stdio）")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     args = parser.parse_args()
 
-    # 预热 mem0
-    logger.info("🚀 预热 mem0...")
-    try:
-        get_memory()
-        logger.info("✅ mem0 预热完成")
-    except Exception as e:
-        logger.warning(f"⚠️ mem0 预热失败: {e}")
-
     # 启动后台自动记忆线程
-    threading.Thread(target=auto_memory_loop, daemon=True).start()
+    threading.Thread(target=auto_memory_loop, daemon=True, name="auto-memory").start()
+    logger.info(f"🧠 aiduMEM MCP Server v18.0.0-zeus 启动（API_BASE={API_BASE}）")
 
     if args.sse:
-        logger.info(f"🌐 SSE 模式，端口 {args.port}")
+        logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")
         import uvicorn
         app = mcp.sse_app(mount_path="/sse")
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
