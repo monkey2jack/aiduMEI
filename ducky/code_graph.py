@@ -169,7 +169,7 @@ def compute_blast_radius(
 
 class ImpactRequest(BaseModel):
     """爆炸半径查询请求"""
-    root_dir: str = "dudu-mem0"
+    root_dir: str = ""
     changed_files: list[str] = Field(default_factory=list)
     max_depth: int = 3
     max_files: int = 500
@@ -201,7 +201,7 @@ def register_code_graph_routes(app: FastAPI) -> None:
         }
 
     @app.get("/code/graph")
-    def code_graph_stats(root_dir: str = "dudu-mem0"):
+    def code_graph_stats(root_dir: str = ""):
         """代码图谱统计"""
         t0 = time.time()
 

@@ -38,6 +38,7 @@ backups/
 .sf_key
 .llm_key
 .opencode_zen_key
+.sensenova_key
 mem0_config_local.json
 
 # Legacy archives
