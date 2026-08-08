@@ -186,10 +186,11 @@ def register_code_graph_routes(app: FastAPI) -> None:
         if not req.changed_files:
             raise HTTPException(400, "changed_files 不能为空")
 
-        if not os.path.isdir(req.root_dir):
-            raise HTTPException(400, f"目录不存在: {req.root_dir}")
+        root_dir = req.root_dir or os.getcwd()
+        if not os.path.isdir(root_dir):
+            raise HTTPException(400, f"目录不存在: {root_dir}")
 
-        graph = build_dependency_graph(req.root_dir, max_files=req.max_files)
+        graph = build_dependency_graph(root_dir, max_files=req.max_files)
         result = compute_blast_radius(graph, req.changed_files, max_depth=req.max_depth)
 
         elapsed_ms = round((time.time() - t0) * 1000, 1)
@@ -205,6 +206,7 @@ def register_code_graph_routes(app: FastAPI) -> None:
         """代码图谱统计"""
         t0 = time.time()
 
+        root_dir = root_dir or os.getcwd()
         if not os.path.isdir(root_dir):
             raise HTTPException(400, f"目录不存在: {root_dir}")
 
