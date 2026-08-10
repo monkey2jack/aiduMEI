@@ -57,9 +57,13 @@ function setDeployedVersion(ver) {
 }
 
 // numeric segment compare: -1 / 0 / +1
+// version like "18.2.0-zeus" is normalized to its pure numeric part first.
 function cmpVersion(a, b) {
-  const pa = String(a).split('.').map(function (x) { return parseInt(x, 10) || 0; });
-  const pb = String(b).split('.').map(function (x) { return parseInt(x, 10) || 0; });
+  const norm = function (s) {
+    return String(s).replace(/^v/i, '').replace(/-.*$/, '').trim();
+  };
+  const pa = norm(a).split('.').map(function (x) { return parseInt(x, 10) || 0; });
+  const pb = norm(b).split('.').map(function (x) { return parseInt(x, 10) || 0; });
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const x = pa[i] || 0, y = pb[i] || 0;
     if (x !== y) return x < y ? -1 : 1;
