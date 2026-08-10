@@ -12,9 +12,9 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-18.2.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
+[![Version](https://img.shields.io/badge/version-18.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
-[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEM/pkgs/container/aidumem)
+[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
 [![Built on mem0](https://img.shields.io/badge/built%20on-mem0-orange.svg)](https://github.com/mem0ai/mem0)
@@ -157,7 +157,7 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v18.2 · Zeus · 宙斯          │
+│           aiduMEI⚕爱嘟优忆思 v18.2          │
 │              FastAPI REST API :8767                       │
 │              控制台 /ui :8767（自带静态托管）              │
 │              MCP Server :8768 (38 tools)                  │
@@ -199,7 +199,7 @@ docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumem:latest
 
 ```bash
 # 1. 克隆
-git clone https://github.com/monkey2jack/aiduMEM.git
+git clone https://github.com/monkey2jack/aiduMEI.git
 cd aiduMEM
 
 # 2. 创建虚拟环境
