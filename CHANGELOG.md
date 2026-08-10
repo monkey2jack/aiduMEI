@@ -188,7 +188,7 @@
 **一句话**：FTS5 全文索引 + 加权混合召回，对标 Hindsight TEMPR。
 
 - FTS5 建索引：`CREATE VIRTUAL TABLE facts_fts USING fts5(...)`
-- 向量（bge-m3）+ BM25 + 时效 + 可靠性 + 热度，5 维融合
+- 向量（向量嵌入）+ BM25 + 时效 + 可靠性 + 热度，5 维融合
 - `/facts/search` 支持 keyword + category 联合查询
 
 ---
@@ -459,7 +459,7 @@ mem0 裸壳 (v0)
 
 | 来源 | 吸收了什么 |
 |------|-----------|
-| **mem0** | 向量存储（Qdrant + bge-m3） |
+| **mem0** | 向量存储（Qdrant + 向量嵌入） |
 | **memory-os** | 7 层架构 · Facts 表 · Bayesian trust · 4 级权威 · FTS5 |
 | **OpenViking** | L0/L1/L2 分层 · 目录递归 · viking:// 范式 |
 | **Aion Memory** | Layer 1 自检 · Recall Funnel · Instinct→Skill 蒸馏 |

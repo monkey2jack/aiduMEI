@@ -15,7 +15,7 @@
   "embedder": {
     "provider": "openai",
     "config": {
-      "model": "BAAI/bge-m3",
+      "model": "your-embedding-model",
       "api_key": "YOUR_EMBEDDING_API_KEY",
       "openai_base_url": "https://your-embedding-endpoint/v1",
       "embedding_dims": 1024
@@ -37,7 +37,7 @@
   "_rerank_optional": "可选。配置后混合检索会走 rerank 精排；不配则自动跳过。",
   "rerank": {
     "enabled": false,
-    "model": "BAAI/bge-reranker-v2-m3",
+    "model": "your-rerank-model",
     "api_key": "YOUR_RERANK_API_KEY",
     "openai_base_url": "https://your-rerank-endpoint/v1"
   }
