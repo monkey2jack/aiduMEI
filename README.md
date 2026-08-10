@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-18.2.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
+[![Version](https://img.shields.io/badge/version-18.3.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
 [![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEM/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -48,6 +48,8 @@
 
 ## 🖥️ aiduMEI 控制台（全新）
 
+> **v18.3 起带登录门禁** —— 控制台页面需要访问密码，未配置时默认 123456（生产请通过 AIDUMEM_UI_PASSWORD 自定义）。
+>
 > **v18.2 起自带可视化控制台** —— 不再是纯 API 服务，而是一个"看得见记忆如何被想起"的引擎。
 
 aiduMEI 内置一个零依赖的 Web 控制台，由后端直接托管在 `/ui`，无需单独部署前端。六个面板覆盖记忆引擎的完整生命周期：
@@ -138,6 +140,7 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 | 版本 | 代号 | 神格 | 核心使命 |
 |------|------|------|----------|
+| **v18.3** | **Zeus** · 宙斯 | 众神之王 · 登录门禁 | 控制台登录页 · 密码校验（默认 123456） |
 | **v18.2** | **Zeus** · 宙斯 | 众神之王 · 检索自进化 | EvolveMem 反馈闭环、38 MCP 工具、质量审计全覆盖、**自带可视化控制台** |
 | **v18.0** | **Zeus** · 宙斯 | 众神之王 · 吸星大法 | 原味抽屉 · 代码图谱 · 五大竞品精华融合 · MCP×36 · IDE 钩子 |
 | **v17.0** | **Themis** · 忒弥斯 | 秩序女神 | 事件账本 · 敏感分档 · 治理铁律 |
