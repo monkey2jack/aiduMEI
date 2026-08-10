@@ -24,9 +24,12 @@ del _stub, _NoopPosthog, _types
 import logging
 import os
 import threading
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from ducky.autodream import autodream_background_loop
 from ducky.evolve_mem import evolve_background_loop
@@ -65,6 +68,21 @@ app = FastAPI(
     version=f"{SERVICE_VERSION}-{CODENAME.lower()}",
 )
 
+# ── 前端 UI 托管（aiduMEM 自带面板）──────────────────────
+# UI_DIR 指向 frontend/ 目录；未指定时取本文件同级的 frontend/。
+# 访问 / 与 /ui/ 即可打开控制台，页面通过 /api/* 与本服务通信。
+_UI_DIR = os.environ.get("UI_DIR", str(Path(__file__).resolve().parent / "frontend"))
+if Path(_UI_DIR).is_dir():
+    app.mount("/ui", StaticFiles(directory=_UI_DIR, html=True), name="ui")
+
+    @app.get("/", include_in_schema=False)
+    def _ui_root():
+        return RedirectResponse("/ui/")
+
+    logger.info("🖥️ 前端 UI 已挂载: %s → /ui/", _UI_DIR)
+else:
+    logger.warning("⚠️ 未找到前端目录 %s（仅 API 模式运行）", _UI_DIR)
+
 # 兼容旧模块仍从 api_server 导入这些符号。
 __all__ = [
     "app",
@@ -76,6 +94,14 @@ __all__ = [
 
 # 注册所有路由（统一入口）
 register_all_routes(app, get_memory, _get_db, _extract_entities)
+
+# ── /api 前缀别名层 ──────────────────────────────────────
+# aiduMEI 控制台前端以 /api/* 为调用根（API.base = '/api'）。
+# 这里挂一个子应用，复用同一套路由，让 /api/stats、/api/config 等
+# 直接命中扁平路由，无需改前端。
+_api_alias = FastAPI(title="aiduMEM /api alias")
+register_all_routes(_api_alias, get_memory, _get_db, _extract_entities)
+app.mount("/api", _api_alias)
 
 # 注入版本信息到 health 端点（唯一真相源）
 set_version_info(SERVICE_VERSION, CODENAME, CODENAME_ZH)

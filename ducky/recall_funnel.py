@@ -9,14 +9,10 @@ Aletheia Memory 设计哲学：
 """
 
 import time, math, logging
-from typing import Optional
 
 from .utils import parse_iso_timestamp, get_salience_conn, get_facts_conn
-from .salience.config import LANE_DECAY_MULTIPLIER, DEFAULT_LANE
+from .salience.config import LANE_DECAY_MULTIPLIER
 from .salience.core import _detect_lane
-from .memory_workspace import ws_lookup, ws_feed_from_results, ws_push
-from .memory_jlens import collect_jlens_report, enhance_funnel_trace
-from .memory_broadcast import broadcast_chain, broadcast_expand
 from .evolve_mem import log_search_quality as _evolve_log_search
 
 logger = logging.getLogger("aiduMEM.funnel")
@@ -46,6 +42,15 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     t0 = time.time()
     try:
         candidates_raw = memory.search(query, filters={"user_id": user_id}, limit=limit * MAX_CANDIDATE_MULT)
+        # mem.search 在 BM25/混合召回内部失败时可能返回 None，必须安全降级。
+        if candidates_raw is None:
+            logger.warning("候选池: mem.search 返回 None，降级到 hybrid_search")
+            try:
+                from ducky.mem0_runtime import lazy_import_hybrid
+                candidates_raw = lazy_import_hybrid()(memory, query, user_id, limit * MAX_CANDIDATE_MULT) or []
+            except Exception as e:
+                logger.warning(f"候选池: hybrid_search 降级也失败: {e}")
+                candidates_raw = []
         candidates = candidates_raw.get("results", candidates_raw) if isinstance(candidates_raw, dict) else candidates_raw
         if not isinstance(candidates, list):
             candidates = []
@@ -170,7 +175,9 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
         item_id = item.get("id")
         lane = lane_map.get(item_id) if item_id else None
         if not lane:
-            lane = item.get("metadata", {}).get("lane")
+            # metadata 可能显式为 None（mem0 个别条目），必须兜底
+            md = item.get("metadata") or {}
+            lane = md.get("lane") if isinstance(md, dict) else None
         if not lane:
             lane = _detect_lane(item.get("memory", ""))
             
@@ -211,8 +218,8 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     # ── EvolveMem: 记录搜索质量信号（异步安全）──
     try:
         _evolve_log_search(query, final, latency_ms=total_ms, gate_passed=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"evolve search-quality log skip: {e}")
 
     return {
         "results": final,

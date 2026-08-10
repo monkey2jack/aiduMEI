@@ -227,7 +227,9 @@ def _extract_tags_from_text(text: str, max_tags: int = 3) -> list[str]:
 # ── skill patterns ──
 def _load_patterns() -> dict:
     if os.path.exists(SKILL_PATTERNS_FILE):
-        with open(SKILL_PATTERNS_FILE) as f: return json.load(f) if f.read().strip() else {}
+        with open(SKILL_PATTERNS_FILE) as f:
+            content = f.read().strip()
+            return json.loads(content) if content else {}
     return {}
 
 def _save_patterns(patterns: dict):
@@ -693,6 +695,10 @@ def register_legacy_routes(app):
             from api_server import get_memory
             mem = get_memory()
             results = mem.search(question, filters={"user_id": DEFAULT_USER_ID}, limit=top_k)
+            if isinstance(results, dict):
+                results = results.get("results", [])
+            if not isinstance(results, list):
+                results = []
             return {"status":"ok","question":question,"results":results[:top_k]}
         except Exception as e:
             return {"status":"error","detail":str(e)}
