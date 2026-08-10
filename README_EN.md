@@ -10,7 +10,7 @@
 > *Memory is not note-taking, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-18.1.0%20·%20Zeus-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-18.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![PyPI](https://img.shields.io/pypi/v/aidumei.svg)](https://pypi.org/project/aidumei/)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -48,6 +48,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
+| **v18.2** | **Zeus** | King of the Gods · Insight | Built-in aiduMEI console · EvolveMem feedback loop · quality audit |
 | **v18.1** | **Zeus** | King of the Gods · Self-Evolving | EvolveMem feedback loop · 38 MCP tools · quality audit |
 | **v18.0** | **Zeus** | King of the Gods · Power Absorption | Raw Drawer · Code Graph · 5 competitors精华 fusion · MCP×36 · IDE hooks |
 | **v17.0** | **Themis** | Goddess of Order | Event ledger · sensitivity tiers · governance rules |
@@ -67,7 +68,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           🤔 aiduMEI v18.1 · Zeus · AI Thought Engine     │
+│           🤔 aiduMEI v18.2 · AI Thought Engine     │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (38 tools)                  │
 ├──────────────────────────────────────────────────────────┤

@@ -949,11 +949,15 @@ function editModelConfig(body, cfg) {
     if (!Object.keys(patch).length) { alert('没有改动 / No changes'); return; }
     try {
       for (var section in patch) {
-        await fetch('/api/config/' + section, {
+        var r = await fetch('/api/config/' + section, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch[section])
         });
+        if (!r.ok) {
+          var errBody = await r.json().catch(function () { return {}; });
+          throw new Error((errBody.detail || errBody.message || section) + ' (' + r.status + ')');
+        }
       }
       await API.post('/reload', {});
       alert('配置已保存并热重载 / Saved and reloaded');

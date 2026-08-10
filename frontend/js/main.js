@@ -49,11 +49,22 @@ const BRAND_COLORS = ['#1f4e79', '#525252', '#000000'];
 
 // Current deployed version — mapped from aiduMEM /health
 let currentVersion = '—';
-const GITHUB_REPO_API = 'https://api.github.com/repos/monkey2jack/aiduMEM/releases/latest';
+const GITHUB_REPO_API = 'https://api.github.com/repos/monkey2jack/aiduMEI/releases/latest';
 
 function setDeployedVersion(ver) {
   currentVersion = ver || '—';
   document.getElementById('foot-ver').textContent = 'v' + currentVersion;
+}
+
+// numeric segment compare: -1 / 0 / +1
+function cmpVersion(a, b) {
+  const pa = String(a).split('.').map(function (x) { return parseInt(x, 10) || 0; });
+  const pb = String(b).split('.').map(function (x) { return parseInt(x, 10) || 0; });
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
 }
 
 async function checkLatestVersion() {
@@ -64,9 +75,9 @@ async function checkLatestVersion() {
     const release = await resp.json();
     const latest = (release.tag_name || '').replace(/^v/, '');
     if (!latest || !currentVersion || currentVersion === '—') return;
-    // Compare: if current is older than latest
-    if (latest !== currentVersion) {
-      badge.textContent = '最新 v' + latest;
+    // Show badge only when the deployed version lags behind GitHub latest.
+    if (cmpVersion(currentVersion, latest) < 0) {
+      badge.textContent = '最新 / Latest';
       badge.style.display = 'inline-block';
     }
   } catch (e) {
