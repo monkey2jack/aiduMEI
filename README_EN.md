@@ -381,17 +381,6 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 
 ---
 
-## Roadmap
-
-- [x] **v18.1 Zeus** — EvolveMem self-evolving retrieval feedback loop
-- [x] **v18.0 Zeus** — Raw Drawer · Code Graph · MCP×36 · IDE hooks
-- [x] **v17.0 Themis** — Event ledger · sensitivity tiers · governance rules
-- [x] **v16.0 Opus Octopod** — Conflict resolution · tree memory · skill crystallization
-- [ ] **v19.0** — Multimodal memory (image → visual description → storage)
-- [ ] **v20.0** — OpenViking unified context DB fusion
-
----
-
 <p align="center">
   <sub>Thinking Version · Iris | Built by <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/monkey2jack">dudu</a></sub>
 </p>
