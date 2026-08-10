@@ -11,7 +11,6 @@
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
 [![Version](https://img.shields.io/badge/version-18.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
-[![PyPI](https://img.shields.io/pypi/v/aidumei.svg)](https://pypi.org/project/aidumei/)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -92,20 +91,14 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 
 ## Quick Start
 
-### Method 1: Install via PyPI
-
-```bash
-pip install aidumei
-```
-
-### Method 2: Run via Docker (GitHub Packages / GHCR)
+### Method 1: Run via Docker (GitHub Packages / GHCR)
 
 ```bash
 docker pull ghcr.io/monkey2jack/aidumei:latest
 docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
 ```
 
-### Method 3: Clone & Run from Source
+### Method 2: Clone & Run from Source
 
 ```bash
 # 1. Clone
@@ -257,7 +250,7 @@ hermes config set memory.provider aidumei
 ```
 
 ### 🔧 Zero-Config Hybrid Search
-BM25 trigram (zero-latency fallback) + BGE-M3 vectors + Reranker + recall funnel relevance ranking. Vector service timeout triggers automatic hot-switch to local full-text search.
+BM25 trigram (zero-latency fallback) + vector embedding vectors + Reranker + recall funnel relevance ranking. Vector service timeout triggers automatic hot-switch to local full-text search.
 
 ---
 
@@ -349,7 +342,7 @@ aiduMEI reads configuration from `mem0_config_local.json`. Key fields:
   "embedder": {
     "provider": "openai",
     "config": {
-      "model": "BAAI/bge-m3",
+      "model": "your-embedding-model",
       "api_key": "your-key",
       "base_url": "your-embedding-endpoint"
     }
