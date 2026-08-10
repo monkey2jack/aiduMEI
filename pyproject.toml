@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aidumem"
-version = "18.1.0"
+name = "aidumei"
+version = "18.2.0"
 description = "aiduMEM: self-hosted multi-tier memory for Hermes Agent — native MemoryProvider bridge, CoreMemory, FTS5 & Qdrant recall"
 readme = "README.md"
 authors = [
