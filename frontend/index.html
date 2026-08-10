@@ -12,6 +12,11 @@
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 </head>
 <body>
+<script>
+if (!sessionStorage.getItem('aidumei_auth')) {
+  location.replace('login.html');
+}
+</script>
 
 <!-- random hexagon backdrop, filled by JS -->
 <div class="hex-bg" id="hexBg"></div>
