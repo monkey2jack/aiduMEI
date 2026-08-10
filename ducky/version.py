@@ -3,12 +3,6 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v18.3 Zeus (宙斯 · 登录门禁纪元)
-    核心主题: 控制台登录页 + 密码门禁
-    1. /ui/login.html: 与主页同款背景/header/footer 的简单密码入口
-    2. /api/login 端点: AIDUMEM_UI_PASSWORD 环境变量校验（不入仓库）
-    3. index 登录态拦截: 未登录访问自动跳转 login.html
-
 v18.2 Zeus (宙斯 · 可视化洞察纪元)
     核心主题: aiduMEI 品牌升级 + 自带可视化控制台 + 全量代码审计
     1. aiduMEI 控制台: 六面板(PULSE/VAULT/MAP/RECALL/EVOLVE/SETTINGS)零依赖纯静态
@@ -24,7 +18,7 @@ v18.1 Zeus (宙斯 · 检索自进化纪元)
     4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
 """
 
-SERVICE_VERSION = "18.3.0"
+SERVICE_VERSION = "18.2.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Zeus"
 CODENAME_ZH = "宙斯"
@@ -35,7 +29,6 @@ ARCHITECTURE = "Visual Insight Memory Engine with Built-in Console"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
-    ("18.3", "Zeus", "宙斯", "登录门禁 · 控制台登录页 · 密码校验"),
     ("18.2", "Zeus", "宙斯", "可视化洞察 · aiduMEI 控制台 · 品牌升级 · 全量审计"),
     ("18.1", "Zeus", "宙斯", "检索自进化 · EvolveMem 反馈闭环"),
     ("18.0", "Zeus", "宙斯", "原味抽屉 · 代码图谱 · 五大竞品精华融合"),
