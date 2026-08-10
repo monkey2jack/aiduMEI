@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-18.1.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
+[![Version](https://img.shields.io/badge/version-18.2.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
 [![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEM/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -48,7 +48,7 @@
 
 ## 🖥️ aiduMEI 控制台（全新）
 
-> **v18.1 起自带可视化控制台** —— 不再是纯 API 服务，而是一个"看得见记忆如何被想起"的引擎。
+> **v18.2 起自带可视化控制台** —— 不再是纯 API 服务，而是一个"看得见记忆如何被想起"的引擎。
 
 aiduMEI 内置一个零依赖的 Web 控制台，由后端直接托管在 `/ui`，无需单独部署前端。六个面板覆盖记忆引擎的完整生命周期：
 
@@ -138,7 +138,7 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 | 版本 | 代号 | 神格 | 核心使命 |
 |------|------|------|----------|
-| **v18.1** | **Zeus** · 宙斯 | 众神之王 · 检索自进化 | EvolveMem 反馈闭环、38 MCP 工具、质量审计全覆盖、**自带可视化控制台** |
+| **v18.2** | **Zeus** · 宙斯 | 众神之王 · 检索自进化 | EvolveMem 反馈闭环、38 MCP 工具、质量审计全覆盖、**自带可视化控制台** |
 | **v18.0** | **Zeus** · 宙斯 | 众神之王 · 吸星大法 | 原味抽屉 · 代码图谱 · 五大竞品精华融合 · MCP×36 · IDE 钩子 |
 | **v17.0** | **Themis** · 忒弥斯 | 秩序女神 | 事件账本 · 敏感分档 · 治理铁律 |
 | **v16.0** | **Opus Octopod** · 八爪鱼 | 深海智者 | 冲突消解 · 树状记忆 · 技能结晶 |
@@ -157,7 +157,7 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v18.1 · Zeus · 宙斯          │
+│           aiduMEI⚕爱嘟优忆思 v18.2 · Zeus · 宙斯          │
 │              FastAPI REST API :8767                       │
 │              控制台 /ui :8767（自带静态托管）              │
 │              MCP Server :8768 (38 tools)                  │
@@ -236,7 +236,7 @@ python api_server.py
 | `DELETE` | `/delete` | 按 ID 删除记忆 |
 | `GET` | `/health` | 健康检查 + 全探针诊断 |
 
-### 控制台配置（v18.1 新增）
+### 控制台配置（v18.2 新增）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -253,7 +253,7 @@ python api_server.py
 | `POST` | `/code/impact` | 分析文件改动波及范围（爆炸半径） |
 | `GET` | `/code/graph` | 查看全项目代码依赖图 |
 
-### 检索自进化（Zeus v18.1）
+### 检索自进化（Zeus v18.2）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -311,7 +311,7 @@ curl -s http://localhost:8767/config | python -m json.tool
 
 ## aiduMEI 的独特之处
 
-### 🖥️ 自带可视化控制台（v18.1 全新）
+### 🖥️ 自带可视化控制台（v18.2 全新）
 
 别家的记忆引擎给你一坨 API，自己写前端。aiduMEI 把控制台焊在后端里——克隆即用，六个面板覆盖记忆引擎的完整生命周期。**RECALL 追忆面板**是灵魂：它不只告诉你"存了什么"，而是用召回漏斗 trace 给你看"它凭什么想起这条"——候选池 8 条 → 点火 → 去重 → 时间衰减 → 最终 3 条，每步耗时与命中数全可见。零依赖纯静态前端，不装 node、不打包、不编译。
 
@@ -333,7 +333,7 @@ curl -s http://localhost:8767/config | python -m json.tool
 ### 🔍 代码图谱（Code Graph — Zeus v18.0）
 借鉴 code-review-graph (29k⭐) 的 AST 爆炸半径分析。用 Python 标准库 `ast` 解析项目依赖关系，改一个文件一秒告诉你影响范围。
 
-### 📈 检索自进化（EvolveMem — Zeus v18.1）
+### 📈 检索自进化（EvolveMem — Zeus v18.2）
 借鉴 SimpleMem (3.7k⭐) 的进化理念。用户可对每次检索结果打分（useful / useless / correction），后台每 6 小时自动计算衰减/提权。高频优质词条自动沉淀，低质词条温柔降权。**闭环反馈，越用越聪明。**
 
 ### 🏛️ 万神殿联邦记忆（Pantheon Federation）
@@ -508,7 +508,7 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 
 ## 路线图
 
-- [x] **v18.1 Zeus** — EvolveMem 检索自进化闭环 + **自带可视化控制台 aiduMEI**
+- [x] **v18.2 Zeus** — EvolveMem 检索自进化闭环 + **自带可视化控制台 aiduMEI**
 - [x] **v18.0 Zeus** — Raw Drawer · Code Graph · MCP×36 · IDE 钩子
 - [x] **v17.0 Themis** — 事件账本 · 敏感分档 · 治理铁律
 - [x] **v16.0 Opus Octopod** — 冲突消解 · 树状记忆 · 技能结晶
