@@ -61,18 +61,18 @@ aiduMEI 内置一个零依赖的 Web 控制台，由后端直接托管在 `/ui`�
 | 🧬 **EVOLVE 进化** | 检索质量看板 | 7 天查询/命中/得分/零命中、进化周期日志、反馈信号 |
 | ⚙️ **SETTINGS 设置** | 模型配置 + 模块 + 联邦 | LLM/Embedding/Reranker 配置只读（api_key 脱敏）、思考模式、可调参数、核心模块探针、联邦成员 |
 
-<img src="docs/docs/screenshots/00_home.png" alt="首页" width="100%">
+<img src="docs/screenshots/00_home.png" alt="首页" width="100%">
 
 ### PULSE — 脉搏
 
 服务健康、版本代号、11 个核心模块探针、四层记忆存量与容量。
 
 <p float="left">
-  <img src="docs/docs/screenshots/01_pulse_status.png" width="48%">
-  <img src="docs/docs/screenshots/02_pulse_storage.png" width="48%">
+  <img src="docs/screenshots/01_pulse_status.png" width="48%">
+  <img src="docs/screenshots/02_pulse_storage.png" width="48%">
 </p>
 <p float="left">
-  <img src="docs/docs/screenshots/03_pulse_layers.png" width="48%">
+  <img src="docs/screenshots/03_pulse_layers.png" width="48%">
 </p>
 
 ### VAULT — 记忆库
@@ -80,11 +80,11 @@ aiduMEI 内置一个零依赖的 Web 控制台，由后端直接托管在 `/ui`�
 语义检索（向量 + 重排）、6 个知识域分类家底、最近写入的事实流。
 
 <p float="left">
-  <img src="docs/docs/screenshots/04_vault_search.png" width="48%">
-  <img src="docs/docs/screenshots/05_vault_categories.png" width="48%">
+  <img src="docs/screenshots/04_vault_search.png" width="48%">
+  <img src="docs/screenshots/05_vault_categories.png" width="48%">
 </p>
 <p float="left">
-  <img src="docs/docs/screenshots/06_vault_recent_facts.png" width="48%">
+  <img src="docs/screenshots/06_vault_recent_facts.png" width="48%">
 </p>
 
 ### MAP — 知识域星图
@@ -92,8 +92,8 @@ aiduMEI 内置一个零依赖的 Web 控制台，由后端直接托管在 `/ui`�
 ECharts 力导向图，核心 / 知识域 / 分类 / 实体四类节点，滚轮缩放、拖拽节点、悬停查看详情。
 
 <p float="left">
-  <img src="docs/docs/screenshots/08_map_starfield.png" width="48%">
-  <img src="docs/docs/screenshots/09_map_details.png" width="48%">
+  <img src="docs/screenshots/08_map_starfield.png" width="48%">
+  <img src="docs/screenshots/09_map_details.png" width="48%">
 </p>
 
 ### RECALL — 追忆漏斗
@@ -103,8 +103,8 @@ ECharts 力导向图，核心 / 知识域 / 分类 / 实体四类节点，滚轮
 候选池 → 🔥 点火 → 去重 → 时间衰减 → 最终，五阶段每步耗时与命中数全可见。
 
 <p float="left">
-  <img src="docs/docs/screenshots/10_recall_funnel.png" width="48%">
-  <img src="docs/docs/screenshots/11_recall_stages.png" width="48%">
+  <img src="docs/screenshots/10_recall_funnel.png" width="48%">
+  <img src="docs/screenshots/11_recall_stages.png" width="48%">
 </p>
 
 ### EVOLVE — 检索自进化
@@ -112,8 +112,8 @@ ECharts 力导向图，核心 / 知识域 / 分类 / 实体四类节点，滚轮
 7 天检索质量看板：查询数、平均命中、平均得分、零命中数；进化周期日志与反馈信号。
 
 <p float="left">
-  <img src="docs/docs/screenshots/12_evolve_quality.png" width="48%">
-  <img src="docs/docs/screenshots/13_evolve_detail.png" width="48%">
+  <img src="docs/screenshots/12_evolve_quality.png" width="48%">
+  <img src="docs/screenshots/13_evolve_detail.png" width="48%">
 </p>
 
 ### SETTINGS — 模型配置
@@ -121,11 +121,11 @@ ECharts 力导向图，核心 / 知识域 / 分类 / 实体四类节点，滚轮
 LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考模式状态、可调参数、核心模块探针、联邦成员。
 
 <p float="left">
-  <img src="docs/docs/screenshots/14_settings_models.png" width="48%">
-  <img src="docs/docs/screenshots/15_settings_reasoning.png" width="48%">
+  <img src="docs/screenshots/14_settings_models.png" width="48%">
+  <img src="docs/screenshots/15_settings_reasoning.png" width="48%">
 </p>
 <p float="left">
-  <img src="docs/docs/screenshots/16_settings_params.png" width="48%">
+  <img src="docs/screenshots/16_settings_params.png" width="48%">
 </p>
 
 > 控制台由后端 `api_server.py` 直接托管在 `/ui`，前端是零依赖的纯静态文件（HTML + CSS + JS + PNG 图标），不打包、不编译、不装 node。克隆仓库 → 启动 → 浏览器打开 `http://localhost:8767/ui/` 即用。
@@ -541,7 +541,7 @@ aiduMEM/
 ├── seed_demo.py           # 脱敏演示数据种子（虚构人物/公司）
 ├── seed_facts.py          # 知识树事实种子（6 域 28 条）
 ├── mem0_config_local.json # 模型配置（gitignored，含密钥）
-├── docs/docs/screenshots/      # 控制台截图
+├── docs/screenshots/      # 控制台截图
 └── requirements.txt
 ```
 
