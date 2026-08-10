@@ -8,6 +8,9 @@ v8 重构统一入口 — 改一处，全局生效。
 
 import math
 import datetime as dt
+import logging
+
+logger = logging.getLogger("aiduMEM.utils")
 
 # ═══════════════════════════════════════════════
 # 文本相似度（词级 Jaccard）
@@ -222,7 +225,7 @@ def ensure_evolution_tables():
         conn.commit()
         conn.close()
     except Exception as e:
-        pass
+        logger.debug(f"ensure_evolution_tables skip: {e}")
 
 # 自动运行确保表就绪
 ensure_evolution_tables()
