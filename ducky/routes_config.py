@@ -6,16 +6,23 @@ api_key 始终脱敏返回；_speed 参数支持在线微调（写入 mem0_confi
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from ducky.speed.config import _CFG_PATH, load_speed_cfg
 
+logger = logging.getLogger(__name__)
+
 _WRITE_LOCK = threading.Lock()
+
+# 允许通过 UI 在线编辑的配置段
+_PUT_SECTIONS = {"llm", "embedder", "rerank", "vector_store"}
 
 
 def _mask_key(key: Optional[str]) -> str:
@@ -94,6 +101,56 @@ def register_config_routes(app: FastAPI) -> None:
     @app.get("/config")
     def get_config() -> dict:
         return _build_config_view()
+
+    @app.put("/config/{section}")
+    def update_config(section: str, body: dict) -> dict:
+        """UI 保存模型配置：PUT /config/llm|embedder|rerank|vector_store。
+
+        body 与 GET /config 同构（provider + config）。合并语义：
+        api_key 传空视为不修改；rerank 未显式给 enabled 时按是否填了
+        model/base_url 自动判断。写回 mem0_config_local.json 后热生效。
+        """
+        if os.environ.get("AIDUMEM_CONFIG_READONLY", "0").lower() in {"1", "true", "yes"}:
+            return JSONResponse(
+                {"status": "error", "detail": "当前为只读演示模式：配置不可在线修改"},
+                status_code=403,
+            )
+        if section not in _PUT_SECTIONS:
+            return JSONResponse(
+                {"status": "error", "detail": f"不支持的配置段: {section}"},
+                status_code=400,
+            )
+        with _WRITE_LOCK:
+            raw = _load_raw_config()
+            old_section = dict(raw.get(section) or {})
+            old_cfg = dict(old_section.get("config") or {})
+            new_cfg = dict((body.get("config") or {}))
+            for k, v in new_cfg.items():
+                if k == "api_key" and (v is None or str(v).strip() == ""):
+                    continue
+                old_cfg[k] = v
+            new_provider = body.get("provider") or old_section.get("provider")
+            if section == "rerank":
+                if "enabled" in body:
+                    enabled = bool(body.get("enabled"))
+                else:
+                    enabled = bool(old_cfg.get("model") or old_cfg.get("openai_base_url"))
+                raw[section] = {"enabled": enabled, "provider": new_provider, "config": old_cfg}
+            else:
+                old_section["provider"] = new_provider
+                old_section["config"] = old_cfg
+                raw[section] = old_section
+            cfg_dir = os.path.dirname(_CFG_PATH)
+            fd, tmp_path = tempfile.mkstemp(dir=cfg_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(raw, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, _CFG_PATH)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+        logger.info("🛠️ 配置段已在线更新: %s", section)
+        return {"status": "ok", "updated": section, "config": _build_config_view()}
 
     @app.get("/config/_speed")
     def get_speed() -> dict:
