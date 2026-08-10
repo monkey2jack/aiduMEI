@@ -87,7 +87,7 @@ v0.1 初啼基座 (mem0 向量检索 + 初始数据导入)
 ┌──────────────┐     ┌────────────────────┐
 │   Qdrant     │     │   SQLite 数据库集群  │
 │ (向量存储)    │     │                    │
-│ bge-m3 嵌入  │     │  facts.db          │
+│ 向量嵌入  │     │  facts.db          │
 │ 1024 维向量   │     │  salience.db       │
 │              │     │  text_fts.db       │
 │              │     │  workspace.db (v11)│

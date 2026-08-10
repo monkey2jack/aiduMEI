@@ -8,7 +8,7 @@
    加了 `messages=`、给 `on_memory_write` 加了 `metadata=` 之后，
    旧签名会在真实调用时抛 TypeError，而不是在启动时——静默到运行才炸。
 2. tool schema 必须能被宿主 `normalize_tool_schema()` 解析出 name，
-   否则严格 provider（如 DeepSeek）会因一个坏 schema 拒掉整个请求。
+   否则严格 provider 会因一个坏 schema 拒掉整个请求。
 3. 服务不可达时必须降级为「无记忆」，绝不能让宿主对话失败。
 
 宿主不在（开源用户只克隆了 aiduMEM）时整个文件 skip，不算失败。
