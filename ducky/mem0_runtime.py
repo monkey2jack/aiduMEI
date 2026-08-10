@@ -362,6 +362,15 @@ def _resolve_api_keys(cfg: dict) -> dict:
         if os.path.exists(kp):
             with open(kp) as f:
                 cfg["llm"]["config"]["api_key"] = f.read().strip()
+
+    rerank_cfg = cfg.get("rerank")
+    if isinstance(rerank_cfg, dict):
+        rk = rerank_cfg.get("config", {}).get("api_key", "")
+        if rk == "__SF_KEY__" or not rk:
+            kp = os.path.join(base, ".sf_key")
+            if os.path.exists(kp):
+                with open(kp) as f:
+                    rerank_cfg["config"]["api_key"] = f.read().strip()
     return cfg
 
 
