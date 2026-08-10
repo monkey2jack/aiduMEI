@@ -29,10 +29,14 @@ htmlcov/
 
 # Data — sensitive / large (DO NOT commit)
 data/
+data_real/
+data_backup/
+data_*/
 logs/
 chroma_data/
 backups/
 .deps/
+exports/
 
 # Secrets & config (local only)
 .sf_key

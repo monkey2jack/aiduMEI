@@ -94,9 +94,139 @@ def _track_rerank_usage(input_tokens: int = 0, total_tokens: int = 0):
 # ═══════════════════════════════════════════════
 _RERANK_CONFIG_CACHE: Optional[dict] = None
 
+# ---------------------------------------------------------------------------
+# Reranker provider registry
+# Each entry knows how to: build the HTTP request, parse the response.
+# Return shape: a list of {index, relevance_score} sorted descending.
+# ---------------------------------------------------------------------------
+
+def _rerank_siliconflow(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
+    """SiliconFlow / OpenAI-compatible rerank endpoint (BAAI/bge-reranker-v2-m3 etc.)"""
+    import requests as req
+    r = req.post(
+        f"{cfg['base_url']}/rerank",
+        headers={
+            "Authorization": f"Bearer {cfg['api_key']}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": cfg["model"],
+            "query": query,
+            "documents": documents,
+            "top_n": min(top_n, len(documents)),
+        },
+        timeout=10,
+    )
+    if r.status_code == 200:
+        results = r.json().get("results", [])
+        meta = r.json().get("meta", {})
+        tokens = meta.get("tokens", {})
+        if tokens:
+            _track_rerank_usage(input_tokens=tokens.get("input_tokens", 0),
+                                total_tokens=tokens.get("input_tokens", 0))
+        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return []
+
+
+def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
+    """Jina AI rerank endpoint"""
+    import requests as req
+    r = req.post(
+        "https://api.jina.ai/v1/rerank",
+        headers={
+            "Authorization": f"Bearer {cfg['api_key']}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        json={
+            "model": cfg.get("model") or "jina-reranker-v3",
+            "query": query,
+            "documents": documents,
+            "top_n": min(top_n, len(documents)),
+        },
+        timeout=10,
+    )
+    if r.status_code == 200:
+        results = r.json().get("results", [])
+        usage = r.json().get("usage", {})
+        if usage.get("total_tokens"):
+            _track_rerank_usage(input_tokens=usage["total_tokens"],
+                                total_tokens=usage["total_tokens"])
+        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return []
+
+
+def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
+    """Cohere / rerank endpoint"""
+    import requests as req
+    r = req.post(
+        "https://api.cohere.com/v1/rerank",
+        headers={
+            "Authorization": f"Bearer {cfg['api_key']}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": cfg.get("model") or "rerank-v3.5",
+            "query": query,
+            "documents": documents,
+            "top_n": min(top_n, len(documents)),
+            "return_documents": False,
+        },
+        timeout=10,
+    )
+    if r.status_code == 200:
+        results = r.json().get("results", [])
+        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return []
+
+
+def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
+    """Generic OpenAI-compatible rerank endpoint (e.g. Azure, vLLM, LiteLLM rerank)."""
+    import requests as req
+    base = cfg['base_url'].rstrip('/')
+    url = f"{base}/rerank" if not base.endswith('/rerank') else base
+    r = req.post(
+        url,
+        headers={"Authorization": f"Bearer {cfg['api_key']}",
+                 "Content-Type": "application/json"},
+        json={
+            "model": cfg["model"],
+            "query": query,
+            "documents": documents,
+            "top_n": min(top_n, len(documents)),
+        },
+        timeout=10,
+    )
+    if r.status_code == 200:
+        data = r.json()
+        results = data.get("results", [])
+        usage = data.get("usage", {})
+        if usage and usage.get("total_tokens"):
+            _track_rerank_usage(input_tokens=usage["total_tokens"],
+                                total_tokens=usage["total_tokens"])
+        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return []
+
+
+RERANK_PROVIDERS = {
+    "siliconflow": _rerank_siliconflow,
+    "jina": _rerank_jina,
+    "cohere": _rerank_cohere,
+    "openai_compatible": _rerank_openai_compatible,
+    # aliases — make config forgiving
+    "sf": _rerank_siliconflow,
+    "openai": _rerank_openai_compatible,
+    "azure": _rerank_openai_compatible,
+    "vllm": _rerank_openai_compatible,
+    "litellm": _rerank_openai_compatible,
+}
+
+# default provider back-compat: old configs without provider field
+DEFAULT_RERANK_PROVIDER = "siliconflow"
+
 
 def _load_rerank_config() -> dict:
-    """从 mem0_config 或环境读 reranker 配置，返回 {api_key, base_url, model}"""
+    """从 mem0_config 或环境读 reranker 配置，返回 {provider, api_key, base_url, model}"""
     global _RERANK_CONFIG_CACHE
     if _RERANK_CONFIG_CACHE is not None:
         return _RERANK_CONFIG_CACHE
@@ -105,10 +235,12 @@ def _load_rerank_config() -> dict:
         if os.path.exists(MEM0_CONFIG):
             with open(MEM0_CONFIG) as f:
                 j = json.load(f)
-            rerank = j.get("reranker", {}).get("config", {})
-            cfg["model"] = rerank.get("model", "BAAI/bge-reranker-v2-m3")
-            cfg["base_url"] = rerank.get("openai_base_url", "https://api.siliconflow.cn/v1")
-            api_key = rerank.get("api_key", "")
+            rerank = j.get("reranker", {})
+            rc = rerank.get("config", {})
+            cfg["provider"] = rerank.get("provider", DEFAULT_RERANK_PROVIDER)
+            cfg["model"] = rc.get("model", "BAAI/bge-reranker-v2-m3")
+            cfg["base_url"] = rc.get("openai_base_url", "https://api.siliconflow.cn/v1")
+            api_key = rc.get("api_key", "")
             if api_key == "__SF_KEY__" or not api_key:
                 kp = os.path.join(BASE_DIR, ".sf_key")
                 if os.path.exists(kp):
@@ -118,6 +250,7 @@ def _load_rerank_config() -> dict:
         else:
             # 兜底：跟 embedding 一样
             cfg = {
+                "provider": DEFAULT_RERANK_PROVIDER,
                 "model": "BAAI/bge-reranker-v2-m3",
                 "base_url": "https://api.siliconflow.cn/v1",
                 "api_key": "",
@@ -134,9 +267,9 @@ def _load_rerank_config() -> dict:
 
 def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     """
-    调用硅基流动 BAAI/bge-reranker-v2-m3 做重排序。
-    返回 [{index, relevance_score}, ...] 按分数降序。
+    调用配置好的 reranker 做重排序。返回 [{index, relevance_score}, ...] 按分数降序。
     失败返回空列表，不阻断检索主链路。
+    支持: SiliconFlow / Jina / Cohere / OpenAI-compatible (Azure / vLLM / LiteLLM)
     """
     if not documents:
         return []
@@ -144,41 +277,12 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     api_key = cfg.get("api_key", "")
     if not api_key:
         return []
-    model = cfg.get("model", "BAAI/bge-reranker-v2-m3")
-    base_url = cfg.get("base_url", "https://api.siliconflow.cn/v1")
+    provider = cfg.get("provider", DEFAULT_RERANK_PROVIDER)
+    handler = RERANK_PROVIDERS.get(provider.lower(), _rerank_openai_compatible)
     try:
-        import requests as req
-        r = req.post(
-            f"{base_url}/rerank",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "query": query,
-                "documents": documents,
-                "top_n": min(top_n, len(documents)),
-            },
-            timeout=10,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            results = data.get("results", [])
-            # 硅基流动 token 在 meta.tokens 里
-            meta = data.get("meta", {})
-            tokens = meta.get("tokens", {})
-            if tokens:
-                _track_rerank_usage(
-                    input_tokens=tokens.get("input_tokens", 0),
-                    total_tokens=tokens.get("input_tokens", 0),
-                )
-            return results
-        else:
-            logger.debug(f"rerank API {r.status_code}: {r.text[:200]}")
-            return []
+        return handler(cfg, query, documents, top_n)
     except Exception as e:
-        logger.warning(f"rerank 调用失败: {e}")
+        logger.warning(f"rerank ({provider}) 调用失败: {e}")
         return []
 
 
@@ -357,6 +461,8 @@ def register_salience_for_add(add_result):
 
 def boost_salience_for_results(results):
     """搜索结果 salience 提权"""
+    if results is None:
+        return
     for r in (results if isinstance(results, list) else results.get("results", [])):
         if isinstance(r, dict):
             mid = r.get("id") or r.get("memory_id", "")

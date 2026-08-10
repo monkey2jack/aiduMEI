@@ -219,8 +219,8 @@ def _apply_salience_delta(memory_id: str, delta: float, reason: str) -> float:
         )
         ev_conn.commit()
         ev_conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"evolve salience adjustment skip: {e}")
 
     logger.debug(f"[evolve] {memory_id[:8]}… salience {old_sal:.3f} → {new_sal:.3f} ({reason})")
     return new_sal

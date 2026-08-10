@@ -169,7 +169,8 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
                 "SELECT COUNT(*) FROM memories WHERE id LIKE 'raw-%'"
             ).fetchone()[0]
             conn.close()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"raw_drawer total count skip: {e}")
             total = -1
 
         try:
@@ -179,7 +180,8 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
                 "SELECT COUNT(*) FROM facts WHERE memory_tier='verbatim'"
             ).fetchone()[0]
             conn.close()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"raw_drawer facts count skip: {e}")
             facts_count = -1
 
         return {
