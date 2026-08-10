@@ -124,7 +124,7 @@ def _register_login(route_app: FastAPI) -> None:
             return {"success": True}
         logger.warning("🚪 UI 登录失败（密码错误）")
         return JSONResponse(
-            {"success": False, "message": "访问密码错误"},
+            {"success": False, "message": "访问密码错误 / Wrong password"},
             status_code=401,
         )
 
@@ -132,7 +132,7 @@ def _register_login(route_app: FastAPI) -> None:
     async def ui_login_hint():
         # 默认密码时前端提示 123456；部署方已自定义则不提示。
         if _UI_PASSWORD == _DEFAULT_UI_PASSWORD:
-            return {"hint": "开源默认密码：123456（生产环境请通过 AIDUMEM_UI_PASSWORD 修改）"}
+            return {"hint": "默认密码 / Default PIN: 123456"}
         return {"hint": None}
 
 
