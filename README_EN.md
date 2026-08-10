@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/aidumem-banner.jpg" alt="aiduMEM" width="100%">
+  <img src="assets/aidumei-banner.jpg" alt="aiduMEI" width="100%">
 </p>
 
-# 🤔 aiduMEM — AI Thought Engine
+# 🤔 aiduMEI — AI Thought Engine
 
 > **Not just memory — thinking.**
 >
@@ -10,9 +10,9 @@
 > *Memory is not note-taking, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-18.1.0%20·%20Zeus-blue.svg)](https://github.com/monkey2jack/aiduMEM)
-[![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
-[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEM/pkgs/container/aidumem)
+[![Version](https://img.shields.io/badge/version-18.1.0%20·%20Zeus-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![PyPI](https://img.shields.io/pypi/v/aidumei.svg)](https://pypi.org/project/aidumei/)
+[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
 [![Built on mem0](https://img.shields.io/badge/built%20on-mem0-orange.svg)](https://github.com/mem0ai/mem0)
@@ -21,11 +21,11 @@
 
 ---
 
-## What is aiduMEM?
+## What is aiduMEI?
 
-aiduMEM is an **AI Thought Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
+aiduMEI is an **AI Thought Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEM adds a ten-layer cognitive framework:
+Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer cognitive framework:
 
 | Layer | Codename | What it does | Key Feature |
 |-------|----------|-------------|-------------|
@@ -44,7 +44,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEM adds a ten-layer
 
 ## Pantheon of Gods
 
-> Each major version of aiduMEM is named after a Greek deity — the god's domain reflects the architecture.
+> Each major version of aiduMEI is named after a Greek deity — the god's domain reflects the architecture.
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
@@ -67,7 +67,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEM adds a ten-layer
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           🤔 aiduMEM v18.1 · Zeus · AI Thought Engine     │
+│           🤔 aiduMEI v18.1 · Zeus · AI Thought Engine     │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (38 tools)                  │
 ├──────────────────────────────────────────────────────────┤
@@ -94,22 +94,22 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEM adds a ten-layer
 ### Method 1: Install via PyPI
 
 ```bash
-pip install aidumem
+pip install aidumei
 ```
 
 ### Method 2: Run via Docker (GitHub Packages / GHCR)
 
 ```bash
-docker pull ghcr.io/monkey2jack/aidumem:latest
-docker run -d -p 8767:8767 --name aidumem ghcr.io/monkey2jack/aidumem:latest
+docker pull ghcr.io/monkey2jack/aidumei:latest
+docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
 ```
 
 ### Method 3: Clone & Run from Source
 
 ```bash
 # 1. Clone
-git clone https://github.com/monkey2jack/aiduMEM.git
-cd aiduMEM
+git clone https://github.com/monkey2jack/aiduMEI.git
+cd aiduMEI
 
 # 2. Create virtual environment
 python3.12 -m venv venv
@@ -207,10 +207,10 @@ curl -s -X POST http://localhost:8767/evolve/feedback \
 
 ---
 
-## What Makes aiduMEM Unique
+## What Makes aiduMEI Unique
 
 ### 🔮 Relevance Gate (Tahoe-Gate)
-Most RAG systems search memory for every single message. aiduMEM's **Relevance Gate** uses heuristics + dynamic entity matching to determine if the current message actually needs memory retrieval. Casual chat skips entirely → **100× token savings**, response latency drops from 10ms to 1ms.
+Most RAG systems search memory for every single message. aiduMEI's **Relevance Gate** uses heuristics + dynamic entity matching to determine if the current message actually needs memory retrieval. Casual chat skips entirely → **100× token savings**, response latency drops from 10ms to 1ms.
 
 ### 🌊 Tidal Coalescing (Mnemosyne Tidal)
 Short messages don't trigger individual LLM calls. They're buffered asynchronously by session, then batched into a single LLM call. Three-tier strategy: Tech / Intimate / Default — fast for code, deep for personal.
@@ -248,11 +248,11 @@ Inspired by MoE (Mixture-of-Experts): a complete multi-agent federation infrastr
 Zero hardcoded identities, absolute paths, server addresses, or secrets in the repository. Everything configurable goes through environment variables. Clone to any directory, any machine — `python api_server.py` just works.
 
 ### 🌈 Iris Rainbow Bridge (v15.0)
-aiduMEM provides an **official Hermes Agent MemoryProvider plugin** with full lifecycle hooks — turn-start injection of persistent blocks & relevant retrieval, background archiving every turn, **pre-compress rescue of about-to-be-discarded conversations into long-term memory**, mirroring of the host's built-in MEMORY.md writes, and three directly callable tools.
+aiduMEI provides an **official Hermes Agent MemoryProvider plugin** with full lifecycle hooks — turn-start injection of persistent blocks & relevant retrieval, background archiving every turn, **pre-compress rescue of about-to-be-discarded conversations into long-term memory**, mirroring of the host's built-in MEMORY.md writes, and three directly callable tools.
 
 ```bash
-cp -r integrations/hermes-plugin/aidumem ~/.hermes/plugins/
-hermes config set memory.provider aidumem
+cp -r integrations/hermes-plugin/aidumei ~/.hermes/plugins/
+hermes config set memory.provider aidumei
 ```
 
 ### 🔧 Zero-Config Hybrid Search
@@ -269,13 +269,13 @@ BM25 trigram (zero-latency fallback) + BGE-M3 vectors + Reranker + recall funnel
 
 **Do not enable both simultaneously** (duplicate injection wastes tokens). See [integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md) for full steps, verification, and rollback.
 
-> ⚠️ **Security**: aiduMEM does not implement authentication itself and listens on `127.0.0.1` by default. For remote access, place a reverse proxy with authentication + TLS in front. Never expose the service directly to the public internet.
+> ⚠️ **Security**: aiduMEI does not implement authentication itself and listens on `127.0.0.1` by default. For remote access, place a reverse proxy with authentication + TLS in front. Never expose the service directly to the public internet.
 
 ---
 
 ## MCP Server (38 Tools)
 
-aiduMEM includes a built-in MCP Server (`:8768`) exposing 38 tools:
+aiduMEI includes a built-in MCP Server (`:8768`) exposing 38 tools:
 
 | Tool Group | Count | Description |
 |------------|-------|-------------|
@@ -301,10 +301,10 @@ aiduMEM includes a built-in MCP Server (`:8768`) exposing 38 tools:
 
 ```bash
 # Copy rule file to project
-cp integrations/cursor-hook/cursor-aidumem.mdc .cursor/rules/
+cp integrations/cursor-hook/cursor-aidumei.mdc .cursor/rules/
 
 # Auto-store on file save → Raw Drawer
-cp integrations/cursor-hook/aidumem-on-save.sh .git/hooks/post-commit
+cp integrations/cursor-hook/aidumei-on-save.sh .git/hooks/post-commit
 ```
 
 ### Claude Code
@@ -333,7 +333,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 
 ## Configuration
 
-aiduMEM reads configuration from `mem0_config_local.json`. Key fields:
+aiduMEI reads configuration from `mem0_config_local.json`. Key fields:
 
 ```json
 {

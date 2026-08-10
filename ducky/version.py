@@ -1,7 +1,14 @@
 """
-ducky.version — aiduMEM 版本信息唯一真相源
+ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
+
+v18.2 Zeus (宙斯 · 可视化洞察纪元)
+    核心主题: aiduMEI 品牌升级 + 自带可视化控制台 + 全量代码审计
+    1. aiduMEI 控制台: 六面板(PULSE/VAULT/MAP/RECALL/EVOLVE/SETTINGS)零依赖纯静态
+    2. 后端自带 /ui 静态托管 + /api 别名层 + /config 路由(api_key 脱敏)
+    3. 全量代码审计: recall_funnel NoneType 崩溃 / _load_patterns 逻辑 bug / 7处静默异常补日志
+    4. 品牌升级: aiduMEM → aiduMEI (aidu Memory Engine Insight / 爱嘟优忆思)
 
 v18.1 Zeus (宙斯 · 检索自进化纪元)
     核心主题: SimpleMem 核心理念 EvolveMem 融合，建立闭环反馈
@@ -9,24 +16,20 @@ v18.1 Zeus (宙斯 · 检索自进化纪元)
     2. MCP 工具扩充: expose evolve_feedback 与 evolve_report
     3. 全方位质量审计: 清理架构遗留瑕疵，确保高稳定性
     4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
-
-    竞品融合来源:
-    - MemPalace (58k⭐): Verbatim Storage → Raw Drawer
-    - code-review-graph (29k⭐): AST blast radius → Code Graph
-    - SimpleMem (3.7k⭐): EvolveMem → 检索自进化 (Phase 3 闭环)
 """
 
-SERVICE_VERSION = "18.1.0"
+SERVICE_VERSION = "18.2.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Zeus"
 CODENAME_ZH = "宙斯"
-DISPLAY_NAME = f"aiduMEM {FULL_VERSION} · {CODENAME_ZH}"
+DISPLAY_NAME = f"aiduMEI {FULL_VERSION} · {CODENAME_ZH}"
 
-# 架构代号：检索自进化 · 反馈闭环 · 核心重构
-ARCHITECTURE = "Feedback-driven Evolving Memory OS"
+# 架构代号：可视化洞察 · 自带控制台 · 品牌升级
+ARCHITECTURE = "Visual Insight Memory Engine with Built-in Console"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
+    ("18.2", "Zeus", "宙斯", "可视化洞察 · aiduMEI 控制台 · 品牌升级 · 全量审计"),
     ("18.1", "Zeus", "宙斯", "检索自进化 · EvolveMem 反馈闭环"),
     ("18.0", "Zeus", "宙斯", "原味抽屉 · 代码图谱 · 五大竞品精华融合"),
     ("17.0", "Themis", "忒弥斯", "治理秩序 · 事件账本 · 敏感分档 · Mímir三借鉴"),
