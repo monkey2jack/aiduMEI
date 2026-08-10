@@ -25,24 +25,12 @@
     border: 1px solid var(--blue-line);
     border-radius: var(--radius);
     box-shadow: 0 12px 40px rgba(31, 78, 121, 0.10);
-    padding: 32px 28px 28px;
+    padding: 36px 28px 26px;
     text-align: center;
-  }
-  .login-brand {
-    font-size: 20px;
-    letter-spacing: 0.5px;
-    margin-bottom: 4px;
-  }
-  .login-brand b { color: var(--blue); font-weight: 700; }
-  .login-brand .sep { color: var(--blue); margin: 0 2px; }
-  .login-sub {
-    font-size: 11px;
-    color: var(--gray-soft);
-    margin-bottom: 24px;
   }
   .login-input {
     width: 100%;
-    padding: 11px 14px;
+    padding: 12px 14px;
     font: inherit;
     font-size: 13px;
     color: var(--ink);
@@ -51,22 +39,25 @@
     border-radius: 8px;
     outline: none;
     text-align: center;
-    letter-spacing: 2px;
+    letter-spacing: 1px;
     transition: border-color 0.25s, box-shadow 0.25s;
   }
   .login-input:focus {
     border-color: var(--blue);
     box-shadow: 0 0 0 3px var(--blue-tint);
   }
+  .login-input::placeholder {
+    color: var(--gray-faint);
+    letter-spacing: 0.5px;
+  }
   .login-btn {
     width: 100%;
     margin-top: 14px;
-    padding: 11px;
+    padding: 12px;
     font: inherit;
     font-size: 14px;
     font-weight: 600;
-    letter-spacing: 6px;
-    text-indent: 6px;
+    letter-spacing: 4px;
     color: #fff;
     background: var(--blue);
     border: none;
@@ -87,7 +78,7 @@
   }
   .login-hint {
     margin-top: 4px;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--gray-faint);
   }
   @keyframes login-shake {
@@ -122,11 +113,9 @@
 
   <div class="login-wrap">
     <div class="login-card" id="loginCard">
-      <div class="login-brand"><span class="lbl">aidu<b>MEM</b></span><span class="sep">⚕</span><span class="lbl">爱嘟</span>优忆思</div>
-      <div class="login-sub">aiduMEI · 记忆引擎观测台 · 请输入访问密码</div>
       <form id="loginForm" autocomplete="off">
-        <input class="login-input" type="password" id="password" placeholder="访问密码" autofocus required />
-        <button class="login-btn" type="submit" id="loginBtn">进 入</button>
+        <input class="login-input" type="password" id="password" placeholder="输入密码 / Password input" autofocus required />
+        <button class="login-btn" type="submit" id="loginBtn">登 录 / Login</button>
       </form>
       <p class="login-err" id="loginErr"></p>
       <p class="login-hint" id="loginHint"></p>
@@ -204,10 +193,10 @@ fetch('/api/login/hint', { headers: { Accept: 'application/json' } })
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     var password = passwordInput.value;
-    if (!password) { err.textContent = '请输入访问密码'; return; }
+    if (!password) { err.textContent = '请输入密码 / Please enter the password'; return; }
     err.textContent = '';
     btn.disabled = true;
-    btn.textContent = '验证中…';
+    btn.textContent = '验证中… / Verifying…';
 
     fetch('/api/login', {
       method: 'POST',
@@ -222,7 +211,7 @@ fetch('/api/login/hint', { headers: { Accept: 'application/json' } })
           sessionStorage.setItem('aidumei_auth', '1');
           location.replace('index.html');
         } else {
-          err.textContent = (res.d && res.d.message) || '密码错误';
+          err.textContent = (res.d && res.d.message) || '密码错误 / Wrong password';
           card.classList.remove('shake');
           void card.offsetWidth;
           card.classList.add('shake');
@@ -231,11 +220,11 @@ fetch('/api/login/hint', { headers: { Accept: 'application/json' } })
         }
       })
       .catch(function () {
-        err.textContent = '无法连接服务，请稍后重试';
+        err.textContent = '无法连接服务 / Connection failed';
       })
       .finally(function () {
         btn.disabled = false;
-        btn.textContent = '进 入';
+        btn.textContent = '登 录 / Login';
       });
   });
 })();
