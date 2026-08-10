@@ -79,7 +79,7 @@ def _track_embed_usage(total_tokens: int):
 
 
 def _track_rerank_usage(input_tokens: int = 0, total_tokens: int = 0):
-    """追踪硅基流动 rerank API 用量（免费模型，token 记着玩）"""
+    """追踪 rerank API 用量"""
     today = _ensure_today()
     with _usage_lock:
         d = _llm_usage[today].setdefault("rerank", {"calls": 0, "input_tokens": 0, "total_tokens": 0})
@@ -90,7 +90,7 @@ def _track_rerank_usage(input_tokens: int = 0, total_tokens: int = 0):
 
 
 # ═══════════════════════════════════════════════
-# §1b 硅基流动 Rerank（懒加载配置 + requests 直发）
+# §1b Reranker（懒加载配置 + requests 直发）
 # ═══════════════════════════════════════════════
 _RERANK_CONFIG_CACHE: Optional[dict] = None
 
@@ -100,8 +100,8 @@ _RERANK_CONFIG_CACHE: Optional[dict] = None
 # Return shape: a list of {index, relevance_score} sorted descending.
 # ---------------------------------------------------------------------------
 
-def _rerank_siliconflow(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
-    """SiliconFlow / OpenAI-compatible rerank endpoint (BAAI/bge-reranker-v2-m3 etc.)"""
+def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
+    """OpenAI-compatible rerank endpoint"""
     import requests as req
     r = req.post(
         f"{cfg['base_url']}/rerank",
@@ -209,12 +209,12 @@ def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int
 
 
 RERANK_PROVIDERS = {
-    "siliconflow": _rerank_siliconflow,
+    "siliconflow": _rerank_openai_rerank,
     "jina": _rerank_jina,
     "cohere": _rerank_cohere,
     "openai_compatible": _rerank_openai_compatible,
     # aliases — make config forgiving
-    "sf": _rerank_siliconflow,
+    "sf": _rerank_openai_rerank,
     "openai": _rerank_openai_compatible,
     "azure": _rerank_openai_compatible,
     "vllm": _rerank_openai_compatible,
@@ -222,7 +222,7 @@ RERANK_PROVIDERS = {
 }
 
 # default provider back-compat: old configs without provider field
-DEFAULT_RERANK_PROVIDER = "siliconflow"
+DEFAULT_RERANK_PROVIDER = "openai_compatible"
 
 
 def _load_rerank_config() -> dict:
@@ -238,8 +238,8 @@ def _load_rerank_config() -> dict:
             rerank = j.get("reranker", {})
             rc = rerank.get("config", {})
             cfg["provider"] = rerank.get("provider", DEFAULT_RERANK_PROVIDER)
-            cfg["model"] = rc.get("model", "BAAI/bge-reranker-v2-m3")
-            cfg["base_url"] = rc.get("openai_base_url", "https://api.siliconflow.cn/v1")
+            cfg["model"] = rc.get("model", "your-rerank-model")
+            cfg["base_url"] = rc.get("openai_base_url", "https://your-rerank-endpoint/v1")
             api_key = rc.get("api_key", "")
             if api_key == "__SF_KEY__" or not api_key:
                 kp = os.path.join(BASE_DIR, ".sf_key")
@@ -251,8 +251,8 @@ def _load_rerank_config() -> dict:
             # 兜底：跟 embedding 一样
             cfg = {
                 "provider": DEFAULT_RERANK_PROVIDER,
-                "model": "BAAI/bge-reranker-v2-m3",
-                "base_url": "https://api.siliconflow.cn/v1",
+                "model": "your-rerank-model",
+                "base_url": "https://your-rerank-endpoint/v1",
                 "api_key": "",
             }
             kp = os.path.join(BASE_DIR, ".sf_key")
@@ -269,7 +269,7 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     """
     调用配置好的 reranker 做重排序。返回 [{index, relevance_score}, ...] 按分数降序。
     失败返回空列表，不阻断检索主链路。
-    支持: SiliconFlow / Jina / Cohere / OpenAI-compatible (Azure / vLLM / LiteLLM)
+    支持: OpenAI-compatible / Jina / Cohere
     """
     if not documents:
         return []

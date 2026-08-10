@@ -12,9 +12,8 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-18.2.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEM)
-[![PyPI](https://img.shields.io/pypi/v/aidumem.svg)](https://pypi.org/project/aidumem/)
-[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEM/pkgs/container/aidumem)
+[![Version](https://img.shields.io/badge/version-18.2.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
 [![Built on mem0](https://img.shields.io/badge/built%20on-mem0-orange.svg)](https://github.com/mem0ai/mem0)
@@ -182,20 +181,14 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 ## 快速开始
 
-### 方式一：从 PyPI 安装（最快捷）
+### 方式一：Docker 容器运行（GitHub Packages / GHCR）
 
 ```bash
-pip install aidumem
+docker pull ghcr.io/monkey2jack/aidumei:latest
+docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
 ```
 
-### 方式二：Docker 容器运行（GitHub Packages / GHCR）
-
-```bash
-docker pull ghcr.io/monkey2jack/aidumem:latest
-docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumem:latest
-```
-
-### 方式三：源码克隆运行（含控制台）
+### 方式二：源码克隆运行（含控制台）
 
 ```bash
 # 1. 克隆
@@ -362,7 +355,7 @@ hermes config set memory.provider aidumem
 ```
 
 ### 🔧 零配置混合检索
-BM25 trigram（零延迟兜底） + BGE-M3 向量 + Reranker 重排序 + 召回漏斗相关性排序。向量服务超时自动热切换到本地全文搜索。
+BM25 trigram（零延迟兜底） + 向量嵌入 + Reranker 重排序 + 召回漏斗相关性排序。向量服务超时自动热切换到本地全文搜索。
 
 ---
 
@@ -431,7 +424,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 - **结构化数据**：SQLite（facts.db、observations.db、scenes.db、fact_events.db）
 - **全文搜索**：SQLite FTS5 + trigram 分词器
 - **向量化**：可配置（兼容 OpenAI Embedding API）
-- **重排序**：可配置（兼容 OpenAI Rerank API · 多 provider 抽象：SiliconFlow / Jina / Cohere）
+- **重排序**：可配置（兼容 OpenAI Rerank API · 多 provider 抽象：OpenAI-compatible / Jina / Cohere）
 - **大模型**：兼容任何 OpenAI 格式的 API
 - **MCP**：fastmcp stdio + HTTP 双模
 - **控制台**：零依赖纯静态（HTML + CSS + 原生 JS + ECharts CDN），由后端 `/ui` 直接托管
@@ -457,14 +450,14 @@ aiduMEI 从 `mem0_config_local.json` 读取配置。主要字段：
   "embedder": {
     "provider": "openai",
     "config": {
-      "model": "BAAI/bge-m3",
+      "model": "your-embedding-model",
       "api_key": "你的密钥",
       "openai_base_url": "你的接口地址"
     }
   },
   "rerank": {
     "enabled": true,
-    "provider": "siliconflow",
+    "provider": "openai_compatible",
     "config": {
       "model": "你的重排模型",
       "api_key": "你的密钥",

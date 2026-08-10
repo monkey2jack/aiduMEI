@@ -27,7 +27,7 @@ SEEDS = [
     ("dudu's memory backend is aiduMEI v18.1.0-zeus built on mem0ai SDK", "dudu"),
     ("Dudu prefers concise responses and always double-checks credentials before actions", "dudu"),
     ("dudu's recall pipeline has five stages: candidate pool, ignition, dedup, time decay, final selection", "dudu"),
-    ("Dudu uses BAAI/bge-m3 for embeddings and DeepSeek-V3.2 for fact extraction", "dudu"),
+    ("Dudu uses your-embedding-model for embeddings and the configured LLM for fact extraction", "dudu"),
     ("Dudu's memory ledger currently holds over 800 structured facts", "dudu"),
     ("Dudu's recall accuracy improved 15% after the ignition threshold was tuned last week", "dudu"),
     ("Dudu was given a warm hexagon-themed UI called aiduMEI with 6 panels", "dudu"),
@@ -40,7 +40,7 @@ SEEDS = [
     # user alice (foreign user)
     ("Alice is a data scientist at Nexus AI, working on RAG pipeline evaluation", "alice"),
     ("Alice prefers Python and writes a lot of databricks notebooks", "alice"),
-    ("She is experimenting with BGE embeddings vs OpenAI ada-002 for Chinese text", "alice"),
+    ("She is experimenting with embedding models vs other embedding models for Chinese text", "alice"),
     ("Alice runs a home lab with a NVIDIA RTX 4090 for fine-tuning small LLMs", "alice"),
     # user bob
     ("Bob is a backend engineer specializing in Go and distributed systems", "bob"),

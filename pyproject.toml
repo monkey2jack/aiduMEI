@@ -8,7 +8,7 @@ version = "18.1.0"
 description = "aiduMEM: self-hosted multi-tier memory for Hermes Agent — native MemoryProvider bridge, CoreMemory, FTS5 & Qdrant recall"
 readme = "README.md"
 authors = [
-    { name = "Jack & Dudu (aiduHER)", email = "iamjw9@gmail.com" }
+    { name = "aiduMEI Team" }
 ]
 license = { text = "MIT" }
 keywords = ["memory", "mem0", "hermes", "hermes-agent", "aiduMEM", "ai", "rag", "qdrant", "fts5", "memory-provider"]

@@ -90,7 +90,7 @@ v0 初啼 (Day 1)
 ┌──────────────┐     ┌────────────────────┐
 │   Qdrant     │     │   SQLite 数据库集群  │
 │ (向量存储)    │     │                    │
-│ bge-m3 嵌入  │     │  facts.db          │
+│ 向量嵌入  │     │  facts.db          │
 │ 1024 维向量   │     │  salience.db       │
 │              │     │  text_fts.db       │
 │              │     │  observations.db   │
@@ -328,7 +328,7 @@ ducky/
 
 ```
 Stage 1: Qdrant 向量检索
-  → 基于 bge-m3 嵌入的语义相似度检索，返回 top-N 候选
+  → 基于 向量嵌入的语义相似度检索，返回 top-N 候选
   
 Stage 2: Ignition 点火
   → 相似度 > 0.85 的候选直接"点火"进入结果池，跳过后续管道
@@ -471,7 +471,7 @@ aiduMEM 站在众多优秀开源项目的肩膀上，取各家之长：
 
 | 来源项目 | 吸收了什么 |
 |---------|-----------|
-| **mem0** | 向量存储基座（Qdrant + bge-m3 嵌入） |
+| **mem0** | 向量存储基座（Qdrant + 向量嵌入） |
 | **memory-os** | 7 层架构 · Facts 表 · Bayesian trust · 4 级权威 · FTS5 |
 | **OpenViking** | L0/L1/L2 分层自检 · 目录递归 |
 | **Aion Memory** | Layer 1 自检 · Recall Funnel · Instinct→Skill 蒸馏 |
