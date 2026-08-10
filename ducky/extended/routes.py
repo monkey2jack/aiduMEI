@@ -140,7 +140,8 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
                 FROM facts f JOIN facts_fts ft ON f.id=ft.rowid
                 WHERE facts_fts MATCH ? AND f.archived=0
                 ORDER BY f.trust_score*(1.0+f.preference_score) DESC LIMIT 20""", (query,)).fetchall()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"FTS5 search skip: {e}")
             fts_results = []
         entities = _extract_entities(query)
         entity_facts = []

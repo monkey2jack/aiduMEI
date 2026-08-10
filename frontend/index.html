@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>aiduMEM⚕爱嘟优忆思</title>
+<meta name="description" content="aiduMEI — aiduMEM 记忆引擎观测台" />
+<meta name="author" content="monkey²" />
+<meta name="theme-color" content="#1f4e79" />
+<link rel="icon" href="logo.png" />
+<link rel="stylesheet" href="css/style.css?v=2" />
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+
+<!-- random hexagon backdrop, filled by JS -->
+<div class="hex-bg" id="hexBg"></div>
+
+  <!-- top bar: version info (used to be footer content) -->
+  <header class="brandbar">
+    <div class="brandbar-inner">
+      <span class="foot-left">
+        <span id="foot-ver">v—</span>
+        <span id="foot-update" class="foot-update-badge" style="display:none"></span>
+      </span>
+      <span class="foot-right">
+        Powered by <b>monkey²</b>
+        <a class="gh-link" href="https://github.com/monkey2jack" target="_blank" rel="noopener" aria-label="GitHub">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </span>
+    </div>
+  </header>
+
+  <div class="stage">
+    <!-- 1 + 2 + 3 hexagon pyramid -->
+    <div class="comb">
+
+    <!-- crown: SETTINGS -->
+    <a class="hex-btn" id="hexCrown" href="#settings" data-panel="settings"
+       style="left: var(--hex-w); top: 0;" aria-label="设定"
+       data-tip-en="Models &amp; connections" data-tip-cn="模型与连接">
+      <svg class="hex-shape" viewBox="0 0 100 115.47" aria-hidden="true">
+        <polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87"
+                 fill="#ffffff" fill-opacity="0.88" stroke="#1f4e79" stroke-width="0.5" />
+      </svg>
+      <img class="hex-icon-png" src="setting.png" alt="" />
+      <span class="hex-en">SETTINGS</span>
+      <span class="hex-cn">设定</span>
+    </a>
+
+    <!-- row 2 -->
+    <a class="hex-btn" id="hexPulse" href="#pulse" data-panel="pulse"
+       style="left: calc(var(--hex-w) * 0.5); top: var(--hex-row);"
+       data-tip-en="Is it healthy now?" data-tip-cn="它现在还好吗">
+      <svg class="hex-shape" viewBox="0 0 100 115.47" aria-hidden="true">
+        <polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87"
+                 fill="#ffffff" fill-opacity="0.88" stroke="#1f4e79" stroke-width="0.5" />
+      </svg>
+      <img class="hex-icon-png" src="pulse.png" alt="" />
+      <span class="hex-en">PULSE</span>
+      <span class="hex-cn">心动</span>
+    </a>
+
+    <a class="hex-btn" id="hexVault" href="#vault" data-panel="vault"
+       style="left: calc(var(--hex-w) * 1.5); top: var(--hex-row);"
+       data-tip-en="What does it remember?" data-tip-cn="它记住了什么">
+      <svg class="hex-shape" viewBox="0 0 100 115.47" aria-hidden="true">
+        <polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87"
+                 fill="#ffffff" fill-opacity="0.88" stroke="#1f4e79" stroke-width="0.5" />
+      </svg>
+      <img class="hex-icon-png" src="vault.png" alt="" />
+      <span class="hex-en">VAULT</span>
+      <span class="hex-cn">忆思</span>
+    </a>
+
+    <!-- row 3 -->
+    <a class="hex-btn" id="hexMap" href="#map" data-panel="map"
+       style="left: 0; top: calc(var(--hex-row) * 2);"
+       data-tip-en="What does its memory look like?" data-tip-cn="它的记忆长什么样">
+      <svg class="hex-shape" viewBox="0 0 100 115.47" aria-hidden="true">
+        <polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87"
+                 fill="#ffffff" fill-opacity="0.88" stroke="#1f4e79" stroke-width="0.5" />
+      </svg>
+      <img class="hex-icon-png" src="map.png" alt="" />
+      <span class="hex-en">MAP</span>
+      <span class="hex-cn">心图</span>
+    </a>
+
+    <a class="hex-btn" id="hexRecall" href="#recall" data-panel="recall"
+       style="left: var(--hex-w); top: calc(var(--hex-row) * 2);"
+       data-tip-en="How did it recall this?" data-tip-cn="它是怎么想起来的">
+      <svg class="hex-shape" viewBox="0 0 100 115.47" aria-hidden="true">
+        <polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87"
+                 fill="#ffffff" fill-opacity="0.88" stroke="#1f4e79" stroke-width="0.5" />
+      </svg>
+      <img class="hex-icon-png" src="recall.png" alt="" />
+      <span class="hex-en">RECALL</span>
+      <span class="hex-cn">追忆</span>
+    </a>
+
+    <a class="hex-btn" id="hexEvolve" href="#evolve" data-panel="evolve"
+       style="left: calc(var(--hex-w) * 2); top: calc(var(--hex-row) * 2);"
+       data-tip-en="Is it getting better or worse?" data-tip-cn="它在变好还是变坏">
+      <svg class="hex-shape" viewBox="0 0 100 115.47" aria-hidden="true">
+        <polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87"
+                 fill="#ffffff" fill-opacity="0.88" stroke="#1f4e79" stroke-width="0.5" />
+      </svg>
+      <img class="hex-icon-png" src="evolve.png" alt="" />
+      <span class="hex-en">EVOLVE</span>
+      <span class="hex-cn">成真</span>
+    </a>
+
+    </div>
+  </div>
+
+  <!-- bottom: logo + brand name, centered -->
+  <footer class="site-foot">
+    <div class="site-foot-brand">
+      <img class="brand-logo" src="logo.png" alt="aiduMEM" />
+      <span class="wordmark"><span class="lbl">aidu<b>MEM</b></span><i class="sep">⚕</i><span class="lbl">爱嘟</span>优忆思</span>
+    </div>
+  </footer>
+
+<!-- panel overlay -->
+<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="panelTitle">
+  <div class="panel">
+    <div class="panel-hex-bg" id="panelHexBg"></div>
+    <div class="panel-head">
+      <span class="p-ico" id="panelIco"></span>
+      <span class="p-en" id="panelEn"></span>
+      <span class="p-title" id="panelTitle"></span>
+      <button class="p-close" id="panelClose" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" aria-hidden="true">
+          <path d="M5 5l14 14M19 5L5 19" />
+        </svg>
+      </button>
+    </div>
+    <div class="panel-body" id="panelBody"></div>
+    <div class="panel-foot">
+      <span id="panelFoot"></span>
+    </div>
+  </div>
+</div>
+
+<script src="js/api.js?v=2"></script>
+<script src="js/panels.js?v=2"></script>
+<script src="js/main.js?v=2"></script>
+</body>
+</html>
