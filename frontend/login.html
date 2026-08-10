@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>aiduMEM⚕爱嘟优忆思</title>
+<meta name="description" content="aiduMEI — aiduMEM 记忆引擎观测台" />
+<meta name="author" content="monkey²" />
+<meta name="theme-color" content="#1f4e79" />
+<link rel="icon" href="logo.png" />
+<link rel="stylesheet" href="css/style.css?v=2" />
+<style>
+  .login-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    z-index: 10;
+    padding: 24px 16px;
+  }
+  .login-card {
+    width: 320px;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid var(--blue-line);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 40px rgba(31, 78, 121, 0.10);
+    padding: 32px 28px 28px;
+    text-align: center;
+  }
+  .login-brand {
+    font-size: 20px;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .login-brand b { color: var(--blue); font-weight: 700; }
+  .login-brand .sep { color: var(--blue); margin: 0 2px; }
+  .login-sub {
+    font-size: 11px;
+    color: var(--gray-soft);
+    margin-bottom: 24px;
+  }
+  .login-input {
+    width: 100%;
+    padding: 11px 14px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 1.5px solid var(--blue-line);
+    border-radius: 8px;
+    outline: none;
+    text-align: center;
+    letter-spacing: 2px;
+    transition: border-color 0.25s, box-shadow 0.25s;
+  }
+  .login-input:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-tint);
+  }
+  .login-btn {
+    width: 100%;
+    margin-top: 14px;
+    padding: 11px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 6px;
+    text-indent: 6px;
+    color: #fff;
+    background: var(--blue);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.25s, box-shadow 0.25s;
+  }
+  .login-btn:hover {
+    background: #285c8e;
+    box-shadow: 0 4px 14px rgba(31, 78, 121, 0.30);
+  }
+  .login-btn:disabled { opacity: 0.6; cursor: default; }
+  .login-err {
+    min-height: 18px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--bad);
+  }
+  .login-hint {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--gray-faint);
+  }
+  @keyframes login-shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-6px); }
+    40% { transform: translateX(6px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+  }
+  .login-card.shake { animation: login-shake 0.4s ease; }
+</style>
+</head>
+<body>
+
+<!-- random hexagon backdrop, filled by JS (same as index) -->
+<div class="hex-bg" id="hexBg"></div>
+
+  <!-- top bar: same as index -->
+  <header class="brandbar">
+    <div class="brandbar-inner">
+      <span class="foot-left">
+        <span id="foot-ver">v—</span>
+      </span>
+      <span class="foot-right">
+        Powered by <b>monkey²</b>
+        <a class="gh-link" href="https://github.com/monkey2jack" target="_blank" rel="noopener" aria-label="GitHub">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </span>
+    </div>
+  </header>
+
+  <div class="login-wrap">
+    <div class="login-card" id="loginCard">
+      <div class="login-brand"><span class="lbl">aidu<b>MEM</b></span><span class="sep">⚕</span><span class="lbl">爱嘟</span>优忆思</div>
+      <div class="login-sub">aiduMEI · 记忆引擎观测台 · 请输入访问密码</div>
+      <form id="loginForm" autocomplete="off">
+        <input class="login-input" type="password" id="password" placeholder="访问密码" autofocus required />
+        <button class="login-btn" type="submit" id="loginBtn">进 入</button>
+      </form>
+      <p class="login-err" id="loginErr"></p>
+      <p class="login-hint" id="loginHint"></p>
+    </div>
+  </div>
+
+  <!-- bottom: same as index -->
+  <footer class="site-foot">
+    <div class="site-foot-brand">
+      <img class="brand-logo" src="logo.png" alt="aiduMEM" />
+      <span class="wordmark"><span class="lbl">aidu<b>MEM</b></span><i class="sep">⚕</i><span class="lbl">爱嘟</span>优忆思</span>
+    </div>
+  </footer>
+
+<script>
+/* random hexagon backdrop (same as index) */
+(function () {
+  var BRAND_COLORS = ['#1f4e79', '#525252', '#000000'];
+  var container = document.getElementById('hexBg');
+  var count = 666;
+  var palette = [];
+  var per = Math.floor(count / BRAND_COLORS.length);
+  BRAND_COLORS.forEach(function (c) {
+    for (var i = 0; i < per; i++) palette.push(c);
+  });
+  while (palette.length < count) palette.push(BRAND_COLORS[palette.length % BRAND_COLORS.length]);
+  for (var i = palette.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = palette[i]; palette[i] = palette[j]; palette[j] = t;
+  }
+  var frag = document.createDocumentFragment();
+  for (var k = 0; k < count; k++) {
+    var left = Math.random() * 100;
+    var top = Math.random() * 100;
+    var size = 15 + Math.random() * 70;
+    var height = size * 1.1547;
+    var rot = Math.floor(Math.random() * 61) - 30;
+    var stroke = (0.3 + Math.random() * 0.5).toFixed(1);
+    var el = document.createElement('div');
+    el.className = 'hex-bg-item';
+    el.style.cssText = 'left:' + left + '%; top:' + top + '%; width:' + size +
+      'px; height:' + height + 'px; transform:rotate(' + rot + 'deg); opacity:0.3;';
+    el.innerHTML = '<svg viewBox="0 0 100 115.47"><polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87" fill="none" stroke="' +
+      palette[k] + '" stroke-width="' + stroke + '"/></svg>';
+    frag.appendChild(el);
+  }
+  container.appendChild(frag);
+})();
+
+/* version badge (same as index) */
+fetch('/api/health', { headers: { Accept: 'application/json' } })
+  .then(function (r) { return r.json().catch(function () { return {}; }); })
+  .then(function (d) {
+    var ver = d.version || '';
+    if (ver) document.getElementById('foot-ver').textContent = 'v' + ver;
+  })
+  .catch(function () {});
+
+/* password hint (backend decides whether default password applies) */
+fetch('/api/login/hint', { headers: { Accept: 'application/json' } })
+  .then(function (r) { return r.json().catch(function () { return {}; }); })
+  .then(function (d) {
+    if (d.hint) document.getElementById('loginHint').textContent = d.hint;
+  })
+  .catch(function () {});
+
+/* login */
+(function () {
+  var form = document.getElementById('loginForm');
+  var passwordInput = document.getElementById('password');
+  var btn = document.getElementById('loginBtn');
+  var err = document.getElementById('loginErr');
+  var card = document.getElementById('loginCard');
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var password = passwordInput.value;
+    if (!password) { err.textContent = '请输入访问密码'; return; }
+    err.textContent = '';
+    btn.disabled = true;
+    btn.textContent = '验证中…';
+
+    fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ password: password })
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return { success: false }; }).then(function (d) { return { ok: r.ok, d: d }; });
+      })
+      .then(function (res) {
+        if (res.ok && res.d.success) {
+          sessionStorage.setItem('aidumei_auth', '1');
+          location.replace('index.html');
+        } else {
+          err.textContent = (res.d && res.d.message) || '密码错误';
+          card.classList.remove('shake');
+          void card.offsetWidth;
+          card.classList.add('shake');
+          passwordInput.value = '';
+          passwordInput.focus();
+        }
+      })
+      .catch(function () {
+        err.textContent = '无法连接服务，请稍后重试';
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = '进 入';
+      });
+  });
+})();
+</script>
+</body>
+</html>

@@ -24,11 +24,12 @@ del _stub, _NoopPosthog, _types
 import logging
 import os
 import threading
+import hmac
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from ducky.autodream import autodream_background_loop
@@ -102,6 +103,41 @@ register_all_routes(app, get_memory, _get_db, _extract_entities)
 _api_alias = FastAPI(title="aiduMEM /api alias")
 register_all_routes(_api_alias, get_memory, _get_db, _extract_entities)
 app.mount("/api", _api_alias)
+
+# ── UI 登录 ─────────────────────────────────────────────
+# 控制台登录门禁：/api/login 校验访问密码（AIDUMEM_UI_PASSWORD）。
+# 密码只来自环境变量，不入仓库；未配置时回退到开源默认密码 123456。
+_DEFAULT_UI_PASSWORD = "123456"
+_UI_PASSWORD = _os.environ.get("AIDUMEM_UI_PASSWORD") or _DEFAULT_UI_PASSWORD
+
+
+def _register_login(route_app: FastAPI) -> None:
+    @route_app.post("/login", include_in_schema=False)
+    async def ui_login(request: Request):
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        given = payload.get("password")
+        if isinstance(given, str) and hmac.compare_digest(given, _UI_PASSWORD):
+            logger.info("🚪 UI 登录成功")
+            return {"success": True}
+        logger.warning("🚪 UI 登录失败（密码错误）")
+        return JSONResponse(
+            {"success": False, "message": "访问密码错误"},
+            status_code=401,
+        )
+
+    @route_app.get("/login/hint", include_in_schema=False)
+    async def ui_login_hint():
+        # 默认密码时前端提示 123456；部署方已自定义则不提示。
+        if _UI_PASSWORD == _DEFAULT_UI_PASSWORD:
+            return {"hint": "开源默认密码：123456（生产环境请通过 AIDUMEM_UI_PASSWORD 修改）"}
+        return {"hint": None}
+
+
+_register_login(app)
+_register_login(_api_alias)
 
 # 注入版本信息到 health 端点（唯一真相源）
 set_version_info(SERVICE_VERSION, CODENAME, CODENAME_ZH)
