@@ -3,8 +3,8 @@
 aiduMEI dev server — static file host + local-test proxy to aiduMEM.
 
 This version talks to the LOCAL test instance (127.0.0.1:8777 by default),
-not the Hangzhou production server. Write endpoints are open so we can test
-the full round-trip. Do NOT point AIDUMEM_UPSTREAM at the production server
+not a remote production server. Write endpoints are open so we can test
+the full round-trip. Do NOT point AIDUMEM_UPSTREAM at a production server
 while running this mode.
 
 Usage

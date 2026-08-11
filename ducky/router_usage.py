@@ -1,6 +1,6 @@
 """ducky.router_usage — 从上游 LLM 路由网关抓取真实用量数据（可选功能）
 
-本模块通过 SSH 读取一台运行 LLM 路由网关（9router 及兼容实现）的主机上的
+本模块通过 SSH 读取一台运行 LLM 路由网关的主机上的
 SQLite 用量库，把每日 prompt/completion token 数汇总回来，供 /usage 类端点展示。
 
 属于纯可选的增强能力：所有连接参数都从环境变量读取，任一项缺失即直接跳过，
@@ -8,7 +8,7 @@ SQLite 用量库，把每日 prompt/completion token 数汇总回来，供 /usag
 
     AIDUMEM_ROUTER_SSH_HOSTS   逗号分隔的 ssh 目标，按顺序尝试，如 "user@10.0.0.2,user@203.0.113.5"
     AIDUMEM_ROUTER_SSH_KEY     ssh 私钥路径
-    AIDUMEM_ROUTER_DB_PATH     远端用量 SQLite 路径，默认 ~/9router-data/db/data.sqlite
+    AIDUMEM_ROUTER_DB_PATH     远端用量 SQLite 路径，默认 ~/router-data/db/data.sqlite
     AIDUMEM_ROUTER_KEY_SUFFIX  只统计 apiKey 以此结尾的调用，留空表示不过滤
     AIDUMEM_ROUTER_MODELS      逗号分隔的模型白名单，留空表示统计全部模型
 """
@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger("aiduMEM.router_usage")
 
-DEFAULT_REMOTE_DB = "~/9router-data/db/data.sqlite"
+DEFAULT_REMOTE_DB = "~/router-data/db/data.sqlite"
 
 
 def _ssh_hosts() -> List[str]:
