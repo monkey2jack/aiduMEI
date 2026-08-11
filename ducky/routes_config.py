@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _WRITE_LOCK = threading.Lock()
 
 # 允许通过 UI 在线编辑的配置段
-_PUT_SECTIONS = {"llm", "embedder", "rerank", "vector_store"}
+_PUT_SECTIONS = {"llm", "embedder", "rerank", "vector_store", "vision", "_features"}
 
 
 def _mask_key(key: Optional[str]) -> str:
@@ -46,10 +46,12 @@ def _build_config_view() -> dict:
     llm = raw.get("llm") or {}
     emb = raw.get("embedder") or {}
     rer = raw.get("rerank") or {}
+    vis = raw.get("vision") or {}
     vs = raw.get("vector_store") or {}
     lc = llm.get("config") or {}
     ec = emb.get("config") or {}
     rc = rer.get("config") or {} if isinstance(rer, dict) else {}
+    vc = vis.get("config") or {} if isinstance(vis, dict) else {}
     vsc = vs.get("config") or {} if isinstance(vs, dict) else {}
     return {
         "llm": {
@@ -82,6 +84,20 @@ def _build_config_view() -> dict:
                 "api_key": _mask_key(rc.get("api_key")),
             },
         },
+        "vision": {
+            "provider": vis.get("provider") or llm.get("provider"),
+            "config": {
+                "model": vc.get("model") or lc.get("model"),
+                "openai_base_url": vc.get("openai_base_url") or lc.get("openai_base_url"),
+                "api_key": _mask_key(vc.get("api_key") if vc.get("api_key") else lc.get("api_key")),
+                "max_tokens": vc.get("max_tokens"),
+            },
+        },
+        "features": raw.get("_features", {
+            "obsidian": True,
+            "vision": True,
+            "fast_update": True
+        }),
         "vector_store": {
             "provider": vs.get("provider") if isinstance(vs, dict) else None,
             "config": {
@@ -136,6 +152,12 @@ def register_config_routes(app: FastAPI) -> None:
                 else:
                     enabled = bool(old_cfg.get("model") or old_cfg.get("openai_base_url"))
                 raw[section] = {"enabled": enabled, "provider": new_provider, "config": old_cfg}
+            elif section == "_features" or section == "features":
+                # 模块开关：直接合并布尔值
+                old_features = dict(raw.get("_features") or {})
+                for k, v in new_cfg.items():
+                    old_features[k] = bool(v)
+                raw["_features"] = old_features
             else:
                 old_section["provider"] = new_provider
                 old_section["config"] = old_cfg
@@ -183,3 +205,56 @@ def register_config_routes(app: FastAPI) -> None:
                 os.unlink(tmp_path)
                 raise
         return {"status": "ok", "updated": updates, "_speed": load_speed_cfg()}
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 修改登录密码（v18.3）
+    # ═══════════════════════════════════════════════════════════════════
+    @app.post("/config/password")
+    def change_password(body: dict) -> dict:
+        """修改 UI 登录密码。需要验证当前密码，成功后写入 .env 文件并提示重启。"""
+        import hmac
+
+        current = body.get("current_password", "")
+        new = body.get("new_password", "")
+        confirm = body.get("confirm_password", "")
+
+        # 验证当前密码
+        current_stored = os.environ.get("AIDUMEM_UI_PASSWORD") or "123456"
+        if not isinstance(current, str) or not hmac.compare_digest(current, current_stored):
+            return {"status": "error", "detail": "当前密码错误 / Current password incorrect"}
+
+        # 验证新密码
+        if not isinstance(new, str) or len(new) < 4:
+            return {"status": "error", "detail": "新密码至少 4 位 / New password too short"}
+        if new != confirm:
+            return {"status": "error", "detail": "两次输入不一致 / Passwords do not match"}
+
+        # 写入 .env 文件（追加或更新 AIDUMEM_UI_PASSWORD）
+        env_path = os.path.join(os.path.dirname(_CFG_PATH), ".env")
+        env_lines = []
+        key_found = False
+
+        if os.path.exists(env_path):
+            with open(env_path) as f:
+                for line in f:
+                    if line.startswith("AIDUMEM_UI_PASSWORD="):
+                        env_lines.append(f"AIDUMEM_UI_PASSWORD={new}\n")
+                        key_found = True
+                    else:
+                        env_lines.append(line)
+
+        if not key_found:
+            env_lines.append(f"AIDUMEM_UI_PASSWORD={new}\n")
+
+        try:
+            with open(env_path, "w") as f:
+                f.writelines(env_lines)
+            logger.info("🔐 UI 登录密码已更新（需重启服务生效）")
+            return {
+                "status": "ok",
+                "detail": "密码已更新，重启服务后生效 / Password updated, restart to take effect",
+                "restart_required": True
+            }
+        except Exception as e:
+            logger.error(f"密码写入失败: {e}")
+            return {"status": "error", "detail": f"写入失败: {e}"}

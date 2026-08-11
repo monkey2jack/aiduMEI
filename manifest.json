@@ -1,8 +1,8 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEM",
-  "version": "18.2.0",
-  "description": "Themis 忒弥斯版 AI 记忆操作系统：治理秩序 · 事件账本 · 敏感分档 · Mímir三借鉴融合",
+  "version": "18.3.0",
+  "description": "Zeus 宙斯 · 多模态感知纪元：无损秒级升级 + 多模态视觉记忆 + Obsidian 双链联动",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",
   "authors": [

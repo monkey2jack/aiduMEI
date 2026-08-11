@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-18.2.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-18.3.0%20·%20Zeus·宙斯-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -192,7 +192,7 @@ docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
 
 ```bash
 # 1. 克隆
-git clone https://github.com/monkey2jack/aiduMEM.git
+git clone https://github.com/monkey2jack/aiduMEI.git
 cd aiduMEM
 
 # 2. 创建虚拟环境

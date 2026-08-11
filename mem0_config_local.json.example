@@ -40,5 +40,23 @@
     "model": "your-rerank-model",
     "api_key": "YOUR_RERANK_API_KEY",
     "openai_base_url": "https://your-rerank-endpoint/v1"
+  },
+
+  "_vision_optional": "可选 (v18.3)。多模态记忆：配置后 /add 传 media_url 会自动调用 Vision 模型生成图片描述。缺省 fallback 到 llm 段。",
+  "vision": {
+    "provider": "openai",
+    "config": {
+      "model": "your-vision-model",
+      "api_key": "YOUR_VISION_API_KEY",
+      "openai_base_url": "https://your-llm-endpoint/v1",
+      "max_tokens": 500
+    }
+  },
+
+  "_features": {
+    "_comment": "v18.3 模块独立开关，false 则禁用对应功能",
+    "obsidian": true,
+    "vision": true,
+    "fast_update": true
   }
 }

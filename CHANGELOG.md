@@ -1,6 +1,36 @@
-# aiduMEM 版本演进史
+# aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.1.0 Zeus 检索自进化纪元。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.3.0 Zeus 多模态感知纪元。
+
+---
+
+## v18.3.0 — Zeus 宙斯（2026-08-11）
+
+> 多模态感知纪元：无损秒级升级机制 + 多模态视觉记忆 + Obsidian 双链联动。
+
+### 核心新特性
+
+**⚡ 无损秒级平滑升级 (Fast-Update)**
+- 引入基于 `PRAGMA user_version` 的 schema 版本化机制（`CURRENT_SCHEMA_VERSION = 2`）
+- 新增 `apply_migrations()`：SQLite `ALTER TABLE ADD COLUMN` 毫秒级增量补丁，代码更新与数据重构彻底解耦
+- 老库自动检测并平滑迁移（v1 → v2 增加 `media_url` / `vision_caption` 字段），数据零丢失
+- 配套《Fast-Update SOP》运维文档：3 步完成版本升级，大版本可秒级回滚
+
+**🖼️ 多模态视觉记忆 (Vision)**
+- `/add` 原生支持 `media_url` / `image_url`，后端自动调用 OpenAI 兼容 Vision API 生成 `vision_caption`
+- 支持 base64 / data URI / 远程 URL 三种图片输入
+- 独立 `vision` 配置段（fallback 到 `llm` 段），Vision 用量自动追踪
+- 前端 VAULT 渲染图片缩略图、PULSE 统计多模态数据、SETTINGS 展示 Vision 模型配置
+
+**🔗 Obsidian 双链联动 (Obsidian Bi-directional Links)**
+- 新增 `POST /api/obsidian/sync`：接收 Obsidian 笔记推送，解析 `[[Wikilink]]` 双链语法
+- 双链词自动沉淀为实体图谱节点（`entities` 表 `obsidian_node` 类型），打通 TreeMemory 拓扑
+- 模块独立开关（`_features.obsidian` / `_features.vision` / `_features.fast_update`），可随时启停
+
+**🔐 控制台增强**
+- SETTINGS 新增登录密码修改（`POST /config/password`，写入 .env 重启生效）
+- 修复 RECALL 显式搜索被相关性闸门误拦截的问题：`/search` 直走 Workspace → Hybrid 混合召回
+- 用户 ID 规范化：历史命名统一映射到 `default`，老数据可被新查询命中
 
 ---
 
@@ -102,7 +132,7 @@
 ### 升级清单
 
 1. `pip install --upgrade mem0ai==2.0.17`
-2. `systemctl restart dudu-mem0-api.service mem0-sync.service`
+2. `systemctl restart aidumem-api.service`
 3. 验证 `/health` 返回 `"health_status":"ok"`
 
 ---

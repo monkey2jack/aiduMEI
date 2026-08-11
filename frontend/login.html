@@ -8,7 +8,7 @@
 <meta name="author" content="monkey²" />
 <meta name="theme-color" content="#1f4e79" />
 <link rel="icon" href="logo.png" />
-<link rel="stylesheet" href="css/style.css?v=3" />
+<link rel="stylesheet" href="css/style.css?v=5" />
 <style>
   .login-wrap {
     flex: 1;
@@ -89,6 +89,50 @@
     80% { transform: translateX(4px); }
   }
   .login-card.shake { animation: login-shake 0.4s ease; }
+
+  /* ---------- slogan (aidu / I do / AI do + 爱嘟 / 唯吾 / 智助) ---------- */
+  .slogan-en, .slogan-cn {
+    position: absolute;
+    top: calc(var(--shell-pad, 24px) + 56px); /* header height + margin */
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    font-size: clamp(1rem, min(3vw, 3.2vh), 2rem);
+    font-weight: 900;
+    line-height: 1.5;
+    pointer-events: none;
+    user-select: none;
+  }
+  .slogan-en {
+    right: max(24px, calc((100vw - var(--shell)) / 2));
+    align-items: flex-end;
+    text-align: right;
+  }
+  .slogan-cn {
+    left: max(24px, calc((100vw - var(--shell)) / 2));
+    align-items: flex-start;
+    text-align: left;
+  }
+  .slogan-en .row, .slogan-cn .row {
+    display: block;
+    white-space: nowrap;
+    text-decoration: underline;
+    text-underline-offset: 0.1em;
+    text-decoration-thickness: 0.055em;
+  }
+  .slogan-en .row--1, .slogan-cn .row--1 { color: var(--ink); }
+  .slogan-en .row--2, .slogan-cn .row--2 { color: var(--gray); }
+  .slogan-en .row--3, .slogan-cn .row--3 { color: var(--blue); }
+
+  @media (max-width: 720px) {
+    .slogan-en, .slogan-cn {
+      top: auto;
+      bottom: 120px;
+      font-size: clamp(0.9rem, 4vw, 1.2rem);
+    }
+    .slogan-en { right: 20px; }
+    .slogan-cn { left: 20px; }
+  }
 </style>
 </head>
 <body>
@@ -110,6 +154,20 @@
       </span>
     </div>
   </header>
+
+  <!-- slogan: aidu / I do / AI do -->
+  <div class="slogan-en" aria-hidden="true">
+    <span class="row row--1">aidu</span>
+    <span class="row row--2">I do</span>
+    <span class="row row--3">AI do</span>
+  </div>
+
+  <!-- slogan 中文：爱嘟 / 唯吾 / 智助 -->
+  <div class="slogan-cn" aria-hidden="true">
+    <span class="row row--1">爱嘟</span>
+    <span class="row row--2">唯吾</span>
+    <span class="row row--3">智助</span>
+  </div>
 
   <div class="login-wrap">
     <div class="login-card" id="loginCard">

@@ -58,6 +58,46 @@ def register_add_routes(app: FastAPI) -> None:
                 async_flag = bool(extra.get("async") or extra.get("async_mode"))
             # metadata 里也可带 async
             md = dict(req.metadata or {})
+
+            # --- 🚀 v18.3 核心：原生多模态支持 (Phase 2) ---
+            media_url = md.get("media_url") or md.get("image_url") or (extra.get("media_url") if isinstance(extra, dict) else None)
+            vision_caption = ""
+            if media_url:
+                # 检查 Vision 模块开关
+                try:
+                    import json
+                    import os
+                    from ducky.mem0_runtime import MEM0_CONFIG
+                    if os.path.exists(MEM0_CONFIG):
+                        with open(MEM0_CONFIG) as f:
+                            _cfg = json.loads(f.read())
+                            _features = _cfg.get("_features", {})
+                            if not _features.get("vision", True):
+                                logger.info("多模态 Vision 模块已禁用，跳过解析")
+                                media_url = None  # 置空，走普通文本路径
+                except Exception as _fe:
+                    logger.warning(f"读取 features 配置失败: {_fe}")
+
+            if media_url:
+                try:
+                    from ducky.pipeline.memory_vision import extract_vision_caption
+                    vision_caption = extract_vision_caption(media_url)
+                    logger.info(f"成功提取多模态 Caption: {vision_caption[:50]}...")
+                    # 把 caption 合并到 messages 供下游写入 DB
+                    if isinstance(messages_json, list):
+                        messages_json.append({"role": "user", "content": f"[附带多模态分析]: {vision_caption}"})
+                    elif isinstance(messages_json, dict):
+                        messages_json["content"] = f"{messages_json.get('content', '')}\n[附带多模态分析]: {vision_caption}"
+                    else:
+                        messages_json = f"{messages_json}\n[附带多模态分析]: {vision_caption}"
+
+                    # 回写 metadata，以便底层能够存到新的 DB column
+                    md["media_url"] = media_url
+                    md["vision_caption"] = vision_caption
+                except Exception as ve:
+                    logger.error(f"多模态提取失败: {ve}")
+            # ---------------------------------------------
+
             if not async_flag:
                 async_flag = bool(md.pop("async", False) or md.pop("async_mode", False))
 
