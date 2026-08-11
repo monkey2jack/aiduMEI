@@ -24,7 +24,7 @@ SEEDS = [
     ("张伟对产品设计的要求很高：克制、高级、美观，不能太花哨", "default"),
     # user aidu — aidu AI 助手（通用设定，不含真实部署信息）
     ("aidu is an AI assistant with persistent memory, deployed on a local server", "aidu"),
-    ("aidu's memory backend is aiduMEI v18.3.0-zeus built on mem0ai SDK", "aidu"),
+    ("aidu's memory backend is aiduMEI v18.3.1-zeus built on mem0ai SDK", "aidu"),
     ("aidu prefers concise responses and always double-checks credentials before actions", "aidu"),
     ("aidu's recall pipeline has five stages: candidate pool, ignition, dedup, time decay, final selection", "aidu"),
     ("aidu uses your-embedding-model for embeddings and the configured LLM for fact extraction", "aidu"),
