@@ -25,7 +25,7 @@ v18.1 Zeus (宙斯 · 检索自进化纪元)
     4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
 """
 
-SERVICE_VERSION = "18.3.0"
+SERVICE_VERSION = "18.3.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Zeus"
 CODENAME_ZH = "宙斯"
