@@ -15,7 +15,7 @@
 
 [Unit]
 Description=aiduMEM Memory Engine REST API
-Documentation=https://github.com/monkey2jack/aiduMEM
+Documentation=https://github.com/monkey2jack/aiduMEI
 After=network.target
 Wants=network.target
 

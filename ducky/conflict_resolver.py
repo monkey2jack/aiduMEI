@@ -58,7 +58,7 @@ def load_custom_exclusion_patterns(patterns: list[tuple[str, str, str]]) -> None
 
 
 def resolve_fact_conflict(
-    category: str, fact_key: str, new_value: str, user_id: str = "dudu"
+    category: str, fact_key: str, new_value: str, user_id: str = "default"
 ) -> dict[str, Any]:
     """
     当写入/更新某个 (category, fact_key) 时：
@@ -108,7 +108,7 @@ def resolve_fact_conflict(
     return {"invalidated": invalidated_count, "category": category, "fact_key": fact_key}
 
 
-def scan_and_resolve_text_conflicts(new_text: str, user_id: str = "dudu") -> list[dict[str, Any]]:
+def scan_and_resolve_text_conflicts(new_text: str, user_id: str = "default") -> list[dict[str, Any]]:
     """
     针对输入的文本内容，检测是否触及显式互斥规则。
     若新文本匹配到新规则模式，则扫描 facts DB 中匹配旧规则的条目，

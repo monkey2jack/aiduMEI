@@ -53,6 +53,17 @@ def register_crud_routes(app: FastAPI) -> None:
             dupes = {h: c for h, c in hash_counts.items() if c > 1}
             total_dupes = sum(c - 1 for c in dupes.values())
 
+            # --- 多模态记忆统计 (v18.3) ---
+            vision_count = 0
+            obsidian_count = 0
+            try:
+                from ducky.utils import get_facts_conn
+                conn = get_facts_conn()
+                vision_count = conn.execute("SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL").fetchone()[0]
+                obsidian_count = conn.execute("SELECT COUNT(*) FROM facts WHERE source = 'obsidian'").fetchone()[0]
+            except Exception as _e:
+                logger.warning(f"统计多模态/obsidian数据异常: {_e}")
+
             return {
                 "status": "ok",
                 "total": total,
@@ -64,6 +75,8 @@ def register_crud_routes(app: FastAPI) -> None:
                 "duplicate_hashes": len(dupes),
                 "after_dedup": total - total_dupes,
                 "top_tags": dict(sorted(tag_counts.items(), key=lambda x: -x[1])[:10]),
+                "vision_count": vision_count,
+                "obsidian_count": obsidian_count,
                 "memories": all_mem,
             }
         except Exception as e:

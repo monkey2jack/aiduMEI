@@ -3,6 +3,13 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v18.3 Zeus (宙斯 · 多模态感知纪元)
+    核心主题: 无损升级机制 + 多模态视觉记忆 + Obsidian 双链联动
+    1. 无损秒级平滑升级 SOP: user_version schema 版本化 + ALTER TABLE 增量补丁
+    2. 多模态 API: /add 原生支持 image_url，后端自动调用 Vision 模型生成 caption
+    3. Obsidian 双链: Wikilink 解析器 + 实体图谱节点打通 + /api/obsidian/sync
+    4. 前端适配: PULSE 统计多模态数据 / SETTINGS 展示 Vision 模型 / VAULT 渲染缩略图
+
 v18.2 Zeus (宙斯 · 可视化洞察纪元)
     核心主题: aiduMEI 品牌升级 + 自带可视化控制台 + 全量代码审计
     1. aiduMEI 控制台: 六面板(PULSE/VAULT/MAP/RECALL/EVOLVE/SETTINGS)零依赖纯静态
@@ -18,17 +25,18 @@ v18.1 Zeus (宙斯 · 检索自进化纪元)
     4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
 """
 
-SERVICE_VERSION = "18.2.0"
+SERVICE_VERSION = "18.3.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Zeus"
 CODENAME_ZH = "宙斯"
 DISPLAY_NAME = f"aiduMEI {FULL_VERSION} · {CODENAME_ZH}"
 
-# 架构代号：可视化洞察 · 自带控制台 · 品牌升级
-ARCHITECTURE = "Visual Insight Memory Engine with Built-in Console"
+# 架构代号：多模态感知 · 无损升级 · Obsidian 双链
+ARCHITECTURE = "Multimodal Memory Engine with Lossless Fast-Update & Obsidian Bi-directional Links"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
+    ("18.3", "Zeus", "宙斯", "多模态感知 · 无损秒级升级 · Obsidian 双链联动"),
     ("18.2", "Zeus", "宙斯", "可视化洞察 · aiduMEI 控制台 · 品牌升级 · 全量审计"),
     ("18.1", "Zeus", "宙斯", "检索自进化 · EvolveMem 反馈闭环"),
     ("18.0", "Zeus", "宙斯", "原味抽屉 · 代码图谱 · 五大竞品精华融合"),

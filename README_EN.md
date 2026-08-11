@@ -10,7 +10,7 @@
 > *Memory is not note-taking, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-18.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-18.3.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -37,7 +37,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 | 🛡️ **Aegis** | Aegis | Zero hardcoding, clone and run | Identity / paths / keywords all injected via env vars |
 | 🌈 **Iris** | Iris | Rides the host's native memory channel | Hermes MemoryProvider plugin: pre-compress rescue · memory mirroring · direct tools |
 | 🐙 **Octopod** | Opus Octopod | Memory governance & crystallization | ConflictResolver + TreeMemory + SkillCrystallizer |
-| ⚡ **Zeus** | Zeus | King of the Gods | Raw Drawer + Code Graph + EvolveMem self-evolving retrieval |
+| ⚡ **Zeus** | Zeus | King of the Gods | Raw Drawer + Code Graph + EvolveMem self-evolving retrieval + **multimodal vision memory · Obsidian bi-directional links · lossless fast-update** |
 
 ---
 
@@ -47,6 +47,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
+| **v18.3** | **Zeus** | King of the Gods · Multimodal | **Lossless fast-update · multimodal vision memory · Obsidian bi-directional links · console password change** |
 | **v18.2** | **Zeus** | King of the Gods · Insight | Built-in aiduMEI console · EvolveMem feedback loop · quality audit |
 | **v18.1** | **Zeus** | King of the Gods · Self-Evolving | EvolveMem feedback loop · 38 MCP tools · quality audit |
 | **v18.0** | **Zeus** | King of the Gods · Power Absorption | Raw Drawer · Code Graph · 5 competitors精华 fusion · MCP×36 · IDE hooks |
@@ -67,7 +68,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           🤔 aiduMEI v18.2 · AI Thought Engine     │
+│           🤔 aiduMEI v18.3 · AI Thought Engine     │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (38 tools)                  │
 ├──────────────────────────────────────────────────────────┤
@@ -382,5 +383,5 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 ---
 
 <p align="center">
-  <sub>Thinking Version · Iris | Built by <a href="https://github.com/monkey2jack">monkey2jack</a> & <a href="https://github.com/monkey2jack">dudu</a></sub>
+  <sub>Thinking Version · Iris | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
 </p>
