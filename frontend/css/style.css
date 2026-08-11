@@ -451,6 +451,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .sec-h .rule { flex: 1 1 auto; height: 1px; background: var(--gray-line); }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+/* 设定面板模型卡片 4 行竖向排列 */
+#cfgModels .tiles { grid-template-columns: 1fr; }
 .tile {
   border: 1px solid var(--gray-line); border-radius: 10px; padding: 13px 14px;
   background: rgba(255,255,255,0.86);

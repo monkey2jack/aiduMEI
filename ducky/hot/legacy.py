@@ -70,7 +70,7 @@ _RE_AKA         = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?
 _RE_USER        = re.compile(r'\b(User|用户)\b')
 _RE_AI          = re.compile(r'\b(AI|Assistant|助手)\b')
 _RE_PROJECT     = re.compile(r'\b(aiduMEM|mem0|Hermes|Qdrant|FastAPI|SQLite)\b', re.IGNORECASE)
-_RE_TECH        = re.compile(r'\b(Hermes|Qdrant|NVIDIA|FTS5|WAL|VACUUM|nginx|systemd|FastAPI)\b')
+_RE_TECH        = re.compile(r'\b(Hermes|DeepSeek|Qdrant|NVIDIA|FTS5|WAL|VACUUM|nginx|systemd|FastAPI)\b')
 
 
 def _env_pattern(env_key: str) -> "re.Pattern | None":

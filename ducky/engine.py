@@ -12,6 +12,7 @@ from typing import Optional, List, Dict, Any
 from ducky.utils import normalize_score, parse_iso_timestamp
 from ducky.salience.core import get_salience_record
 from ducky.text_fts import calc_bm25_score
+from ducky.mem0_runtime import _normalize_user_id
 
 logger = logging.getLogger("aiduMEM.engine")
 
@@ -35,6 +36,10 @@ class RecallEngine:
         """执行全流程式多信号混合召回 + 重排序"""
         w = {**self.weights, **(weights or {})}
         now_ts = time.time()
+
+        # 规范化 user_id，兼容历史数据（统一映射到 default）
+        user_id = _normalize_user_id(user_id)
+        logger.info(f"🔍 引擎召回: query='{query}' user_id='{user_id}' limit={limit}")
 
         # 1. 向量基础匹配
         candidates = []

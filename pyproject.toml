@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "18.2.0"
-description = "aiduMEM: self-hosted multi-tier memory for Hermes Agent — native MemoryProvider bridge, CoreMemory, FTS5 & Qdrant recall"
+version = "18.3.0"
+description = "aiduMEI: self-hosted multi-tier memory engine — native MemoryProvider bridge, CoreMemory, FTS5 & Qdrant recall, multimodal vision memory & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
     { name = "aiduMEI Team" }
 ]
 license = { text = "MIT" }
-keywords = ["memory", "mem0", "hermes", "hermes-agent", "aiduMEM", "ai", "rag", "qdrant", "fts5", "memory-provider"]
+keywords = ["memory", "mem0", "hermes", "hermes-agent", "aiduMEI", "ai", "rag", "qdrant", "fts5", "memory-provider", "obsidian", "multimodal"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -32,9 +32,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/monkey2jack/aiduMEM"
-Documentation = "https://github.com/monkey2jack/aiduMEM#readme"
-Repository = "https://github.com/monkey2jack/aiduMEM.git"
+Homepage = "https://github.com/monkey2jack/aiduMEI"
+Documentation = "https://github.com/monkey2jack/aiduMEI#readme"
+Repository = "https://github.com/monkey2jack/aiduMEI.git"
 
 [project.scripts]
 aidumem = "api_server:main"

@@ -69,7 +69,10 @@ CREATE TABLE IF NOT EXISTS facts (
     shared           INTEGER DEFAULT 1,
     -- Mímir 借鉴：敏感级别分档（v17）
     -- internal: 授权范围内可用 | confidential: 限制 owner/外发 | restricted: 本地仅限
-    sensitivity      TEXT DEFAULT 'internal'
+    sensitivity      TEXT DEFAULT 'internal',
+    -- aiduMEI v18.3 多模态与 Obsidian 双链支持
+    media_url        TEXT,
+    vision_caption   TEXT
 )
 """
 
@@ -118,6 +121,47 @@ _INDEXES = (
 _lock = threading.Lock()
 _done = False
 
+CURRENT_SCHEMA_VERSION = 2  # v18.3: 添加 media_url, vision_caption
+
+
+def apply_migrations(conn) -> None:
+    """基于 user_version 实现秒级增量补丁迁移（无损升级 v18.3）"""
+    try:
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+        # 对于老的、之前没有使用版本控制的 v18.2 及以前的库，版本号通常是 0。
+        # 第一版版本控制我们将其基线定义为版本 1。
+        if user_version == 0:
+            # 标记存量完整库为版本 1（即缺少 media_url 和 vision_caption 的阶段）
+            logger.info("检测到老版本数据库，初始基准定为 Version 1")
+            user_version = 1
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+
+        # 版本迁移流：Version 1 -> Version 2
+        if user_version < 2:
+            logger.info("执行数据库增量升级：v1 -> v2 (增加多模态字段)")
+            # SQLite 的 ALTER TABLE ADD COLUMN 是近乎 O(1) 的超快操作
+            try:
+                conn.execute("ALTER TABLE facts ADD COLUMN media_url TEXT;")
+            except Exception as e:
+                logger.debug(f"字段 media_url 已存在或跳过: {e}")
+
+            try:
+                conn.execute("ALTER TABLE facts ADD COLUMN vision_caption TEXT;")
+            except Exception as e:
+                logger.debug(f"字段 vision_caption 已存在或跳过: {e}")
+
+            conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+            logger.info("数据库秒级增量升级 v2 成功 ✅")
+            user_version = 2
+
+        # 未来的版本升级可以直接在下面追加: if user_version < 3: ...
+
+    except Exception as exc:
+        logger.error("数据库增量补丁执行异常 (服务继续启动): %s", exc)
+
 
 def ensure_core_schema(force: bool = False) -> dict:
     """幂等建表。返回本次实际新建的表名列表。"""
@@ -148,6 +192,9 @@ def ensure_core_schema(force: bool = False) -> dict:
                     conn.execute(stmt)
                 except Exception as exc:  # 老库上可能已有同名非唯一索引
                     logger.debug("索引跳过 (%s): %s", stmt.split()[-1], exc)
+
+            # 执行 schema 版本增量迁移补丁
+            apply_migrations(conn)
 
             conn.commit()
             _done = True

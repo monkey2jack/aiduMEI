@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-18.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-18.3.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -26,7 +26,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用思想系统** —— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它以希腊神话诸神为名，承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **品牌演进**：aiduMEM（优忆思）→ aiduMEI⚕爱嘟优忆思。从一个记忆中间件，升级为带可视化洞察的智能体通用思想系统。"爱嘟"是用户与 AI 助手"助手"的亲密呼唤，"优忆思"是记忆·思考·洞察的三重承诺。
+> **品牌演进**：aiduMEM（优忆思）→ aiduMEI⚕爱嘟优忆思。从一个记忆中间件，升级为带可视化洞察的智能体通用思想系统。"爱嘟"是用户与 AI 助手的亲密呼唤，"优忆思"是记忆·思考·洞察的三重承诺。
 
 基于 [mem0](https://github.com/mem0ai/mem0) 构建，aiduMEI 在其之上搭建了十层认知体系：
 
@@ -41,7 +41,7 @@
 | 🛡️ **埃癸斯** | Aegis 埃癸斯 | 零硬编码，换机即跑 | 身份/路径/词表全部环境变量注入，克隆即用 |
 | 🌈 **伊里斯** | Iris 伊里斯 | 走宿主官方记忆通道 | Hermes MemoryProvider 插件：压缩前抢救 · 记忆镜像 · 工具直连 |
 | 🐙 **八爪鱼** | Opus Octopod | 记忆治理与结晶 | ConflictResolver 冲突消解 + TreeMemory 树状图谱 + SkillCrystallizer 自动结晶 |
-| ⚡ **宙斯** | Zeus 宙斯 | 吸星大法 · 众神之王 | Raw Drawer 原味抽屉 + Code Graph 代码图谱 + EvolveMem 检索自进化 |
+| ⚡ **宙斯** | Zeus 宙斯 | 吸星大法 · 众神之王 | Raw Drawer 原味抽屉 + Code Graph 代码图谱 + EvolveMem 检索自进化 + **多模态视觉记忆 · Obsidian 双链 · 无损秒级升级** |
 
 ---
 
@@ -137,6 +137,7 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 | 版本 | 代号 | 神格 | 核心使命 |
 |------|------|------|----------|
+| **v18.3** | **Zeus** · 宙斯 | 众神之王 · 多模态感知 | **无损秒级升级 · 多模态视觉记忆 · Obsidian 双链联动 · 控制台密码修改** |
 | **v18.2** | **Zeus** · 宙斯 | 众神之王 · 检索自进化 | EvolveMem 反馈闭环、38 MCP 工具、质量审计全覆盖、**自带可视化控制台** |
 | **v18.0** | **Zeus** · 宙斯 | 众神之王 · 吸星大法 | 原味抽屉 · 代码图谱 · 五大竞品精华融合 · MCP×36 · IDE 钩子 |
 | **v17.0** | **Themis** · 忒弥斯 | 秩序女神 | 事件账本 · 敏感分档 · 治理铁律 |
@@ -156,7 +157,7 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v18.2          │
+│           aiduMEI⚕爱嘟优忆思 v18.3          │
 │              FastAPI REST API :8767                       │
 │              控制台 /ui :8767（自带静态托管）              │
 │              MCP Server :8768 (38 tools)                  │
@@ -193,7 +194,7 @@ docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
 ```bash
 # 1. 克隆
 git clone https://github.com/monkey2jack/aiduMEI.git
-cd aiduMEM
+cd aiduMEI
 
 # 2. 创建虚拟环境
 python3.12 -m venv venv
@@ -222,9 +223,9 @@ python api_server.py
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/search` | 搜索记忆（混合：向量 + BM25 + 相关性闸门） |
+| `POST` | `/search` | 搜索记忆（混合：向量 + BM25 + 重排，直走 Workspace → Hybrid 混合召回） |
 | `POST` | `/search_trace` | 带完整执行链路的搜索（召回漏斗 trace） |
-| `POST` | `/add` | 添加记忆（默认异步潮浪合并） |
+| `POST` | `/add` | 添加记忆（默认异步潮浪合并；支持 `media_url` 多模态图片，v18.3） |
 | `POST` | `/add/raw` | 原味抽屉——零 LLM 直存原始文本 |
 | `DELETE` | `/delete` | 按 ID 删除记忆 |
 | `GET` | `/health` | 健康检查 + 全探针诊断 |
@@ -233,11 +234,42 @@ python api_server.py
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/config` | 模型配置只读视图（api_key 脱敏） |
+| `GET` | `/config` | 模型配置只读视图（api_key 脱敏；v18.3 起含 vision 段与 features 开关） |
 | `GET` | `/config/_speed` | 速度/合并可调参数 |
 | `POST` | `/config/_speed` | 在线微调参数（写入 mem0_config_local.json） |
+| `POST` | `/config/password` | 修改 UI 登录密码（v18.3，写入 .env 重启生效） |
 
 > 前端控制台以 `/api` 为调用根（`API.base = '/api'`）。后端挂了一个 `/api` 别名子应用，让 `/api/stats`、`/api/config` 等直接命中扁平路由，无需改前端。访问 `/` 自动重定向到 `/ui/`。
+
+### 多模态视觉记忆（Zeus v18.3）
+
+`/add` 原生支持多模态：传入 `media_url` 或 `image_url`，后端自动调用 OpenAI 兼容 Vision API 生成图片描述（`vision_caption`）并入库。支持三种图片输入：
+
+```json
+{
+  "messages": [{"role": "user", "content": "这张照片是我拍的海边日落"}],
+  "metadata": {
+    "media_url": "https://example.com/sunset.jpg",
+    "category": "moment"
+  }
+}
+```
+
+- **远程 URL**：`https://...`
+- **Data URI**：`data:image/jpeg;base64,...`
+- **纯 Base64**：`/9j/4AAQ...`（自动补齐 data 前缀）
+
+Vision 模型在 `mem0_config_local.json` 的独立 `vision` 配置段指定（缺省 fallback 到 `llm` 段）。
+
+### Obsidian 双链联动（Zeus v18.3）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/obsidian/sync` | 接收 Obsidian 笔记推送，解析 `[[Wikilink]]` 双链并沉淀为实体图谱节点 |
+
+### 无损秒级升级（Zeus v18.3）
+
+基于 `PRAGMA user_version` 的 schema 版本化机制，代码更新与数据重构彻底解耦：纯逻辑更新直接重启生效，表结构变更在启动瞬间以 `ALTER TABLE ADD COLUMN` 毫秒级完成，**不破坏任何存量数据**。详见 [Fast-Update SOP](docs/Fast_Update_SOP.md)。
 
 ### 代码图谱（Zeus v18.0）
 
@@ -502,7 +534,7 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 ## 仓库结构
 
 ```
-aiduMEM/
+aiduMEI/
 ├── api_server.py          # 主入口（API + /ui 控制台托管）
 ├── ducky/                 # 业务逻辑（各神祇模块）
 │   ├── hot/               #   搜索/健康/遗留端点
