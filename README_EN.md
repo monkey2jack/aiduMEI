@@ -10,7 +10,7 @@
 > *Memory is not note-taking, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-18.3.1-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-18.3.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
