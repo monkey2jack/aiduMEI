@@ -54,12 +54,14 @@ function pill(label, value, tone) {
   return '<span class="pill ' + tone + '">' + esc(label) + ': <b>' + esc(value) + '</b></span>';
 }
 
-/* Grouped bar + line combo chart — calls as bars, tokens as lines. */
+/* Grouped bar + line combo chart — calls as bars, tokens as lines.
+   双纵坐标：左侧 calls 刻度，右侧 tokens 刻度。
+   鼠标悬停通过 JS tooltip 浮窗显示数值。 */
 function barChart(rows, series) {
   /* series: [{ name, color, fn, type }] — type: 'bar' | 'line'
      bars show call counts, lines show token counts */
-  const W = 900, H = 150;
-  const padL = 34, padR = 34, padT = 10, padB = 26;
+  const W = 900, H = 160;
+  const padL = 44, padR = 44, padT = 12, padB = 30;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   if (!rows.length) return '<div class="hint">这段时间没有调用记录 / No data.</div>';
@@ -76,14 +78,45 @@ function barChart(rows, series) {
     lineSeries.forEach(function (s) { linePeak = Math.max(linePeak, s.fn(r)); });
   });
 
+  // ── 生成左侧 Y 轴（calls）刻度 ──
+  var yAxisLeft = '';
+  var leftSteps = 4;
+  for (var si = 0; si <= leftSteps; si++) {
+    var val = (barPeak / leftSteps) * si;
+    var y = (padT + innerH - (val / barPeak) * innerH).toFixed(1);
+    var label = val === 0 ? '0' : fmtCompact(val);
+    yAxisLeft += '<text class="yaxis" x="' + (padL - 6) + '" y="' + y + '" text-anchor="end" font-size="9" fill="#7c8ba0">' + label + '</text>';
+    // gridline
+    yAxisLeft += '<line class="ygrid" x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#1a2a3a" stroke-width="0.5" stroke-dasharray="3,5"/>';
+  }
+
+  // ── 生成右侧 Y 轴（tokens）刻度 ──
+  var yAxisRight = '';
+  var rightSteps = 4;
+  for (var ti = 0; ti <= rightSteps; ti++) {
+    var tval = (linePeak / rightSteps) * ti;
+    var ty = (padT + innerH - (tval / linePeak) * innerH).toFixed(1);
+    var tlabel = tval === 0 ? '0 t' : fmtCompact(tval) + 't';
+    yAxisRight += '<text class="yaxis" x="' + (W - padR + 6) + '" y="' + ty + '" text-anchor="start" font-size="9" fill="#7c8ba0">' + tlabel + '</text>';
+  }
+
   const slot = innerW / rows.length;
   const barW = Math.max(2, slot * (0.72 / Math.max(nBar, 1)));
   const gap = barW * 0.28;
-
   var bars = '';
   var lines = '';
   var dots = '';
   var labels = '';
+
+  /* 为每列构建 tooltip 文本缓存（按 px 坐标落入列查表） */
+  var tips = [];
+  rows.forEach(function (r, i) {
+    const cx = padL + slot * (i + 0.5);
+    var dayTip = '<b>' + esc(r.date) + '</b><br>';
+    barSeries.forEach(function (s) { dayTip += esc(s.name) + ': ' + fmtInt(s.fn(r)) + ' 次调用<br>'; });
+    lineSeries.forEach(function (s) { var v = s.fn(r); if (v > 0) dayTip += esc(s.name) + ': ' + fmtCompact(v) + ' tokens<br>'; });
+    tips[i] = { cx: cx, w: slot, tip: dayTip };
+  });
 
   rows.forEach(function (r, i) {
     const cx = padL + slot * (i + 0.5);
@@ -93,8 +126,7 @@ function barChart(rows, series) {
       const h = Math.max(v > 0 ? 1.5 : 0, (v / barPeak) * innerH);
       const x = cx - (barW * nBar + gap * (nBar - 1)) / 2 + si * (barW + gap);
       bars += '<rect class="cbar" fill="' + esc(s.color) + '" opacity="0.75" x="' + x.toFixed(1) + '" y="' + (padT + innerH - h).toFixed(1) +
-        '" width="' + barW.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="1.2">' +
-        '<title>' + esc(r.date) + ' ' + esc(s.name) + ' ' + fmtInt(v) + ' 调用</title></rect>';
+        '" width="' + barW.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="1.2"></rect>';
     });
 
     // lines (tokens) — continuous across days
@@ -103,15 +135,15 @@ function barChart(rows, series) {
       if (v > 0) {
         const x = cx;
         const y = padT + innerH - (v / linePeak) * innerH;
-        dots += '<circle class="cdot" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="2" fill="' + esc(s.color) + '">' +
-          '<title>' + esc(r.date) + ' ' + esc(s.name) + ' ' + fmtInt(v) + ' tokens</title></circle>';
+        dots += '<circle class="cdot" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="2" fill="' + esc(s.color) + '"></circle>';
+
       }
     });
 
     const step = rows.length > 16 ? 3 : rows.length > 9 ? 2 : 1;
     if (i % step === 0 || i === rows.length - 1) {
       labels += '<text class="clabel" x="' + cx.toFixed(1) + '" y="' + (H - 10) +
-        '" text-anchor="middle">' + esc(r.date.slice(5)) + '</text>';
+        '" text-anchor="middle" font-size="9" fill="#7c8ba0">' + esc(r.date.slice(5)) + '</text>';
     }
   });
 
@@ -134,22 +166,26 @@ function barChart(rows, series) {
     }
   });
 
-  var legend = series.map(function (s) {
-    if (s.type === 'bar') {
-      return '<span><i style="background:' + esc(s.color) + ';width:8px;height:8px;border-radius:2px"></i>' + esc(s.name) + '</span>';
-    } else {
-      return '<span><i style="background:none;border-top:2px dashed ' + esc(s.color) + ';width:12px;height:0"></i>' + esc(s.name) + '</span>';
-    }
+  // ── 图例 ──
+  var leftLegend = barSeries.map(function (s) {
+    return '<span title="' + esc(s.name) + ' (左轴 calls)"><i style="background:' + esc(s.color) + ';width:8px;height:8px;border-radius:2px;display:inline-block"></i> ' + esc(s.name) + '</span>';
+  }).join('');
+  var rightLegend = lineSeries.map(function (s) {
+    return '<span title="' + esc(s.name) + ' (右轴 tokens)"><i style="display:inline-block;width:12px;height:0;border-top:2px dashed ' + esc(s.color) + ';vertical-align:middle"></i> ' + esc(s.name) + '</span>';
   }).join('');
 
   return '<div class="chart">' +
+    '<div class="chart-hint" style="display:flex;justify-content:space-between;font-size:10px;color:#7c8ba0;margin-bottom:4px">' +
+      '<span>← 左轴：调用次数 calls</span>' +
+      '<span>右轴：tokens →</span>' +
+    '</div>' +
     '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(series[0].name) + '">' +
-    '<line class="cgrid" x1="' + padL + '" y1="' + (padT + innerH) + '" x2="' + (W - padR) + '" y2="' + (padT + innerH) + '"/>' +
+    yAxisLeft + yAxisRight +
     bars + lines + dots + labels +
     '</svg>' +
-    '<div class="chart-legend">' +
-      legend +
-      '<span style="margin-left:auto">峰值 peak: ' + fmtCompact(barPeak) + ' calls / ' + fmtCompact(linePeak) + ' tokens</span>' +
+    '<div class="chart-legend" style="display:flex;flex-wrap:wrap;gap:4px 14px;justify-content:space-between;align-items:center">' +
+      '<span>' + leftLegend + rightLegend + '</span>' +
+      '<span style="font-size:10px;color:#7c8ba0">峰值 peak: ' + fmtCompact(barPeak) + ' calls / ' + fmtCompact(linePeak) + ' tokens</span>' +
     '</div></div>';
 }
 
@@ -225,6 +261,8 @@ async function renderPulse(body) {
         layerRow('全文索引', 'FULL-TEXT', nFts, peak, 'soft', '可关键词命中') +
         layerRow('向量记忆', 'VECTOR', nVec, peak, 'accent', '可语义召回') +
         layerRow('原味抽屉', 'RAW DRAWER', nRaw, peak, 'soft', '原文零改写') +
+        layerRow('多模态解析', 'VISION', stats.vision_count || 0, peak, 'accent', '可解析图片视界') +
+        layerRow('Obsidian 双链', 'OBSIDIAN', stats.obsidian_count || 0, peak, 'soft', '双链笔记导入') +
       '</div>' +
     '</div>' +
 
@@ -234,21 +272,27 @@ async function renderPulse(body) {
           '<small>tokens</small></div><div class="u">' + fmtInt(today.llmCalls) + ' 次调用 / calls</div></div>' +
         '<div class="tile"><div class="k">今日向量化 Embedding</div><div class="v">' + fmtCompact(today.embTokens) +
           '<small>tokens</small></div><div class="u">' + fmtInt(today.embCalls) + ' 次调用 / calls</div></div>' +
+        '<div class="tile"><div class="k">今日多模态 Vision</div><div class="v">' + fmtCompact(today.visTokens) +
+          '<small>tokens</small></div><div class="u">' + fmtInt(today.visCalls) + ' 次调用 / calls</div></div>' +
         '<div class="tile"><div class="k">今日重排 Reranker</div><div class="v">' + fmtCompact(today.rerTokens) +
           '<small>tokens</small></div><div class="u">' + fmtInt(today.rerCalls) + ' 次调用 / calls</div></div>' +
         '<div class="tile"><div class="k">累计 LLM</div><div class="v">' + fmtCompact(total.llmTokens) +
           '<small>tokens</small></div><div class="u">' + fmtInt(total.llmCalls) + ' 次调用 / calls</div></div>' +
         '<div class="tile"><div class="k">累计向量化 Embedding</div><div class="v">' + fmtCompact(total.embTokens) +
           '<small>tokens</small></div><div class="u">' + fmtInt(total.embCalls) + ' 次调用 / calls</div></div>' +
+        '<div class="tile"><div class="k">累计多模态 Vision</div><div class="v">' + fmtCompact(total.visTokens) +
+          '<small>tokens</small></div><div class="u">' + fmtInt(total.visCalls) + ' 次调用 / calls</div></div>' +
         '<div class="tile"><div class="k">累计重排 Reranker</div><div class="v">' + fmtCompact(total.rerTokens) +
           '<small>tokens</small></div><div class="u">' + fmtInt(total.rerCalls) + ' 次调用 / calls</div></div>' +
       '</div>' +
       barChart(usageRows, [
         { name: 'LLM 调用', color: '#1f4e79', fn: function (r) { return r.llmCalls; }, type: 'bar' },
-        { name: '向量化 Embedding 调用', color: '#525252', fn: function (r) { return r.embCalls; }, type: 'bar' },
-        { name: '重排 Reranker 调用', color: '#7030a0', fn: function (r) { return r.rerCalls; }, type: 'bar' },
+        { name: 'Embedding 调用', color: '#525252', fn: function (r) { return r.embCalls; }, type: 'bar' },
+        { name: 'Vision 调用', color: '#007a5e', fn: function (r) { return r.visCalls; }, type: 'bar' },
+        { name: 'Reranker 调用', color: '#7030a0', fn: function (r) { return r.rerCalls; }, type: 'bar' },
         { name: 'LLM tokens', color: '#1f4e79', fn: function (r) { return r.llmTokens; }, type: 'line' },
         { name: 'Embedding tokens', color: '#7c7c7c', fn: function (r) { return r.embTokens; }, type: 'line' },
+        { name: 'Vision tokens', color: '#00b386', fn: function (r) { return r.visTokens; }, type: 'line' },
         { name: 'Reranker tokens', color: '#b388c9', fn: function (r) { return r.rerTokens; }, type: 'line' },
       ]) +
     '</div>' +
@@ -434,23 +478,39 @@ async function deleteMemory(id, card) {
 function recordRow(r) {
   const bits = [];
   if (r.category) bits.push('<span class="cat">' + esc(r.category) + '</span>');
+  if (r.source) bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(r.source) + '</span>');
   if (r.rerank != null) bits.push('重排 ' + r.rerank.toFixed(3));
   else if (r.score != null) bits.push('相似 ' + r.score.toFixed(3));
   if (r.createdAt) bits.push(fmtWhen(r.createdAt));
   if (r.factId != null) bits.push('#' + r.factId);
+  if (r.mediaUrl) bits.push('<span class="vsn" style="color:var(--hex-cn)">[多模态图]</span>');
+
+  let imgHtml = '';
+  if (r.mediaUrl && (r.mediaUrl.startsWith('http') || r.mediaUrl.startsWith('data:image'))) {
+    imgHtml = '<div style="margin-top:8px"><img src="' + esc(r.mediaUrl) + '" style="max-height:80px; border-radius:4px; border:1px solid rgba(255,255,255,0.1)"></div>';
+  }
+
   return '<div class="rec" data-id="' + esc(r.id || '') + '"><div class="rtext">' +
-    esc(clip(stripMd(r.text), 260)) + '</div>' +
+    esc(clip(stripMd(r.text), 260)) + imgHtml + '</div>' +
     '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div></div>';
 }
 
 function factRow(f) {
   const bits = [];
   if (f.category) bits.push('<span class="cat">' + esc(f.category) + '</span>');
+  if (f.source) bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(f.source) + '</span>');
   if (f.trust != null) bits.push('信任 ' + f.trust.toFixed(2));
   if (f.retrieved) bits.push('被想起 ' + f.retrieved + ' 次');
   if (f.helpful || f.unhelpful) bits.push('有用 ' + f.helpful + ' / 没用 ' + f.unhelpful);
   if (f.createdAt) bits.push(fmtWhen(f.createdAt));
-  return '<div class="rec"><div class="rtext">' + esc(clip(stripMd(f.summary || f.value), 260)) + '</div>' +
+  if (f.mediaUrl) bits.push('<span class="vsn" style="color:var(--hex-cn)">[多模态图]</span>');
+
+  let imgHtml = '';
+  if (f.mediaUrl && (f.mediaUrl.startsWith('http') || f.mediaUrl.startsWith('data:image'))) {
+    imgHtml = '<div style="margin-top:8px"><img src="' + esc(f.mediaUrl) + '" style="max-height:80px; border-radius:4px; border:1px solid rgba(255,255,255,0.1)"></div>';
+  }
+
+  return '<div class="rec"><div class="rtext">' + esc(clip(stripMd(f.summary || f.value), 260)) + imgHtml + '</div>' +
     '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div></div>';
 }
 
@@ -460,12 +520,13 @@ function factRow(f) {
 async function renderMap(body) {
   body.innerHTML = loading('知识树 / Knowledge tree');
 
-  let tree, entities, scenes;
+  let tree, entities, scenes, obsidianEntities;
   try {
-    [tree, entities, scenes] = await Promise.all([
+    [tree, entities, scenes, obsidianEntities] = await Promise.all([
       API.get('/knowledge/tree'),
       API.get('/facts/entities/list').catch(function () { return null; }),
       API.get('/scene').catch(function () { return null; }),
+      API.get('/facts/entities/list', { entity_type: 'obsidian_node', limit: 30 }).catch(function () { return null; }),
     ]);
   } catch (e) {
     body.innerHTML = failure(e);
@@ -490,18 +551,42 @@ async function renderMap(body) {
       '<div id="domainList"></div>' +
     '</div>';
 
-  drawEChartsStarMap(body.querySelector('#starMapChart'), domains, entities, scenes);
-  drawDomainList(body.querySelector('#domainList'), domains);
+  // Obsidian 未配置提示
+  var obsEnts = (obsidianEntities && obsidianEntities.entities) || [];
+  if (!obsEnts.length) {
+    var obsHint = '<div class="sec">' + secHead('Obsidian 双链', 'OBSIDIAN', '未配置 / Not configured') +
+      '<div class="todo">' +
+        '<h4>📚 启用 Obsidian 双链联动</h4>' +
+        '<p>将您的 Obsidian Vault 笔记同步到 aiduMEI，实现双链记忆图谱。</p>' +
+        '<ul>' +
+          '<li>在 Obsidian 中安装 <code>Local REST API</code> 插件</li>' +
+          '<li>配置插件指向 aiduMEI 的 <code>POST /api/obsidian/sync</code> 端点</li>' +
+          '<li>推送笔记后，双链关系将自动构建为知识图谱节点</li>' +
+        '</ul>' +
+        '<p>当前状态：<b>未检测到 Obsidian 数据</b>，配置后此处将显示绿色双链节点。</p>' +
+      '</div>' +
+    '</div>';
+    body.insertAdjacentHTML('beforeend', obsHint);
+  }
+
+  drawEChartsStarMap(body.querySelector('#starMapChart'), domains, entities, scenes, obsidianEntities);
+  drawDomainList(body.querySelector('#domainList'), domains, obsidianEntities);
 }
 
 /* ECharts force-directed graph — interactive, zoomable, draggable */
-function drawEChartsStarMap(container, domains, entitiesPayload, scenesPayload) {
+function drawEChartsStarMap(container, domains, entitiesPayload, scenesPayload, obsidianPayload) {
   var chart = echarts.init(container);
   var maxCount = Math.max.apply(null, domains.map(function (d) { return d.count; })) || 1;
 
   var nodes = [];
   var links = [];
-  var categories = [{ name: '核心 Core' }, { name: '知识域 Domain' }, { name: '分类 Category' }, { name: '实体 Entity' }];
+  var categories = [
+    { name: '核心 Core' },
+    { name: '知识域 Domain' },
+    { name: '分类 Category' },
+    { name: '实体 Entity' },
+    { name: '双链 Obsidian', itemStyle: { color: '#5cb85c' } },
+  ];
 
   // center node — big, bright, white
   nodes.push({
@@ -563,6 +648,25 @@ function drawEChartsStarMap(container, domains, entitiesPayload, scenesPayload) 
     if (domains.length) links.push({ source: 'd0', target: eid, lineStyle: { color: '#a06eec', opacity: 0.12, width: 0.7 } });
   });
 
+  // Obsidian 双链节点 — 青色 special category #4
+  var obsEnts = (obsidianPayload && obsidianPayload.entities) || [];
+  obsEnts.slice(0, 20).forEach(function (e, i) {
+    var oid = 'obs' + i;
+    var fc = e.fact_count || e.count || 1;
+    var osize = 8 + 12 * Math.min(fc / 10, 2.5);
+    nodes.push({
+      id: oid,
+      name: e.name || e.entity || '?',
+      symbolSize: osize,
+      category: 4,
+      itemStyle: { color: '#5cb85c', shadowBlur: 10, shadowColor: 'rgba(92,184,92,0.5)', opacity: 0.8 },
+      label: { show: osize > 15, color: '#8dd88d', fontSize: 9 },
+      value: fc,
+      entityType: 'obsidian_node'
+    });
+    if (domains.length) links.push({ source: 'd0', target: oid, lineStyle: { color: '#5cb85c', opacity: 0.18, width: 0.7 } });
+  });
+
   var option = {
     backgroundColor: '#0a0e14',
     tooltip: {
@@ -621,11 +725,23 @@ function drawEChartsStarMap(container, domains, entitiesPayload, scenesPayload) 
   container._resizeFn = resizeFn;
 }
 
-function drawDomainList(container, domains) {
+function drawDomainList(container, domains, obsidianPayload) {
   const peak = domains.length ? domains[0].count : 1;
-  container.innerHTML = '<div class="layers">' + domains.slice(0, 18).map(function (n) {
+  var html = '<div class="layers">' + domains.slice(0, 18).map(function (n) {
     return layerRow(n.name, n.children.length ? n.children.length + ' 子域' : '', n.count, peak, '', '');
   }).join('') + '</div>';
+
+  // Obsidian 双链节点一览
+  var obsEnts = (obsidianPayload && obsidianPayload.entities) || [];
+  if (obsEnts.length) {
+    html += '<div class="sec" style="margin-top:16px">' +
+      secHead('Obsidian 双链节点', 'OBSIDIAN NODES', obsEnts.length + ' 个节点') +
+      '<div class="chips">' + obsEnts.slice(0, 18).map(function (e) {
+        return '<span class="chip" style="border-color:#5cb85c">' + esc(e.name || e.entity) + '<b>' + fmtInt(e.fact_count || e.count || 0) + '</b></span>';
+      }).join('') + '</div></div>';
+  }
+
+  container.innerHTML = html;
 }
 
 /* ===========================================================================
@@ -849,7 +965,10 @@ async function renderSettings(body) {
     // ---- modules ----
     '<div class="sec">' + secHead('核心模块', 'CORE MODULES', Object.keys(modules).length + ' 项') +
       '<div class="probes">' + Object.entries(modules).map(function (kv) {
-        return '<div class="probe" data-ok="' + (kv[1] ? 1 : 0) + '"><i></i>' + esc(kv[0]) +
+        var cnName = kv[0];
+        // 给 Obsidian 模块加中文名
+        if (cnName === 'v18.3_obsidian') cnName = 'Obsidian 双链 / V18.3 Obsidian';
+        return '<div class="probe" data-ok="' + (kv[1] ? 1 : 0) + '"><i></i>' + esc(cnName) +
           '<b>' + (kv[1] ? 'ON' : 'OFF') + '</b></div>';
       }).join('') + '</div>' +
     '</div>' +
@@ -869,6 +988,11 @@ async function renderSettings(body) {
               '</div></div>';
           }).join('') + '</div>'
         : '<div class="hint">读不到联邦成员 / No federation agents.</div>') +
+    '</div>' +
+
+    // ---- security / change password ----
+    '<div class="sec">' + secHead('安全设置', 'SECURITY', '修改登录密码 / Change password') +
+      '<div id="cfgSecurity">' + renderPasswordForm() + '</div>' +
     '</div>';
 
   // wire up config actions
@@ -886,6 +1010,79 @@ async function renderSettings(body) {
       editParam(body, btn.dataset.key, btn);
     });
   });
+
+  // wire up password change
+  var pwdSaveBtn = body.querySelector('#pwdSave');
+  if (pwdSaveBtn) pwdSaveBtn.addEventListener('click', function () { changePassword(body); });
+}
+
+/* ---------------------------------------------------------------------------
+   SETTINGS — security / change password
+   --------------------------------------------------------------------------- */
+
+function renderPasswordForm() {
+  return '<div class="editor" style="margin-top:10px">' +
+    '<div class="mc-row"><span class="mc-k">当前密码</span><input class="sinput mc-input" id="pwdCurrent" type="password" placeholder="Current password"></div>' +
+    '<div class="mc-row"><span class="mc-k">新密码</span><input class="sinput mc-input" id="pwdNew" type="password" placeholder="New password (min 4 chars)"></div>' +
+    '<div class="mc-row"><span class="mc-k">确认新密码</span><input class="sinput mc-input" id="pwdConfirm" type="password" placeholder="Confirm new password"></div>' +
+    '<div class="ebar">' +
+      '<button class="ebtn save" id="pwdSave">保存密码 Save Password</button>' +
+    '</div>' +
+    '<div class="hint" style="padding-top:8px">修改后需重启服务生效。新密码将写入 <code>.env</code> 文件，下次启动自动加载。<br>' +
+      '<span class="en-label">Password saved to .env file. Restart service to take effect.</span></div>' +
+    '<div class="hint" id="pwdMsg" style="min-height:18px"></div>' +
+  '</div>';
+}
+
+async function changePassword(body) {
+  var current = (body.querySelector('#pwdCurrent') || {}).value || '';
+  var newPwd = (body.querySelector('#pwdNew') || {}).value || '';
+  var confirm = (body.querySelector('#pwdConfirm') || {}).value || '';
+  var msgEl = body.querySelector('#pwdMsg');
+  var saveBtn = body.querySelector('#pwdSave');
+
+  if (!current || !newPwd || !confirm) {
+    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">请填写完整 / Please fill all fields</span>';
+    return;
+  }
+  if (newPwd.length < 4) {
+    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">新密码至少 4 位 / Too short</span>';
+    return;
+  }
+  if (newPwd !== confirm) {
+    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">两次输入不一致 / Mismatch</span>';
+    return;
+  }
+
+  if (saveBtn) saveBtn.disabled = true;
+  if (msgEl) msgEl.innerHTML = '<span style="color:var(--gray-faint)">保存中… / Saving…</span>';
+
+  try {
+    var r = await fetch('/api/config/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        current_password: current,
+        new_password: newPwd,
+        confirm_password: confirm
+      })
+    });
+    var d = await r.json();
+
+    if (r.ok && d && d.status === 'ok') {
+      if (msgEl) msgEl.innerHTML = '<span style="color:var(--ok)">✓ ' + esc(d.detail || '密码已更新') + '</span>';
+      // 清空输入
+      if (body.querySelector('#pwdCurrent')) body.querySelector('#pwdCurrent').value = '';
+      if (body.querySelector('#pwdNew')) body.querySelector('#pwdNew').value = '';
+      if (body.querySelector('#pwdConfirm')) body.querySelector('#pwdConfirm').value = '';
+    } else {
+      if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">✗ ' + esc((d && d.detail) || '保存失败') + '</span>';
+    }
+  } catch (e) {
+    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">✗ 网络错误 / Network error</span>';
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
 }
 
 function editModelConfig(body, cfg) {
@@ -893,14 +1090,23 @@ function editModelConfig(body, cfg) {
   var llm = cfg.llm || {};
   var emb = cfg.embedder || {};
   var rer = cfg.rerank || {};
+  var vis = cfg.vision || {};
 
   var form = '<div class="editor" style="margin-top:10px">' +
+    '<div class="sec" style="margin:0 0 10px 0"><h4 style="margin:0;color:var(--blue);">语言模型 LLM</h4></div>' +
     '<div class="mc-row"><span class="mc-k">LLM Model</span><input class="sinput mc-input" id="edLlmModel" value="' + esc((llm.config && llm.config.model) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">LLM Base URL</span><input class="sinput mc-input" id="edLlmUrl" value="' + esc((llm.config && llm.config.openai_base_url) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">LLM API Key</span><input class="sinput mc-input" id="edLlmKey" type="password" placeholder="留空不修改 / blank=no change"></div>' +
+    '<div class="sec" style="margin:12px 0 10px 0"><h4 style="margin:0;color:#007a5e;">多模态解析 VISION</h4></div>' +
+    '<div class="mc-row"><span class="mc-k">Vision Model</span><input class="sinput mc-input" id="edVisModel" value="' + esc((vis.config && vis.config.model) || (llm.config && llm.config.model) || '') + '" placeholder="与 LLM Model 共用则留空"></div>' +
+    '<div class="mc-row"><span class="mc-k">Vision Base URL</span><input class="sinput mc-input" id="edVisUrl" value="' + esc((vis.config && vis.config.openai_base_url) || (llm.config && llm.config.openai_base_url) || '') + '" placeholder="与 LLM Base URL 共用则留空"></div>' +
+    '<div class="mc-row"><span class="mc-k">Vision API Key</span><input class="sinput mc-input" id="edVisKey" type="password" placeholder="与 LLM API Key 共用则留空"></div>' +
+    '<div class="hint" style="padding:6px 0">Vision 模型默认复用 LLM 的连接信息；如需独立模型可在此填写。<br><span class="en-label">Vision model shares LLM credentials by default. Override here if needed.</span></div>' +
+    '<div class="sec" style="margin:12px 0 10px 0"><h4 style="margin:0;color:var(--blue);">向量模型 EMBEDDING</h4></div>' +
     '<div class="mc-row"><span class="mc-k">Embed Model</span><input class="sinput mc-input" id="edEmbModel" value="' + esc((emb.config && emb.config.model) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">Embed Base URL</span><input class="sinput mc-input" id="edEmbUrl" value="' + esc((emb.config && emb.config.openai_base_url) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">Embed API Key</span><input class="sinput mc-input" id="edEmbKey" type="password" placeholder="留空不修改"></div>' +
+    '<div class="sec" style="margin:12px 0 10px 0"><h4 style="margin:0;color:#7030a0;">重排模型 RERANKER</h4></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Model</span><input class="sinput mc-input" id="edRerModel" value="' + esc((rer.config && rer.config.model) || '') + '" placeholder="可选 optional"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Base URL</span><input class="sinput mc-input" id="edRerUrl" value="' + esc((rer.config && rer.config.openai_base_url) || '') + '" placeholder="可选 optional"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank API Key</span><input class="sinput mc-input" id="edRerKey" type="password" placeholder="可选，留空不修改"></div>' +
@@ -926,6 +1132,15 @@ function editModelConfig(body, cfg) {
       if (lm) patch.llm.config.model = lm;
       if (lu) patch.llm.config.openai_base_url = lu;
       if (lk) patch.llm.config.api_key = lk;
+    }
+    var vm = body.querySelector('#edVisModel').value.trim();
+    var vu = body.querySelector('#edVisUrl').value.trim();
+    var vk = body.querySelector('#edVisKey').value.trim();
+    if (vm || vu || vk) {
+      patch.vision = { provider: 'openai', config: {} };
+      if (vm) patch.vision.config.model = vm;
+      if (vu) patch.vision.config.openai_base_url = vu;
+      if (vk) patch.vision.config.api_key = vk;
     }
     var em = body.querySelector('#edEmbModel').value.trim();
     var eu = body.querySelector('#edEmbUrl').value.trim();
@@ -961,7 +1176,9 @@ function editModelConfig(body, cfg) {
       }
       await API.post('/reload', {});
       alert('配置已保存并热重载 / Saved and reloaded');
-      openPanel('settings');
+      // 重新获取最新配置再渲染，确保 UI 显示最新值
+      var freshCfg = await API.get('/config').catch(function () { return cfg; });
+      editModelConfigRefresh(body, freshCfg);
     } catch (e) {
       alert('保存失败 / Save failed: ' + (e.message || ''));
     }
@@ -971,6 +1188,16 @@ function editModelConfig(body, cfg) {
     var ed = body.querySelector('.editor');
     if (ed) ed.remove();
   });
+}
+
+// 保存配置后刷新显示（不重新打开面板，只更新模型配置区域）
+function editModelConfigRefresh(body, cfg) {
+  var modelsDiv = body.querySelector('#cfgModels');
+  if (modelsDiv && cfg) {
+    modelsDiv.innerHTML = renderModelConfig(cfg);
+  }
+  var ed = body.querySelector('.editor');
+  if (ed) ed.remove();
 }
 
 async function reloadConfig(body) {
@@ -1030,6 +1257,7 @@ function renderModelConfig(cfg) {
   const llm = cfg.llm || {};
   const emb = cfg.embedder || {};
   const rer = cfg.rerank || {};
+  const vis = cfg.vision || {};
 
   const card = function (title, en, m) {
     const provider = m.provider || '—';
@@ -1046,13 +1274,14 @@ function renderModelConfig(cfg) {
       '</div>';
   };
 
-  return '<div class="tiles">' +
+  return '<div class="tiles" style="grid-template-columns:1fr">' +
     card('语言模型', 'LLM', llm) +
+    card('多模态解析', 'VISION', vis) +
     card('向量模型', 'EMBEDDING', emb) +
     card('重排模型', 'RERANKER', rer) +
   '</div>' +
-  '<div class="hint" style="padding-top:8px">配置只读展示。修改需通过 <code>PUT /config/{key}</code> 或编辑 <code>mem0_config_local.json</code> 后 <code>POST /reload</code>。<br>' +
-    '<span class="en-label">Read-only display. Edit mem0_config_local.json then POST /reload to apply.</span></div>';
+  '<div class="hint" style="padding-top:8px">多模态模型默认复用 LLM 的连接信息（在 LLM 栏配置），也可独立配置。点击"编辑配置"即可修改。<br>' +
+    '<span class="en-label">Vision model shares LLM credentials by default, or can be set independently. Click Edit Config to modify.</span></div>';
 }
 
 function renderReasoning(cfg) {

@@ -73,12 +73,14 @@ function readRecord(raw) {
     id: raw.id || '',
     text: raw.memory || raw.text || '',
     category: meta.category || '',
+    source: meta.source || '',
     factId: meta.fact_id != null ? meta.fact_id : null,
     createdAt: raw.created_at || '',
     updatedAt: raw.updated_at || '',
     userId: raw.user_id || '',
     score: raw.score != null ? raw.score : null,
     rerank: raw._rerank_score != null ? raw._rerank_score : null,
+    mediaUrl: meta.media_url || null,
   };
 }
 
@@ -99,6 +101,7 @@ function readFact(raw) {
     lastSeen: raw.last_accessed_at || '',
     createdAt: raw.created_at || '',
     archived: !!raw.archived,
+    mediaUrl: raw.media_url || null,
   };
 }
 
@@ -138,6 +141,7 @@ function readUsage(payload, days) {
     const llm = d.llm || {};
     const emb = d.embedding || {};
     const rer = d.rerank || d.reranker || {};
+    const vis = d.vision || {};
     return {
       date: date,
       llmCalls: llm.calls || 0,
@@ -146,6 +150,8 @@ function readUsage(payload, days) {
       embTokens: emb.total_tokens || 0,
       rerCalls: rer.calls || 0,
       rerTokens: rer.total_tokens || 0,
+      visCalls: vis.calls || 0,
+      visTokens: vis.total_tokens || 0,
     };
   };
 
@@ -170,9 +176,10 @@ function sumUsage(payload) {
     a.llmCalls += r.llmCalls; a.llmTokens += r.llmTokens;
     a.embCalls += r.embCalls; a.embTokens += r.embTokens;
     a.rerCalls += r.rerCalls; a.rerTokens += r.rerTokens;
-    a.days += (r.llmCalls || r.embCalls || r.rerCalls) ? 1 : 0;
+    a.visCalls += r.visCalls; a.visTokens += r.visTokens;
+    a.days += (r.llmCalls || r.embCalls || r.rerCalls || r.visCalls) ? 1 : 0;
     return a;
-  }, { llmCalls: 0, llmTokens: 0, embCalls: 0, embTokens: 0, rerCalls: 0, rerTokens: 0, days: 0 });
+  }, { llmCalls: 0, llmTokens: 0, embCalls: 0, embTokens: 0, rerCalls: 0, rerTokens: 0, visCalls: 0, visTokens: 0, days: 0 });
 }
 
 /* ---------------------------------------------------------------------------

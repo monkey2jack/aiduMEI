@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 
 from ducky.api_models import SearchRequest, SearchResponse
 from ducky.mem0_runtime import (
+    _normalize_user_id,
     boost_salience_for_results,
     get_memory,
     lazy_import_funnel,
@@ -19,17 +20,9 @@ logger = logging.getLogger("aiduMEM.hot")
 def register_search_routes(app: FastAPI) -> None:
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
-        """搜索记忆 — Gate → Workspace 优先 → Ignition → 混合召回 → Salience boost"""
+        """搜索记忆 — Workspace 优先 → 混合召回（Hybrid）→ Salience boost"""
         try:
-            try:
-                from ducky.memory_gate import relevance_check
-                gate = relevance_check(req.query)
-                if not gate["needs_memory"]:
-                    logger.debug(f"闸门跳过: {gate['reason']}")
-                    return {"status": "ok", "results": [], "_gate_blocked": gate["reason"]}
-            except ImportError:
-                pass
-
+            # 注意：/search 是显式搜索 API，不走 relevance gate（gate 用于对话上下文注入）
             mem = get_memory()
 
             try:
@@ -43,11 +36,13 @@ def register_search_routes(app: FastAPI) -> None:
 
             results = []
             try:
-                results = lazy_import_hybrid()(mem, req.query, req.user_id, req.limit)
+                results = lazy_import_hybrid()(mem, req.query, _normalize_user_id(req.user_id), req.limit)
+                logger.info(f"🔍 hybrid 召回: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
             except (ImportError, Exception) as e:
                 logger.debug(f"混合召回不可用，降级 mem0 搜索: {e}")
-                raw = mem.search(req.query, filters={"user_id": req.user_id}, limit=req.limit)
+                raw = mem.search(req.query, filters={"user_id": _normalize_user_id(req.user_id)}, limit=req.limit)
                 results = raw.get("results", raw) if isinstance(raw, dict) else raw
+                logger.info(f"🔍 mem0 裸搜: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
 
             boost_salience_for_results(results)
 

@@ -3,7 +3,7 @@
    ============================================================================= */
 
 /* ---------------------------------------------------------------------------
-   random hexagon backdrop (ported from legacy-gateway)
+   random hexagon backdrop
    --------------------------------------------------------------------------- */
 function createHexBackground(selector, count, colors, opacity) {
   const container = document.querySelector(selector);

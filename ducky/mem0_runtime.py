@@ -27,6 +27,18 @@ from ducky.utils import BASE_DIR, LOG_DIR
 USAGE_FILE = os.path.join(LOG_DIR, "llm_usage.json")
 MEM0_CONFIG = os.path.join(BASE_DIR, "mem0_config_local.json")
 
+
+def _clear_qdrant_lock():
+    """启动前清理 Qdrant 残留锁文件，防止服务崩溃后锁死"""
+    try:
+        qdrant_path = os.path.join(BASE_DIR, "data", "qdrant")
+        lock_file = os.path.join(qdrant_path, ".lock")
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+            logger.info("🔓 Qdrant 残留锁文件已清理")
+    except Exception as e:
+        logger.warning(f"Qdrant 锁清理跳过: {e}")
+
 # ═══════════════════════════════════════════════
 # §1  LLM & Embedding 用量追踪
 # ═══════════════════════════════════════════════
@@ -86,6 +98,16 @@ def _track_rerank_usage(input_tokens: int = 0, total_tokens: int = 0):
         d["calls"] += 1
         d["input_tokens"] += input_tokens
         d["total_tokens"] += total_tokens
+        _save_usage()
+
+
+def track_vision_usage(input_tokens: int = 0, output_tokens: int = 0, total_tokens: int = 0):
+    """追踪多模态 Vision API 用量（v18.3）"""
+    today = _ensure_today()
+    with _usage_lock:
+        d = _llm_usage[today].setdefault("vision", {"calls": 0, "total_tokens": 0})
+        d["calls"] += 1
+        d["total_tokens"] += total_tokens or (input_tokens + output_tokens)
         _save_usage()
 
 
@@ -357,7 +379,7 @@ def _resolve_api_keys(cfg: dict) -> dict:
                 cfg["embedder"]["config"]["api_key"] = f.read().strip()
 
     llm_key = cfg.get("llm", {}).get("config", {}).get("api_key", "")
-    if llm_key == "__SF_KEY__" or not llm_key:
+    if llm_key == "__SF_KEY__" or llm_key == "__LLM_KEY__" or not llm_key:
         kp = os.path.join(base, ".llm_key")
         if os.path.exists(kp):
             with open(kp) as f:
@@ -372,6 +394,17 @@ def _resolve_api_keys(cfg: dict) -> dict:
                 with open(kp) as f:
                     rerank_cfg["config"]["api_key"] = f.read().strip()
     return cfg
+
+
+def _normalize_user_id(user_id: str) -> str:
+    """规范化 user ID：历史版本使用过自定义名字，现统一映射到 default，保证与存量库兼容"""
+    if not user_id:
+        return "default"
+    legacy_map = {
+        "admin": "default",
+        "user": "default",
+    }
+    return legacy_map.get(user_id.lower(), user_id)
 
 
 def get_memory():
@@ -391,6 +424,8 @@ def get_memory():
         try:
             if Memory is None:
                 raise RuntimeError("mem0 SDK 未加载")
+            # 启动时清理 Qdrant 锁
+            _clear_qdrant_lock()
             cfg = json.loads(open(MEM0_CONFIG).read())
             cfg = _resolve_api_keys(cfg)
             m = Memory.from_config(cfg)

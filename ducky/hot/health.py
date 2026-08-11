@@ -76,6 +76,7 @@ def register_health_routes(app: FastAPI) -> None:
             "v2.1_salience":  _can_import("ducky.memory_salience"),
             "v2.1_gate":      _can_import("ducky.memory_gate"),
             "v2.1_envelope":  _can_import("ducky.tool_envelope"),
+            "v18.3_obsidian": _can_import("ducky.routes_obsidian"),
         })
 
         probes: dict[str, object] = {
