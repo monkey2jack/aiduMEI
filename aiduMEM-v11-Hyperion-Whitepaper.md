@@ -100,7 +100,7 @@ aiduMEM 内部由五条"神经脉络"驱动，灵感来自 J-space 启发式记�
 
 | 脉络 | 模块 | 职责与 v11 升级点 |
 |:---|:---|:---|
-| **Ignition** | `memory_ignition.py` | 高置信度记忆直接"点火"，跳过衰减管道直达 |
+| **Ignition** | `memory_ignition.py` | 高置信度记忆「点火」提权（在召回漏斗 `/search_trace` 中钳定衰减下限，非完全跳过衰减） |
 | **Workspace** | `memory_workspace.py` | 活跃记忆工作区（L1 缓存），**v11 从纯内存改为 SQLite 持久化** |
 | **Broadcast** | `memory_broadcast.py` | 记忆广播链：种子 → 关联 → 深度推理 |
 | **J-lens** | `memory_jlens.py` | 全链路可审计 trace，每次检索可追溯留痕 |

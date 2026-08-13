@@ -18,7 +18,7 @@ import json, os, time, threading, logging, sqlite3
 from typing import Optional
 from collections import OrderedDict
 
-from ducky.utils import quick_sim
+from ducky.utils import quick_sim, DATA_DIR
 
 logger = logging.getLogger("aiduMEM.workspace")
 
@@ -26,7 +26,9 @@ logger = logging.getLogger("aiduMEM.workspace")
 WORKSPACE_CAPACITY = 20       # 工作区最大容量
 WORKSPACE_TTL_SECONDS = 3600  # 冷记忆过期时间 (1小时)
 CLEANUP_INTERVAL = 300        # 清理间隔 (5分钟)
-WORKSPACE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "workspace.db")
+# 🟢22：workspace.db 此前硬拼到 ducky/data/，绕开了 AIDUMEM_DATA_DIR 环境变量注入约定。
+# 统一走 utils.DATA_DIR，与其余库（facts/text_fts/salience）落在同一数据目录。
+WORKSPACE_DB = os.path.join(DATA_DIR, "workspace.db")
 
 # ── 全局状态 ──
 # workspace[user_id] = OrderedDict({memory_id: {data, access_count, last_accessed, created}})

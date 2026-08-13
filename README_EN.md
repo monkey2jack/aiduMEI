@@ -32,7 +32,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 |-------|----------|-------------|-------------|
 | 🦉 **Wisdom** | Athena | How to grow wiser after remembering | Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer |
 | 🧠 **Recall** | Mnemosyne | Find the right memory at the right time | Ebbinghaus decay + BM25/trigram + vector hybrid search |
-| 🔍 **Gate** | Tahoe-Gate | Only retrieve what's actually relevant | 1ms heuristic gate blocks irrelevant context — 100× token savings |
+| 🔍 **Gate** | Tahoe-Gate | Only retrieve what's actually relevant | Heuristic gate (`GET /gate`) blocks irrelevant context — casual chat skips retrieval, saving tokens & compute |
 | 🌊 **Tidal** | Mnemosyne Tidal | Batch LLM extraction, not one-by-one | Async coalescing queue: multiple short messages → single LLM call |
 | ⏳ **Decay** | Ebbinghaus | Forgetting is a feature, not a bug | Three-lane decay: Identity zero-decay / Emotion accelerated / General standard curve |
 | 🕰️ **Chronos** | Chronos | Time-aware validity | Dual timeline (valid_from / valid_to), deprioritize without deletion |
@@ -100,7 +100,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 - **Embedded on-disk vector store** (Qdrant `path` mode) — no separate service, no Docker, no extra port.
 - **Compute outsourced** — LLM / Embedding / Rerank all via OpenAI-compatible APIs; no model weights loaded locally, so no GPU, no big RAM.
-- **Relevance gate first** — casual chat skips retrieval, saving an order of magnitude of tokens and compute.
+- **Relevance gate first** — casual chat skips retrieval, saving tokens and compute.
 - **SQLite + FTS5 fallback** — structured knowledge and full-text search on zero-dependency SQLite; hot-switches from vector to full-text on timeout.
 
 > In short: **a 1-core/1 GB entry VPS runs it; 2-core/2 GB is comfortable.** The heavy lifting (LLM inference) lives in the cloud API — locally it's a lean memory-and-retrieval brain.
@@ -275,7 +275,7 @@ curl -s -X POST http://localhost:8767/evolve/feedback \
 ## What Makes aiduMEI Unique
 
 ### 🔮 Relevance Gate (Tahoe-Gate)
-Most RAG systems search memory for every single message. aiduMEI's **Relevance Gate** uses heuristics + dynamic entity matching to determine if the current message actually needs memory retrieval. Casual chat skips entirely → **100× token savings**, response latency drops from 10ms to 1ms.
+Most RAG systems search memory for every single message. aiduMEI's **Relevance Gate** (`GET /gate`) uses heuristics + dynamic entity matching to determine if the current message actually needs memory retrieval. Casual chat skips retrieval entirely → saves tokens and compute. Hosts call the gate before injecting memory context.
 
 ### 🌊 Tidal Coalescing (Mnemosyne Tidal)
 Short messages don't trigger individual LLM calls. They're buffered asynchronously by session, then batched into a single LLM call. Three-tier strategy: Tech / Intimate / Default — fast for code, deep for personal.

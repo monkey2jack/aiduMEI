@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-aiduMEM MCP Server — v18.0.0 Zeus
+aiduMEM MCP Server — 版本随 ducky.version 真相源（见 SERVICE_VERSION）
 ==============================================
 通过 stdio/SSE 模式暴露 aiduMEM 工具给宿主 Agent。
 
@@ -39,6 +39,8 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ducky.utils import BASE_DIR, DATA_DIR, DEFAULT_USER_ID, LOG_DIR
 from ducky.tool_envelope import success, error, format_response
+# 🟡12：版本号统一从真相源导入，杜绝 mcp_server 自报 18.0.0 与 version.py 打架。
+from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
 
 # ── 常量 ──
 STATE_DB = os.environ.get("AIDUMEM_HOST_STATE_DB", "")
@@ -179,7 +181,7 @@ def mem_search_deep(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 10)
         user_id: 用户标识
         top_k:   每路返回结果数，默认 10
     """
-    result = _api_post("/search/deep", {"query": query, "user_id": user_id, "top_k": top_k})
+    result = _api_get("/search/deep", {"query": query, "depth": min(max(top_k // 5, 1), 3)})
     return _ok(result)
 
 
@@ -770,7 +772,7 @@ def auto_memory_loop() -> None:
 # ═══════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="aiduMEM MCP Server v18.0.0 Zeus")
+    parser = argparse.ArgumentParser(description=f"aiduMEM MCP Server v{SERVICE_VERSION} {CODENAME}")
     parser.add_argument("--sse", action="store_true", help="以 SSE HTTP 模式启动（默认 stdio）")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--host", type=str, default="127.0.0.1")
@@ -778,7 +780,7 @@ if __name__ == "__main__":
 
     # 启动后台自动记忆线程
     threading.Thread(target=auto_memory_loop, daemon=True, name="auto-memory").start()
-    logger.info(f"🧠 aiduMEM MCP Server v18.0.0-zeus 启动（API_BASE={API_BASE}）")
+    logger.info(f"🧠 aiduMEM MCP Server v{SERVICE_VERSION}-{CODENAME.lower()} 启动（API_BASE={API_BASE}）")
 
     if args.sse:
         logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")

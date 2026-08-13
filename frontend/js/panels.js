@@ -1236,11 +1236,16 @@ function editParam(body, key, btn) {
   btn.addEventListener('click', async function () {
     var newVal = input.value.trim();
     try {
-      await fetch('/api/config/_speed', {
-        method: 'PUT',
+      // 🟡14：后端是 POST /config/_speed（非 PUT），且必须检查 r.ok，
+      // 否则 4xx/5xx 不进 catch，UI 会假报"已保存"。
+      var resp = await fetch('/api/config/_speed', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key: key, value: newVal })
       });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      var data = await resp.json();
+      if (data && data.status === 'error') throw new Error(data.detail || '保存被拒绝');
       var span = document.createElement('span');
       span.className = 'param-v';
       span.textContent = newVal;

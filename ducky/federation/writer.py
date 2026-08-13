@@ -91,14 +91,16 @@ def write_fact(
             return merged
 
         # ── 更新：视为同一事实的新版本，就地覆盖 ──
+        # 🟢25：不重置 recorded_at/decay_at，与 dedup.apply_merge 语义对齐，
+        # 避免 0.70-0.85 相似度更新反复刷新衰减时钟让旧事实"无限续命"。
         if verdict and verdict.action == ACTION_UPDATE and verdict.fact_id:
             conn.execute(
                 """UPDATE facts
                    SET fact_value=?, overview=?, summary=?, memory_tier=?,
-                       recorded_at=?, decay_at=?, source=?, updated_at=CURRENT_TIMESTAMP
+                       source=?, updated_at=CURRENT_TIMESTAMP
                    WHERE id=?""",
                 (fact_value, fact_value, _summary_of(fact_value), resolved_tier,
-                 recorded_at, decay_at, source, verdict.fact_id),
+                 source, verdict.fact_id),
             )
             conn.commit()
             return {
@@ -115,7 +117,7 @@ def write_fact(
                   agent_id, profile, memory_tier, recorded_at, decay_at, tags, shared,
                   valid_from, valid_to)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(category, fact_key) DO UPDATE SET
+               ON CONFLICT(agent_id, category, fact_key) DO UPDATE SET
                    fact_value=excluded.fact_value,
                    summary=excluded.summary,
                    overview=excluded.overview,

@@ -179,8 +179,25 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
     real_conn.execute("PRAGMA journal_mode=WAL")
     real_conn.execute("PRAGMA busy_timeout=10000")
     real_conn.execute("PRAGMA cache_size=-500")  # 500KB/conn (default -2000=2MB)
+    # 🔴9：注册 REGEXP 函数。SQLite 不原生支持 REGEXP，conflict_resolver 的
+    # `fact_value REGEXP ?` 此前必抛 "no such function" 被吞，热路径空转。
+    try:
+        real_conn.create_function("REGEXP", 2, _sqlite_regexp, deterministic=True)
+    except Exception:
+        real_conn.create_function("REGEXP", 2, _sqlite_regexp)
     setattr(_thread_local, cache_key, real_conn)
     return _ConnProxy(real_conn)
+
+
+def _sqlite_regexp(pattern, value) -> int:
+    """SQLite REGEXP 实现：大小写不敏感，NULL/异常安全返回 0。"""
+    if value is None or pattern is None:
+        return 0
+    try:
+        import re as _re
+        return 1 if _re.search(str(pattern), str(value), _re.IGNORECASE) else 0
+    except Exception:
+        return 0
 
 def get_facts_conn():
     return _get_thread_conn(FACTS_DB)

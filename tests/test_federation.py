@@ -41,6 +41,7 @@ CREATE TABLE facts (
     summary TEXT,
     overview TEXT,
     level TEXT DEFAULT 'L2',
+    agent_id TEXT DEFAULT 'local',
     trust_score REAL DEFAULT 0.5,
     retrieval_count INTEGER DEFAULT 0,
     last_accessed_at TIMESTAMP,
@@ -49,7 +50,7 @@ CREATE TABLE facts (
     valid_to TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(category, fact_key)
+    UNIQUE(agent_id, category, fact_key)
 );
 CREATE TABLE fact_entities (
     entity_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,6 +186,54 @@ def test_dedup_can_be_disabled():
                    agent_id=LOCAL_AGENT, dedup=False)
     assert a["action"] == ACTION_INSERT and b["action"] == ACTION_INSERT
     assert a["fact_id"] != b["fact_id"]
+
+
+# 🔴3 回归：两个 agent 写同 (category, fact_key) 不得互相覆盖
+def test_cross_agent_same_key_no_overwrite():
+    import sqlite3
+
+    from ducky.federation.registry import register_agent
+    from ducky.federation.writer import write_fact
+
+    register_agent("agent_a", profile="default")
+    register_agent("agent_b", profile="default")
+
+    a = write_fact("跨隔离区", "同一个键", "这是 A 独有的内容甲",
+                   agent_id="agent_a", dedup=False)
+    b = write_fact("跨隔离区", "同一个键", "这是 B 独有的内容乙",
+                   agent_id="agent_b", dedup=False)
+
+    # 两条独立记录，各归其主，不互相覆盖
+    assert a["fact_id"] != b["fact_id"], "B 覆盖了 A —— 跨 agent 隔离失效"
+
+    conn = sqlite3.connect(_TEST_DB)
+    rows = conn.execute(
+        "SELECT agent_id, fact_value FROM facts WHERE category='跨隔离区' AND fact_key='同一个键' ORDER BY agent_id"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 2, f"应有 2 条独立记录，实得 {len(rows)}"
+    by_agent = {r[0]: r[1] for r in rows}
+    assert by_agent["agent_a"] == "这是 A 独有的内容甲", "A 的内容被篡改"
+    assert by_agent["agent_b"] == "这是 B 独有的内容乙", "B 的内容错记或缺失"
+
+
+# 🔴3 同 agent 同 key 仍走 upsert 覆盖（唯一性在 agent 内保持）
+def test_same_agent_same_key_upserts():
+    import sqlite3
+
+    from ducky.federation.writer import write_fact
+
+    write_fact("自覆盖区", "键X", "旧值", agent_id="agent_a", dedup=False)
+    write_fact("自覆盖区", "键X", "新值", agent_id="agent_a", dedup=False)
+
+    conn = sqlite3.connect(_TEST_DB)
+    rows = conn.execute(
+        "SELECT fact_value FROM facts WHERE category='自覆盖区' AND fact_key='键X' AND agent_id='agent_a'"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1, "同 agent 同 key 应唯一（upsert 覆盖）"
+    assert rows[0][0] == "新值"
+
 
 
 # ═══════════════════ registry ═══════════════════

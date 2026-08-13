@@ -112,7 +112,11 @@ CREATE TABLE IF NOT EXISTS fact_events (
 _INDEXES = (
     "CREATE INDEX        IF NOT EXISTS idx_facts_category ON facts(category)",
     "CREATE INDEX        IF NOT EXISTS idx_facts_key      ON facts(fact_key)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_unique   ON facts(category, fact_key)",
+    # 🔴3：唯一约束按 agent 隔离，避免联邦跨 Agent 同 (category,fact_key) 静默互覆盖。
+    # 全新库直接建成三列版；存量库由 federation.schema._rebuild_agent_scoped_unique_index 升级。
+    # 注：facts 表在 federation 迁移前可能尚无 agent_id 列，此处 CREATE 若失败会被下方 try 吞掉，
+    # 由联邦迁移阶段（agent_id 就位后）重建，最终一致。
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_unique   ON facts(agent_id, category, fact_key)",
     "CREATE INDEX        IF NOT EXISTS idx_entities_name  ON entities(name)",
     "CREATE INDEX        IF NOT EXISTS idx_fevents_type   ON fact_events(event_type)",
     "CREATE INDEX        IF NOT EXISTS idx_fevents_cat    ON fact_events(category)",

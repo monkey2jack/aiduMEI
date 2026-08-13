@@ -113,7 +113,17 @@ def session_search(
         except Exception as e:
             logger.warning(f"Session fallback search 失败: {e}")
 
-    # ── Step 3: 记录历史 ──
+    # ── Step 3: 检查历史重叠（🟢21：必须在把当前 query 写进 history 之前算，
+    #    否则当前 query 会和它自己算相似度恒 =1.0 > 0.3，context_used 恒真）──
+    with _sessions_lock:
+        sess = _sessions.get(session_id)
+        prior_history = list(sess.get("history", [])) if sess else []
+    history_matches = [
+        h for h in prior_history
+        if quick_sim(query, h.get("query", "")) > 0.3
+    ]
+
+    # ── Step 4: 记录历史 ──
     with _sessions_lock:
         sess = _sessions.get(session_id)
         if sess:
@@ -124,12 +134,6 @@ def session_search(
             })
             if len(sess["history"]) > SESSION_HISTORY_LIMIT:
                 sess["history"] = sess["history"][-SESSION_HISTORY_LIMIT:]
-
-    # ── Step 4: 检查历史重叠 ──
-    history_matches = [
-        h for h in (sess.get("history", []) if sess else [])
-        if quick_sim(query, h.get("query", "")) > 0.3
-    ]
 
     return {
         "status": "ok",
@@ -155,7 +159,11 @@ def session_unpin(session_id: str, memory_id: str) -> dict:
     """Unpin 一条记忆"""
     with _sessions_lock:
         sess = _sessions.get(session_id)
-        if not sess and memory_id in sess.get("pinned_ids", []):
+        if not sess:
+            return {"status": "error", "detail": "Session 不存在"}
+        # 🟢20：原判空逻辑写反（if not sess and ...），sess 为 None 时会 AttributeError，
+        # 且分支永不进入，unpin 从未真正生效却总返回 ok。
+        if memory_id in sess.get("pinned_ids", []):
             sess["pinned_ids"].remove(memory_id)
     return {"status": "ok", "session_id": session_id, "unpinned": memory_id}
 
