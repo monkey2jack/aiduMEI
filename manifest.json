@@ -1,8 +1,8 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEM",
-  "version": "18.3.0",
-  "description": "Zeus 宙斯 · 多模态感知纪元：无损秒级升级 + 多模态视觉记忆 + Obsidian 双链联动",
+  "version": "19.1.0",
+  "description": "Athena 雅典娜 · 从记忆到智慧：主动反思 + 记忆自编辑 + 递归精炼 + Skill 自生长 + 人格记忆基座（v19.1 审计修复版）",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",
   "authors": [

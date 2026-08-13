@@ -154,6 +154,14 @@ def _detect_relation(memory, user_id: str, new_text: str) -> Optional[dict]:
     if not candidates:
         return None
 
+    # 🟢19：仅当存在足够相似的候选才烧 LLM，避免每次 /add 都同步调用（timeout 45s）阻塞写入。
+    # _CANDIDATE_SIM_FLOOR 此前定义后从未使用——这里真正用起来做前置门控。
+    from ducky.utils import jaccard_sim
+    top_sim = max((jaccard_sim(new_text, c["content"]) for c in candidates), default=0.0)
+    if top_sim < _CANDIDATE_SIM_FLOOR:
+        logger.debug("self-edit: 最相似候选 jaccard=%.2f < %.2f，跳过 LLM 判定", top_sim, _CANDIDATE_SIM_FLOOR)
+        return None
+
     cand_block = "\n".join(
         f"[id={c['memory_id']}] {c['content'][:200]}" for c in candidates
     )

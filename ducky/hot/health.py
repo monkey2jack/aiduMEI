@@ -160,3 +160,34 @@ def register_health_routes(app: FastAPI) -> None:
             health_status=status,
         )
 
+    @app.get("/metrics")
+    def metrics(days: int = 7):
+        """🔴4：运行时指标端点（白皮书宣称已久，此前从未注册）。
+
+        返回记忆总量 / salience 生长历史 / FTS 索引量等运维指标。
+        """
+        out: dict = {"version": f"{_version_info['service_version']}-{_version_info['codename'].lower()}"}
+        try:
+            from ducky.utils import get_facts_conn
+            conn = get_facts_conn()
+            out["facts_total"] = conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+            out["facts_active"] = conn.execute(
+                "SELECT COUNT(*) FROM facts WHERE archived=0"
+            ).fetchone()[0]
+            conn.close()
+        except Exception as e:
+            out["facts_error"] = str(e)[:120]
+        try:
+            from ducky.salience.metrics import get_historical_metrics
+            out["salience_history"] = get_historical_metrics(days)
+        except Exception as e:
+            out["salience_error"] = str(e)[:120]
+        try:
+            from ducky.utils import get_text_conn
+            c = get_text_conn()
+            out["fts_indexed"] = c.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            c.close()
+        except Exception as e:
+            out["fts_error"] = str(e)[:120]
+        return te_ok(**out)
+

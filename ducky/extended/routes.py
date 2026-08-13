@@ -15,6 +15,7 @@ from ducky.extended.auto_memory import (
     AUTO_MEMORY_STATE,
     _run_auto_memory,
 )
+from ducky.text_fts import _fts_terms
 
 logger = logging.getLogger("aiduMEM.extended")
 
@@ -135,13 +136,22 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
     def search_deep(query:str, depth:int=Query(2, ge=1, le=3)):
         db = _get_facts_conn()
         try:
-            fts_results = db.execute("""SELECT f.id,f.category,f.fact_key,f.fact_value,
-                f.trust_score,f.preference_score,f.retrieval_count
-                FROM facts f JOIN facts_fts ft ON f.id=ft.rowid
-                WHERE facts_fts MATCH ? AND f.archived=0
-                ORDER BY f.trust_score*(1.0+f.preference_score) DESC LIMIT 20""", (query,)).fetchall()
+            # 🟡18：facts_fts 虚拟表从未创建，原 JOIN 每次抛异常静默降级为空。
+            # 改用 facts 表上的关键词 LIKE 检索（中英混合切词），不依赖 FTS 虚拟表。
+            terms = _fts_terms(query) or [query.strip()]
+            terms = [t for t in terms if t][:12]
+            if terms:
+                clauses = " OR ".join(["f.fact_value LIKE ?"] * len(terms))
+                params = [f"%{t}%" for t in terms]
+                fts_results = db.execute(f"""SELECT f.id,f.category,f.fact_key,f.fact_value,
+                    f.trust_score,f.preference_score,f.retrieval_count
+                    FROM facts f
+                    WHERE ({clauses}) AND f.archived=0
+                    ORDER BY f.trust_score*(1.0+f.preference_score) DESC LIMIT 20""", params).fetchall()
+            else:
+                fts_results = []
         except Exception as e:
-            logger.debug(f"FTS5 search skip: {e}")
+            logger.debug(f"deep keyword search skip: {e}")
             fts_results = []
         entities = _extract_entities(query)
         entity_facts = []
