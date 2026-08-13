@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumei-banner.jpg" alt="aiduMEI" width="100%">
+  <img src="assets/aidumem-banner.jpg" alt="aiduMEI" width="100%">
 </p>
 
 # 🤔 aiduMEI — AI Thought Engine
@@ -10,7 +10,7 @@
 > *Memory is not note-taking, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-18.3.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-19.0.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -24,10 +24,13 @@
 
 aiduMEI is an **AI Thought Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer cognitive framework:
+> **v19.0 · Athena — from memory to wisdom.** Zeus solved *what to remember and how*; Athena, born fully armed from Zeus's head, closes the cognitive loop with *how to grow wiser after remembering* — **active reflection, memory self-editing, recursive refinement, autonomous skill growth, and a persona memory layer.** Memory (Mnemosyne) → consolidation → **wisdom (Athena)**.
+
+Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
 | Layer | Codename | What it does | Key Feature |
 |-------|----------|-------------|-------------|
+| 🦉 **Wisdom** | Athena | How to grow wiser after remembering | Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer |
 | 🧠 **Recall** | Mnemosyne | Find the right memory at the right time | Ebbinghaus decay + BM25/trigram + vector hybrid search |
 | 🔍 **Gate** | Tahoe-Gate | Only retrieve what's actually relevant | 1ms heuristic gate blocks irrelevant context — 100× token savings |
 | 🌊 **Tidal** | Mnemosyne Tidal | Batch LLM extraction, not one-by-one | Async coalescing queue: multiple short messages → single LLM call |
@@ -47,7 +50,8 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
-| **v18.3** | **Zeus** | King of the Gods · Multimodal | **Lossless fast-update · multimodal vision memory · Obsidian bi-directional links · console password change** |
+| **v19.0** | **Athena** | Goddess of Wisdom · From Memory to Wisdom | **Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer** |
+| **v18.3** | **Zeus** | King of the Gods · Multimodal | Lossless fast-update · multimodal vision memory · Obsidian bi-directional links · console password change |
 | **v18.2** | **Zeus** | King of the Gods · Insight | Built-in aiduMEI console · EvolveMem feedback loop · quality audit |
 | **v18.1** | **Zeus** | King of the Gods · Self-Evolving | EvolveMem feedback loop · 38 MCP tools · quality audit |
 | **v18.0** | **Zeus** | King of the Gods · Power Absorption | Raw Drawer · Code Graph · 5 competitors精华 fusion · MCP×36 · IDE hooks |
@@ -64,14 +68,54 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a ten-layer
 
 ---
 
+## 🦉 What's New in v19.0 · Athena — From Memory to Wisdom
+
+> Zeus solved *what to remember, how to store it, how to retrieve it*. Athena closes the second half of the cognitive loop: **once a memory is stored, how does the Agent actively review, self-correct, refine over time, grow experience into skills, and hold a stable persona?** Memory no longer only grows — it reflects, converges, and evolves.
+
+- **🔮 Active Reflect (P0-3 · inspired by Hindsight)** — Periodic/triggered review distills patterns, relations, predictions, contradictions and knowledge gaps into first-class `reflections`. Auto-runs every 6h (configurable) and on `/session/end`; degradation-friendly. New: `POST /reflect`, `GET /reflect/list`, `GET /reflect/context`.
+- **✏️ Memory Self-Editing (P0-2 · inspired by Mem0)** — Before writing, an LLM judges *duplicate / conflict / novel* against existing memory — merge instead of append, keep both on conflict with confidence. Jaccard fallback when LLM is down; every edit snapshotted to `memory_edits`, one-click rollback.
+- **🧬 Recursive Refinement (P1-3 · inspired by SimpleMem)** — Background clustering compresses many fragment memories into higher-level abstractions. Products land in `refined_memories`; originals soft-superseded (never physically deleted), fully reversible.
+- **🌱 Autonomous Skill Growth + Pruning (P1-2 · inspired by ReMe/MemU)** — Task trace → step extraction → LLM-drafted SKILL.md → **human approval** → archived skill. Reuse scoring; low-utility skills (success rate < 34%) auto-flagged for retirement without deletion. LLM can only draft, never auto-commit.
+- **🎭 Persona Memory Layer (inspired by MemoryForge)** — Expands a one-line persona into a full context-retrievable autobiographical memory bank (L/G/E three tiers), replacing a static persona card injected every turn. Dual modes: `synthesis` (fictional characters) / `grounded` (real users, from existing memory, no fabrication). Versioned & reversible.
+- **🕰️ Dual-Timeline Memory + Time-Aware Retrieval (P0-1 / P0-4)** — Every memory carries `valid_from` / `valid_to` / `recorded_at`; hybrid retrieval fuses vector + BM25 + time decay + reliability + heat, with a tunable decay rate.
+- **🗂️ Memory Type Separation (P1-1 · inspired by Hindsight's four networks)** — Six explicit cognitive types: FACTS · PREFERENCES · EXPERIENCES · OBSERVATIONS · REFLECTIONS · DECISIONS.
+
+---
+
+## 📦 Deployment Footprint — Light Enough for an Entry-Level VPS
+
+> A common question: how heavy is this to run? **Answer: very light — by design.**
+
+| Dimension | Measured | Notes |
+|-----------|----------|-------|
+| **Memory** | **~210 MB RSS** (single process, measured) | mem0 kernel + FastAPI + embedded vector store in one Python process |
+| **CPU** | **2 cores plenty, < 1% idle** | No heavy resident compute; LLM/Embedding all via external API |
+| **Disk (program)** | ~2.6 MB source · ~175 MB venv | Pure Python, no compilation, clone & run |
+| **Disk (data)** | ~13 MB vectors + few-hundred KB SQLite per thousands of memories | Grows linearly, tiny scale |
+| **Direct deps** | **only 9 top-level packages** | mem0ai / qdrant-client / fastapi / uvicorn / pydantic family / httpx / requests |
+| **Python** | 3.10 – 3.12 | 3.12 recommended |
+| **Frontend** | **0 dependencies** | Pure static console — no node, no bundler, no compile |
+
+**Why it's this light, deliberately:**
+
+- **Embedded on-disk vector store** (Qdrant `path` mode) — no separate service, no Docker, no extra port.
+- **Compute outsourced** — LLM / Embedding / Rerank all via OpenAI-compatible APIs; no model weights loaded locally, so no GPU, no big RAM.
+- **Relevance gate first** — casual chat skips retrieval, saving an order of magnitude of tokens and compute.
+- **SQLite + FTS5 fallback** — structured knowledge and full-text search on zero-dependency SQLite; hot-switches from vector to full-text on timeout.
+
+> In short: **a 1-core/1 GB entry VPS runs it; 2-core/2 GB is comfortable.** The heavy lifting (LLM inference) lives in the cloud API — locally it's a lean memory-and-retrieval brain.
+
+---
+
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           🤔 aiduMEI v18.3 · AI Thought Engine     │
+│        🦉 aiduMEI v19.0 · Athena · AI Thought Engine │
 │              FastAPI REST API :8767                       │
-│              MCP Server :8768 (38 tools)                  │
+│              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
+│  Athena          → Reflect · Self-Edit · Refine · Skill Growth · Persona │
 │  Core (HOT)      → Search, Add, CRUD, Health              │
 │  v8 Pipeline     → Ignition · Workspace · Broadcast ·     │
 │                    Mirror · Session                        │
@@ -159,6 +203,32 @@ python api_server.py
 | `GET` | `/tree/nodes` | Tree memory node listing |
 | `POST` | `/crystals/detect` | Detect crystallizable high-frequency facts |
 | `GET` | `/crystals` | View skill crystal candidates |
+
+### Athena Cognitive Layer (v19.0)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/reflect` | Trigger active reflection into insights |
+| `GET` | `/reflect/list` | List stored reflection insights |
+| `GET` | `/reflect/context` | Injectable reflection summary |
+| `GET` | `/self-edit/edits` | Memory self-edit (merge/conflict) history |
+| `POST` | `/self-edit/rollback` | Roll back a self-edit |
+| `GET` | `/memory/types` | Six memory types & distribution |
+| `POST` | `/memory/types/query` | Retrieve memories by type |
+| `POST` | `/memory/refine` | Trigger recursive refinement |
+| `POST` | `/memory/refine/rollback` | Roll back a refinement |
+| `POST` | `/skill/grow` | Grow a SKILL.md draft from a task trace (needs approval) |
+| `POST` | `/crystals/use` | Skill reuse scoring (success/fail) |
+| `POST` | `/crystals/prune` | Retire low-utility skills (archive, not delete) |
+
+### Persona Memory Layer (v19.0)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/persona/build` | Build a persona bank (`synthesis` / `grounded` dual mode) |
+| `GET` | `/persona/banks` | List persona banks |
+| `POST` | `/persona/retrieve` | Context-based persona retrieval |
+| `POST` | `/persona/rollback` | Roll back to a historical persona version |
 
 ### Pantheon Federation (v13.0)
 
@@ -268,9 +338,9 @@ BM25 trigram (zero-latency fallback) + vector embedding vectors + Reranker + rec
 
 ---
 
-## MCP Server (38 Tools)
+## MCP Server (41 Tools)
 
-aiduMEI includes a built-in MCP Server (`:8768`) exposing 38 tools:
+aiduMEI includes a built-in MCP Server (`:8768`) exposing 41 tools:
 
 | Tool Group | Count | Description |
 |------------|-------|-------------|
@@ -287,6 +357,7 @@ aiduMEI includes a built-in MCP Server (`:8768`) exposing 38 tools:
 | Conflict | 1 | conflict_resolve |
 | Evolve | 2 | evolve_feedback / evolve_report |
 | Federation | 6 | fed_recall / fed_add / fed_agents / fed_register / fed_broadcast / fed_awareness |
+| Persona (v19.0) | 3 | persona_build / persona_retrieve / persona_banks |
 
 ---
 
@@ -315,7 +386,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 ## Tech Stack
 
 - **Runtime**: Python 3.12+, FastAPI, Uvicorn
-- **Memory Kernel**: mem0 v2.0.17
+- **Memory Kernel**: mem0 v2.0.18
 - **Vector Store**: Qdrant (via qdrant-client)
 - **Structured Data**: SQLite (facts.db, observations.db, scenes.db, fact_events.db)
 - **Full-Text Search**: SQLite FTS5 + trigram tokenizer
@@ -383,5 +454,5 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 ---
 
 <p align="center">
-  <sub>Thinking Version · Iris | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
+  <sub>AI Thought Engine · Athena | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
 </p>

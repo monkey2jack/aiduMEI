@@ -71,6 +71,14 @@ def _bootstrap_db():
     yield
 
 
+# 与其他测试模块同进程合跑时，其他模块的 autouse fixture 会把 utils.FACTS_DB
+# 改成它们自己的临时库。这里在每测试前强制指回本文件的临时库，保证隔离。
+@pytest.fixture(autouse=True)
+def _bind_test_db():
+    utils.FACTS_DB = _TEST_DB
+    yield
+
+
 # ═══════════════════ schema ═══════════════════
 def test_schema_migration_is_idempotent():
     from ducky.federation.schema import ensure_federation_schema

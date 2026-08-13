@@ -397,14 +397,18 @@ def _resolve_api_keys(cfg: dict) -> dict:
 
 
 def _normalize_user_id(user_id: str) -> str:
-    """规范化 user ID：历史版本使用过自定义名字，现统一映射到 default，保证与存量库兼容"""
+    """规范化 user ID：历史版本使用过自定义名字，现统一映射到 default，保证与存量库兼容。
+
+    历史私有 user_id 不写进仓库：通过环境变量 AIDUMEM_LEGACY_USER_IDS
+    （逗号分隔）由部署方按各自存量库配置，映射后老数据才能被新查询召回。
+    """
     if not user_id:
         return "default"
-    legacy_map = {
-        "admin": "default",
-        "user": "default",
-    }
-    return legacy_map.get(user_id.lower(), user_id)
+    legacy = {"admin", "user"}
+    extra = os.getenv("AIDUMEM_LEGACY_USER_IDS", "")
+    if extra:
+        legacy |= {x.strip().lower() for x in extra.split(",") if x.strip()}
+    return "default" if user_id.lower() in legacy else user_id
 
 
 def get_memory():
@@ -424,10 +428,10 @@ def get_memory():
         try:
             if Memory is None:
                 raise RuntimeError("mem0 SDK 未加载")
-            # 启动时清理 Qdrant 锁
-            _clear_qdrant_lock()
             cfg = json.loads(open(MEM0_CONFIG).read())
             cfg = _resolve_api_keys(cfg)
+            # 启动时清理 Qdrant 锁（与生产对齐：先读配置再清理）
+            _clear_qdrant_lock()
             m = Memory.from_config(cfg)
             _patch_usage_tracking(m)
             try:
@@ -442,6 +446,8 @@ def get_memory():
             logger.error(f"mem0 初始化失败: {e}")
             raise HTTPException(500, f"mem0 不可用: {e}")
 
+    # 启动时清理 Qdrant 锁（与生产对齐：get_memory 异常路径也清理一次）
+    _clear_qdrant_lock()
 
 def reset_memory_singleton() -> None:
     """/reload 用：清空模块级 + sys 级单例。"""

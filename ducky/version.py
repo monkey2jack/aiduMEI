@@ -3,6 +3,16 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v19.0 Athena (雅典娜 · 从记忆到智慧)
+    核心主题: 认知闭环后半程——记完之后如何变聪明
+    1. Reflect 主动反思 (P0-3): 定期/会话结束触发，提炼模式/矛盾/知识缺口为洞察
+    2. 记忆去重自编辑 (P0-2): 写入前 LLM 判重复/冲突/全新，合并而非追加，可回滚
+    3. 记忆类型分离 (P1-1): FACTS/PREFERENCES/EXPERIENCES/OBSERVATIONS/REFLECTIONS/DECISIONS 六型
+    4. 自动 Skill 生长 + 精炼淘汰 (P1-2): 轨迹→草稿→人工approve；低效用技能自动待淘汰
+    5. 记忆递归精炼 (P1-3): 多条碎记忆聚类压缩为高层抽象，可回滚
+    6. 人格记忆基座 Persona Memory Layer: 一句话人设展开为可检索自传体记忆库，synthesis/grounded 双模式
+    7. 双时间轴 + 时间感知检索 (P0-1/P0-4): valid_from/valid_to/recorded_at + 向量+BM25+时间衰减混合召回
+
 v18.3 Zeus (宙斯 · 多模态感知纪元)
     核心主题: 无损升级机制 + 多模态视觉记忆 + Obsidian 双链联动
     1. 无损秒级平滑升级 SOP: user_version schema 版本化 + ALTER TABLE 增量补丁
@@ -25,17 +35,18 @@ v18.1 Zeus (宙斯 · 检索自进化纪元)
     4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
 """
 
-SERVICE_VERSION = "18.3.0"
+SERVICE_VERSION = "19.0.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
-CODENAME = "Zeus"
-CODENAME_ZH = "宙斯"
+CODENAME = "Athena"
+CODENAME_ZH = "雅典娜"
 DISPLAY_NAME = f"aiduMEI {FULL_VERSION} · {CODENAME_ZH}"
 
-# 架构代号：多模态感知 · 无损升级 · Obsidian 双链
-ARCHITECTURE = "Multimodal Memory Engine with Lossless Fast-Update & Obsidian Bi-directional Links"
+# 架构代号：从记忆到智慧——主动反思 · 自编辑 · 递归精炼 · Skill 自生长 · 人格记忆基座
+ARCHITECTURE = "AI Thought Engine with Active Reflection, Self-Editing Memory, Recursive Refinement & Persona Memory Layer"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
+    ("19.0", "Athena", "雅典娜", "从记忆到智慧 · 主动反思 · 记忆自编辑 · 递归精炼 · Skill生长 · 人格记忆基座"),
     ("18.3", "Zeus", "宙斯", "多模态感知 · 无损秒级升级 · Obsidian 双链联动"),
     ("18.2", "Zeus", "宙斯", "可视化洞察 · aiduMEI 控制台 · 品牌升级 · 全量审计"),
     ("18.1", "Zeus", "宙斯", "检索自进化 · EvolveMem 反馈闭环"),
