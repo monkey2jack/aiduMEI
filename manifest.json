@@ -1,7 +1,7 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEM",
-  "version": "19.1.0",
+  "version": "19.1.1",
   "description": "Athena 雅典娜 · 从记忆到智慧：主动反思 + 记忆自编辑 + 递归精炼 + Skill 自生长 + 人格记忆基座（v19.1 审计修复版）",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",

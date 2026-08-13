@@ -3,6 +3,17 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v19.1.1 Athena (雅典娜 · 审计补丁版)
+    核心主题: 双源审计 + 小猴自查整改——接口安全 / MCP 契约 / 版本号诚信 / 六型逻辑尾巴
+    1. MCP stdio 运行时少注册 2 工具 → 主入口移至文件末尾
+    2. MCP mem_update 清空记忆 → content 直传 + 模型兼容 data
+    3. MCP mem_delete_all 删错用户 → body 模型接收 user_id
+    4. REST API 零鉴权 → AIDUMEM_API_TOKEN Bearer 中间件
+    5. Docker 默认 0.0.0.0 裸奔 → 默认 127.0.0.1 + 安全引导
+    6. 默认密码 123456 + hint 泄密 → 未设置时 hint 不吐明文
+    7. 版本号真相源 → pyproject / manifest / README badge 全对齐
+    8. 六型 / top_k / ref / 裸 except / 文档小尾巴一并收口
+
 v19.1 Athena (雅典娜 · 审计修复版)
     核心主题: 社区审计 26 条问题全修——数据安全 / 主链接线 / 卖点打假
     1. 联邦跨 Agent 隔离: 唯一索引 (agent_id,category,fact_key)，杜绝同 key 静默互覆盖
@@ -44,7 +55,7 @@ v18.1 Zeus (宙斯 · 检索自进化纪元)
     4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
 """
 
-SERVICE_VERSION = "19.1.0"
+SERVICE_VERSION = "19.1.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
@@ -55,6 +66,7 @@ ARCHITECTURE = "AI Wisdom Engine with Active Reflection, Self-Editing Memory, Re
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
+    ("19.1.1", "Athena", "雅典娜", "审计补丁 · 接口安全 · MCP 契约 · 版本号诚信"),
     ("19.1", "Athena", "雅典娜", "审计修复 · 联邦隔离 · 主链接线 · 卖点诚信"),
     ("19.0", "Athena", "雅典娜", "从记忆到智慧 · 主动反思 · 记忆自编辑 · 递归精炼 · Skill生长 · 人格记忆基座"),
     ("18.3", "Zeus", "宙斯", "多模态感知 · 无损秒级升级 · Obsidian 双链联动"),
