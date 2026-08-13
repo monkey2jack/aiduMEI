@@ -2,7 +2,7 @@
   <img src="assets/aidumem-banner.jpg" alt="aiduMEI" width="100%">
 </p>
 
-# 🤔 aiduMEI — AI Thought Engine
+# 🤔 aiduMEI — AI Wisdom Engine
 
 > **Not just memory — thinking.**
 >
@@ -22,7 +22,7 @@
 
 ## What is aiduMEI?
 
-aiduMEI is an **AI Thought Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
+aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
 > **v19.0 · Athena — from memory to wisdom.** Zeus solved *what to remember and how*; Athena, born fully armed from Zeus's head, closes the cognitive loop with *how to grow wiser after remembering* — **active reflection, memory self-editing, recursive refinement, autonomous skill growth, and a persona memory layer.** Memory (Mnemosyne) → consolidation → **wisdom (Athena)**.
 
@@ -111,7 +111,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│        🦉 aiduMEI v19.0 · Athena · AI Thought Engine │
+│        🦉 aiduMEI v19.0 · Athena · AI Wisdom Engine │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
@@ -454,5 +454,5 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 ---
 
 <p align="center">
-  <sub>AI Thought Engine · Athena | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
+  <sub>AI Wisdom Engine · Athena | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
 </p>
