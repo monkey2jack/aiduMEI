@@ -81,7 +81,8 @@ async function checkLatestVersion() {
     if (!latest || !currentVersion || currentVersion === '—') return;
     // Show badge only when the deployed version lags behind GitHub latest.
     if (cmpVersion(currentVersion, latest) < 0) {
-      badge.textContent = '最新 / Latest';
+      badge.textContent = '有新版 v' + latest + ' / Update';
+      badge.title = '当前 v' + currentVersion + '，GitHub 最新 v' + latest + '，建议升级';
       badge.style.display = 'inline-block';
     }
   } catch (e) {

@@ -662,8 +662,9 @@ def register_legacy_routes(app):
     @app.get("/facts/search")
     def search_facts(query: str = "", category: str = None, top_k: int = 10,
                      min_trust: float = 0.0, use_hybrid: bool = True,
-                     level: str = "L2"):
+                     level: str = "L2", before: str = "", after: str = ""):
         # facts 是独立结构化知识库，不再绕经 mem0/Qdrant；use_hybrid 保留为兼容参数。
+        # P0-1 时间过滤：before/after 支持 YYYY[-MM[-DD]] 粒度。
         from ducky.facts_recall import search_facts as recall_facts
         return recall_facts(
             query,
@@ -671,6 +672,8 @@ def register_legacy_routes(app):
             top_k=top_k,
             level=level,
             min_trust=min_trust,
+            before=before,
+            after=after,
         )
 
     # ── §8  Observations + Reflect ──
@@ -689,8 +692,9 @@ def register_legacy_routes(app):
         conn.close()
         return {"status":"ok","observations":[dict(r) for r in rows],"count":len(rows)}
 
-    @app.post("/reflect")
-    def reflect_memories(question: str, top_k: int = 10, use_llm: bool = True):
+    # 注：v19.0 起 /reflect 端点由 ducky.routes_p0 提供真正的 LLM 反思引擎。
+    # 这里只保留旧的「关联记忆检索」helper，供 /observe/related 继续使用。
+    def _legacy_related_search(question: str, top_k: int = 10, use_llm: bool = True):
         try:
             from api_server import get_memory
             mem = get_memory()
@@ -705,7 +709,7 @@ def register_legacy_routes(app):
 
     @app.get("/observe/related")
     def get_related(query: str, top_k: int = 5):
-        return reflect_memories(query, top_k)
+        return _legacy_related_search(query, top_k)
 
     # ── §9  Scene 聚类 + Persona ──
     @app.post("/scene/cluster")
@@ -733,7 +737,9 @@ def register_legacy_routes(app):
     def get_persona(name: str = "user"):
         return _refresh_persona_inline(name)
 
-    @app.post("/persona/build")
+    # 注：/persona/build 已让位给 v19.0 人格记忆基座（ducky.routes_persona）。
+    # 旧「AI 自我人设刷新」逻辑保留为 /persona/refresh，避免路径冲突。
+    @app.post("/persona/refresh")
     def build_persona(name: str = Form("user")):
         return _refresh_persona_inline(name)
 
