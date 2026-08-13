@@ -42,7 +42,7 @@ CODENAME_ZH = "雅典娜"
 DISPLAY_NAME = f"aiduMEI {FULL_VERSION} · {CODENAME_ZH}"
 
 # 架构代号：从记忆到智慧——主动反思 · 自编辑 · 递归精炼 · Skill 自生长 · 人格记忆基座
-ARCHITECTURE = "AI Thought Engine with Active Reflection, Self-Editing Memory, Recursive Refinement & Persona Memory Layer"
+ARCHITECTURE = "AI Wisdom Engine with Active Reflection, Self-Editing Memory, Recursive Refinement & Persona Memory Layer"
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (

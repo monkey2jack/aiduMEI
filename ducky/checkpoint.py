@@ -232,7 +232,7 @@ def inject_context() -> str:
 if __name__ == "__main__":
     _ensure_table()
     test_blocks = {
-        "cp_active_intent": "aiduMEM v11 Hyperion 思想引擎",
+        "cp_active_intent": "aiduMEM v11 Hyperion 智慧引擎",
         "cp_next_action": "完成 AutoDream 模块后集成测试",
         "cp_current_work": "ducky/core_memory.py 已完成 · ducky/checkpoint.py 测试中",
         "cp_key_decisions": "三模块独立开发→独立测试→合入 api_server.py",
