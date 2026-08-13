@@ -1,6 +1,63 @@
 # aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，直至 v18.3 Zeus 多模态感知纪元。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，直至 v19.0 Athena 从记忆到智慧。
+
+---
+
+## v19.0.0 — Athena 雅典娜（2026-08-13）
+
+> 从记忆到智慧。前代 Zeus 打通「记什么、怎么记、怎么找回来」；雅典娜从宙斯头颅中全副武装诞生，补上认知闭环的后半程——**记忆存下来之后，Agent 如何主动反思、自我修正、越用越精炼、把经验长成技能，并拥有稳定的人格底座**。记忆不再只增不减，而是会自省、会收敛、会进化。
+
+### 核心新特性
+
+**🔮 Reflect 主动反思（P0-3 · 借鉴 Hindsight）**
+- 新增 `ducky.reflect` 反思引擎：定期/触发式回顾记忆，提炼模式、关系、预测、矛盾、知识缺口为洞察
+- 洞察落库为一等公民 `reflections`，可列表查询、可注入上下文；同一洞察按 content 哈希幂等落库
+- 后台每 6 小时自动反思（`AIDUMEM_REFLECT_INTERVAL_HOURS` 可调，`AIDUMEM_REFLECT_ENABLED=false` 关闭）
+- **会话结束自动触发**：`/session/end` 后台拉起 `run_reflect(source="session_end")`（`AIDUMEM_REFLECT_ON_SESSION_END` 开关）
+- 新增路由 `POST /reflect`、`GET /reflect/list`、`GET /reflect/context`；降级友好，LLM 不可用返回空洞察不抛异常
+
+**✏️ 记忆去重自编辑（P0-2 · 借鉴 Mem0）**
+- 新增 `ducky.self_edit`：写入前用 LLM 判断新记忆与既有记忆是「重复 / 冲突 / 全新」，重复合并、冲突并存标注置信度
+- LLM 语义判重先行，`Layer1` Jaccard 零成本兜底；LLM 不可用无缝回退，向后完全兼容
+- 每次合并/冲突更新快照进 `memory_edits` 表，`POST /self-edit/rollback` 一键回滚；新增 `GET /self-edit/edits`
+
+**🗂️ 记忆类型分离（P1-1 · 借鉴 Hindsight 四网络）**
+- 新增 `ducky.memory_types`：六种认知类型显式管理——FACTS / PREFERENCES / EXPERIENCES / OBSERVATIONS / REFLECTIONS / DECISIONS
+- 不推翻现有存储，加一层类型标签与查询视图；新增 `/memory/types`、`/memory/types/query`、`/memory/types/backfill`、`/memory/types/reset`
+
+**🌱 自动 Skill 生长 + 精炼淘汰（P1-2 · 借鉴 ReMe/MemU）**
+- 新增 `ducky.skill_growth`：任务轨迹回放 → 步骤提取 → LLM 生成 SKILL.md 草稿 → 人工 approve → 归档
+- 技能复用打点 `record_skill_use`（成功/失败计数）；`prune_low_utility_skills` 淘汰低效用技能（成功率 < 34% 标记 archived，不物理删除）
+- 新增 `POST /skill/grow`、`GET /skill/drafts`、`POST /crystals/use`、`POST /crystals/prune`
+- 治理铁律沿用 Mímir：LLM 只能建议草稿（`status='draft'`），不能自动 commit
+
+**🧬 记忆递归精炼（P1-3 · 借鉴 SimpleMem）**
+- 新增 `ducky.refine_memory`：后台把相关多条碎记忆递归合并为高层抽象，对抗记忆熵增
+- 与 self_edit 分工：自编辑管写入时 1 对 1 判重，精炼管后台多对 1 聚类压缩
+- 精炼产物写入 `refined_memories`，原记忆 soft-superseded 不物理删除，可一键回滚；新增 `/memory/refine`、`/memory/refine/apply`、`/memory/refine/rollback`、`/memory/refinements`
+
+**🎭 人格记忆基座 · Persona Memory Layer（借鉴 MemoryForge）**
+- 新增 `ducky.persona_memory`：把一句话人设展开成可按情境检索的自传体记忆库，L（生平）/ G（成长）/ E（情节）三层
+- 双模式：`synthesis`（合成，面向虚构角色，自动生成三层）/ `grounded`（落地，面向真实用户，从已有记忆归纳不虚构）
+- 与运营记忆双层并行，版本化可回滚；新增 `/persona/build`、`/persona/banks`、`/persona/detail`、`/persona/retrieve`、`/persona/context`、`/persona/rollback`
+- MCP 新增 `persona_build` / `persona_retrieve` / `persona_banks` 三工具（MCP 工具总数 38 → 41）
+
+**🕰️ 双时间轴记忆 + 时间感知检索（P0-1 / P0-4）**
+- P0-1：`/add` 自动写入 `valid_from` / `valid_to` / `recorded_at` 双时间轴；`created_at → recorded_at → valid_from` 三级时间源回退
+- P0-4：混合检索多信号加权融合——向量 + BM25 + 时效衰减 + 可靠性 + 热度；时间衰减率 `λ` 环境变量可调
+
+### 部署与工程
+
+- mem0 内核锁定 `2.0.18`、`qdrant-client 1.18.0`，与生产基座对齐
+- 向量库嵌入式 on-disk（`path: ./data/qdrant`），无独立服务/容器/端口
+- 实测运行内存约 210 MB RSS（单进程），2 核足够，闲时 CPU < 1%；仅 9 个顶层依赖
+- SQLite `ALTER TABLE ADD COLUMN` 幂等迁移覆盖两代旧 `skill_crystals` schema，老库平滑升级零数据丢失
+- `_normalize_user_id` 历史 user_id 映射改由环境变量 `AIDUMEM_LEGACY_USER_IDS` 注入，仓库零硬编码身份
+
+### 测试
+
+- 新增 P0/P1/persona/session-end 全套单测：81 passed（含 test_p0_upgrades / test_p1_memory_types / test_p1_refine_memory / test_p1_skill_growth / test_p1_skill_refinement / test_persona_memory / test_session_end_reflect）
 
 ---
 

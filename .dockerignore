@@ -4,6 +4,7 @@ __pycache__/
 .git/
 backups/
 data/
+data_*/
 dist/
 build/
 *.egg-info/

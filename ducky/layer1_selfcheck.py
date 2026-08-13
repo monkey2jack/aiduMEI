@@ -138,6 +138,32 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
     else:
         text = str(messages_json)
 
+    # Step 0: P0-2 记忆去重自编辑（LLM 语义级判重，先行；失败降级回 Jaccard）
+    try:
+        from ducky.self_edit import self_edit_on_add
+        self_edit_result = self_edit_on_add(memory, user_id, messages_json, metadata)
+        if self_edit_result:
+            details["self_edit"] = self_edit_result
+            action = self_edit_result["action"]
+            # self-edit 直接更新了既有记忆内容，记忆向量与文本索引会因
+            # update 而异动；热度与 FTS 仍需同步，否则合并后的记忆在
+            # 检索侧被降权/漏检。这里做保守同步，失败不阻断返回。
+            _sync_indexes_after_update(
+                memory,
+                memory_id=self_edit_result.get("memory_id", ""),
+                content=self_edit_result.get("merged_content", text),
+                user_id=user_id,
+            )
+            elapsed_ms = int((time.time() - start) * 1000)
+            details["ms"] = elapsed_ms
+            return {
+                "status": "ok",
+                "action": action,
+                "details": details,
+            }
+    except Exception as se:
+        logger.debug(f"self-edit 跳过（降级）: {se}")
+
     # Step 1: 去重检查
     existing_id = dedup_check(memory, user_id, text)
     if existing_id:
@@ -180,6 +206,29 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
         "action": action,
         "details": details,
     }
+
+
+def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: str) -> None:
+    """self-edit 合并/冲突更新记忆后，补做热度登记与 FTS 索引刷新。
+
+    与 /add 正常写入路径保持一致；任何一步失败都静默降级，不阻断
+    self-edit 的返回（记忆内容本身已经更新成功）。
+    """
+    if not memory_id:
+        return
+    try:
+        # 合并是「更新」不是「新增」：走 preserve_heat=True 保留既有热度，
+        # 避免 register_salience_for_add 的 INSERT OR REPLACE 把 access_count
+        # 清零、把高频访问的旧记忆降权。
+        from ducky.salience.core import on_memory_added
+        on_memory_added(memory_id, content=content, preserve_heat=True)
+    except Exception as e:
+        logger.debug(f"self-edit 热度登记跳过: {e}")
+    try:
+        from ducky.text_fts import _index_memory
+        _index_memory(memory_id, content, user_id=user_id, category="")
+    except Exception as e:
+        logger.debug(f"self-edit FTS 索引刷新跳过: {e}")
 
 
 def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str = "new_item"):

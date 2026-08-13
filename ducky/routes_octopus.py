@@ -16,7 +16,12 @@ from pydantic import BaseModel
 
 from ducky.conflict_resolver import resolve_fact_conflict, scan_and_resolve_text_conflicts
 from ducky.tree_memory import add_tree_node, get_subtree
-from ducky.skill_crystallizer import detect_and_crystallize_patterns, list_crystals
+from ducky.skill_crystallizer import (
+    detect_and_crystallize_patterns,
+    list_crystals,
+    record_skill_use,
+    prune_low_utility_skills,
+)
 
 logger = logging.getLogger("aiduMEM.OctopusRoutes")
 
@@ -96,4 +101,24 @@ def register_octopus_routes(app: FastAPI) -> None:
             return {"status": "ok", "detected": detected, "count": len(detected)}
         except Exception as e:
             logger.error("🐙 /crystals/detect 错误: %s", e)
+            raise HTTPException(500, str(e))
+
+    # ── v19.0 P1-2 技能精炼：复用追踪 + 低效用淘汰 ─────────
+    @app.post("/crystals/use")
+    def crystals_use_endpoint(skill_name: str, success: bool = True):
+        """记录一次技能复用成功/失败（P1-2 技能精炼）"""
+        try:
+            return record_skill_use(skill_name, success)
+        except Exception as e:
+            logger.error("🐙 /crystals/use 错误: %s", e)
+            raise HTTPException(500, str(e))
+
+    @app.post("/crystals/prune")
+    def crystals_prune_endpoint():
+        """低效用技能自动标记为 archived（待淘汰，可人工复核）"""
+        try:
+            archived = prune_low_utility_skills()
+            return {"status": "ok", "archived": archived, "count": len(archived)}
+        except Exception as e:
+            logger.error("🐙 /crystals/prune 错误: %s", e)
             raise HTTPException(500, str(e))

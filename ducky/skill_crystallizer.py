@@ -33,11 +33,48 @@ CREATE TABLE IF NOT EXISTS skill_crystals (
     sample_keys       TEXT DEFAULT '',
     hit_count         INTEGER DEFAULT 1,
     candidate_count   INTEGER DEFAULT 0,
-    status            TEXT DEFAULT 'candidate', -- candidate | approved | archived
+    status            TEXT DEFAULT 'candidate', -- candidate | approved | archived | draft
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    use_count         INTEGER DEFAULT 0,     -- v19.0 P1-2：复用总次数
+    success_count     INTEGER DEFAULT 0,     -- v19.0 P1-2：复用成功次数
+    fail_count        INTEGER DEFAULT 0      -- v19.0 P1-2：复用失败次数
 );
 """
+
+# v19.0 P1-2 技能精炼：连续观察至少这么多轮复用，才允许自动判定效用
+_MIN_USES_FOR_UTILITY = 3
+# 成功率低于此阈值 → 自动标记为 archived（待淘汰），需人工复核
+_LOW_UTILITY_SUCCESS_RATE = 0.34
+
+
+def _migrate_crystal_columns(conn) -> None:
+    """v19.0 P1-2 迁移：给旧 skill_crystals 表补全代码引用的列（幂等）。
+
+    兼容两代历史 schema：
+      - 最老版（生产）：sample_facts，无 source_categories/sample_keys/candidate_count
+      - v17 版：有 source_categories/sample_keys/candidate_count，无 use/success/fail
+    新代码（skill_growth / record_skill_use / prune_low_utility_skills）需要的列：
+      source_categories TEXT, sample_keys TEXT, candidate_count INT,
+      use_count INT, success_count INT, fail_count INT
+    """
+    _COLUMN_DDL = {
+        "source_categories": "TEXT DEFAULT ''",
+        "sample_keys": "TEXT DEFAULT ''",
+        "candidate_count": "INTEGER DEFAULT 0",
+        "use_count": "INTEGER DEFAULT 0",
+        "success_count": "INTEGER DEFAULT 0",
+        "fail_count": "INTEGER DEFAULT 0",
+    }
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(skill_crystals)").fetchall()}
+    for col, ddl in _COLUMN_DDL.items():
+        if col in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE skill_crystals ADD COLUMN {col} {ddl}")
+        except Exception:
+            # 并发建表等极端情况——忽略，下轮再迁移
+            pass
 
 # 结晶最小事实数阈值：分类下至少 3 条不同 fact_key 才触发结晶（避免噪声过度生成）
 _MIN_FACTS_FOR_CRYSTAL = 3
@@ -50,10 +87,11 @@ _EXCLUDED_CATEGORIES = frozenset({
 
 
 def init_crystallizer_schema() -> None:
-    """初始化 skill_crystals 表"""
+    """初始化 skill_crystals 表（含 v19.0 P1-2 精炼字段迁移）"""
     conn = get_facts_conn()
     try:
         conn.executescript(_CRYSTAL_SCHEMA_DDL)
+        _migrate_crystal_columns(conn)
         conn.commit()
     except Exception as e:
         logger.error("🐙 [SkillCrystallizer] DDL 初始化失败: %s", e)
@@ -152,7 +190,8 @@ def list_crystals(status: str = "candidate") -> list[dict[str, Any]]:
             """
             SELECT crystal_id, skill_name, trigger_rule, procedure,
                    source_categories, sample_keys, hit_count, candidate_count,
-                   status, created_at, updated_at
+                   status, created_at, updated_at,
+                   use_count, success_count, fail_count
             FROM skill_crystals
             WHERE status = ? OR ? = 'all'
             ORDER BY hit_count DESC, candidate_count DESC
@@ -172,6 +211,9 @@ def list_crystals(status: str = "candidate") -> list[dict[str, Any]]:
                 "status": r[8],
                 "created_at": r[9],
                 "updated_at": r[10],
+                "use_count": r[11],
+                "success_count": r[12],
+                "fail_count": r[13],
             }
             for r in rows
         ]
@@ -201,3 +243,103 @@ def approve_crystal(crystal_id: int) -> dict[str, Any]:
         return {"status": "error", "message": str(e)}
     finally:
         conn.close()
+
+
+def record_skill_use(skill_name: str, success: bool) -> dict[str, Any]:
+    """v19.0 P1-2 技能精炼：记录一次技能复用成功/失败。
+
+    - 成功后优化描述（hit_count 微升，复用是技能有效的信号）
+    - 失败后标注陷阱（fail_count 累计，供 prune_low_utility_skills 判定）
+    - 返回 {status, skill_name, use_count, success_count, fail_count, low_utility}
+    """
+    init_crystallizer_schema()
+    conn = get_facts_conn()
+    try:
+        row = conn.execute(
+            "SELECT crystal_id, status FROM skill_crystals WHERE skill_name=?", (skill_name,)
+        ).fetchone()
+        if not row:
+            return {"status": "error", "message": f"技能 '{skill_name}' 不存在"}
+        conn.execute(
+            """
+            UPDATE skill_crystals SET
+                use_count     = use_count + 1,
+                success_count = success_count + ?,
+                fail_count    = fail_count + ?,
+                hit_count     = CASE WHEN ? THEN hit_count + 1 ELSE hit_count END,
+                updated_at    = CURRENT_TIMESTAMP
+            WHERE skill_name = ?
+            """,
+            (1 if success else 0, 0 if success else 1, 1 if success else 0, skill_name),
+        )
+        conn.commit()
+        stats = conn.execute(
+            "SELECT use_count, success_count, fail_count FROM skill_crystals WHERE skill_name=?",
+            (skill_name,),
+        ).fetchone()
+        use_count, success_count, fail_count = stats[0], stats[1], stats[2]
+        low_utility = (
+            use_count >= _MIN_USES_FOR_UTILITY
+            and success_count / max(use_count, 1) < _LOW_UTILITY_SUCCESS_RATE
+        )
+        logger.info(
+            "🐙 [SkillCrystallizer] 技能复用记录: '%s' %s (use=%d ok=%d fail=%d)",
+            skill_name, "成功" if success else "失败", use_count, success_count, fail_count,
+        )
+        return {
+            "status": "ok",
+            "skill_name": skill_name,
+            "use_count": use_count,
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "low_utility": low_utility,
+        }
+    except Exception as e:
+        logger.error("🐙 [SkillCrystallizer] record_skill_use 失败: %s", e)
+        return {"status": "error", "message": str(e)}
+    finally:
+        conn.close()
+
+
+def prune_low_utility_skills() -> list[dict[str, Any]]:
+    """v19.0 P1-2 技能精炼淘汰：低效用技能自动标记为 archived（待淘汰）。
+
+    判定：use_count >= _MIN_USES_FOR_UTILITY 且成功率 < _LOW_UTILITY_SUCCESS_RATE。
+    只降级 approved/candidate 技能；draft 草稿由人工决定去留，本函数不动。
+    不物理删除数据，仅改 status='archived'，可人工复核后恢复。
+    """
+    init_crystallizer_schema()
+    conn = get_facts_conn()
+    archived: list[dict[str, Any]] = []
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT skill_name, use_count, success_count, fail_count
+            FROM skill_crystals
+            WHERE status IN ('approved', 'candidate')
+              AND use_count >= {_MIN_USES_FOR_UTILITY}
+              AND success_count * 1.0 / use_count < {_LOW_UTILITY_SUCCESS_RATE}
+            """
+        ).fetchall()
+        for skill_name, use_count, success_count, fail_count in rows:
+            conn.execute(
+                "UPDATE skill_crystals SET status='archived', updated_at=CURRENT_TIMESTAMP WHERE skill_name=?",
+                (skill_name,),
+            )
+            archived.append({
+                "skill_name": skill_name,
+                "use_count": use_count,
+                "success_count": success_count,
+                "fail_count": fail_count,
+                "success_rate": round(success_count / max(use_count, 1), 3),
+            })
+            logger.info(
+                "🐙 [SkillCrystallizer] 低效用技能标记待淘汰: '%s' (成功率 %.0f%%)",
+                skill_name, 100 * success_count / max(use_count, 1),
+            )
+        conn.commit()
+    except Exception as e:
+        logger.error("🐙 [SkillCrystallizer] prune_low_utility_skills 失败: %s", e)
+    finally:
+        conn.close()
+    return archived

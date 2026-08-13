@@ -181,12 +181,16 @@ def session_report(session_id: str) -> dict:
 
 
 def session_end(session_id: str) -> dict:
-    """结束 Session"""
+    """结束 Session。成功时顺带返回 user_id，供上层触发 session_end 反思。"""
     with _sessions_lock:
         removed = _sessions.pop(session_id, None)
     if removed:
         logger.info(f"Session 结束: {session_id}")
-        return {"status": "ok", "session_id": session_id}
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "user_id": removed.get("user_id", ""),
+        }
     return {"status": "error", "detail": "Session 不存在"}
 
 

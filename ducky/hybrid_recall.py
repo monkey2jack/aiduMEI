@@ -27,10 +27,16 @@ RECENCY_LAMBDA = 0.01   # 时间衰减率
 
 
 def hybrid_search(memory, query: str, user_id: str, limit: int = 10,
-                  weights: Optional[dict] = None) -> list:
+                  weights: Optional[dict] = None,
+                  before: str = "", after: str = "") -> list:
     """
     加权混合召回（委托给 ducky.engine.RecallEngine 引擎处理）
+
+    P0-4：before/after 时间窗口透传给引擎做时间过滤。
     """
     from ducky.engine import RecallEngine
     engine = RecallEngine(memory_instance=memory)
-    return engine.search(query=query, user_id=user_id, limit=limit, weights=weights)
+    return engine.search(
+        query=query, user_id=user_id, limit=limit, weights=weights,
+        before=before, after=after,
+    )

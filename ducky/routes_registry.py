@@ -20,6 +20,9 @@ from ducky.code_graph import register_code_graph_routes
 from ducky.routes_config import register_config_routes
 from ducky.routes_evolve import register_evolve_routes
 from ducky.routes_obsidian import register_obsidian_routes
+from ducky.routes_p0 import register_p0_routes
+from ducky.routes_p1 import register_p1_routes
+from ducky.routes_persona import register_persona_routes
 
 logger = logging.getLogger("aiduMEM.RoutesRegistry")
 
@@ -62,4 +65,13 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
     # 12. 注册 v18.3 Obsidian 双链接入路由
     register_obsidian_routes(app)
 
-    logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus + v18.1 EvolveMem + aiduMEI 配置 + Obsidian)")
+    # 13. 注册 v19.0 P0 认知层路由（Reflect 反思 / 记忆去重自编辑）
+    register_p0_routes(app)
+
+    # 14. 注册 v19.0 P1 记忆类型分离路由（四网络查询视图）
+    register_p1_routes(app)
+
+    # 15. 注册 v19.0 人格记忆基座路由（Persona Memory Layer）
+    register_persona_routes(app)
+
+    logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus + v18.1 EvolveMem + aiduMEI 配置 + Obsidian + v19.0 Reflect/类型分离/人格基座)")

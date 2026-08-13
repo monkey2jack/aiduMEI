@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "18.3.0"
-description = "aiduMEI: self-hosted multi-tier memory engine — native MemoryProvider bridge, CoreMemory, FTS5 & Qdrant recall, multimodal vision memory & Obsidian bi-directional links"
+version = "19.0.0"
+description = "aiduMEI: self-hosted multi-tier AI thought engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
     { name = "aiduMEI Team" }
@@ -23,12 +23,17 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "mem0ai>=2.0.17",
+    "mem0ai==2.0.18",
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
     "pydantic>=2.0.0",
     "qdrant-client>=1.7.0",
     "requests>=2.28.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
 ]
 
 [project.urls]

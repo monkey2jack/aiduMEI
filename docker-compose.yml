@@ -1,0 +1,37 @@
+# aiduMEI docker-compose 一键起（v19.0）
+# 用法：
+#   docker compose up -d          # 后台启动
+#   docker compose logs -f        # 跟踪日志
+#   docker compose down           # 停止并移除容器
+#
+# 注意：
+#   1. 默认使用仓库根目录的 mem0_config_local.json（可被环境变量覆盖）
+#   2. 数据落盘在 ./data（已在 .gitignore，不会提交）
+#   3. 生产部署建议仍用 systemd（见 deploy/aidumem-api.service）
+
+services:
+  aidumem:
+    build: .
+    image: aidumei:local
+    container_name: aidumem
+    restart: unless-stopped
+    ports:
+      - "8767:8767"
+    environment:
+      - AIDUMEM_HOST=0.0.0.0
+      - AIDUMEM_API_PORT=8767
+      - MEM0_API_PORT=8767
+      - MEM0_TELEMETRY=false
+      # v19.0 认知层开关（默认开启 Reflect / self-edit；P1 的 LLM 增强默认关闭）
+      - AIDUMEM_REFLECT_ENABLED=true
+      - AIDUMEM_SELF_EDIT_ENABLED=true
+      - AIDUMEM_TYPE_CLASSIFY_ENABLED=false
+      - AIDUMEM_SKILL_GROWTH_ENABLED=false
+      - AIDUMEM_REFINE_ENABLED=false
+      - AIDUMEM_RECENCY_LAMBDA=0.01
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./mem0_config_local.json:/app/mem0_config_local.json:ro
+      # 部署方如需自定义实体词表，取消下一行注释：
+      # - ./.env:/app/.env

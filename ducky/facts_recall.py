@@ -1,6 +1,8 @@
 """Facts 分层召回：确定性 SQL 检索、轨迹与上下文注入。"""
 from __future__ import annotations
 
+import calendar
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -9,11 +11,41 @@ from ducky.utils import get_facts_conn
 
 _VALID_LEVELS = {"L0", "L1", "L2"}
 
-
 def _normalize_level(level: str) -> str:
     normalized = (level or "L2").upper()
     return normalized if normalized in _VALID_LEVELS else "L2"
 
+# ── 时间过滤参数归一化（P0-1 · Zep 双时态查询）─────────────────────────────
+# 支持三种粒度：YYYY / YYYY-MM / YYYY-MM-DD，以及 ISO 日期时间（取日期部分）。
+# after 语义=「此后仍有效」→ 取期首日；before 语义=「此前已存在」→ 取期末日。
+# 比较统一走日期部分 substr(...,1,10)，兼容 facts 里两种时间格式：
+#   valid_from/valid_to = ISO "2026-08-12T00:00:00+00:00"
+#   recorded_at         = SQLite "2026-08-12 10:00:00"
+def _parse_time_bound(raw: str, *, is_before: bool = False) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if re.match(r"^\d{4}-\d{2}-\d{2}[T ]", raw):
+        return raw[:10]
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", raw)
+    if m:
+        return raw
+    m = re.match(r"^(\d{4})-(\d{2})$", raw)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        # 非法月份（如 2026-13 / 2026-00）→ 原样返回，交给 SQL 做普通
+        # 字符串比较而非 crash；calendar.monthrange 对越界月会抛 ValueError。
+        if not (1 <= month <= 12):
+            return raw
+        if is_before:
+            return f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+        return f"{year:04d}-{month:02d}-01"
+    m = re.match(r"^(\d{4})$", raw)
+    if m:
+        year = int(m.group(1))
+        return f"{year:04d}-12-31" if is_before else f"{year:04d}-01-01"
+    # 无法识别 → 原样返回，交给 SQL 做普通字符串比较
+    return raw
 
 def _project_fact(row: dict[str, Any], level: str) -> dict[str, Any]:
     item = dict(row)
@@ -27,7 +59,6 @@ def _project_fact(row: dict[str, Any], level: str) -> dict[str, Any]:
     item.pop("overview", None)
     return item
 
-
 def search_facts(
     query: str,
     *,
@@ -35,14 +66,27 @@ def search_facts(
     top_k: int = 10,
     level: str = "L2",
     min_trust: float = 0.0,
+    before: str = "",
+    after: str = "",
 ) -> dict[str, Any]:
-    """检索 facts.db，返回稳定的分层结构与五阶段轨迹。"""
+    """检索 facts.db，返回稳定的分层结构与五阶段轨迹。
+
+    P0-1 时间过滤（Zep 双时态借鉴）：
+        after:  YYYY[-MM[-DD]]  → 只召回「在该时间点之后仍有效」的事实
+                （valid_to 为空=持续有效，或 valid_to 日期 >= after；
+                 无有效期字段时回退用 recorded_at）
+        before: YYYY[-MM[-DD]]  → 只召回「在该时间点之前就已存在」的事实
+                （valid_from 为空=一直有效，或 valid_from 日期 <= before）
+    旧值不会被覆盖，因此「用户三个月前偏好什么」类时间推理成为可能。
+    """
     started = time.perf_counter()
     level = _normalize_level(level)
     top_k = max(1, min(int(top_k), 100))
     effective_trust = max(0.2, float(min_trust))
     needle = (query or "").strip()
     like = f"%{needle}%"
+    after_bound = _parse_time_bound(after)
+    before_bound = _parse_time_bound(before, is_before=True)
 
     conn = get_facts_conn()
     try:
@@ -64,6 +108,24 @@ def search_facts(
         if category:
             sql += " AND category=?"
             params.append(category)
+        # P0-1 时间范围：只比较日期部分，兼容 ISO 与 SQLite TIMESTAMP 两种格式。
+        # 语义（Chronos 双时间轴）：
+        #   after  =「此后仍有效」  → valid_to 为空（持续有效）直接保留，否则 valid_to >= after
+        #   before =「此前已存在」  → valid_from 为空（一直存在）直接保留，否则 valid_from <= before
+        # 注意不能用 COALESCE(x, recorded_at) 替代：valid_to/valid_from 为 NULL 表示
+        # 「无界」，若回退到 recorded_at 会把「持续有效/一直存在」的事实误杀。
+        if after_bound:
+            sql += """
+              AND (valid_to IS NULL
+                   OR substr(valid_to, 1, 10) >= ?)
+            """
+            params.append(after_bound)
+        if before_bound:
+            sql += """
+              AND (valid_from IS NULL
+                   OR substr(valid_from, 1, 10) <= ?)
+            """
+            params.append(before_bound)
         # Chronos 双时间轴：失效(valid_to<now)/未生效(valid_from>now)的事实降到最后，
         # 不删除、不过滤——铁律与无有效期字段(NULL)的事实完全不受影响。
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -99,6 +161,7 @@ def search_facts(
         trajectory = [
             {"step": "intent_analysis", "category_candidates": category_candidates, "elapsed_ms": intent_ms},
             {"step": "position", "level": level, "elapsed_ms": position_ms},
+            {"step": "time_filter", "before": before_bound, "after": after_bound},
             {"step": "retrieve", "scanned": len(rows), "hits": len(facts)},
             {"step": "trust_filter", "min_trust": effective_trust, "kept": len(facts)},
             {"step": "return", "count": len(facts), "elapsed_ms": total_ms},
@@ -110,6 +173,7 @@ def search_facts(
             "facts": facts,
             "results": facts,
             "count": len(facts),
+            "time_filter": {"before": before_bound, "after": after_bound},
             "trajectory": trajectory,
         }
     finally:

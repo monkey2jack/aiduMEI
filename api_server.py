@@ -46,6 +46,7 @@ from ducky.hot.legacy import (
     _get_db,
 )
 from ducky.mem0_runtime import get_memory
+from ducky.reflect import reflect_background_loop
 from ducky.routes_registry import register_all_routes
 from ducky.schema_bootstrap import ensure_core_schema
 from ducky.text_fts import _init_text_fts
@@ -151,6 +152,7 @@ _BACKGROUND_LOOPS = {
     "auto_expire": _auto_expire_loop,
     "autodream": autodream_background_loop,
         "evolve_mem": evolve_background_loop,
+    "reflect": reflect_background_loop,
 }
 
 
