@@ -401,13 +401,14 @@ def _normalize_user_id(user_id: str) -> str:
 
     历史私有 user_id 不写进仓库：通过环境变量 AIDUMEM_LEGACY_USER_IDS
     （逗号分隔）由部署方按各自存量库配置，映射后老数据才能被新查询召回。
+    不再硬编码 admin/user 映射，避免未来真实用户被静默并进 default。
     """
     if not user_id:
         return "default"
-    legacy = {"admin", "user"}
+    legacy = set()
     extra = os.getenv("AIDUMEM_LEGACY_USER_IDS", "")
     if extra:
-        legacy |= {x.strip().lower() for x in extra.split(",") if x.strip()}
+        legacy = {x.strip().lower() for x in extra.split(",") if x.strip()}
     return "default" if user_id.lower() in legacy else user_id
 
 
@@ -445,9 +446,6 @@ def get_memory():
         except Exception as e:
             logger.error(f"mem0 初始化失败: {e}")
             raise HTTPException(500, f"mem0 不可用: {e}")
-
-    # 启动时清理 Qdrant 锁（与生产对齐：get_memory 异常路径也清理一次）
-    _clear_qdrant_lock()
 
 def reset_memory_singleton() -> None:
     """/reload 用：清空模块级 + sys 级单例。"""

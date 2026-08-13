@@ -14,7 +14,10 @@ RUN pip install --no-cache-dir .
 
 EXPOSE 8767
 
-ENV AIDUMEM_HOST="0.0.0.0"
+# 默认只监听容器内回环，避免公网裸奔。
+# 需要对外暴露时，请通过 docker run -e AIDUMEM_HOST=0.0.0.0 覆盖，
+# 并务必同时设置 AIDUMEM_API_TOKEN 与 AIDUMEM_UI_PASSWORD，前置 TLS 反代。
+ENV AIDUMEM_HOST="127.0.0.1"
 ENV AIDUMEM_API_PORT="8767"
 
 CMD ["aidumem"]

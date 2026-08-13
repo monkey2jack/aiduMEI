@@ -33,6 +33,8 @@ DEFAULT_WEIGHTS = {
 }
 # 时间衰减率：环境变量可调（P0-4）。λ 越大，旧记忆衰减越快。
 # 默认 0.01：30 天记忆 ≈ 0.74，180 天记忆 ≈ 0.16，永不归零。
+# 注意：本 λ 管「检索时效分」，与 ducky.salience.config 的显著性半衰期
+# DECAY_RATE（管「热度衰减」）是两套语义，各司其职，不要混为一谈。
 def _env_lambda() -> float:
     try:
         return float(os.environ.get("AIDUMEM_RECENCY_LAMBDA", "0.01"))

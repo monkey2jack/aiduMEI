@@ -17,6 +17,37 @@ from ducky.mem0_runtime import (
 logger = logging.getLogger("aiduMEM.hot")
 
 
+def _annotate_memory_types(results: list) -> None:
+    """把六型分类结果回填到检索结果（P2-3：分类从「写了不读」变为参与召回）。
+
+    - 只读账本，不触发任何 LLM 调用，检索性能不受影响；
+    - 每条结果写入 memory_type 字段；账本无记录时默认 FACTS。
+    - 失败静默降级（检索优先，分类失败不阻断召回）。
+    """
+    if not results:
+        return
+    try:
+        from ducky.memory_types import get_memory_type
+
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            ref = ""
+            meta = item.get("metadata") or {}
+            if isinstance(meta, dict):
+                ref = meta.get("fact_key") or meta.get("fact_id") or ""
+            if not ref:
+                ref = item.get("id") or item.get("memory_id") or ""
+            if not ref:
+                continue
+            try:
+                item["memory_type"] = get_memory_type(str(ref))
+            except Exception:
+                continue
+    except Exception:
+        return
+
+
 def _apply_time_window_to_trace(result: dict, before: str, after: str) -> dict:
     """对 funnel trace 的 results 做 P0-4 时间窗口客户端过滤。
 
@@ -97,15 +128,16 @@ def register_search_routes(app: FastAPI) -> None:
                 pass
 
             results = []
+            effective_limit = req.top_k if req.top_k and req.top_k > 0 else req.limit
             try:
                 results = lazy_import_hybrid()(
-                    mem, req.query, _normalize_user_id(req.user_id), req.limit,
+                    mem, req.query, _normalize_user_id(req.user_id), effective_limit,
                     before=req.before, after=req.after,
                 )
                 logger.info(f"🔍 hybrid 召回: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
             except Exception as e:
                 logger.debug(f"混合召回不可用，降级 mem0 搜索: {e}")
-                raw = mem.search(req.query, filters={"user_id": _normalize_user_id(req.user_id)}, top_k=max(req.limit * 3, 20))
+                raw = mem.search(req.query, filters={"user_id": _normalize_user_id(req.user_id)}, top_k=max(effective_limit * 3, 20))
                 results = raw.get("results", raw) if isinstance(raw, dict) else raw
                 if req.before or req.after:
                     # 降级路径也必须兑现 P0-4 时间窗口，否则混合召回一挂
@@ -114,6 +146,7 @@ def register_search_routes(app: FastAPI) -> None:
                 logger.info(f"🔍 mem0 裸搜: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
 
             boost_salience_for_results(results)
+            _annotate_memory_types(results)
 
             try:
                 from ducky.memory_workspace import ws_feed_from_results
@@ -131,7 +164,8 @@ def register_search_routes(app: FastAPI) -> None:
         """搜索记忆 + Recall Funnel trace（带分阶段耗时）"""
         try:
             mem = get_memory()
-            result = lazy_import_funnel()(mem, req.query, req.user_id, req.limit)
+            effective_limit = req.top_k if req.top_k and req.top_k > 0 else req.limit
+            result = lazy_import_funnel()(mem, req.query, req.user_id, effective_limit)
             # P0-4：与 /search 保持一致的时间窗口过滤。funnel 若返回
             # results 列表，这里做一次客户端过滤，不改变 trace 结构。
             if req.before or req.after:
