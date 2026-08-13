@@ -49,6 +49,9 @@ LAST_ID_FILE = os.environ.get(
     os.path.join(DATA_DIR, "auto_memory_last_id.txt"),
 )
 API_BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
+# 🟡P0-4：MCP 侧同步携带 API token。后端设置了 AIDUMEM_API_TOKEN 后，
+# 若 MCP 不读同一个变量带 Authorization，所有工具调用都会 401。
+_API_TOKEN = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -68,6 +71,16 @@ logger = logging.getLogger("aiduMEM-mcp")
 # HTTP 客户端辅助（轻量，无第三方依赖）
 # ═══════════════════════════════════════════════════════
 
+def _api_headers(extra: dict | None = None) -> dict:
+    """构造带 API token 的请求头（配置了 token 时自动携带）。"""
+    headers = {"Accept": "application/json"}
+    if _API_TOKEN:
+        headers["Authorization"] = f"Bearer {_API_TOKEN}"
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
     """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
     url = f"{API_BASE}{path}"
@@ -75,7 +88,7 @@ def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
         qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
         url = f"{url}?{qs}"
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        req = urllib.request.Request(url, headers=_api_headers())
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
@@ -92,7 +105,7 @@ def _api_post(path: str, body: dict | None = None, timeout: int = 30) -> dict:
     try:
         req = urllib.request.Request(
             url, data=data,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers=_api_headers({"Content-Type": "application/json"}),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:

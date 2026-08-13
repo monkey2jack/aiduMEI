@@ -22,6 +22,7 @@ def _annotate_memory_types(results: list) -> None:
 
     - 只读账本，不触发任何 LLM 调用，检索性能不受影响；
     - 每条结果写入 memory_type 字段；账本无记录时默认 FACTS。
+    - ref 命中优先级：mem0 UUID（主链写时）→ fact:{fact_id}（backfill 写时）。
     - 失败静默降级（检索优先，分类失败不阻断召回）。
     """
     if not results:
@@ -32,10 +33,11 @@ def _annotate_memory_types(results: list) -> None:
         for item in results:
             if not isinstance(item, dict):
                 continue
-            ref = ""
+            # ref 优先级：fact:{fact_id}（backfill 账本）→ mem0 UUID（主链写时）
             meta = item.get("metadata") or {}
-            if isinstance(meta, dict):
-                ref = meta.get("fact_key") or meta.get("fact_id") or ""
+            ref = ""
+            if isinstance(meta, dict) and meta.get("fact_id") is not None:
+                ref = f"fact:{meta['fact_id']}"
             if not ref:
                 ref = item.get("id") or item.get("memory_id") or ""
             if not ref:

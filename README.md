@@ -625,6 +625,8 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 | `AIDUMEM_CONFIG_FILE` | `<repo>/mem0_config_local.json` | mem0 配置文件路径（由 `AIDUMEM_HOME` 推导，固定文件名） |
 | `AIDUMEM_DEFAULT_USER_ID` | `default` | 默认 user_id |
 | `AIDUMEM_DEFAULT_AGENT_ID` | `local` | 联邦默认 agent_id |
+| `AIDUMEM_LEGACY_USER_IDS` | 空 | 历史 user_id 映射（逗号分隔，如 `admin,user`），映射后老数据才能被召回。v19.1.1 起不再硬编码 `admin/user` 映射 |
+| `AIDUMEM_API_TOKEN` | 空 | REST API 访问令牌；设置后所有接口强制 `Authorization: Bearer`。本地/回环可不设，对外部署必设 |
 | `AIDUMEM_API_PORT` | `8767` | API + 控制台监听端口 |
 | `AIDUMEM_ENTITY_KEYWORDS` | 空 | 相关性闸门的自定义实体词表，`\|` 分隔 |
 | `UI_DIR` | `<repo>/frontend` | 控制台静态文件目录（不存在则仅 API 模式） |
