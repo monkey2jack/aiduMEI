@@ -92,18 +92,24 @@ def register_add_routes(app: FastAPI) -> None:
                 try:
                     from ducky.pipeline.memory_vision import extract_vision_caption
                     vision_caption = extract_vision_caption(media_url)
-                    logger.info(f"成功提取多模态 Caption: {vision_caption[:50]}...")
-                    # 把 caption 合并到 messages 供下游写入 DB
-                    if isinstance(messages_json, list):
-                        messages_json.append({"role": "user", "content": f"[附带多模态分析]: {vision_caption}"})
-                    elif isinstance(messages_json, dict):
-                        messages_json["content"] = f"{messages_json.get('content', '')}\n[附带多模态分析]: {vision_caption}"
-                    else:
-                        messages_json = f"{messages_json}\n[附带多模态分析]: {vision_caption}"
+                    # 🟢23：vision 失败时返回以「图片解析失败」开头的字符串（非异常），
+                    # 此前被无条件当作正常 caption 拼进 messages 落库，让失败信息变成一条记忆。
+                    # 这里显式识别失败前缀，失败则不拼接、不回写 metadata。
+                    if vision_caption and not vision_caption.startswith("图片解析失败"):
+                        logger.info(f"成功提取多模态 Caption: {vision_caption[:50]}...")
+                        # 把 caption 合并到 messages 供下游写入 DB
+                        if isinstance(messages_json, list):
+                            messages_json.append({"role": "user", "content": f"[附带多模态分析]: {vision_caption}"})
+                        elif isinstance(messages_json, dict):
+                            messages_json["content"] = f"{messages_json.get('content', '')}\n[附带多模态分析]: {vision_caption}"
+                        else:
+                            messages_json = f"{messages_json}\n[附带多模态分析]: {vision_caption}"
 
-                    # 回写 metadata，以便底层能够存到新的 DB column
-                    md["media_url"] = media_url
-                    md["vision_caption"] = vision_caption
+                        # 回写 metadata，以便底层能够存到新的 DB column
+                        md["media_url"] = media_url
+                        md["vision_caption"] = vision_caption
+                    else:
+                        logger.warning(f"多模态解析失败，跳过 caption 落库: {vision_caption}")
                 except Exception as ve:
                     logger.error(f"多模态提取失败: {ve}")
             # ---------------------------------------------

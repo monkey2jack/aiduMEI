@@ -148,3 +148,21 @@ def register_search_routes(app: FastAPI) -> None:
                 "detail": str(e),
             }
 
+    # 🔴1：Tahoe-Gate 相关性闸门端点。此前 relevance_check 全库零生产调用，
+    # 「省 Token」卖点是画饼。现暴露为 /gate，供宿主 Agent 在对话上下文注入前
+    # 先问一句「这轮要不要检索记忆」——闲聊直接跳过检索，真正省掉 Token 与算力。
+    @app.get("/gate")
+    def gate(query: str):
+        """相关性闸门：判断这条 query 是否需要检索记忆上下文。
+
+        返回 {needs_memory, reason, scope}。宿主在注入记忆前调用它，
+        needs_memory=false 时可整轮跳过 /search，省掉无谓的向量检索。
+        """
+        try:
+            from ducky.pipeline.memory_gate import relevance_check
+            return {"status": "ok", **relevance_check(query)}
+        except Exception as e:
+            logger.error(f"gate 失败: {e}")
+            # 失败时保守放行（需要记忆），不因闸门故障而漏召回
+            return {"status": "error", "needs_memory": True, "reason": f"gate_error: {e}", "scope": None}
+

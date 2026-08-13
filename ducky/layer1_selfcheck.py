@@ -174,9 +174,12 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
             action = "updated"
             details["existing_id"] = existing_id
             logger.info(f"Layer1 去重更新: {existing_id[:16]}")
+            # 🔴2：更新既有记忆后同步热度与 FTS，避免检索侧漏检/降权
+            _sync_indexes_after_update(memory, memory_id=existing_id, content=text, user_id=user_id)
         except Exception:
             # update 失败就走新增
-            memory.add(messages_json, user_id=user_id, metadata=metadata)
+            add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
+            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""))
             action = "new"
     else:
         # Step 2: 容量检查
@@ -196,7 +199,9 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
             logger.warning(f"写入前演化追踪失败: {e}")
 
         # Step 3: 写入
-        memory.add(messages_json, user_id=user_id, metadata=metadata)
+        # 🔴2：主链写入路径必须登记 salience + FTS 索引，否则新记忆全文搜不到、热度不累计。
+        add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
+        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""))
 
     elapsed_ms = int((time.time() - start) * 1000)
     details["ms"] = elapsed_ms
@@ -206,6 +211,56 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
         "action": action,
         "details": details,
     }
+
+
+def _index_after_add(add_result, user_id: str, category: str = "") -> None:
+    """🔴2：mem0.add() 成功后登记 salience + 写 FTS 索引。
+
+    正常新增路径此前只调 memory.add()，既不注册显著性、也不写全文索引，
+    导致新记忆热度不累计、FTS/BM25 全文搜不到（向量召回不受影响）。
+    此处统一补齐，任何一步失败静默降级不阻断写入。
+    🔴7：同时按 AIDUMEM_TYPE_CLASSIFY_ENABLED 做写时六型分类落账本。
+    """
+    if add_result is None:
+        return
+    try:
+        from ducky.mem0_runtime import register_salience_for_add
+        register_salience_for_add(add_result)
+    except Exception as e:
+        logger.debug(f"salience 登记跳过: {e}")
+
+    results = (
+        add_result if isinstance(add_result, list)
+        else (add_result.get("results") if isinstance(add_result, dict) else [])
+    )
+    for r in (results or []):
+        if not isinstance(r, dict):
+            continue
+        mid = r.get("id") or r.get("memory_id")
+        content = r.get("memory") or r.get("data") or ""
+        if not (mid and content):
+            continue
+        try:
+            from ducky.text_fts import _index_memory
+            _index_memory(mid, content, user_id=user_id, category=category)
+        except Exception as e:
+            logger.debug(f"FTS index on add 跳过: {e}")
+        _classify_memory_type_on_add(mid, content)
+
+
+def _classify_memory_type_on_add(memory_id: str, content: str) -> None:
+    """🔴7：写时六型分类。默认关闭（规则分类），开 AIDUMEM_TYPE_CLASSIFY_ENABLED 后用 LLM。
+
+    此前 classify_and_record 生产零调用、六型只能手动 backfill。这里接进主链，
+    环境变量控制是否用 LLM；失败静默降级不阻断写入。
+    """
+    try:
+        import os
+        enabled = os.getenv("AIDUMEM_TYPE_CLASSIFY_ENABLED", "false").lower() in {"1", "true", "yes"}
+        from ducky.memory_types import classify_and_record
+        classify_and_record(memory_id, content, use_llm=enabled)
+    except Exception as e:
+        logger.debug(f"写时六型分类跳过: {e}")
 
 
 def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: str) -> None:

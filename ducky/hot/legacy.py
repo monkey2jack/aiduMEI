@@ -277,10 +277,25 @@ def _run_consolidation(user_id=DEFAULT_USER_ID, max_obs=50):
 # §9  后台循环（导出供 §14 引用）
 # ═══════════════════════════════════════════════
 def _background_consolidation_loop():
+    # 🔴10：合并间隔改为读 manifest/env 可配置项（consolidation_interval_hours，默认 24h）。
+    import os as _os
+    try:
+        interval_h = float(_os.getenv("AIDUMEM_CONSOLIDATION_INTERVAL_HOURS", "0")) or None
+    except ValueError:
+        interval_h = None
+    if interval_h is None:
+        try:
+            import json as _json
+            _mp = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "manifest.json")
+            _cfg = (_json.load(open(_mp, encoding="utf-8")).get("capabilities", {}) or {}).get("config", {})
+            interval_h = float(_cfg.get("consolidation_interval_hours", {}).get("default", 24))
+        except Exception:
+            interval_h = 24
+    interval_s = max(60, int(interval_h * 3600))
     while True:
         try: _run_consolidation(max_obs=30)
         except Exception as e: logger.error(f"consolidation 后台失败: {e}")
-        time.sleep(3600)
+        time.sleep(interval_s)
 
 def _background_scene_cluster_loop():
     """后台场景聚类——如果 facts 表不存在则静默跳过"""
@@ -294,11 +309,47 @@ def _background_scene_cluster_loop():
         first_run = False
         time.sleep(43200)
 
+def _ensure_scenes_table(conn):
+    """🔴6：scenes 表此前从未建，导致 /scene 开箱 500。此处幂等建表。
+
+    member_keys 加 UNIQUE：后台聚类每 12h 跑一次，配合下方 INSERT OR IGNORE
+    防止同一场景重复累积、表无限膨胀（自审 A ⚠️）。
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scenes (
+            scene_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            category    TEXT DEFAULT '',
+            summary     TEXT DEFAULT '',
+            member_keys TEXT DEFAULT '' UNIQUE,
+            member_count INTEGER DEFAULT 0,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # 迁移：早期版本建过无 UNIQUE 的 scenes 表；scenes 是聚类衍生数据，可安全重建。
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='scenes'"
+    ).fetchone()
+    if row and row[0] and "UNIQUE" not in row[0]:
+        conn.executescript("""
+            DROP TABLE IF EXISTS scenes;
+            CREATE TABLE scenes (
+                scene_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                category    TEXT DEFAULT '',
+                summary     TEXT DEFAULT '',
+                member_keys TEXT DEFAULT '' UNIQUE,
+                member_count INTEGER DEFAULT 0,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+    conn.commit()
+
+
 def _cluster_scenes_impl(category: str = None, dry_run: bool = True, min_similarity: float = 0.25):
     conn = _get_facts_conn()  # 🔧 修：categories 来自 facts 表，非 scenes
     categories = [category] if category else [r[0] for r in conn.execute(
         "SELECT DISTINCT category FROM facts WHERE archived=0 ORDER BY category").fetchall()]
     clustered = 0
+    scenes_out = []
     for cat in categories:
         facts = _extract_key_facts(cat)
         if len(facts) < 2: continue
@@ -309,7 +360,26 @@ def _cluster_scenes_impl(category: str = None, dry_run: bool = True, min_similar
                 if sim > best_score: best_score, best_match = sim, facts[j]
             if best_score >= min_similarity:
                 clustered += 1
+                if best_match is not None:
+                    scenes_out.append({
+                        "category": cat,
+                        "summary": (facts[i].get("fact_value","") or "")[:120],
+                        "member_keys": f"{facts[i].get('fact_key','')}|{best_match.get('fact_key','')}",
+                    })
     conn.close()
+    # 🔴6：非 dry-run 时把聚类结果落库（此前只算 clustered 计数、从不写库）
+    if not dry_run and scenes_out:
+        sconn = _get_scenes_conn()
+        try:
+            _ensure_scenes_table(sconn)
+            for s in scenes_out:
+                sconn.execute(
+                    "INSERT OR IGNORE INTO scenes (category, summary, member_keys, member_count) VALUES (?,?,?,2)",
+                    (s["category"], s["summary"], s["member_keys"]),
+                )
+            sconn.commit()
+        finally:
+            sconn.close()
     return {"status":"ok (dry-run)" if dry_run else "ok","clustered":clustered}
 
 
@@ -415,7 +485,7 @@ def register_legacy_routes(app):
                                valid_from, valid_to, agent_id, profile, memory_tier,
                                recorded_at, decay_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(category, fact_key) DO UPDATE SET
+            ON CONFLICT(agent_id, category, fact_key) DO UPDATE SET
                 fact_value=excluded.fact_value, source=excluded.source,
                 summary=excluded.summary, overview=excluded.overview,
                 level=excluded.level, updated_at=CURRENT_TIMESTAMP,
@@ -719,7 +789,16 @@ def register_legacy_routes(app):
     @app.get("/scene")
     def list_scenes(category: str = None, limit: int = 20):
         conn = _get_scenes_conn()
-        rows = conn.execute("SELECT * FROM scenes ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        _ensure_scenes_table(conn)  # 🔴6：保证表存在，避免开箱 500
+        if category:
+            rows = conn.execute(
+                "SELECT * FROM scenes WHERE category=? ORDER BY created_at DESC LIMIT ?",
+                (category, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM scenes ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
         conn.close()
         return {"status":"ok","scenes":[dict(r) for r in rows]}
 

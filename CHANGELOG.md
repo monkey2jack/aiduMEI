@@ -4,6 +4,40 @@
 
 ---
 
+## v19.1.0 — Athena 雅典娜 · 审计修复版（2026-08-13）
+
+> 社区网友对 v19.0 做了 file:line 级全量代码审计，指出 26 项问题。本版逐条独立复核后全部修复，并对少数夸大的营销措辞做诚信对齐。感谢审计者。
+
+### 🔴 数据安全
+- **联邦跨 Agent 隔离**：facts 唯一索引由 `(category, fact_key)` 升级为 `(agent_id, category, fact_key)`，`ON CONFLICT` 目标同步带 agent_id。此前 Agent B 写同 key 会静默覆盖 A 的记忆且仍记 A 名下。存量库自动安全重建；新增跨-agent 回归测试。
+- **联邦 UPDATE 不再重置衰减时钟**：0.70–0.85 相似度更新不再刷新 `recorded_at/decay_at`，与 merge 分支语义对齐。
+
+### 🔴 启动与主链
+- **全新部署开箱可用**：联邦 schema 迁移前置核心建表，修 fresh clone 时 `agents/federation_broadcast` 表缺失、联邦端点全返 `no such table`。
+- **写入主链接线**：正常 `/add` 补齐 salience 登记 + FTS 索引 + 六型写时分类。此前正常新增的记忆全文搜不到、热度不累计。
+
+### 🔴 Athena 断链修复
+- **技能人工审批**：新增 `POST /crystals/approve`，此前 draft 永远转不了正。
+- **conflict REGEXP 注册**：给 SQLite 连接注册 `REGEXP`，冲突消解热路径此前必抛 `no such function` 静默空转。
+- **self_edit 相似度门控**：启用 `_CANDIDATE_SIM_FLOOR`，避免每次 `/add` 同步烧 LLM 阻塞写入。
+
+### 🔴/🟠 端点与脚本
+- `/metrics` 上线（运行时指标）；`/gate` 上线（Tahoe-Gate 相关性闸门，此前零调用）。
+- `mem_search_deep` POST→GET 修 405；`/search/deep` 改关键词检索，不再依赖从未创建的 `facts_fts`。
+- `/scene` 建表 + 结果落库修开箱 500；`restore_backup.py` 端点 `/api/memory/add`→`/add` 修 404。
+- SETTINGS 保存 `PUT`→`POST` 且检查 `r.ok`，不再对失败假报「已保存」；升级脚本移除幽灵文件引用、mem0ai 基线对齐 `2.0.18`。
+
+### 🟡 缺陷修复
+- `session_unpin` 判空逻辑写反修正；`session_search` 的 `context_used` 恒真修正。
+- `workspace.db` 改走 `AIDUMEM_DATA_DIR`；vision 失败字符串不再落库；autodream 不再物理改写原文（仅归档 + `autodream_log` 溯源）。
+
+### 🟠 诚信与一致性
+- **版本号统一**：`version.py` 真相源升 `19.1.0`，`mcp_server.py`/`manifest.json` 全部从真相源取值。
+- **manifest 可配置项真读取**：`salience_half_life_days`/`salience_floor`/`consolidation_interval_hours` 由环境变量 > manifest > fallback 实际读取。
+- **卖点措辞对齐实现**：移除「Token 降低 100 倍 / 10ms→1ms」未经基准验证的表述；「零依赖前端」标注 MAP 面板依赖 ECharts CDN。
+
+---
+
 ## v19.0.0 — Athena 雅典娜（2026-08-13）
 
 > 从记忆到智慧。前代 Zeus 打通「记什么、怎么记、怎么找回来」；雅典娜从宙斯头颅中全副武装诞生，补上认知闭环的后半程——**记忆存下来之后，Agent 如何主动反思、自我修正、越用越精炼、把经验长成技能，并拥有稳定的人格底座**。记忆不再只增不减，而是会自省、会收敛、会进化。
