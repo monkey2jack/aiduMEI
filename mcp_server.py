@@ -465,6 +465,89 @@ def mem_persona() -> str:
     return _ok(result)
 
 
+# ── v19.0 人格记忆基座（Persona Memory Layer）MCP 工具 ──
+# 与旧 /persona/ai-self 静态人设互补：新基座是按情境检索的自传体记忆库。
+
+@mcp.tool()
+def mem_persona_build(
+    persona_card: str = "",
+    persona_name: str = "",
+    persona_key: str = "",
+    mode: str = "synthesis",
+    source_material: str = "",
+    use_llm: bool = True,
+) -> str:
+    """构建人格记忆基座（v19.0 Persona Memory Layer）。
+
+    两种模式：
+      - synthesis 合成：从一句话人设生成虚构自传体记忆库（面向虚构角色）
+      - grounded 真实：从 source_material 抽取组织记忆，零虚构，每条可回溯来源
+
+    Args:
+        persona_card:    合成模式用，简短人设
+        persona_name:    人设名称
+        persona_key:     稳定标识（省略则自动推导）
+        mode:            synthesis | grounded
+        source_material: 真实模式用，素材原文（多行）
+        use_llm:         是否调用 LLM（False 时合成模式走规则降级）
+    """
+    body: dict = {
+        "persona_card": persona_card,
+        "persona_name": persona_name,
+        "persona_key": persona_key,
+        "mode": mode,
+        "source_material": source_material,
+        "use_llm": use_llm,
+    }
+    result = _api_post("/persona/build", body)
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_persona_retrieve(
+    situation: str,
+    persona_key: str = "",
+    bank_id: int = 0,
+    k: int = 5,
+    level: str = "",
+) -> str:
+    """按当前情境检索人格记忆（动态条件化，替代整卡注入）。
+
+    Args:
+        situation:   当前情境描述（如「用户在做前端开发」）
+        persona_key: 基座标识（省略则用 bank_id）
+        bank_id:     指定基座版本 ID（与 persona_key 二选一）
+        k:           返回条数
+        level:       可选只取某层 L(人生阶段)/G(一般事件)/E(具体经历)
+    """
+    body: dict = {
+        "situation": situation,
+        "persona_key": persona_key,
+        "bank_id": bank_id,
+        "k": k,
+        "level": level,
+    }
+    result = _api_post("/persona/retrieve", body)
+    return _ok(result)
+
+
+@mcp.tool()
+def mem_persona_banks(persona_key: str = "", status: str = "") -> str:
+    """列出人格记忆基座（含版本历史、L/G/E 计数，可回滚）。
+
+    Args:
+        persona_key: 可选，只列某个基座
+        status:      可选，按状态过滤（ready | superseded | building | failed）
+    """
+    params: dict = {}
+    if persona_key:
+        params["persona_key"] = persona_key
+    if status:
+        params["status"] = status
+    result = _api_get("/persona/banks", params)
+    return _ok(result)
+
+
 # ═══════════════════════════════════════════════════════
 # ⑧ AutoDream 自动梦境（后台自演化）
 # ═══════════════════════════════════════════════════════

@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-18.3.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-19.0.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -24,14 +24,17 @@
 
 ## aiduMEI 是什么？
 
-**aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用思想系统** —— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它以希腊神话诸神为名，承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
+**aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用思想系统**（AI Thought Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它以希腊神话诸神为名，承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
+
+> **v19.0 · Athena 雅典娜——从记忆到智慧。** 前代 Zeus（宙斯）打通了「记什么、怎么记」；雅典娜从宙斯头颅中全副武装诞生，续上「记完之后如何变聪明」——**主动反思、记忆自编辑、递归精炼、技能自生长、人格记忆基座**。记忆（Mnemosyne）→ 沉淀 → **智慧（Athena）**，进化线自此闭环。
 
 > **品牌演进**：aiduMEM（优忆思）→ aiduMEI⚕爱嘟优忆思。从一个记忆中间件，升级为带可视化洞察的智能体通用思想系统。"爱嘟"是用户与 AI 助手的亲密呼唤，"优忆思"是记忆·思考·洞察的三重承诺。
 
-基于 [mem0](https://github.com/mem0ai/mem0) 构建，aiduMEI 在其之上搭建了十层认知体系：
+基于 [mem0](https://github.com/mem0ai/mem0) 构建，aiduMEI 在其之上搭建了逐版生长的认知体系：
 
 | 层级 | 代号 | 做什么 | 核心特性 |
 |------|------|--------|----------|
+| 🦉 **智慧** | Athena 雅典娜 | 记完之后如何变聪明 | Reflect 主动反思 · 记忆自编辑去重 · 递归精炼 · Skill 自生长 · 人格记忆基座 |
 | 🧠 **回忆** | Mnemosyne 谟涅摩绪涅 | 在对的时间找到对的回忆 | Ebbinghaus 遗忘曲线 + BM25/trigram + 向量混合检索 |
 | 🔍 **闸门** | Tahoe-Gate | 只检索真正相关的内容 | 1ms 启发式闸门拦截无关上下文 —— Token 消耗降低 100 倍 |
 | 🌊 **潮浪** | Mnemosyne Tidal | 批量 LLM 提取，不逐条调用 | 异步合并队列：多条短消息 → 单次 LLM 调用 |
@@ -127,7 +130,72 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
   <img src="docs/screenshots/16_settings_params.png" width="48%">
 </p>
 
-> 控制台由后端 `api_server.py` 直接托管在 `/ui`，前端是零依赖的纯静态文件（HTML + CSS + JS + PNG 图标），不打包、不编译、不装 node。克隆仓库 → 启动 → 浏览器打开 `http://localhost:8767/ui/` 即用。
+---
+
+## 🦉 v19.0 新特性 · Athena 雅典娜——从记忆到智慧
+
+> 前代 Zeus 解决了「记什么、怎么记、怎么找回来」。Athena 补上认知闭环的后半程：**记忆存下来之后，Agent 如何主动回顾、自我修正、越用越精炼、把经验长成技能，并拥有稳定的人格底座。** 记忆不再只增不减，而是会自省、会收敛、会进化。
+
+### 🔮 Reflect 主动反思（P0-3 · 借鉴 Hindsight）
+Agent 不再只会「存了再搜」。定期或触发式回顾记忆，提炼出模式、关系、预测、矛盾与知识缺口，把洞察落库成一等公民的 `reflections`，供后续对话注入引用。
+- 后台每 6 小时自动反思一次（`AIDUMEM_REFLECT_INTERVAL_HOURS` 可调），也可 `POST /reflect` 手动触发
+- **会话结束自动触发**：`/session/end` 后台拉起 `run_reflect(source="session_end")`，把一段对话沉淀成洞察
+- 降级友好：LLM 未配置 / 调用失败 / 解析失败都不抛异常，返回空洞察；同一洞察按 content 哈希幂等落库
+
+### ✏️ 记忆去重自编辑（P0-2 · 借鉴 Mem0）
+写入新记忆前，先用 LLM 判断它与既有记忆是「重复 / 冲突 / 全新」——重复则合并而非追加，冲突则保留双方并标注置信度与时间。**记忆不再只增不减。**
+- LLM 语义级判重先行，`Layer1` Jaccard 零成本兜底；LLM 不可用时无缝回退，向后完全兼容
+- 每次合并/冲突更新都把「旧内容 → 新内容」快照进 `memory_edits` 表，`POST /self-edit/rollback` 一键回滚
+
+### 🧬 记忆递归精炼（P1-3 · 借鉴 SimpleMem）
+后台把相关的多条碎记忆递归合并为更高层抽象，对抗「记忆熵增」。与自编辑分工清晰：自编辑管写入时的 1 对 1 判重，精炼管后台的多对 1 聚类压缩。
+- 精炼产物写入 `refined_memories`，原记忆只做 soft-superseded（不物理删除），可一键回滚
+- 治理铁律：LLM 只能建议，不能直接 commit
+
+### 🌱 自动 Skill 生长 + 精炼淘汰（P1-2 · 借鉴 ReMe/MemU）
+在 v17 结晶器之上补上「从经验自动生长技能」的后半链路：任务轨迹回放 → 步骤提取 → LLM 生成 SKILL.md 草稿 → **人工 approve** → 归档为技能。
+- 技能复用打点（`record_skill_use`）：成功/失败计数，低效用技能（成功率 < 34%）自动标记待淘汰，**不物理删除**，可人工复核恢复
+- 草稿永远落在 `status='draft'`，LLM 不能自动 commit
+
+### 🎭 人格记忆基座 · Persona Memory Layer（借鉴 MemoryForge）
+把一句话人设展开成一整套**可按情境检索的自传体记忆库**，替代每轮硬塞同一张静态人设卡。L（生平）/ G（成长）/ E（情节）三层结构，双模式构建：
+- **synthesis 合成**——面向虚构角色：从简短人设自动生成 L/G/E 三层
+- **grounded 落地**——面向真实用户：从已有记忆库归纳提炼，不虚构
+- 与运营记忆双层并行：运营记忆是持续生长的「活记忆」，人格基座是相对静态的「人生底座」，上层按情境混排注入；版本化可回滚
+
+### 🕰️ 双时间轴记忆 + 时间感知检索（P0-1 / P0-4）
+- **P0-1**：每条记忆带 `valid_from` / `valid_to` / `recorded_at` 双时间轴，`created_at → recorded_at → valid_from` 三级时间源回退
+- **P0-4**：混合检索多信号加权融合——向量 + BM25 + 时效衰减 + 可靠性 + 热度；时间衰减率 `λ` 环境变量可调
+
+### 🗂️ 记忆类型分离（P1-1 · 借鉴 Hindsight 四网络）
+把混在同一池的记忆按认知类型显式分开管理——不推翻现有存储，而是加一层类型标签与查询视图：
+
+`FACTS` 客观事实 · `PREFERENCES` 偏好+置信度 · `EXPERIENCES` 第一人称经历 · `OBSERVATIONS` 中性观察 · `REFLECTIONS` 反思洞察 · `DECISIONS` 关键决策账本
+
+---
+
+## 📦 部署要求——轻到能塞进一台入门云主机
+
+> 维护者关心的问题：这套东西部署起来重不重、要多少内存 CPU、体积多大？**答案是：非常轻。** 这本身就是 aiduMEI 的一个设计亮点。
+
+| 维度 | 实测数据 | 说明 |
+|------|----------|------|
+| **运行内存** | **约 210 MB RSS**（单进程实测） | 生产环境单个 Python 进程常驻，含 mem0 内核 + FastAPI + 嵌入式向量库 |
+| **CPU** | **2 核足够，闲时 < 1%** | 无常驻重计算；LLM/Embedding 全部走外部 API，本机只做检索融合与 SQL |
+| **磁盘（程序）** | 源码约 2.6 MB · 依赖 venv 约 175 MB | 纯 Python，无需编译；克隆即跑 |
+| **磁盘（数据）** | 千级记忆约 13 MB 向量 + 数百 KB SQLite | 随记忆量线性增长，量级极小 |
+| **直接依赖** | **仅 9 个顶层包** | mem0ai / qdrant-client / fastapi / uvicorn / pydantic 系 / httpx / requests |
+| **Python** | 3.10 – 3.12 | 3.12 为推荐 |
+| **前端** | **0 依赖** | 控制台纯静态，不装 node、不打包、不编译 |
+
+**为什么这么轻，是刻意设计：**
+
+- **向量库嵌入式落盘，不起独立服务**：Qdrant 走 `path: ./data/qdrant` 本地模式，无独立进程、无 Docker、无额外端口——省掉一整套向量数据库运维。
+- **算力外包**：LLM、Embedding、Rerank 全部通过 OpenAI 兼容 API 外部调用，本机不加载任何大模型权重，因此不吃 GPU、不吃大内存。
+- **相关性闸门先拦一道**：日常闲聊不触发检索，Token 与算力消耗直接省掉一个量级。
+- **SQLite + FTS5 兜底**：结构化知识与全文搜索用零依赖的 SQLite，向量服务超时可热切换到本地全文搜索，不会因为向量库抖动而全盘瘫痪。
+
+> 一句话：**一台 1 核 1G 的入门云主机即可跑起来，2 核 2G 从容有余。** 重量级的部分（大模型推理）都在云端 API，本地只是一个轻巧的记忆与检索大脑。
 
 ---
 
@@ -137,7 +205,8 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 | 版本 | 代号 | 神格 | 核心使命 |
 |------|------|------|----------|
-| **v18.3** | **Zeus** · 宙斯 | 众神之王 · 多模态感知 | **无损秒级升级 · 多模态视觉记忆 · Obsidian 双链联动 · 控制台密码修改** |
+| **v19.0** | **Athena** · 雅典娜 | 智慧女神 · 从记忆到智慧 | **Reflect 主动反思 · 记忆自编辑去重 · 递归精炼 · Skill 自生长 · 人格记忆基座** |
+| **v18.3** | **Zeus** · 宙斯 | 众神之王 · 多模态感知 | 无损秒级升级 · 多模态视觉记忆 · Obsidian 双链联动 · 控制台密码修改 |
 | **v18.2** | **Zeus** · 宙斯 | 众神之王 · 检索自进化 | EvolveMem 反馈闭环、38 MCP 工具、质量审计全覆盖、**自带可视化控制台** |
 | **v18.0** | **Zeus** · 宙斯 | 众神之王 · 吸星大法 | 原味抽屉 · 代码图谱 · 五大竞品精华融合 · MCP×36 · IDE 钩子 |
 | **v17.0** | **Themis** · 忒弥斯 | 秩序女神 | 事件账本 · 敏感分档 · 治理铁律 |
@@ -157,11 +226,12 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v18.3          │
+│           aiduMEI⚕爱嘟优忆思 v19.0 · Athena │
 │              FastAPI REST API :8767                       │
 │              控制台 /ui :8767（自带静态托管）              │
-│              MCP Server :8768 (38 tools)                  │
+│              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
+│  Athena          → Reflect反思 · 自编辑 · 精炼 · Skill生长 · 人格基座 │
 │  Core (HOT)      → 搜索、添加、CRUD、健康检查              │
 │  v8 Pipeline     → 点火 · 工作区 · 广播 · 镜鉴 · 会话      │
 │  Clotho/Hyperion → CoreMemory · 检查点 · AutoDream       │
@@ -294,6 +364,38 @@ Vision 模型在 `mem0_config_local.json` 的独立 `vision` 配置段指定（�
 | `POST` | `/crystals/detect` | 检测可结晶的高频重复事实 |
 | `GET` | `/crystals` | 查看技能结晶候选项 |
 
+### 🦉 Athena 认知层（v19.0 新增）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/reflect` | 触发主动反思，提炼模式/矛盾/知识缺口为洞察 |
+| `GET` | `/reflect/list` | 列出已落库的反思洞察 |
+| `GET` | `/reflect/context` | 取可注入上下文的反思摘要 |
+| `GET` | `/self-edit/edits` | 查看记忆自编辑（合并/冲突）历史 |
+| `POST` | `/self-edit/rollback` | 回滚一次自编辑（旧内容还原） |
+| `GET` | `/memory/types` | 六种记忆类型定义与分布 |
+| `POST` | `/memory/types/query` | 按类型检索记忆 |
+| `POST` | `/memory/types/backfill` | 给存量记忆回填类型标签 |
+| `POST` | `/memory/refine` | 触发递归精炼（多条碎记忆 → 高层抽象） |
+| `POST` | `/memory/refine/apply` | 应用一条精炼产物 |
+| `POST` | `/memory/refine/rollback` | 回滚精炼（原记忆还原） |
+| `GET` | `/memory/refinements` | 精炼产物列表 |
+| `POST` | `/skill/grow` | 从任务轨迹生长 SKILL.md 草稿（待人工 approve） |
+| `GET` | `/skill/drafts` | 技能草稿列表 |
+| `POST` | `/crystals/use` | 技能复用打点（成功/失败计数） |
+| `POST` | `/crystals/prune` | 淘汰低效用技能（标记 archived，不删除） |
+
+### 🎭 人格记忆基座（Persona Memory Layer · v19.0）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/persona/build` | 构建人格基座（`synthesis` 合成 / `grounded` 落地 双模式） |
+| `GET` | `/persona/banks` | 人格库列表 |
+| `GET` | `/persona/detail` | 单个人格库的 L/G/E 三层明细 |
+| `POST` | `/persona/retrieve` | 按情境检索人格记忆 |
+| `GET` | `/persona/context` | 取可注入的人格上下文 |
+| `POST` | `/persona/rollback` | 回滚到人格库的历史版本 |
+
 ### 万神殿联邦（Pantheon v13.0）
 
 | 方法 | 路径 | 说明 |
@@ -404,9 +506,9 @@ BM25 trigram（零延迟兜底） + 向量嵌入 + Reranker 重排序 + 召回�
 
 ---
 
-## MCP Server（38 工具）
+## MCP Server（41 工具）
 
-aiduMEI 内置 MCP Server（`:8768`），暴露 38 个工具，分组如下：
+aiduMEI 内置 MCP Server（`:8768`），暴露 41 个工具，分组如下：
 
 | 工具组 | 数量 | 说明 |
 |--------|------|------|
@@ -423,6 +525,7 @@ aiduMEI 内置 MCP Server（`:8768`），暴露 38 个工具，分组如下：
 | Conflict | 1 | conflict_resolve |
 | Evolve | 2 | evolve_feedback / evolve_report |
 | Federation | 6 | fed_recall / fed_add / fed_agents / fed_register / fed_broadcast / fed_awareness |
+| Persona（v19.0） | 3 | persona_build / persona_retrieve / persona_banks |
 
 ---
 
@@ -451,7 +554,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 ## 技术栈
 
 - **运行时**：Python 3.12+、FastAPI、Uvicorn
-- **记忆内核**：mem0 v2.0.17
+- **记忆内核**：mem0 v2.0.18
 - **向量存储**：Qdrant（通过 qdrant-client）
 - **结构化数据**：SQLite（facts.db、observations.db、scenes.db、fact_events.db）
 - **全文搜索**：SQLite FTS5 + trigram 分词器

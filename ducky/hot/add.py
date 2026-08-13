@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
@@ -58,6 +59,15 @@ def register_add_routes(app: FastAPI) -> None:
                 async_flag = bool(extra.get("async") or extra.get("async_mode"))
             # metadata 里也可带 async
             md = dict(req.metadata or {})
+
+            # P0-1 写入侧自动时间戳（与生产对齐）：
+            # 调用方未显式传 recorded_at 时自动补 UTC ISO 时间，供
+            # 时间过滤（before/after）和三级时间戳回退使用。
+            # 注意：仅新写入路径需要该时间戳。md 会被透传给 memory.add
+            # 与 self-edit 合并路径的 memory.update；若在这里统一补上，
+            # 合并会把旧记忆的 recorded_at 覆盖成「现在」，破坏 before/
+            # after 时间推理。因此只在新增落库时补，合并不受影响。
+            md.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
 
             # --- 🚀 v18.3 核心：原生多模态支持 (Phase 2) ---
             media_url = md.get("media_url") or md.get("image_url") or (extra.get("media_url") if isinstance(extra, dict) else None)

@@ -9,6 +9,8 @@ Ignition · Workspace · Broadcast · J-lens · Session · Instinct graduate
 from __future__ import annotations
 
 import logging
+import os
+import threading
 
 from fastapi import FastAPI, HTTPException
 
@@ -17,6 +19,31 @@ from ducky.utils import DEFAULT_USER_ID
 from ducky.mem0_runtime import get_memory
 
 logger = logging.getLogger("aiduMEM.routes")
+
+# 会话结束反思默认开启；AIDUMEM_REFLECT_ON_SESSION_END=false 可关闭（手动 /reflect 不受影响）
+_REFLECT_ON_SESSION_END = os.environ.get("AIDUMEM_REFLECT_ON_SESSION_END", "true").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+
+
+def _trigger_session_end_reflect(user_id: str) -> None:
+    """P0-3 接线：会话结束时在后台线程触发一次 Reflect 反思。
+
+    - 不阻塞 /session/end 响应
+    - 异常吞掉只记日志，绝不因反思失败影响会话结束
+    - 由 AIDUMEM_REFLECT_ON_SESSION_END 控制开关
+    """
+    if not _REFLECT_ON_SESSION_END:
+        return
+
+    def _run():
+        try:
+            from ducky.reflect import run_reflect
+            run_reflect(user_id=user_id, source="session_end")
+        except Exception as e:
+            logger.warning(f"会话结束反思触发失败（忽略）: {e}")
+
+    threading.Thread(target=_run, daemon=True, name="aidumem-session-end-reflect").start()
 
 
 def register_v8_routes(app: FastAPI) -> None:
@@ -163,7 +190,11 @@ def register_v8_routes(app: FastAPI) -> None:
     def session_end(session_id: str):
         try:
             from ducky.memory_persistence import session_end as _session_end
-            return _session_end(session_id)
+            result = _session_end(session_id)
+            if result.get("status") == "ok":
+                # P0-3 接线：会话结束触发一次 Reflect 反思（后台线程，不阻塞响应）
+                _trigger_session_end_reflect(result.get("user_id") or DEFAULT_USER_ID)
+            return result
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 

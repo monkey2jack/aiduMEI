@@ -36,8 +36,31 @@ def _detect_lane(memory_content: str) -> str:
 
 
 def on_memory_added(memory_id: str, initial_salience: float = 0.5,
-                     lane: Optional[str] = None, content: str = ""):
-    """新增记忆时注册 salience（v8.3.0 支持 Lane + 内容缓存）"""
+                     lane: Optional[str] = None, content: str = "",
+                     preserve_heat: bool = False):
+    """新增记忆时注册 salience（v8.3.0 支持 Lane + 内容缓存）
+
+    保留已有热度的合并路径：self-edit 合并已有记忆时传入 preserve_heat=True，
+    不会把 access_count 清零（否则合并会悄悄抹掉检索热度信号）。
+    """
+    if preserve_heat:
+        conn = get_salience_conn()
+        row = conn.execute(
+            "SELECT access_count, salience FROM salience WHERE memory_id = ?", (memory_id,)
+        ).fetchone()
+        if row:
+            # 已有热度：保留访问次数与显著性，仅刷新 content_preview/last_access
+            now = time.time()
+            resolved_lane = lane or DEFAULT_LANE
+            conn.execute(
+                "UPDATE salience SET last_access=?, content_preview=?, lane=? WHERE memory_id=?",
+                (now, content[:200] if content else "", resolved_lane, memory_id),
+            )
+            conn.commit()
+            conn.close()
+            logger.debug(f"salience 合并登记（保留热度 access_count={row['access_count']}）: {memory_id[:16]}")
+            return
+
     now = time.time()
     if lane is None and content:
         lane = _detect_lane(content)

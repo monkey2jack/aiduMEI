@@ -17,6 +17,68 @@ from ducky.mem0_runtime import (
 logger = logging.getLogger("aiduMEM.hot")
 
 
+def _apply_time_window_to_trace(result: dict, before: str, after: str) -> dict:
+    """对 funnel trace 的 results 做 P0-4 时间窗口客户端过滤。
+
+    funnel 返回结构为 {status, trace, results, ...}；这里复用 engine
+    的时间归一化逻辑，失败则原样返回（降级不阻断检索）。
+    """
+    try:
+        results = result.get("results") or []
+        if not isinstance(results, list):
+            return result
+        _filter_results_by_time(results, before, after)
+        result["results"] = results
+        if "trace" in result and isinstance(result["trace"], dict):
+            result["trace"]["final_count"] = len(results)
+        return result
+    except Exception:
+        return result
+
+
+def _filter_results_by_time(results: list, before: str, after: str) -> None:
+    """原地过滤 results，剔除不在 before/after 窗口内的候选（P0-4）。
+
+    与 engine.RecallEngine.search 的窗口过滤同一套四级时间戳回退语义。
+    """
+    try:
+        from ducky.engine import extract_timestamp
+
+        if not before and not after:
+            return
+        b_prefix = None
+        a_prefix = None
+        try:
+            from ducky.engine import _norm_bound
+            b_prefix = _norm_bound(before, is_before=True)
+            a_prefix = _norm_bound(after, is_before=False)
+        except Exception:
+            from ducky.engine import _date_prefix
+            b_prefix = _date_prefix(before)
+            a_prefix = _date_prefix(after)
+
+        kept = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            ts = extract_timestamp(item)
+            prefix = ""
+            if ts > 0:
+                from datetime import datetime, timezone
+                prefix = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            if not prefix:
+                kept.append(item)  # 无时间戳保守保留
+                continue
+            if b_prefix and prefix > b_prefix:
+                continue
+            if a_prefix and prefix < a_prefix:
+                continue
+            kept.append(item)
+        results[:] = kept
+    except Exception:
+        return
+
+
 def register_search_routes(app: FastAPI) -> None:
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
@@ -36,12 +98,19 @@ def register_search_routes(app: FastAPI) -> None:
 
             results = []
             try:
-                results = lazy_import_hybrid()(mem, req.query, _normalize_user_id(req.user_id), req.limit)
+                results = lazy_import_hybrid()(
+                    mem, req.query, _normalize_user_id(req.user_id), req.limit,
+                    before=req.before, after=req.after,
+                )
                 logger.info(f"🔍 hybrid 召回: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
-            except (ImportError, Exception) as e:
+            except Exception as e:
                 logger.debug(f"混合召回不可用，降级 mem0 搜索: {e}")
-                raw = mem.search(req.query, filters={"user_id": _normalize_user_id(req.user_id)}, limit=req.limit)
+                raw = mem.search(req.query, filters={"user_id": _normalize_user_id(req.user_id)}, top_k=max(req.limit * 3, 20))
                 results = raw.get("results", raw) if isinstance(raw, dict) else raw
+                if req.before or req.after:
+                    # 降级路径也必须兑现 P0-4 时间窗口，否则混合召回一挂
+                    # before/after 就被静默丢弃，时间推理返回错误结果。
+                    _filter_results_by_time(results, req.before, req.after)
                 logger.info(f"🔍 mem0 裸搜: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
 
             boost_salience_for_results(results)
@@ -63,6 +132,10 @@ def register_search_routes(app: FastAPI) -> None:
         try:
             mem = get_memory()
             result = lazy_import_funnel()(mem, req.query, req.user_id, req.limit)
+            # P0-4：与 /search 保持一致的时间窗口过滤。funnel 若返回
+            # results 列表，这里做一次客户端过滤，不改变 trace 结构。
+            if req.before or req.after:
+                result = _apply_time_window_to_trace(result, req.before, req.after)
             return result
         except ImportError:
             raise HTTPException(503, "Recall Funnel 模块未就绪")

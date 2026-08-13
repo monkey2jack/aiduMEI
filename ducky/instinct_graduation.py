@@ -45,8 +45,8 @@ def _get_llm_config() -> dict:
                         api_key = f.read().strip()
                         break
         return {
-            "model": llm_cfg.get("model", "sensenova-6.7-flash-lite"),
-            "base_url": llm_cfg.get("openai_base_url", "https://token.sensenova.cn/v1"),
+            "model": llm_cfg.get("model", "flash-lite"),
+            "base_url": llm_cfg.get("openai_base_url", "https://provider.example.cn/v1"),
             "api_key": api_key,
         }
     except Exception as e:
