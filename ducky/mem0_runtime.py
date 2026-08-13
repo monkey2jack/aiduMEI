@@ -257,7 +257,7 @@ def _load_rerank_config() -> dict:
         if os.path.exists(MEM0_CONFIG):
             with open(MEM0_CONFIG) as f:
                 j = json.load(f)
-            rerank = j.get("reranker", {})
+            rerank = j.get("rerank") or j.get("reranker") or {}
             rc = rerank.get("config", {})
             cfg["provider"] = rerank.get("provider", DEFAULT_RERANK_PROVIDER)
             cfg["model"] = rc.get("model", "your-rerank-model")
