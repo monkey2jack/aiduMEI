@@ -64,6 +64,17 @@ def ensure_memory_types_schema() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_types_type ON memory_types(memory_type)"
         )
+        # P2-4：ref 空间统一兼容。主链写时用 mem0 UUID，backfill 用 fact:{id}，
+        # 两者可能指向同一条记忆。这里幂等补 ref_alt 列，查询时双 ref 可命中。
+        try:
+            conn.execute("ALTER TABLE memory_types ADD COLUMN ref_alt TEXT")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_types_ref_alt ON memory_types(ref_alt) "
+                "WHERE ref_alt IS NOT NULL"
+            )
+        except Exception:
+            # ref_alt 已存在或 ALTER 不被支持时忽略，查询侧会回退单 ref。
+            pass
         conn.commit()
         _checked = True
     except Exception as e:
@@ -160,13 +171,17 @@ def classify_and_record(memory_ref: str, text: str, *, use_llm: bool = False) ->
 
     conn = get_facts_conn()
     try:
+        alt = None
+        if memory_ref.startswith("fact:"):
+            alt = memory_ref[5:]
         conn.execute(
-            "INSERT INTO memory_types (memory_ref, memory_type, source, confidence, updated_at) "
-            "VALUES (?,?,?,?,CURRENT_TIMESTAMP) "
+            "INSERT INTO memory_types (memory_ref, ref_alt, memory_type, source, confidence, updated_at) "
+            "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP) "
             "ON CONFLICT(memory_ref) DO UPDATE SET "
+            "ref_alt=COALESCE(excluded.ref_alt, memory_types.ref_alt), "
             "memory_type=excluded.memory_type, source=excluded.source, "
             "confidence=excluded.confidence, updated_at=CURRENT_TIMESTAMP",
-            (memory_ref, memory_type, source, confidence),
+            (memory_ref, alt, memory_type, source, confidence),
         )
         conn.commit()
     except Exception as e:
@@ -178,12 +193,18 @@ def classify_and_record(memory_ref: str, text: str, *, use_llm: bool = False) ->
 
 
 def get_memory_type(memory_ref: str) -> str:
-    """查询某条记忆的类型；未记录返回 FACTS（老数据默认事实）。"""
+    """查询某条记忆的类型；未记录返回 FACTS（老数据默认事实）。
+
+    P2-4：支持双 ref 命中——主链 UUID 与 backfill 的 fact:{id} 任一
+    匹配都返回同一分类，避免同一条记忆出现两条对不上的账本记录。
+    """
     ensure_memory_types_schema()
     conn = get_facts_conn()
     try:
         row = conn.execute(
-            "SELECT memory_type FROM memory_types WHERE memory_ref=?", (memory_ref,)
+            "SELECT memory_type FROM memory_types "
+            "WHERE memory_ref=? OR (ref_alt IS NOT NULL AND ref_alt=?)",
+            (memory_ref, memory_ref),
         ).fetchone()
         return row["memory_type"] if row else "FACTS"
     finally:

@@ -198,14 +198,14 @@ def mem_recent(user_id: str = DEFAULT_USER_ID, limit: int = 10) -> str:
 
 
 @mcp.tool()
-def mem_update(memory_id: str, data: str) -> str:
+def mem_update(memory_id: str, content: str) -> str:
     """更新指定 ID 的记忆内容。
 
     Args:
         memory_id: 记忆 UUID
-        data:      新的记忆文本
+        content:   新的记忆文本
     """
-    result = _api_post("/update", {"memory_id": memory_id, "data": data})
+    result = _api_post("/update", {"memory_id": memory_id, "content": content})
     return _ok(result)
 
 
@@ -768,30 +768,6 @@ def auto_memory_loop() -> None:
 
 
 # ═══════════════════════════════════════════════════════
-# 主入口
-# ═══════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=f"aiduMEM MCP Server v{SERVICE_VERSION} {CODENAME}")
-    parser.add_argument("--sse", action="store_true", help="以 SSE HTTP 模式启动（默认 stdio）")
-    parser.add_argument("--port", type=int, default=8766)
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    args = parser.parse_args()
-
-    # 启动后台自动记忆线程
-    threading.Thread(target=auto_memory_loop, daemon=True, name="auto-memory").start()
-    logger.info(f"🧠 aiduMEM MCP Server v{SERVICE_VERSION}-{CODENAME.lower()} 启动（API_BASE={API_BASE}）")
-
-    if args.sse:
-        logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")
-        import uvicorn
-        app = mcp.sse_app(mount_path="/sse")
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-    else:
-        logger.info("📟 stdio 模式启动")
-        mcp.run(transport="stdio")
-
-# ═══════════════════════════════════════════════════════
 # ⑬ EvolveMem 检索自进化（v18.1 新增）
 # ═══════════════════════════════════════════════════════
 
@@ -818,3 +794,29 @@ def evolve_report() -> str:
     """获取 EvolveMem 检索自进化的近期统计报告（搜索命中率、动态权重调整）。"""
     result = _api_get("/evolve/report")
     return _ok(result)
+
+
+# ═══════════════════════════════════════════════════════
+# 主入口 — 必须保持在文件最末尾，确保上方所有 @mcp.tool 装饰器都已执行
+# （stdio 模式下 mcp.run() 会阻塞，若提前会漏注册其后的工具）
+# ═══════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=f"aiduMEM MCP Server v{SERVICE_VERSION} {CODENAME}")
+    parser.add_argument("--sse", action="store_true", help="以 SSE HTTP 模式启动（默认 stdio）")
+    parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--host", type=str, default="127.0.0.1")
+    args = parser.parse_args()
+
+    # 启动后台自动记忆线程
+    threading.Thread(target=auto_memory_loop, daemon=True, name="auto-memory").start()
+    logger.info(f"🧠 aiduMEM MCP Server v{SERVICE_VERSION}-{CODENAME.lower()} 启动（API_BASE={API_BASE}）")
+
+    if args.sse:
+        logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")
+        import uvicorn
+        app = mcp.sse_app(mount_path="/sse")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    else:
+        logger.info("📟 stdio 模式启动")
+        mcp.run(transport="stdio")

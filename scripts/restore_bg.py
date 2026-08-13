@@ -39,7 +39,7 @@ for i, row in enumerate(rows):
             success += 1
         else:
             fail += 1
-    except:
+    except Exception:
         fail += 1
     
     if (i+1) % 200 == 0:

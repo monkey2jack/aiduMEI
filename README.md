@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-19.0.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-19.1.1-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -624,7 +624,7 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 | `AIDUMEM_LOG_DIR` | `<repo>/logs` | 日志目录 |
 | `AIDUMEM_CONFIG_FILE` | `<repo>/mem0_config_local.json` | mem0 配置文件路径（由 `AIDUMEM_HOME` 推导，固定文件名） |
 | `AIDUMEM_DEFAULT_USER_ID` | `default` | 默认 user_id |
-| `AIDUMEM_DEFAULT_AGENT_ID` | `default` | 联邦默认 agent_id |
+| `AIDUMEM_DEFAULT_AGENT_ID` | `local` | 联邦默认 agent_id |
 | `AIDUMEM_API_PORT` | `8767` | API + 控制台监听端口 |
 | `AIDUMEM_ENTITY_KEYWORDS` | 空 | 相关性闸门的自定义实体词表，`\|` 分隔 |
 | `UI_DIR` | `<repo>/frontend` | 控制台静态文件目录（不存在则仅 API 模式） |

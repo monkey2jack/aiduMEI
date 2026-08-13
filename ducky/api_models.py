@@ -30,9 +30,14 @@ class AddRequest(BaseModel):
     async_mode: bool = False
 
 class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     query: str
     user_id: str = DEFAULT_USER_ID
     limit: int = 5
+    # MCP 等调用方传的是 top_k；显式接收，避免被 Pydantic 静默丢弃
+    # 导致调用方指定数量永远不生效（P2-1 审计发现）。
+    top_k: int = 0
     # P0-4 时间窗口过滤（可选，兼容旧调用方）
     before: str = ""
     after: str = ""
@@ -48,7 +53,16 @@ class DeleteRequest(BaseModel):
     user_id: str = DEFAULT_USER_ID
 
 
+class DeleteAllRequest(BaseModel):
+    # 🟡P0-3：delete_all 独立 body 模型，user_id 从 body 读取。
+    user_id: str = DEFAULT_USER_ID
+
+
 class UpdateRequest(BaseModel):
+    # 🟡P0-2：放开额外字段并兼容旧调用方传 data 的写法，
+    # 避免 data 被 Pydantic 静默丢弃后把记忆更新成空串。
+    model_config = ConfigDict(extra="allow")
+
     memory_id: str
     user_id: str = DEFAULT_USER_ID
     content: str = ""

@@ -105,6 +105,39 @@ _api_alias = FastAPI(title="aiduMEM /api alias")
 register_all_routes(_api_alias, get_memory, _get_db, _extract_entities)
 app.mount("/api", _api_alias)
 
+# ── API 访问令牌（开源裸奔防线）────────────────────────────
+# 部署方设置 AIDUMEM_API_TOKEN 后，除登录/健康检查/静态 UI 外，
+# 所有 REST 端点强制校验 Authorization: Bearer <token>。
+# 未设置时保持旧行为（本机零配置可用），Docker 部署文档会强制引导设置。
+_API_TOKEN = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+
+
+def _is_public_path(path: str) -> bool:
+    """无需 API token 即可访问的路径（登录、健康检查、静态 UI、文档）。"""
+    if path in ("/", "/ui", "/login", "/api/login", "/login/hint", "/api/login/hint",
+                "/health", "/api/health", "/docs", "/api/docs", "/openapi.json",
+                "/api/openapi.json", "/redoc", "/api/redoc"):
+        return True
+    if path.startswith("/ui/"):
+        return True
+    return False
+
+
+@app.middleware("http")
+async def _require_api_token(request: Request, call_next):
+    if not _API_TOKEN:
+        return await call_next(request)
+    if _is_public_path(request.url.path):
+        return await call_next(request)
+    supplied = request.headers.get("Authorization", "")
+    expected = f"Bearer {_API_TOKEN}"
+    if not (supplied and hmac.compare_digest(supplied, expected)):
+        return JSONResponse(
+            {"error": "unauthorized", "detail": "Missing or invalid API token"},
+            status_code=401,
+        )
+    return await call_next(request)
+
 # ── UI 登录 ─────────────────────────────────────────────
 # 控制台登录门禁：/api/login 校验访问密码（AIDUMEM_UI_PASSWORD）。
 # 密码只来自环境变量，不入仓库；未配置时回退到开源默认密码 123456。
@@ -131,9 +164,8 @@ def _register_login(route_app: FastAPI) -> None:
 
     @route_app.get("/login/hint", include_in_schema=False)
     async def ui_login_hint():
-        # 默认密码时前端提示 123456；部署方已自定义则不提示。
-        if _UI_PASSWORD == _DEFAULT_UI_PASSWORD:
-            return {"hint": "默认密码 / Default PIN: 123456"}
+        # 安全修复：任何情况下都不把密码明文吐给前端。
+        # 未设置 AIDUMEM_UI_PASSWORD 时启动日志会提醒部署方自行设置。
         return {"hint": None}
 
 
@@ -215,10 +247,20 @@ def main():
     _start_background()
     host = os.environ.get("AIDUMEM_HOST", "127.0.0.1")
     port = int(os.environ.get("AIDUMEM_API_PORT") or os.environ.get("MEM0_API_PORT") or 8767)
+    if not _API_TOKEN:
+        logger.warning(
+            "⚠️ 未设置 AIDUMEM_API_TOKEN：REST 接口无鉴权。"
+            "本机/回环使用可接受；对外部署请务必设置 token。"
+        )
+    if _UI_PASSWORD == _DEFAULT_UI_PASSWORD:
+        logger.warning(
+            "⚠️ 未设置 AIDUMEM_UI_PASSWORD：UI 登录回退为默认密码。"
+            "对外部署请务必设置自己的强密码。"
+        )
     if host != "127.0.0.1":
         logger.warning(
-            "⚠️ 监听地址为 %s（非回环）。aiduMEM 自身不做鉴权，"
-            "请确保前置反向代理已配置认证与 TLS。", host
+            "⚠️ 监听地址为 %s（非回环）。对外部署请前置反向代理配置 TLS，"
+            "并设置 AIDUMEM_API_TOKEN + AIDUMEM_UI_PASSWORD。", host
         )
     uvicorn.run(app, host=host, port=port, log_level="info")
 

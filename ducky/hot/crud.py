@@ -5,7 +5,7 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 
-from ducky.api_models import DeleteRequest, InjectContextRequest, UpdateRequest
+from ducky.api_models import DeleteAllRequest, DeleteRequest, InjectContextRequest, UpdateRequest
 from ducky.utils import DEFAULT_USER_ID
 from ducky.mem0_runtime import (
     get_llm_usage,
@@ -99,10 +99,12 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(500, str(e))
 
     @app.post("/delete_all")
-    def delete_all(user_id: str = DEFAULT_USER_ID):
+    def delete_all(req: DeleteAllRequest):
+        # 🟡P0-3：改 body 模型接收 user_id，杜绝 MCP/客户端把 user_id 放 body
+        # 却被 FastAPI 当 query 取不到、永远回落 default 的删错用户事故。
         try:
             mem = get_memory()
-            mem.delete_all(user_id=user_id)
+            mem.delete_all(user_id=req.user_id)
             return {"status": "ok"}
         except Exception as e:
             raise HTTPException(500, str(e))
@@ -111,7 +113,13 @@ def register_crud_routes(app: FastAPI) -> None:
     def update(req: UpdateRequest):
         try:
             mem = get_memory()
-            mem.update(req.memory_id, data=req.content)
+            # 🟡P0-2：兼容旧调用方误传 data 字段；content 为空才回落到 data，
+            # 防止 UpdateRequest 把 data 丢弃后把记忆清空。
+            content = req.content
+            if not content:
+                extra = getattr(req, "model_extra", None) or {}
+                content = extra.get("data", "")
+            mem.update(req.memory_id, data=content)
             return {"status": "ok"}
         except Exception as e:
             raise HTTPException(500, str(e))
