@@ -1,4 +1,4 @@
-# aiduMEI docker-compose 一键起（v19.0）
+# aiduMEI docker-compose 一键起（v19.1.1）
 # 用法：
 #   docker compose up -d          # 后台启动
 #   docker compose logs -f        # 跟踪日志
@@ -8,6 +8,8 @@
 #   1. 默认使用仓库根目录的 mem0_config_local.json（可被环境变量覆盖）
 #   2. 数据落盘在 ./data（已在 .gitignore，不会提交）
 #   3. 生产部署建议仍用 systemd（见 deploy/aidumem-api.service）
+#   4. 安全：默认只监听 127.0.0.1。要对外暴露请先设置
+#      AIDUMEM_API_TOKEN + AIDUMEM_UI_PASSWORD，并前置 TLS 反代。
 
 services:
   aidumem:
@@ -16,12 +18,15 @@ services:
     container_name: aidumem
     restart: unless-stopped
     ports:
-      - "8767:8767"
+      - "127.0.0.1:8767:8767"
     environment:
-      - AIDUMEM_HOST=0.0.0.0
+      - AIDUMEM_HOST=127.0.0.1
       - AIDUMEM_API_PORT=8767
       - MEM0_API_PORT=8767
       - MEM0_TELEMETRY=false
+      # 安全：按需在宿主机 .env 注入（compose 会自动读取）
+      # - AIDUMEM_API_TOKEN=change-me-please
+      # - AIDUMEM_UI_PASSWORD=change-me-please
       # v19.0 认知层开关（默认开启 Reflect / self-edit；P1 的 LLM 增强默认关闭）
       - AIDUMEM_REFLECT_ENABLED=true
       - AIDUMEM_SELF_EDIT_ENABLED=true
