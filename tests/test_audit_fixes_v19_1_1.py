@@ -76,8 +76,13 @@ def test_search_request_accepts_top_k():
 def test_annotate_memory_types():
     import ducky.hot.search as hs
 
+    from ducky.memory_types import classify_and_record, ensure_memory_types_schema
+
+    ensure_memory_types_schema()
+    classify_and_record("fact:1", "用户偏好 Python", use_llm=False)
+
     results = [
-        {"id": "uuid-1", "metadata": {"fact_key": "pref_tea"}},
+        {"id": "uuid-1", "metadata": {"fact_id": 1}},
         {"id": "uuid-2", "metadata": {}},
         {"id": "uuid-3"},
         "not-a-dict",
@@ -87,6 +92,9 @@ def test_annotate_memory_types():
     for item in results[:3]:
         assert "memory_type" in item
     assert results[3] == "not-a-dict"
+    # 自审发现：fact_id 应优先命中账本（fact:{id}），不是拿 UUID 空查
+    assert results[0]["memory_type"] == "PREFERENCES"
+    assert results[1]["memory_type"] == "FACTS"
 
 
 # ── P3-3: _normalize_user_id no hardcoded admin/user mapping ──────────
