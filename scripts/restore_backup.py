@@ -39,7 +39,7 @@ for i, pt in enumerate(all_points):
         'user_id': payload.get('user_id', 'default'),
     }
     try:
-        resp = requests.post(f'{api_url}/api/memory/add', json=body, timeout=15)
+        resp = requests.post(f'{api_url}/add', json=body, timeout=15)
         if resp.status_code == 200:
             success += 1
         else:

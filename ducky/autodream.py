@@ -188,10 +188,12 @@ def _simple_merge(clusters: dict) -> dict:
 
                     for mid in merged_ids:
                         try:
-                            # 标记被合并的事实为 archived = 1，并更新内容
+                            # 🟢24：不再物理改写 fact_value（原「|| ' [superseded by #id]'」会破坏原文）。
+                            # 仅置 archived=1 归档；被谁取代的溯源信息已完整记在 autodream_log
+                            # （action=merge, source_ids, target_id, reason），可无损回溯。
                             conn.execute(
-                                "UPDATE facts SET fact_value = fact_value || ' [superseded by #' || ? || ']', archived = 1, archived_at = ? WHERE id = ?",
-                                (best["id"], now, mid)
+                                "UPDATE facts SET archived = 1, archived_at = ? WHERE id = ?",
+                                (now, mid)
                             )
                         except Exception as e:
                             logger.error(f"Failed to update fact #{mid}: {e}")

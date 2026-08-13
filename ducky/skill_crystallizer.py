@@ -231,11 +231,13 @@ def approve_crystal(crystal_id: int) -> dict[str, Any]:
     """
     conn = get_facts_conn()
     try:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE skill_crystals SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE crystal_id = ?",
             (crystal_id,),
         )
         conn.commit()
+        if cur.rowcount == 0:
+            return {"status": "error", "message": f"技能结晶 crystal_id={crystal_id} 不存在"}
         logger.info("🐙 [SkillCrystallizer] 人工审核通过: crystal_id=%d", crystal_id)
         return {"status": "ok", "crystal_id": crystal_id, "new_status": "approved"}
     except Exception as e:

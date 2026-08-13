@@ -21,6 +21,7 @@ from ducky.skill_crystallizer import (
     list_crystals,
     record_skill_use,
     prune_low_utility_skills,
+    approve_crystal,
 )
 
 logger = logging.getLogger("aiduMEM.OctopusRoutes")
@@ -121,4 +122,22 @@ def register_octopus_routes(app: FastAPI) -> None:
             return {"status": "ok", "archived": archived, "count": len(archived)}
         except Exception as e:
             logger.error("🐙 /crystals/prune 错误: %s", e)
+            raise HTTPException(500, str(e))
+
+    # 🔴8：人工审批端点——此前 approve_crystal 零调用方，draft 永远转不了正。
+    @app.post("/crystals/approve")
+    def crystals_approve_endpoint(crystal_id: int):
+        """人工审核通过某个技能结晶候选项（candidate/draft -> approved）。
+
+        遵循 Mímir 铁律：只有人工审核才能 approve，不可自动批准。
+        """
+        try:
+            result = approve_crystal(crystal_id)
+            if result.get("status") == "error":
+                raise HTTPException(400, result.get("message", "approve 失败"))
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("🐙 /crystals/approve 错误: %s", e)
             raise HTTPException(500, str(e))

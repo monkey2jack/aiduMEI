@@ -79,12 +79,69 @@ def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in rows}
 
 
+def _rebuild_agent_scoped_unique_index(conn: sqlite3.Connection) -> None:
+    """🔴3：把 facts 全局唯一索引 (category,fact_key) 升级为按 agent 隔离。
+
+    幂等：已是新索引则跳过。存量库里同一 (category,fact_key) 的 agent_id 已被
+    上游回填为同一 DEFAULT_AGENT，故 (agent_id,category,fact_key) 仍唯一，重建不会
+    因重复行失败。若历史上真有跨 agent 撞 key 的脏数据导致建唯一索引失败，则降级为
+    普通索引并记 warning，避免阻断启动。
+    """
+    idx = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_facts_unique'"
+    ).fetchone()
+    if idx and idx[0] and "agent_id" in idx[0]:
+        return  # 已是 agent 隔离版
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_facts_unique")
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_facts_unique ON facts(agent_id, category, fact_key)"
+        )
+        logger.info("🔒 facts 唯一索引已升级为 (agent_id, category, fact_key)")
+    except sqlite3.OperationalError as exc:
+        # 🔴3 自审：绝不能降级为“普通索引”。writer 的 ON CONFLICT(agent_id,category,fact_key)
+        # 需要一个 UNIQUE 约束作为冲突目标；若这里建成非唯一索引，upsert 会报
+        # “no such conflict target”导致所有联邦写入失败——比原 bug 更糟。
+        # 正确做法：先合并跨 agent 撞 key 的脏数据（保留每组最新一行），再重建唯一索引。
+        logger.warning("唯一索引升级遇冲突，尝试清理跨 agent 撞 key 脏数据后重建: %s", exc)
+        try:
+            conn.execute(
+                """
+                DELETE FROM facts
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM facts GROUP BY agent_id, category, fact_key
+                )
+                """
+            )
+            conn.execute("DROP INDEX IF EXISTS idx_facts_unique")
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_facts_unique ON facts(agent_id, category, fact_key)"
+            )
+            logger.info("🔒 清理脏数据后，facts 唯一索引重建成功")
+        except sqlite3.OperationalError as exc2:
+            # 仍失败：宁可让联邦迁移整体报错、由运维介入，也不能留一个
+            # 会让所有 upsert 崩溃的非唯一索引。抛出交由上层记录。
+            raise RuntimeError(
+                f"facts 唯一索引重建失败，联邦 upsert 将无法工作，需人工核查脏数据: {exc2}"
+            ) from exc2
+
+
+
 def ensure_federation_schema(force: bool = False) -> dict:
     """幂等迁移 facts.db 到联邦结构。返回本次实际执行的变更清单。"""
     global _migrated
     with _migrate_lock:
         if _migrated and not force:
             return {"status": "ok", "skipped": True, "added_columns": [], "created_tables": []}
+
+        # 🔴13 修复：联邦迁移可能在核心建表之前（路由导入期）被触发。
+        # 先确保 facts 等核心表存在，否则 ADD COLUMN / 回填会静默失败，
+        # 导致 agents / federation_broadcast 两表永远建不出来 → 全新部署开箱即坏。
+        try:
+            from ducky.schema_bootstrap import ensure_core_schema
+            ensure_core_schema()
+        except Exception as exc:
+            logger.warning("联邦迁移前置核心建表失败（继续尝试）: %s", exc)
 
         added: list[str] = []
         created: list[str] = []
@@ -121,6 +178,12 @@ def ensure_federation_schema(force: bool = False) -> dict:
 
             for stmt in _INDEXES:
                 conn.execute(stmt)
+
+            # 🔴3 修复：唯一约束升级为按 agent 隔离 (agent_id, category, fact_key)。
+            # 旧索引 (category, fact_key) 全局唯一会让 Agent B 写同 key 时静默覆盖
+            # Agent A 的记忆（且仍记 A 名下）。此处在 agent_id 回填完成后重建，
+            # 存量库同 (cat,key) 因 agent_id 一致仍唯一，迁移安全。
+            _rebuild_agent_scoped_unique_index(conn)
 
             for name, ddl in (("agents", _AGENTS_DDL), ("federation_broadcast", _BROADCAST_DDL)):
                 before = conn.execute(

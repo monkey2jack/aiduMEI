@@ -3,6 +3,15 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v19.1 Athena (雅典娜 · 审计修复版)
+    核心主题: 社区审计 26 条问题全修——数据安全 / 主链接线 / 卖点打假
+    1. 联邦跨 Agent 隔离: 唯一索引 (agent_id,category,fact_key)，杜绝同 key 静默互覆盖
+    2. 全新部署开箱可用: 联邦 schema 迁移前置核心建表，修 fresh clone 联邦表缺失
+    3. 写入主链接线: 正常 /add 补 salience 登记 + FTS 索引 + 六型写时分类
+    4. Athena 断链修复: /crystals/approve 端点、REGEXP 注册、self_edit 相似度门控
+    5. 端点修复: /metrics 上线、search/deep 关键词检索、scenes 表、restore 端点、SETTINGS 保存
+    6. 卖点诚信: manifest 可配置项真读取，Tahoe-Gate/Ignition 等文档措辞对齐实现
+
 v19.0 Athena (雅典娜 · 从记忆到智慧)
     核心主题: 认知闭环后半程——记完之后如何变聪明
     1. Reflect 主动反思 (P0-3): 定期/会话结束触发，提炼模式/矛盾/知识缺口为洞察
@@ -35,7 +44,7 @@ v18.1 Zeus (宙斯 · 检索自进化纪元)
     4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
 """
 
-SERVICE_VERSION = "19.0.0"
+SERVICE_VERSION = "19.1.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
@@ -46,6 +55,7 @@ ARCHITECTURE = "AI Wisdom Engine with Active Reflection, Self-Editing Memory, Re
 
 # 历史版本谱系（大版本代号，最新在前）
 LINEAGE = (
+    ("19.1", "Athena", "雅典娜", "审计修复 · 联邦隔离 · 主链接线 · 卖点诚信"),
     ("19.0", "Athena", "雅典娜", "从记忆到智慧 · 主动反思 · 记忆自编辑 · 递归精炼 · Skill生长 · 人格记忆基座"),
     ("18.3", "Zeus", "宙斯", "多模态感知 · 无损秒级升级 · Obsidian 双链联动"),
     ("18.2", "Zeus", "宙斯", "可视化洞察 · aiduMEI 控制台 · 品牌升级 · 全量审计"),
