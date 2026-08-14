@@ -23,18 +23,15 @@ MAX_CONTENT_LENGTH = int(os.environ.get("AIDUMEM_MAX_MEMORY_CHARS", "100000"))
 # ── 第一层：原始特征检测正则 ────────────────────────────────────────
 _RAW_INJECTION_PATTERNS = re.compile(
     # 英文指令覆盖
-    r"ignore\s+(all\s+)?(your\s+)?(previous|prior|earlier|above)\s+(instructions?|directions?|prompts?|rules?|guidelines?)"
-    r"|forget\s+(all\s+|everything\s+)?(you\s+)?(learned|know|were\s+told|remember)"
-    r"|disregard\s+(all\s+|previous\s+|prior\s+)?(instructions?|commands?|directives?|rules?)"
-    r"|do\s+not\s+follow\s+(the\s+|any\s+|these\s+)?(instructions?|rules?|guidelines?)"
-    r"|you\s+must\s+(ignore|forget|override|bypass)\s"
-    r"|override\s+(all\s+)?(system\s+)?(prompts?|instructions?|rules?)"
-    # 英文角色劫持
-    r"|from\s+now\s+on\s+you\s+are\s+(an?\s+)?"
-    r"|act\s+as\s+(if\s+)?(you\s+are\s+)?(an?\s+)?"
-    r"|pretend\s+(you\s+are|to\s+be)\s+(an?\s+)?"
-    r"|your\s+(new|real|true|actual)\s+(name|identity|role|purpose)\s+is"
-    r"|you\s+are\s+(not\s+|now\s+)?(an?\s+|the\s+)?(AI|assistant|model|GPT|LLM|language\s+model|chatbot)"
+    r"ignore\s+(all\s+)?(your\s+)?(previous|prior|earlier|above|system)\s+(instructions?|directions?|prompts?)"
+    r"|forget\s+(all\s+|everything\s+)?(you\s+)?(learned|were\s+told|remember)\s+(about\s+your\s+rules|and\s+start\s+fresh)"
+    r"|disregard\s+(all\s+|previous\s+|prior\s+)?(instructions?|commands?|directives?|system\s+prompts?)"
+    r"|do\s+not\s+follow\s+(the\s+|any\s+|these\s+)?(instructions?|system\s+prompts?)"
+    r"|you\s+must\s+(ignore|forget|override|bypass)\s+(all\s+)?(rules?|instructions?|system\s+prompts?)"
+    r"|override\s+(all\s+)?(system\s+)?(prompts?|instructions?)"
+    # 英文角色劫持（限定对抗/越狱形态）
+    r"|(from\s+now\s+on\s+you\s+are|act\s+as|pretend\s+(you\s+are|to\s+be)|you\s+are\s+now)\s+(an?\s+)?(unrestricted|jailbroken|dan|dan\s+mode|developer\s+mode|evil|god\s+mode|bypass\s+mode)"
+    r"|your\s+(new|real|true|actual)\s+system\s+(prompt|instruction)\s+is"
     # 系统级标记与特殊 Token
     r"|<\|?im_start\|?>|<\|?im_end\|?>|<\|?endoftext\|?>"
     r"|<\|?system\|?>|<\|?user\|?>|<\|?assistant\|?>"
@@ -42,13 +39,14 @@ _RAW_INJECTION_PATTERNS = re.compile(
     r"|\[/?(system|prompt|instruction)\]"
     r"|<\s*(system|prompt|instruction)\s*>"
     # 中文指令覆盖与角色劫持
-    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部|系统)*(的)?(所有|全部|之前|先前|历史)*(指令|指示|设定|规则|提示词|限制)"
-    r"|忘记(所有|一切|你学到的|你的记忆|之前的|先前的)"
-    r"|从现在(起|开始)?(你(是|将是)|扮演|假装)|扮演无限制|无视(道德|系统|安全)?限制"
-    r"|你现在的(身份|角色|名字|设定)是"
-    r"|你的真实(身份|设定|指令)是"
-    r"|不要遵守(上述|任何|这些|系统)?(规则|指令|设定)"
-    r"|覆盖(系统)?(指令|设定|提示词)",
+    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部)*(的)?(所有|全部|之前|先前|历史)*(系统)?(指令|指示|提示词)"
+    r"|忘记(所有|一切|你学到的|你的记忆)*(的)?(系统)?(指令|提示词)"
+    r"|从现在(起|开始)?(你(是|将是)|扮演|假装)(无限制|越狱|DAN|不受约束)"
+    r"|你现在的真实(系统)?(指令|提示词)是"
+    r"|你的真实(系统)?(指令|提示词)是"
+    r"|不要遵守(上述|任何|这些|系统)?(系统)?(指令|提示词)"
+    r"|覆盖(系统)?(指令|提示词)"
+    r"|扮演无限制|无视(道德|安全|系统)?限制",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -57,17 +55,17 @@ _NORMALIZE_CLEAN_RE = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff]", re.UNICODE)
 
 # 归一化后的匹配特征（去除了空格和标点后）
 _NORMALIZED_INJECTION_PATTERNS = re.compile(
-    r"ignore(all)?(your)?(previous|prior|earlier|above)?(instruction|instructions|direction|prompt|rule|rules|guideline)"
-    r"|forget(all|everything)?(you)?(learned|know|weretold|remember)"
-    r"|disregard(all|previous|prior)?(instruction|command|directive|rule)"
-    r"|fromnowonyouare"
-    r"|youmust(ignore|forget|override|bypass)"
-    r"|override(all)?(system)?(prompt|instruction|rule)"
-    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部|系统)*(的)?(所有|全部|之前|先前|历史)*(指令|指示|设定|规则|提示词)"
-    r"|忘记(所有|一切|你学到的|你的记忆)"
-    r"|从现在(起|开始)?(你是|扮演|假装)|扮演无限制|无视(道德|系统|安全)?限制"
-    r"|你的真实(身份|设定|指令)是"
-    r"|不要遵守(上述|任何|这些)?(规则|指令|设定)",
+    r"ignore(all)?(your)?(previous|prior|earlier|above|system)?(instruction|instructions|direction|prompt)"
+    r"|forget(all|everything)?(you)?(learned|weretold|remember)?(system)?(instruction|prompt)"
+    r"|disregard(all|previous|prior)?(instruction|command|directive|systemprompt)"
+    r"|(fromnowonyouare|actas|pretendto|youarenow)(unrestricted|jailbroken|dan|danmode|developermode|evil)"
+    r"|youmust(ignore|forget|override|bypass)(all)?(rule|instruction|systemprompt)"
+    r"|override(all)?(system)?(prompt|instruction)"
+    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部)*(系统)?(指令|指示|提示词)"
+    r"|忘记(所有|一切|你学到的|你的记忆)*(系统)?(指令|提示词)"
+    r"|从现在(起|开始)?(你是|扮演|假装)(无限制|越狱|dan|不受约束)|扮演无限制|无视(道德|系统|安全)?限制"
+    r"|你的真实(系统)?(指令|提示词)是"
+    r"|不要遵守(上述|任何|这些)?(系统)?(指令|提示词)",
     re.IGNORECASE,
 )
 

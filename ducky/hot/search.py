@@ -18,9 +18,9 @@ logger = logging.getLogger("aiduMEM.hot")
 
 
 def _annotate_memory_types(results: list) -> None:
-    """把六型分类结果回填到检索结果（P2-3：分类从「写了不读」变为参与召回）。
+    """把六型分类结果回填到检索结果（P2-3 / v19.2.0：单次 SQL 批量加载，消除 N+1 读查询）。
 
-    - 只读账本，不触发任何 LLM 调用，检索性能不受影响；
+    - 只读账本，单次 SQL 批量加载，不触发任何 LLM 调用，检索性能不受影响；
     - 每条结果写入 memory_type 字段；账本无记录时默认 FACTS。
     - ref 命中优先级：mem0 UUID（主链写时）→ fact:{fact_id}（backfill 写时）。
     - 失败静默降级（检索优先，分类失败不阻断召回）。
@@ -28,24 +28,30 @@ def _annotate_memory_types(results: list) -> None:
     if not results:
         return
     try:
-        from ducky.memory_types import get_memory_type
+        from ducky.memory_types import get_batch_memory_types
 
+        ref_list = []
+        item_ref_map = []
         for item in results:
             if not isinstance(item, dict):
                 continue
-            # ref 优先级：fact:{fact_id}（backfill 账本）→ mem0 UUID（主链写时）
             meta = item.get("metadata") or {}
             ref = ""
             if isinstance(meta, dict) and meta.get("fact_id") is not None:
                 ref = f"fact:{meta['fact_id']}"
             if not ref:
                 ref = item.get("id") or item.get("memory_id") or ""
-            if not ref:
-                continue
-            try:
-                item["memory_type"] = get_memory_type(str(ref))
-            except Exception:
-                continue
+            if ref:
+                ref_str = str(ref)
+                ref_list.append(ref_str)
+                item_ref_map.append((item, ref_str))
+            else:
+                item["memory_type"] = "FACTS"
+
+        if ref_list:
+            type_map = get_batch_memory_types(ref_list)
+            for item, ref_str in item_ref_map:
+                item["memory_type"] = type_map.get(ref_str, "FACTS")
     except Exception:
         return
 

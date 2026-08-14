@@ -49,13 +49,19 @@ class SearchResponse(BaseModel):
 
 
 class DeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     memory_id: str
     user_id: str = DEFAULT_USER_ID
 
 
 class DeleteAllRequest(BaseModel):
-    # 🟡P0-3：delete_all 独立 body 模型，user_id 从 body 读取。
-    user_id: str = DEFAULT_USER_ID
+    model_config = ConfigDict(extra="allow")
+
+    # 🔴P0-3: 必须显式指定 user_id，缺失拒绝执行
+    user_id: str = ""
+    # 清空 default 租户必须显式传递 confirm=True
+    confirm: bool = False
 
 
 class UpdateRequest(BaseModel):

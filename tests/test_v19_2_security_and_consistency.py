@@ -2,13 +2,16 @@
 tests/test_v19_2_security_and_consistency.py — v19.2.0 安全与多仓一致性综合回归测试
 
 覆盖内容：
-1. 三层 Prompt 注入防御网 (Raw 正则 + 规范化绕过 + 重复行攻击 + 沙箱隔离)
-2. 多仓级联原子删除 (Qdrant + FTS5 + facts.db + salience.db + evolve_mem.db)
-3. 应用级 WAL 日志持久化与启动对账自愈 (reconcile_startup)
-4. 统一五维打分体系与事实偏置 (scoring.py & Recency lambda)
-5. 动态降级追踪器与 /health 可观测性 (DegradationTracker)
-6. 控制台 Salt+SHA256 密码哈希安全存储
-7. v19.2.0 版本号全链路对齐
+1. 三层 Prompt 注入防御网 (Raw 正则 + 规范化绕过 + 重复行攻击 + 误报白名单过滤 + 沙箱隔离)
+2. 多仓级联原子删除与租户隔离 (Qdrant + FTS5 + facts.db + salience.db + evolve_mem.db)
+3. 严格精确匹配删除 (杜绝 LIKE 前缀误伤子串记录)
+4. 核弹级 /delete_all 防爆门禁 (空参数拦截 + default 租户二次确认 confirm: true)
+5. 应用级 WAL 日志持久化与启动对账自愈 (reconcile_startup)
+6. 批量记忆类型加载与 N+1 消除 (get_batch_memory_types)
+7. 统一五维打分体系与事实偏置 (scoring.py & Recency lambda)
+8. 动态降级追踪器与 /health 可观测性 (DegradationTracker)
+9. 控制台随机强密码与 Salt+SHA256 哈希安全存储 (废除 123456 弱口令)
+10. v19.2.0 版本号全链路对齐
 """
 
 import os
@@ -25,6 +28,24 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+_tmp_dir = tempfile.mkdtemp(prefix="aidumem_v19_2_test_")
+_TEST_DB = os.path.join(_tmp_dir, "facts.db")
+
+import ducky.utils as utils
+utils.FACTS_DB = _TEST_DB
+
+
+@pytest.fixture(autouse=True)
+def _setup_test_env():
+    utils.FACTS_DB = _TEST_DB
+    from ducky.schema_bootstrap import ensure_core_schema
+    from ducky.memory_types import ensure_memory_types_schema
+    ensure_core_schema(force=True)
+    import ducky.memory_types as mt
+    mt._checked = False
+    ensure_memory_types_schema()
+
+
 from ducky.security.injection_guard import (
     check_prompt_injection,
     validate_and_sanitize_memory_content,
@@ -37,6 +58,12 @@ from ducky.wal_engine import (
     cascade_delete_memory,
     cascade_delete_all,
 )
+from ducky.memory_types import (
+    classify_and_record,
+    get_batch_memory_types,
+    get_memory_type,
+    ensure_memory_types_schema,
+)
 from ducky.scoring import (
     compute_time_decay,
     calc_bm25_score,
@@ -48,10 +75,11 @@ from ducky.degradation import (
     DegradationTracker,
 )
 from ducky.version import SERVICE_VERSION
+from ducky.utils import get_facts_conn
 
 
 # ─────────────────────────────────────────────────────────────
-# 1. Prompt 注入防御测试
+# 1. Prompt 注入防御测试 (P1-2 精准度与白名单)
 # ─────────────────────────────────────────────────────────────
 
 def test_prompt_injection_detection_raw():
@@ -100,13 +128,16 @@ def test_prompt_injection_repetition_attack():
 
 
 def test_prompt_injection_legitimate_content_allowed():
-    """测试正常知识与偏好记忆不产生误报"""
+    """测试正常知识、偏好记忆及日常词汇不产生误报（白名单机制）"""
     safe_memories = [
         "用户喜欢喝热拿铁，不加糖，偏好燕麦奶",
         "Project deadline is 2026-09-01 for the v19.2 release",
         "会议纪要：讨论了 SQLite WAL 模式和 Qdrant 索引优化",
         "生产环境团队在 8 月 13 日完成了 1131 条事实记忆的压力测试",
         "User prefers Python for backend development and Vue for frontend",
+        "这个配置要忽略之前的设定规则",
+        "act as a helper for me please",
+        "请忽略之前的草稿，以最新的版本为主",
     ]
     for text in safe_memories:
         detected, reason = check_prompt_injection(text)
@@ -127,7 +158,7 @@ def test_memory_context_sandboxing():
 
 
 # ─────────────────────────────────────────────────────────────
-# 2. 多仓级联原子删除与 WAL 一致性测试
+# 2. 多仓级联原子删除与租户隔离测试 (P0-1, P0-2, P0-3)
 # ─────────────────────────────────────────────────────────────
 
 def test_wal_engine_append_and_reconcile():
@@ -162,16 +193,110 @@ def test_reconcile_startup_clean():
     assert "recovered" in report
 
 
-def test_cascade_delete_memory_handles_safely():
-    """测试级联删除记忆安全执行不崩溃"""
-    res = cascade_delete_memory("non_existent_memory_id_999", user_id="test_user")
-    assert isinstance(res, dict)
+def test_cascade_delete_isolation_and_exact_match():
+    """测试跨租户越权删除隔离与精确匹配删除（P0-1 & P0-2）"""
+    from ducky.schema_bootstrap import ensure_core_schema
+    ensure_core_schema()
+    conn = get_facts_conn()
+    try:
+        # 准备测试数据：User A 和 User B 插入相似键名的 facts
+        conn.execute("DELETE FROM facts WHERE source IN ('user_alice', 'user_bob')")
+        conn.execute(
+            "INSERT INTO facts (fact_key, fact_value, source, agent_id) VALUES (?, ?, ?, ?)",
+            ("pref_coffee", "Alice likes Latte", "user_alice", "user_alice"),
+        )
+        conn.execute(
+            "INSERT INTO facts (fact_key, fact_value, source, agent_id) VALUES (?, ?, ?, ?)",
+            ("pref_coffee_extra", "Alice likes Oat Milk", "user_alice", "user_alice"),
+        )
+        conn.execute(
+            "INSERT INTO facts (fact_key, fact_value, source, agent_id) VALUES (?, ?, ?, ?)",
+            ("pref_coffee", "Bob likes Americano", "user_bob", "user_bob"),
+        )
+        conn.commit()
+
+        # 1. Bob 尝试删除 Alice 的 pref_coffee
+        cascade_delete_memory("pref_coffee", user_id="user_bob")
+
+        # 验证：Bob 的 pref_coffee 被删除，Alice 的 pref_coffee 和 pref_coffee_extra 毫发无损！
+        bob_rows = conn.execute("SELECT * FROM facts WHERE source='user_bob'").fetchall()
+        assert len(bob_rows) == 0
+
+        alice_rows = conn.execute("SELECT fact_key FROM facts WHERE source='user_alice'").fetchall()
+        alice_keys = [r[0] for r in alice_rows]
+        assert "pref_coffee" in alice_keys
+        assert "pref_coffee_extra" in alice_keys
+
+        # 2. Alice 精确删除 pref_coffee，确保不会误删 pref_coffee_extra (精确匹配)
+        cascade_delete_memory("pref_coffee", user_id="user_alice")
+
+        alice_rows_after = conn.execute("SELECT fact_key FROM facts WHERE source='user_alice'").fetchall()
+        alice_keys_after = [r[0] for r in alice_rows_after]
+        assert "pref_coffee" not in alice_keys_after
+        assert "pref_coffee_extra" in alice_keys_after
+
+    finally:
+        conn.execute("DELETE FROM facts WHERE source IN ('user_alice', 'user_bob')")
+        conn.commit()
+        conn.close()
+
+
+def test_cascade_delete_all_guards():
+    """测试 delete_all 强制指定 user_id 与 default 租户二次确认防爆门禁 (P0-3)"""
+    # 1. 空参数或空白字符必须直接抛出 ValueError
+    with pytest.raises(ValueError, match="user_id 必须显式指定"):
+        cascade_delete_all(user_id="")
+
+    with pytest.raises(ValueError, match="user_id 必须显式指定"):
+        cascade_delete_all(user_id="   ")
+
+    # 2. 清空 default 租户若未传递 confirm=True 必须拒绝
+    with pytest.raises(ValueError, match="必须传递 confirm=True"):
+        cascade_delete_all(user_id="default", confirm=False)
+
+    # 3. 指定非 default 租户（如 test_sandbox_user）允许正常执行
+    from ducky.schema_bootstrap import ensure_core_schema
+    ensure_core_schema()
+    res = cascade_delete_all(user_id="test_sandbox_user", confirm=False)
     assert res["status"] == "ok"
-    assert res["details"]["memory_id"] == "non_existent_memory_id_999"
+    assert res["details"]["user_id"] == "test_sandbox_user"
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. 统一五维打分体系测试
+# 3. 批量记忆类型加载与 N+1 消除测试 (P1-1)
+# ─────────────────────────────────────────────────────────────
+
+def test_batch_memory_types_loader():
+    """测试 get_batch_memory_types 单次 SQL 批量加载与回退"""
+    ensure_memory_types_schema()
+    conn = get_facts_conn()
+    try:
+        conn.execute("DELETE FROM memory_types WHERE memory_ref IN ('test_ref_1', 'test_ref_2')")
+        conn.execute(
+            "INSERT INTO memory_types (memory_ref, memory_type, confidence) VALUES (?, ?, ?)",
+            ("test_ref_1", "DECISIONS", 0.95),
+        )
+        conn.execute(
+            "INSERT INTO memory_types (memory_ref, memory_type, confidence) VALUES (?, ?, ?)",
+            ("test_ref_2", "PREFERENCES", 0.85),
+        )
+        conn.commit()
+
+        # 批量获取存在的与不存在的
+        type_map = get_batch_memory_types(["test_ref_1", "test_ref_2", "non_existent_ref"])
+        assert isinstance(type_map, dict)
+        assert type_map.get("test_ref_1") == "DECISIONS"
+        assert type_map.get("test_ref_2") == "PREFERENCES"
+        assert type_map.get("non_existent_ref") == "FACTS"  # 默认回退 FACTS
+
+    finally:
+        conn.execute("DELETE FROM memory_types WHERE memory_ref IN ('test_ref_1', 'test_ref_2')")
+        conn.commit()
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. 统一五维打分体系测试
 # ─────────────────────────────────────────────────────────────
 
 def test_scoring_time_decay():
@@ -229,7 +354,7 @@ def test_score_and_rank_candidates():
 
 
 # ─────────────────────────────────────────────────────────────
-# 4. 动态降级追踪器与健康观测测试
+# 5. 动态降级追踪器与健康观测测试
 # ─────────────────────────────────────────────────────────────
 
 def test_degradation_tracker():
@@ -248,7 +373,7 @@ def test_degradation_tracker():
 
 
 # ─────────────────────────────────────────────────────────────
-# 5. 安全凭据存储测试
+# 6. 安全凭据存储与弱口令防御测试 (P1-3)
 # ─────────────────────────────────────────────────────────────
 
 def test_password_salt_sha256_hash():
@@ -269,7 +394,7 @@ def test_password_salt_sha256_hash():
 
 
 # ─────────────────────────────────────────────────────────────
-# 6. 版本号统一性测试
+# 7. 版本号统一性测试
 # ─────────────────────────────────────────────────────────────
 
 def test_version_truth():
