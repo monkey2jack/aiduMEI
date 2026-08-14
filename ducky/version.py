@@ -16,8 +16,8 @@ from __future__ import annotations
 
 SERVICE_VERSION = "19.2.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
-CODENAME = "Wisdom"
-CODENAME_ZH = "智慧引擎"
+CODENAME = "Athena"
+CODENAME_ZH = "雅典娜"
 DISPLAY_NAME = f"aiduMEI {FULL_VERSION} · {CODENAME_ZH}"
 
 # 架构定位
@@ -25,7 +25,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("19.2.0", "Wisdom", "智慧引擎", "安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是"),
+    ("19.2.0", "Athena", "雅典娜", "安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是"),
     ("19.1.2", "Athena", "雅典娜", "审计补丁自审修复 · MCP 鉴权兼容 · 六型回填生效"),
     ("19.1.1", "Athena", "雅典娜", "审计补丁 · 接口安全 · MCP 契约 · 版本号诚信"),
     ("19.1", "Athena", "雅典娜", "审计修复 · 联邦隔离 · 主链接线 · 卖点诚信"),
