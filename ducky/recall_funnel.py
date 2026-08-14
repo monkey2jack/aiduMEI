@@ -14,11 +14,11 @@ from .utils import parse_iso_timestamp, get_salience_conn, get_facts_conn
 from .salience.config import LANE_DECAY_MULTIPLIER
 from .salience.core import _detect_lane
 from .evolve_mem import log_search_quality as _evolve_log_search
+from .scoring import RECENCY_LAMBDA
 
 logger = logging.getLogger("aiduMEM.funnel")
 
 # ── 配置 ──
-RECENCY_LAMBDA = 0.01    # 时间衰减率
 MAX_CANDIDATE_MULT = 3   # 候选池倍数
 IGNITION_THRESHOLD = 0.85
 IGNITION_MAX = 8
