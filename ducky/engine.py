@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -139,10 +140,13 @@ class RecallEngine:
 
 
 _engine_singleton: Optional[RecallEngine] = None
+_engine_lock = threading.Lock()
 
 
 def get_recall_engine() -> RecallEngine:
     global _engine_singleton
     if _engine_singleton is None:
-        _engine_singleton = RecallEngine()
+        with _engine_lock:
+            if _engine_singleton is None:
+                _engine_singleton = RecallEngine()
     return _engine_singleton

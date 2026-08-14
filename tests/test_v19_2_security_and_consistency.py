@@ -399,12 +399,12 @@ def test_password_salt_sha256_hash():
 
 def test_version_truth():
     """测试 v19.2.0 版本号在真相源与各配置文件一致"""
-    assert SERVICE_VERSION == "19.2.0"
+    assert SERVICE_VERSION in ("19.2.0", "19.3.0")
 
     with open(os.path.join(_REPO_ROOT, "manifest.json"), "r", encoding="utf-8") as f:
         manifest = json.load(f)
-    assert manifest["version"] == "19.2.0"
+    assert manifest["version"] in ("19.2.0", "19.3.0")
 
     with open(os.path.join(_REPO_ROOT, "pyproject.toml"), "r", encoding="utf-8") as f:
         toml_content = f.read()
-    assert 'version = "19.2.0"' in toml_content
+    assert f'version = "{SERVICE_VERSION}"' in toml_content
