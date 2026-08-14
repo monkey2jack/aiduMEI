@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-19.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-19.3.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -26,7 +26,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它以希腊神话诸神为名，承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **v19.2.0 · 雅典娜——生产级加固与一致性闭环。** 在 v19.0 Athena（主动反思、记忆自编辑、递归精炼、人格基座）的基础上，v19.2.0 聚焦**真实生产场景的安全筑基、多仓一致性、统一打分提质与透明可观测性**——引入三层 Prompt 注入防御网、多仓级联原子删除与应用级 WAL、统一五维打分与时效衰减真相源、动态降级追踪与容量水位告警。
+> **v19.3.0 · 雅典娜——架构大一统与全链路加固。** 在 v19.2 Athena 生产级加固的基础上，v19.3.0 彻底实现**检索召回管道与打分引擎的单一真相源大一统**：收敛 Funnel 阶段至 unified scoring 5 维打分、加固全生命周期单例与惰性加载并发线程安全、拆分解耦 800+ 行 legacy 巨型模块、在高速写入通道设立统一注入防御终审 Gate，全面消除运行时静默降级。
 
 > **品牌演进**：aiduMEM（优忆思）→ aiduMEI⚕爱嘟优忆思。从一个记忆中间件，升级为带可视化洞察的智能体通用智慧引擎。"爱嘟"是用户与 AI 助手的亲密呼唤，"优忆思"是记忆·思考·洞察的三重承诺。
 

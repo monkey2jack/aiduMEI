@@ -9,6 +9,7 @@ from typing import Any
 from ducky.speed.cache import cache_get, cache_key, cache_set
 from ducky.speed.config import load_speed_cfg, messages_to_text
 from ducky.speed.fastpath import try_fastpath_text
+from ducky.security.injection_guard import validate_and_sanitize_memory_content
 
 logger = logging.getLogger("aiduMEM.speed")
 
@@ -40,6 +41,16 @@ def run_add_pipeline(
     speed = load_speed_cfg()
     text = messages_to_text(messages_json)
     metadata = dict(metadata or {})
+
+    # [P0 Gate] 终审注入防护：写入前全量执行清洗与越权拦截
+    is_safe, sanitized_text, threat = validate_and_sanitize_memory_content(text)
+    if not is_safe:
+        logger.warning(f"🛡️ [SpeedPipeline] 拦截注入攻击 user_id={user_id}: {threat}")
+        raise ValueError(f"安全风控拦截：检测到非法注入模式 ({threat})")
+    if sanitized_text != text:
+        text = sanitized_text
+        if isinstance(messages_json, list) and len(messages_json) > 0 and isinstance(messages_json[-1], dict) and "content" in messages_json[-1]:
+            messages_json[-1]["content"] = sanitized_text
 
     # 0) 抽取缓存（仅 infer 路径）
     ck = cache_key(user_id, text, "infer")
