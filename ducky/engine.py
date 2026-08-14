@@ -24,10 +24,6 @@ from ducky.scoring import (
 
 logger = logging.getLogger("aiduMEM.engine")
 
-# 统一时间衰减率
-RECENCY_LAMBDA = float(os.environ.get("AIDUMEM_RECENCY_LAMBDA", "0.05"))
-RERANK_WEIGHT = float(os.environ.get("AIDUMEM_RERANK_WEIGHT", "0.4"))
-
 
 def _parse_time_boundary(val: Optional[str]) -> Optional[str]:
     """解析 before/after 时间边界为标准 ISO 前缀。"""

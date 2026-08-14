@@ -14,7 +14,7 @@ v19.2.0 (生产级加固与优化升级版 · 2026-08-14)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "19.2.0"
+SERVICE_VERSION = "19.2.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
@@ -25,6 +25,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("19.2.1", "Athena", "雅典娜", "打分收敛 · 衰减单一真相源 · Hermes 插件版本对齐"),
     ("19.2.0", "Athena", "雅典娜", "安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是"),
     ("19.1.2", "Athena", "雅典娜", "审计补丁自审修复 · MCP 鉴权兼容 · 六型回填生效"),
     ("19.1.1", "Athena", "雅典娜", "审计补丁 · 接口安全 · MCP 契约 · 版本号诚信"),

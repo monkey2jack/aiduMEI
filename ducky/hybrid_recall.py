@@ -13,6 +13,7 @@ from typing import Optional
 
 from .memory_ignition import ignition_filter
 from .utils import normalize_score, parse_iso_timestamp
+from .scoring import RECENCY_LAMBDA
 
 logger = logging.getLogger("aiduMEM.hybrid")
 
@@ -23,7 +24,6 @@ DEFAULT_WEIGHTS = {
     "reliability": 0.15, # 可靠性（来源可信度）
     "heat": 0.10,        # 热度（访问次数）
 }
-RECENCY_LAMBDA = 0.01   # 时间衰减率
 
 
 def hybrid_search(memory, query: str, user_id: str, limit: int = 10,

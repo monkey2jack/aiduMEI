@@ -398,13 +398,31 @@ def test_password_salt_sha256_hash():
 # ─────────────────────────────────────────────────────────────
 
 def test_version_truth():
-    """测试 v19.2.0 版本号在真相源与各配置文件一致"""
-    assert SERVICE_VERSION == "19.2.0"
+    """测试 v19.2.1 版本号在真相源与各配置文件一致"""
+    assert SERVICE_VERSION == "19.2.1"
 
     with open(os.path.join(_REPO_ROOT, "manifest.json"), "r", encoding="utf-8") as f:
         manifest = json.load(f)
-    assert manifest["version"] == "19.2.0"
+    assert manifest["version"] == "19.2.1"
 
     with open(os.path.join(_REPO_ROOT, "pyproject.toml"), "r", encoding="utf-8") as f:
         toml_content = f.read()
-    assert 'version = "19.2.0"' in toml_content
+    assert 'version = "19.2.1"' in toml_content
+
+    # 测试 Hermes 插件 plugin.yaml 版本一致性
+    with open(os.path.join(_REPO_ROOT, "integrations", "hermes-plugin", "aidumem", "plugin.yaml"), "r", encoding="utf-8") as f:
+        plugin_yaml = f.read()
+    assert "version: 19.2.1" in plugin_yaml
+
+
+def test_recency_lambda_single_source_of_truth():
+    """测试时间衰减率 RECENCY_LAMBDA 在各检索模块均为单一真相源 (0.05)"""
+    from ducky.scoring import RECENCY_LAMBDA as scoring_lambda
+    from ducky.engine import RECENCY_LAMBDA as engine_lambda
+    from ducky.recall_funnel import RECENCY_LAMBDA as funnel_lambda
+    from ducky.hybrid_recall import RECENCY_LAMBDA as hybrid_lambda
+
+    assert scoring_lambda == 0.05
+    assert engine_lambda == 0.05
+    assert funnel_lambda == 0.05
+    assert hybrid_lambda == 0.05

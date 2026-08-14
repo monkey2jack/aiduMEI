@@ -1,5 +1,5 @@
 name: aidumem
-version: 15.0.0
+version: 19.2.1
 description: "aiduMEM — self-hosted multi-tier memory (CoreMemory + FTS5 + Qdrant) over a local HTTP service."
 requires_env: []
 hooks:
