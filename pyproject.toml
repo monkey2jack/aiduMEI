@@ -17,40 +17,36 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "mem0ai==2.0.18",
     "fastapi>=0.100.0",
-    "uvicorn>=0.20.0",
-    "pydantic>=2.0.0",
+    "uvicorn[standard]>=0.20.0",
+    "pydantic>=2.0",
     "qdrant-client>=1.7.0",
-    "requests>=2.28.0"
+    "python-multipart>=0.0.6",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
+mcp = ["mcp>=1.0.0"]
+full = [
+    "mcp>=1.0.0",
 ]
-
-[project.urls]
-Homepage = "https://github.com/monkey2jack/aiduMEI"
-Documentation = "https://github.com/monkey2jack/aiduMEI#readme"
-Repository = "https://github.com/monkey2jack/aiduMEI.git"
 
 [project.scripts]
 aidumem = "api_server:main"
+aidumei = "api_server:main"
+aidumem-mcp = "mcp_server:main"
+aidumei-mcp = "mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ducky*", "scripts*"]
+include = ["ducky*"]
 
-# 服务入口是仓库根的单文件模块，不在 ducky/ 包里。不显式声明的话
-# wheel 只装 ducky/ + scripts/，而 [project.scripts] 的 aidumem 指向
-# api_server:main —— 装完一执行就 ModuleNotFoundError: api_server。
-# v15 之前的 wheel 就是这个状态（入口点从来没跑起来过）。
+# 显式声明根目录顶层单文件模块，setuptools 才能把它打进 wheel 根目录，
+# 否则 pip install 之后 import api_server 会 ModuleNotFoundError，
+# /usr/local/bin/aidumem 入口点找不到 api_server。
 [tool.setuptools]
 py-modules = ["api_server", "mcp_server", "mem0_sync"]
