@@ -368,10 +368,16 @@ def save_insights(insights: list[dict], user_id: str, source: str) -> int:
     conn = get_facts_conn()
     added = 0
     try:
+        from ducky.security.injection_guard import validate_and_sanitize_memory_content
         for ins in insights:
-            content = (ins.get("content") or "").strip()
-            if not content:
+            raw_c = (ins.get("content") or "").strip()
+            if not raw_c:
                 continue
+            is_safe, sanitized_c, rejection = validate_and_sanitize_memory_content(raw_c)
+            if not is_safe:
+                logger.warning("🛡️ [InjectionGuard] 跳过不安全的洞察写入: %s", rejection)
+                continue
+            content = sanitized_c
             dup = conn.execute(
                 "SELECT id FROM reflections WHERE user_id=? AND content=?",
                 (user_id, content),

@@ -1,4 +1,4 @@
-# aiduMEI docker-compose 一键起（v19.1.1）
+# aiduMEI docker-compose 一键起（v19.2.0）
 # 用法：
 #   docker compose up -d          # 后台启动
 #   docker compose logs -f        # 跟踪日志

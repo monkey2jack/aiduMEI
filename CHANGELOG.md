@@ -1,6 +1,51 @@
 # aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，直至 v19.0 Athena 从记忆到智慧。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，直至 v19.2.0 智慧引擎生产级加固。
+
+---
+
+## v19.2.0 — 生产级加固与优化升级版（2026-08-14）
+
+> 综合助手实测反馈（生产环境 1131-fact 生产实例）、社区多份代码审计报告、小猴深度自省及 xuantie-persona-system 架构精华，aiduMEI 迎来坚实的工程化与生产级加固升级。实事求是，安全筑基，闭环一致，可观测透明。
+
+### 🛡️ P0 安全与防御加固
+- **三层 Prompt 注入防御网** (`ducky/security/injection_guard.py`)：
+  - 第 1 层：中英文典型越狱/指令覆盖模式正则匹配（`ignore previous instructions`、`忽略之前指令`、`system prompt override` 等）。
+  - 第 2 层：去噪规范化绕过检测（强力清除空格、句点、特殊符号，粉碎 `i.g.n.o.r.e`、`忽 略 指 令` 变形绕过）。
+  - 第 3 层：重复行/长文本溢出攻击防御与长度水位截断。
+  - 全链路接入：覆盖 `/add`、`/drawer/store`、`federation/writer`、`/legacy/add`、Reflect 反思、去重自编辑与递归精炼入口。
+- **记忆上下文沙箱隔离** (`wrap_memory_context_sandbox`)：
+  - 所有召回记忆在注入 System Prompt / 对话上下文前强制包裹 `[DATA: MEMORY CONTEXT ...]` 数据隔离标签，向宿主模型显式声明该片段为纯数据非系统指令。
+- **网络与凭据硬化**：
+  - `api_server.py` 绑定非 loopback 地址（如 `0.0.0.0`）且未设置 `AIDUMEM_API_TOKEN` 时直接致命拒绝启动并输出安全警告。
+  - 弃用 `.env` 明文写入密码，控制台密码通过 Salt+SHA256 哈希安全持久化在 `data/.ui_password_hash` 中。
+
+### 🔄 P0 多仓级联原子删除与一致性（WAL）
+- **多仓原子级联删除** (`ducky/wal_engine.py` & `ducky/hot/crud.py`)：
+  - 单条删除 (`DELETE /memory/{id}`) 与全量清空 (`DELETE /all`) 严格同步级联物理清理 Qdrant 向量仓、SQLite FTS5 全文索引、`facts.db`、`salience.db` 以及 `evolve_mem.db`，彻底根绝孤儿与幽灵记忆。
+- **轻量应用级 WAL 日志与启动对账自愈**：
+  - 关键状态变更前写入 `wal_journal.jsonl`（落盘 `fsync`），服务启动时自动运行 `reconcile_startup()` 扫描并清理孤儿索引，保障进程崩溃/断电时的一致性。
+- **递归精炼幽灵消除** (`ducky/refine_memory.py`)：
+  - 记忆精炼归档后，自动从 FTS5 全文表中解挂并在向量库软标记归档，彻底消除精炼后旧记忆的虚假召回。
+
+### 🎯 P1 统一打分引擎与检索提质
+- **统一打分与重排序模块** (`ducky/scoring.py`)：
+  - 建立统一五维打分体系（Vector + BM25 + Time Decay + Reliability + Heat），彻底消除不同检索分支打分逻辑碎片化。
+  - 衰减系数唯一真相源：全局统一使用 `AIDUMEM_RECENCY_LAMBDA=0.05`。
+  - 事实倾向偏置（Fact-seeking Bias）：对 `FACTS`、`PREFERENCES`、`DECISIONS` 类型给予 +35% 权重提振，大幅提升事实型问答精准度。
+  - 彻底消除 N+1 数据库查询：新增 `get_batch_salience_records` 批量加载热度记录。
+- **Reranker 配置双键兼容与探测**：
+  - 兼容 `rerank` 与 `reranker` 配置项，杜绝因键名不一致导致的重排失效。
+  - 增加重排耗时与结果探测日志（`rerank ok: n docs -> top_n in Xms`）。
+
+### 📊 P1 动态健康观测与降级透明化
+- **降级追踪器** (`ducky/degradation.py`)：
+  - 实时捕获并记录 Qdrant、SQLite、LLM、FTS5、Reranker 的组件降级与熔断状态。
+- **健康端点与容量告警** (`GET /health`)：
+  - 动态暴露 `degraded_components` 列表，不再返回虚假的「恒绿 200」。
+  - 增加事实库容量水位线告警（激活事实数 > 800 时预警），辅助运维与精炼决策。
+- **网关接口鲁棒性** (`GET /gate`)：
+  - 同时兼容 `query`、`text`、`q` 查询参数，提升客户端适配友好度。
 
 ---
 

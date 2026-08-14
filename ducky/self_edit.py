@@ -180,9 +180,14 @@ def _detect_relation(memory, user_id: str, new_text: str) -> Optional[dict]:
         return None
 
     memory_id = str(decision.get("memory_id") or "").strip()
-    merged = str(decision.get("merged_content") or "").strip()
-    if not memory_id or not merged:
+    raw_merged = str(decision.get("merged_content") or "").strip()
+    if not memory_id or not raw_merged:
         return None
+    is_safe, sanitized_merged, rejection = validate_and_sanitize_memory_content(raw_merged)
+    if not is_safe:
+        logger.warning("🛡️ [InjectionGuard] self-edit 结果包含不安全指令，拦截回写: %s", rejection)
+        return None
+    merged = sanitized_merged
     if memory_id not in {c["memory_id"] for c in candidates}:
         # LLM 幻觉出一个不存在的 id → 降级为 distinct，保证安全
         logger.warning("self-edit: LLM 返回了候选之外的 memory_id=%s，判定为 distinct", memory_id)

@@ -189,3 +189,18 @@ def get_stats() -> dict:
         "lane_distribution": lane_distribution,
         "lane_avg_salience": lane_avg,
     }
+
+def get_batch_salience_records(memory_ids: list[str]) -> dict[str, dict]:
+    """批量获取记忆显著性记录，消除 N+1 查询。"""
+    if not memory_ids:
+        return {}
+    valid_ids = [str(m) for m in memory_ids if m]
+    if not valid_ids:
+        return {}
+    conn = get_salience_conn()
+    try:
+        placeholders = ",".join("?" * len(valid_ids))
+        rows = conn.execute(f"SELECT * FROM salience WHERE memory_id IN ({placeholders})", valid_ids).fetchall()
+        return {r["memory_id"]: dict(r) for r in rows}
+    finally:
+        conn.close()
