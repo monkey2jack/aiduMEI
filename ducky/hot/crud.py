@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from ducky.api_models import DeleteAllRequest, DeleteRequest, InjectContextRequest, UpdateRequest
 from ducky.utils import DEFAULT_USER_ID
 from ducky.mem0_runtime import (
+    _normalize_user_id,
     get_llm_usage,
     get_memory,
     reset_memory_singleton,
@@ -87,9 +88,12 @@ def register_crud_routes(app: FastAPI) -> None:
 
     @app.post("/delete")
     def delete(req: DeleteRequest):
-        # 🟡v19.2.0: 多仓级联原子删除（Qdrant + FTS + facts + salience + evolve）
+        # 🔴P0-1: 传递并严格校验 user_id 归属，杜绝跨租户越权删除
+        if not req.memory_id or not req.memory_id.strip():
+            raise HTTPException(400, "memory_id 不能为空")
         try:
-            res = cascade_delete_memory(req.memory_id)
+            user_id = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
+            res = cascade_delete_memory(req.memory_id, user_id=user_id)
             return {"status": "ok", "details": res.get("details", {})}
         except Exception as e:
             logger.error(f"delete 失败: {e}")
@@ -97,9 +101,15 @@ def register_crud_routes(app: FastAPI) -> None:
 
     @app.post("/delete_all")
     def delete_all(req: DeleteAllRequest):
-        # 🟡v19.2.0: 多仓级联原子清空，根绝 SQLite / FTS 孤儿记忆
+        # 🔴P0-3: 强制显式指定 user_id，清空 default 全库必须二次确认 confirm=True
+        if not req.user_id or not req.user_id.strip():
+            raise HTTPException(400, "user_id 必须显式指定，拒绝空参数清库")
+        user_id = _normalize_user_id(req.user_id)
+        if user_id == DEFAULT_USER_ID and not getattr(req, "confirm", False):
+            raise HTTPException(400, "清空默认用户(default)全部记忆具有破坏性，必须传递 confirm: true 二次确认")
+
         try:
-            res = cascade_delete_all(user_id=req.user_id)
+            res = cascade_delete_all(user_id=user_id, confirm=getattr(req, "confirm", False))
             return {"status": "ok", "details": res.get("details", {})}
         except Exception as e:
             logger.error(f"delete_all 失败: {e}")
@@ -107,19 +117,45 @@ def register_crud_routes(app: FastAPI) -> None:
 
     @app.post("/update")
     def update(req: UpdateRequest):
+        # 🔴P0-4: 传递并严格校验 user_id 归属，并同步更新 FTS5、facts 与 memory_types
+        if not req.memory_id or not req.memory_id.strip():
+            raise HTTPException(400, "memory_id 不能为空")
         try:
             mem = get_memory()
             content = req.content
             if not content:
                 extra = getattr(req, "model_extra", None) or {}
                 content = extra.get("data", "")
+            
+            user_id = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
             mem.update(req.memory_id, data=content)
+            
             # 同步更新 FTS
             try:
                 from ducky.text_fts import _index_memory
-                _index_memory(req.memory_id, content)
+                _index_memory(req.memory_id, content, user_id=user_id)
             except Exception as fe:
                 logger.debug(f"FTS index on update 跳过: {fe}")
+
+            # 同步更新 facts.db 事实内容与更新时间
+            try:
+                from ducky.utils import get_facts_conn
+                fconn = get_facts_conn()
+                if user_id == DEFAULT_USER_ID:
+                    fconn.execute(
+                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE id=? OR fact_key=?",
+                        (content, req.memory_id, req.memory_id),
+                    )
+                else:
+                    fconn.execute(
+                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE (id=? OR fact_key=?) AND (source=? OR agent_id=?)",
+                        (content, req.memory_id, req.memory_id, user_id, user_id),
+                    )
+                fconn.commit()
+                fconn.close()
+            except Exception as fte:
+                logger.debug(f"facts update on update 跳过: {fte}")
+
             return {"status": "ok"}
         except Exception as e:
             logger.error(f"update 失败: {e}")

@@ -236,8 +236,8 @@ def register_config_routes(app: FastAPI) -> None:
                 pass
 
         if not current_valid:
-            current_stored = os.environ.get("AIDUMEM_UI_PASSWORD") or "123456"
-            if isinstance(current, str) and hmac.compare_digest(current, current_stored):
+            current_stored = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
+            if current_stored and isinstance(current, str) and hmac.compare_digest(current, current_stored):
                 current_valid = True
 
         if not current_valid:
