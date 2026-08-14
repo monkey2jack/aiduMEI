@@ -1,0 +1,16 @@
+include README.md README_EN.md LICENSE CHANGELOG.md manifest.json pyproject.toml
+recursive-include ducky *.py
+recursive-include frontend *
+recursive-include integrations *
+recursive-include deploy *
+
+prune venv
+prune data
+prune logs
+prune tests
+prune docs
+prune assets
+prune .git
+prune .github
+prune .cache
+global-exclude *.py[cod] __pycache__ *.so *.dylib ._* .DS_Store *.log
