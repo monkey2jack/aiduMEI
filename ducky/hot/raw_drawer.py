@@ -159,4 +159,15 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
             from ducky.utils import get_facts_conn
             conn = get_facts_conn()
             facts_count = conn.execute(
-                "SELECT COUNT(*) FROM facts WHERE memory_tier='verbatim'\"\n            ).fetchone()[0]\n            conn.close()\n        except Exception as e:\n            logger.debug(f\"raw_drawer facts count skip: {e}\")\n            facts_count = -1\n\n        return {\n            \"status\": \"ok\",\n            \"raw_memories_fts\": total,\n            \"verbatim_facts\": facts_count,\n        }\n"
+                "SELECT COUNT(*) FROM facts WHERE memory_tier='verbatim'"
+            ).fetchone()[0]
+            conn.close()
+        except Exception as e:
+            logger.debug(f"raw_drawer facts count skip: {e}")
+            facts_count = -1
+
+        return {
+            "status": "ok",
+            "raw_memories_fts": total,
+            "verbatim_facts": facts_count,
+        }
