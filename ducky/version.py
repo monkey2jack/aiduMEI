@@ -3,14 +3,13 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v19.2.0 (生产级加固与优化升级版 · 2026-08-14)
-    核心主题: 安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是
-    1. 品类安全防御: 建立三层存储型 Prompt 注入拦截网（原始+归一化+重复行），召回沙箱化隔离（[DATA] 边界）
-    2. 数据强一致性: 多仓原子级联删除（Qdrant + SQLite 三库 + FTS5 零孤儿），软归档实时剔除向量/FTS
-    3. 应用级 WAL: 引入 fsync 预写日志与启动自愈对账（Reconcile Diff）
-    4. 检索与打分收敛: 抽取统一 scoring.py 模块根治双套 λ 漂移，消除 N+1 查询，六型分类深度接入加权
-    5. 反静默降级: 84 处静默异常治理，/health 暴露 degraded_components 实时探针与水位预警
-    6. 文档诚信改良: 彻底去除神话夸大修辞与虚假基准宣传，交付真实规范的技术文档
+v19.3.0 (架构大一统与全链路加固版 · 2026-08-14)
+    核心主题: 架构大一统 · 召回打分单一真相源 · 单例加锁治理 · 模块解耦与防线统一
+    1. 召回与打分单一真相源: recall_funnel 彻底委托 scoring.py 5 维打分，消除双套 λ 漂移
+    2. 全生命周期并发加固: RecallEngine 单例与 lazy_import 模块全面实施 Double-Checked Locking 互斥锁
+    3. 写入统一注入防护 Gate: speed/pipeline 最终落库前设立强制注入清洗 Gate
+    4. 消除运行时静默降级: 修复 search.py 时间边界导入，/health 探针全量捕获
+    5. 巨型模块解耦: 800+ 行 legacy.py 拆分为 legacy_helpers 与 legacy_routes
 """
 from __future__ import annotations
 

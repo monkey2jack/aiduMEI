@@ -33,7 +33,7 @@ services:
       - AIDUMEM_TYPE_CLASSIFY_ENABLED=false
       - AIDUMEM_SKILL_GROWTH_ENABLED=false
       - AIDUMEM_REFINE_ENABLED=false
-      - AIDUMEM_RECENCY_LAMBDA=0.01
+      - AIDUMEM_RECENCY_LAMBDA=0.05
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
