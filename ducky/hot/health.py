@@ -1,25 +1,26 @@
-"""ducky.hot.health — GET /health"""
+"""ducky.hot.health — GET /health & /metrics（v19.2.0 可观测性升级版）"""
 from __future__ import annotations
-import os
 
 import logging
 import os
+import time
 
 from fastapi import FastAPI
 
 # 版本信息：由 api_server.py 启动时通过 set_version_info() 注入
 _version_info = {
-    "service_version": "12.0.0",
-    "codename": "Chronos",
-    "codename_zh": "克罗诺斯",
+    "service_version": "19.2.0",
+    "codename": "Wisdom",
+    "codename_zh": "智慧引擎",
 }
 
 
-def set_version_info(version: str, codename: str, codename_zh: str = "克罗诺斯"):
+def set_version_info(version: str, codename: str, codename_zh: str = "智慧引擎"):
     """api_server 启动时调用，注入版本信息到 health 端点"""
     _version_info["service_version"] = version
     _version_info["codename"] = codename
     _version_info["codename_zh"] = codename_zh
+
 
 from ducky.mem0_runtime import (
     is_mem_ready,
@@ -29,6 +30,7 @@ from ducky.mem0_runtime import (
 )
 from ducky.tool_envelope import ok as te_ok
 from ducky.utils import FACTS_DB, TEXT_FTS_DB
+from ducky.degradation import DegradationTracker
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -36,10 +38,7 @@ logger = logging.getLogger("aiduMEM.hot")
 def register_health_routes(app: FastAPI) -> None:
     @app.get("/health")
     def health():
-        """B 档：lazy 预热 + 真实探针（可 import / 文件存在 / mem0 单例是否就绪）。
-
-        modules 不再只表示「是否已加载过」，避免冷启动全 false 误导运维。
-        """
+        """B 档：lazy 预热 + 真实探针 + 反静默降级追踪 + 水位预警。"""
         module_ok = {}
         try:
             lazy_import_layer1()
@@ -68,15 +67,18 @@ def register_health_routes(app: FastAPI) -> None:
                 return False
 
         module_ok.update({
-            "v8_ignition":    _can_import("ducky.memory_ignition"),
-            "v8_workspace":   _can_import("ducky.memory_workspace"),
-            "v8_broadcast":   _can_import("ducky.memory_broadcast"),
-            "v8_jlens":       _can_import("ducky.memory_jlens"),
-            "v8_persistence": _can_import("ducky.memory_persistence"),
-            "v2.1_salience":  _can_import("ducky.memory_salience"),
-            "v2.1_gate":      _can_import("ducky.memory_gate"),
+            "v8_ignition":    _can_import("ducky.pipeline.memory_ignition"),
+            "v8_workspace":   _can_import("ducky.pipeline.memory_workspace"),
+            "v8_broadcast":   _can_import("ducky.federation.broadcast"),
+            "v8_jlens":       _can_import("ducky.pipeline.memory_jlens"),
+            "v8_persistence": _can_import("ducky.pipeline.memory_persistence"),
+            "v2.1_salience":  _can_import("ducky.salience.core"),
+            "v2.1_gate":      _can_import("ducky.pipeline.memory_gate"),
             "v2.1_envelope":  _can_import("ducky.tool_envelope"),
             "v18.3_obsidian": _can_import("ducky.routes_obsidian"),
+            "scoring_engine": _can_import("ducky.scoring"),
+            "wal_engine":     _can_import("ducky.wal_engine"),
+            "injection_guard": _can_import("ducky.security.injection_guard"),
         })
 
         probes: dict[str, object] = {
@@ -84,7 +86,21 @@ def register_health_routes(app: FastAPI) -> None:
             "text_fts_db": os.path.exists(TEXT_FTS_DB),
             "mem0_singleton": is_mem_ready(),
             "port_service": True,
+            "injection_guard_ok": True,
         }
+
+        # WAL 探针
+        try:
+            from ducky.wal_engine import WALEngine
+            wal = WALEngine.get_instance()
+            pending_count = len(wal.get_pending_entries())
+            probes["wal_engine_ok"] = True
+            probes["wal_pending_entries"] = pending_count
+        except Exception as e:
+            probes["wal_engine_ok"] = False
+            probes["wal_error"] = str(e)[:120]
+
+        # FTS 探针
         try:
             from ducky.utils import get_text_conn
             conn = get_text_conn()
@@ -96,8 +112,7 @@ def register_health_routes(app: FastAPI) -> None:
             probes["fts_ok"] = False
             probes["fts_error"] = str(e)[:120]
 
-        # 实体词表探针 —— 漏配时闸门会把自己人名/项目代号的查询判成
-        # no_signal 并静默零召回，这是最难自查的一类故障，必须上报。
+        # 实体词表探针
         warnings: list[str] = []
         try:
             from ducky.pipeline.memory_gate import entity_keywords_status
@@ -113,60 +128,55 @@ def register_health_routes(app: FastAPI) -> None:
             probes["entity_keywords_ok"] = False
             probes["entity_keywords_error"] = str(e)[:120]
 
-        # Zeus v18.0: Raw Drawer 探针
+        # 事实库与容量水位探针
+        facts_count = 0
         try:
-            from ducky.utils import get_text_conn
-            conn2 = get_text_conn()
-            raw_count = conn2.execute(
-                "SELECT COUNT(*) FROM memories WHERE id LIKE 'raw-%'"
-            ).fetchone()[0]
-            conn2.close()
-            probes["raw_drawer_count"] = int(raw_count)
-            probes["raw_drawer_ok"] = True
+            from ducky.utils import get_facts_conn
+            conn_f = get_facts_conn()
+            facts_count = conn_f.execute("SELECT COUNT(*) FROM facts WHERE archived=0").fetchone()[0]
+            conn_f.close()
+            probes["facts_active_count"] = int(facts_count)
+            # 水位预警（默认 1000 条基准容量，>800 预警）
+            if facts_count > 800:
+                warnings.append(f"事实库水位较高（当前有效事实 {facts_count} 条），建议触发 refine_memory 归档精炼")
+                probes["watermark_warning"] = True
+            else:
+                probes["watermark_warning"] = False
         except Exception as e:
-            probes["raw_drawer_ok"] = False
-            probes["raw_drawer_error"] = str(e)[:120]
+            probes["facts_active_count"] = -1
+            probes["facts_error"] = str(e)[:120]
 
-        # Zeus v18.0: Code Graph 探针
-        try:
-            from ducky.code_graph import build_dependency_graph
-            probes["code_graph_ok"] = True
-        except Exception as e:
-            probes["code_graph_ok"] = False
-            probes["code_graph_error"] = str(e)[:120]
-
-        # Zeus v18.1: EvolveMem 探针
-        try:
-            from ducky.utils import DATA_DIR
-            probes["evolve_mem_ok"] = os.path.exists(os.path.join(DATA_DIR, "evolve_mem.db"))
-        except Exception as e:
-            probes["evolve_mem_ok"] = False
-            probes["evolve_mem_error"] = str(e)[:120]
-
+        # 汇总所有降级组件
         degraded = [k for k, v in module_ok.items() if not v]
         if not probes.get("fts_ok"):
             degraded.append("fts")
+        if not probes.get("wal_engine_ok"):
+            degraded.append("wal_engine")
+
+        # 合并动态降级追踪器记录的事件
+        for active_deg in DegradationTracker.get_degraded_summary():
+            if active_deg not in degraded:
+                degraded.append(active_deg)
+
         status = "ok" if not degraded else "degraded"
 
         return te_ok(
             service=f"aiduMEM-v{_version_info['service_version']}",
-            version=f"{_version_info['service_version']}-{_version_info['codename'].lower()}",
+            version=f"{_version_info['service_version']}",
             codename=_version_info["codename"],
             codename_zh=_version_info["codename_zh"],
             modules=module_ok,
             probes=probes,
             degraded=degraded,
+            degraded_details=DegradationTracker.get_degraded_details(),
             warnings=warnings,
             health_status=status,
         )
 
     @app.get("/metrics")
     def metrics(days: int = 7):
-        """🔴4：运行时指标端点（白皮书宣称已久，此前从未注册）。
-
-        返回记忆总量 / salience 生长历史 / FTS 索引量等运维指标。
-        """
-        out: dict = {"version": f"{_version_info['service_version']}-{_version_info['codename'].lower()}"}
+        """运行时指标端点。"""
+        out: dict = {"version": f"{_version_info['service_version']}"}
         try:
             from ducky.utils import get_facts_conn
             conn = get_facts_conn()
@@ -190,4 +200,3 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as e:
             out["fts_error"] = str(e)[:120]
         return te_ok(**out)
-

@@ -153,6 +153,12 @@ def register_add_routes(app: FastAPI) -> None:
                     async_flag = True
 
             text_preview = messages_to_text(messages_json)[:120]
+            from ducky.security.injection_guard import validate_and_sanitize_memory_content
+            _full_text = messages_to_text(messages_json)
+            _is_safe, _, _rejection = validate_and_sanitize_memory_content(_full_text)
+            if not _is_safe:
+                logger.warning(f"🛡️ [InjectionGuard] POST /add 拦截注入: {_rejection}")
+                raise HTTPException(400, f"Memory content rejected: {_rejection}")
 
             # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
             try:

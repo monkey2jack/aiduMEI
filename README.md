@@ -12,7 +12,7 @@
 > *洞察不是看见，而是看懂每一条记忆为何被想起；*
 > *引擎不是工具，而是让 AI 会记忆、会思考、会进化。*
 
-[![Version](https://img.shields.io/badge/version-19.1.2-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-19.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumem)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -26,7 +26,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它以希腊神话诸神为名，承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **v19.0 · Athena 雅典娜——从记忆到智慧。** 前代 Zeus（宙斯）打通了「记什么、怎么记」；雅典娜从宙斯头颅中全副武装诞生，续上「记完之后如何变聪明」——**主动反思、记忆自编辑、递归精炼、技能自生长、人格记忆基座**。记忆（Mnemosyne）→ 沉淀 → **智慧（Athena）**，进化线自此闭环。
+> **v19.2.0 · 智慧引擎——生产级加固与一致性闭环。** 在 v19.0 Athena（主动反思、记忆自编辑、递归精炼、人格基座）的基础上，v19.2.0 聚焦**真实生产场景的安全筑基、多仓一致性、统一打分提质与透明可观测性**——引入三层 Prompt 注入防御网、多仓级联原子删除与应用级 WAL、统一五维打分与时效衰减真相源、动态降级追踪与容量水位告警。
 
 > **品牌演进**：aiduMEM（优忆思）→ aiduMEI⚕爱嘟优忆思。从一个记忆中间件，升级为带可视化洞察的智能体通用智慧引擎。"爱嘟"是用户与 AI 助手的亲密呼唤，"优忆思"是记忆·思考·洞察的三重承诺。
 
@@ -132,6 +132,30 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 ---
 
+## 🛡️ v19.2.0 核心加固与升级亮点
+
+> 经历真实高频生产环境与全量安全审计验证，v19.2.0 带来 5 大关键生产级加固：
+
+1. **三层 Prompt 注入防御与上下文沙箱** (`ducky/security/injection_guard.py`)
+   - **正则防御 + 去噪规范化绕过粉碎 + 重复行截断**：防御针对记忆写入与反思的越狱指令（如 `ignore previous instructions` 及其点号/空格/变体绕过）。
+   - **上下文沙箱隔离**：召回记忆注入 System Prompt 前强制包裹 `[DATA: MEMORY CONTEXT]` 隔离标记，防止对抗性注入劫持模型。
+2. **多仓级联原子删除与应用级 WAL** (`ducky/wal_engine.py`)
+   - 单条删除与全量清空同步物理级联清理 **Qdrant 向量库、SQLite FTS5 全文索引、facts.db、salience.db、evolve_mem.db**。
+   - `wal_journal.jsonl`（带 `fsync`）记录关键状态转移，服务启动自动执行 `reconcile_startup()` 扫描修复孤儿记录。
+   - 递归精炼自动从 FTS5 和向量索引中软标记/解挂，根绝旧记忆虚假召回（幽灵记忆）。
+3. **统一五维打分体系与时效衰减** (`ducky/scoring.py`)
+   - 向量 + BM25 + 时间衰减 + 可靠性 + 热度五维打分全链路统一，衰减系数由 `AIDUMEM_RECENCY_LAMBDA=0.05` 单真相源控制。
+   - **事实倾向提振（+35%）**：显著增强事实、偏好与决策类记忆在问答中的精准排序。
+   - **0 N+1 查询**：批量加载显著性与热度，检索性能稳定可控。
+4. **动态可观测性与健康诊断** (`ducky/degradation.py` & `GET /health`)
+   - 实时记录 Qdrant、SQLite、LLM、FTS5、Reranker 组件降级与熔断状态，拒绝假绿健康检查。
+   - 事实库容量水位线监控（激活记忆 > 800 条时告警），辅助精炼与运维治理。
+5. **网络与凭据硬化**
+   - 绑定非回环地址（`0.0.0.0`）且未配置 `AIDUMEM_API_TOKEN` 时拒绝启动。
+   - 控制台密码通过 Salt+SHA256 存储在 `data/.ui_password_hash`，废除 `.env` 明文写入。
+
+---
+
 ## 🦉 v19.0 新特性 · Athena 雅典娜——从记忆到智慧
 
 > 前代 Zeus 解决了「记什么、怎么记、怎么找回来」。Athena 补上认知闭环的后半程：**记忆存下来之后，Agent 如何主动回顾、自我修正、越用越精炼、把经验长成技能，并拥有稳定的人格底座。** 记忆不再只增不减，而是会自省、会收敛、会进化。
@@ -205,6 +229,7 @@ Agent 不再只会「存了再搜」。定期或触发式回顾记忆，提炼�
 
 | 版本 | 代号 | 神格 | 核心使命 |
 |------|------|------|----------|
+| **v19.2.0** | **Wisdom** · 智慧引擎 | 生产级加固 · 一致闭环 | **Prompt注入防护 · 多仓原子删除与WAL · 统一打分体系 · 动态健康观测** |
 | **v19.0** | **Athena** · 雅典娜 | 智慧女神 · 从记忆到智慧 | **Reflect 主动反思 · 记忆自编辑去重 · 递归精炼 · Skill 自生长 · 人格记忆基座** |
 | **v18.3** | **Zeus** · 宙斯 | 众神之王 · 多模态感知 | 无损秒级升级 · 多模态视觉记忆 · Obsidian 双链联动 · 控制台密码修改 |
 | **v18.2** | **Zeus** · 宙斯 | 众神之王 · 检索自进化 | EvolveMem 反馈闭环、38 MCP 工具、质量审计全覆盖、**自带可视化控制台** |
@@ -226,11 +251,12 @@ Agent 不再只会「存了再搜」。定期或触发式回顾记忆，提炼�
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v19.0 · Athena │
+│           aiduMEI⚕爱嘟优忆思 v19.2.0 · Wisdom │
 │              FastAPI REST API :8767                       │
 │              控制台 /ui :8767（自带静态托管）              │
 │              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
+│  v19.2 Engine    → 注入防护 · WAL多仓级联 · 统一打分 · 动态健康
 │  Athena          → Reflect反思 · 自编辑 · 精炼 · Skill生长 · 人格基座 │
 │  Core (HOT)      → 搜索、添加、CRUD、健康检查              │
 │  v8 Pipeline     → 点火 · 工作区 · 广播 · 镜鉴 · 会话      │

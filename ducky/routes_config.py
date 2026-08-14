@@ -211,16 +211,36 @@ def register_config_routes(app: FastAPI) -> None:
     # ═══════════════════════════════════════════════════════════════════
     @app.post("/config/password")
     def change_password(body: dict) -> dict:
-        """修改 UI 登录密码。需要验证当前密码，成功后写入 .env 文件并提示重启。"""
+        """修改 UI 登录密码。安全加固：哈希存储，禁止明文写 .env 文件。"""
         import hmac
+        import hashlib
+        from ducky.utils import DATA_DIR
 
         current = body.get("current_password", "")
         new = body.get("new_password", "")
         confirm = body.get("confirm_password", "")
 
-        # 验证当前密码
-        current_stored = os.environ.get("AIDUMEM_UI_PASSWORD") or "123456"
-        if not isinstance(current, str) or not hmac.compare_digest(current, current_stored):
+        # 验证当前密码（先查哈希文件，再查环境变量）
+        hash_file = os.path.join(DATA_DIR, ".ui_password_hash")
+        current_valid = False
+        if os.path.exists(hash_file):
+            try:
+                with open(hash_file, "r") as f:
+                    stored_hash = f.read().strip()
+                if ":" in stored_hash:
+                    salt, expected_hash = stored_hash.split(":", 1)
+                    cand_hash = hashlib.sha256((salt + current).encode()).hexdigest()
+                    if hmac.compare_digest(cand_hash, expected_hash):
+                        current_valid = True
+            except Exception:
+                pass
+
+        if not current_valid:
+            current_stored = os.environ.get("AIDUMEM_UI_PASSWORD") or "123456"
+            if isinstance(current, str) and hmac.compare_digest(current, current_stored):
+                current_valid = True
+
+        if not current_valid:
             return {"status": "error", "detail": "当前密码错误 / Current password incorrect"}
 
         # 验证新密码
@@ -229,32 +249,20 @@ def register_config_routes(app: FastAPI) -> None:
         if new != confirm:
             return {"status": "error", "detail": "两次输入不一致 / Passwords do not match"}
 
-        # 写入 .env 文件（追加或更新 AIDUMEM_UI_PASSWORD）
-        env_path = os.path.join(os.path.dirname(_CFG_PATH), ".env")
-        env_lines = []
-        key_found = False
-
-        if os.path.exists(env_path):
-            with open(env_path) as f:
-                for line in f:
-                    if line.startswith("AIDUMEM_UI_PASSWORD="):
-                        env_lines.append(f"AIDUMEM_UI_PASSWORD={new}\n")
-                        key_found = True
-                    else:
-                        env_lines.append(line)
-
-        if not key_found:
-            env_lines.append(f"AIDUMEM_UI_PASSWORD={new}\n")
-
+        # 哈希写入保护文件（不写明文 .env）
         try:
-            with open(env_path, "w") as f:
-                f.writelines(env_lines)
-            logger.info("🔐 UI 登录密码已更新（需重启服务生效）")
+            salt = os.urandom(16).hex()
+            pw_hash = hashlib.sha256((salt + new).encode()).hexdigest()
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(hash_file, "w") as f:
+                f.write(f"{salt}:{pw_hash}")
+            os.environ["AIDUMEM_UI_PASSWORD"] = new
+            logger.info("🔐 UI 登录密码已安全更新（已哈希存储）")
             return {
                 "status": "ok",
-                "detail": "密码已更新，重启服务后生效 / Password updated, restart to take effect",
-                "restart_required": True
+                "detail": "密码已更新并即时生效 / Password updated securely",
+                "restart_required": False
             }
         except Exception as e:
-            logger.error(f"密码写入失败: {e}")
-            return {"status": "error", "detail": f"写入失败: {e}"}
+            logger.error(f"密码更新失败: {e}")
+            return {"status": "error", "detail": f"更新失败: {e}"}
