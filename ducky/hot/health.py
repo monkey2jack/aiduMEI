@@ -10,12 +10,12 @@ from fastapi import FastAPI
 # 版本信息：由 api_server.py 启动时通过 set_version_info() 注入
 _version_info = {
     "service_version": "19.2.0",
-    "codename": "Wisdom",
-    "codename_zh": "智慧引擎",
+    "codename": "Athena",
+    "codename_zh": "雅典娜",
 }
 
 
-def set_version_info(version: str, codename: str, codename_zh: str = "智慧引擎"):
+def set_version_info(version: str, codename: str, codename_zh: str = "雅典娜"):
     """api_server 启动时调用，注入版本信息到 health 端点"""
     _version_info["service_version"] = version
     _version_info["codename"] = codename
