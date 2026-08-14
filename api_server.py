@@ -153,7 +153,32 @@ def _register_login(route_app: FastAPI) -> None:
         except Exception:
             payload = {}
         given = payload.get("password")
-        if isinstance(given, str) and hmac.compare_digest(given, _UI_PASSWORD):
+        if not isinstance(given, str):
+            return JSONResponse({"success": False, "message": "密码格式错误"}, status_code=401)
+
+        # 优先校验安全哈希文件
+        import hashlib
+        from ducky.utils import DATA_DIR
+        hash_file = os.path.join(DATA_DIR, ".ui_password_hash")
+        valid = False
+        if os.path.exists(hash_file):
+            try:
+                with open(hash_file, "r") as f:
+                    stored_hash = f.read().strip()
+                if ":" in stored_hash:
+                    salt, exp_hash = stored_hash.split(":", 1)
+                    cand_hash = hashlib.sha256((salt + given).encode()).hexdigest()
+                    if hmac.compare_digest(cand_hash, exp_hash):
+                        valid = True
+            except Exception:
+                pass
+
+        if not valid:
+            current_pwd = os.environ.get("AIDUMEM_UI_PASSWORD") or _UI_PASSWORD
+            if hmac.compare_digest(given, current_pwd):
+                valid = True
+
+        if valid:
             logger.info("🚪 UI 登录成功")
             return {"success": True}
         logger.warning("🚪 UI 登录失败（密码错误）")
@@ -208,6 +233,14 @@ def _start_background() -> None:
 
     _init_text_fts()
     init_core_memory()
+    # 启动 WAL 对账与自愈（v19.2.0 P0-DATA）
+    try:
+        from ducky.wal_engine import reconcile_startup
+        _rec_report = reconcile_startup()
+        if _rec_report.get("recovered", 0) > 0:
+            logger.info("🔧 [WAL Reconcile] 成功自愈恢复 %d 条挂起事务", _rec_report["recovered"])
+    except Exception as _re:
+        logger.warning(f"⚠️ WAL 启动对账异常: {_re}")
 
     # 启动自检：实体词表漏配是「静默故障」——闸门会把涉及自定义人名/
     # 项目代号的查询判成 no_signal 而零召回，不报错也不留痕。v15 起
@@ -257,11 +290,17 @@ def main():
             "⚠️ 未设置 AIDUMEM_UI_PASSWORD：UI 登录回退为默认密码。"
             "对外部署请务必设置自己的强密码。"
         )
-    if host != "127.0.0.1":
-        logger.warning(
-            "⚠️ 监听地址为 %s（非回环）。对外部署请前置反向代理配置 TLS，"
-            "并设置 AIDUMEM_API_TOKEN + AIDUMEM_UI_PASSWORD。", host
-        )
+    if host not in ("127.0.0.1", "localhost") and not _API_TOKEN:
+        allow_insecure = os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
+        if not allow_insecure:
+            logger.critical(
+                "🛑 [Security Fatal] 拒绝启动：监听地址为公网/非回环 '%s' 且未配置 AIDUMEM_API_TOKEN。"
+                "为防止未授权公网裸奔，请在 .env 中设置 AIDUMEM_API_TOKEN 或显式设置 AIDUMEM_ALLOW_INSECURE_PUBLIC=1 后重试。",
+                host
+            )
+            raise RuntimeError(f"Fatal Security Policy: Binding to '{host}' without AIDUMEM_API_TOKEN is prohibited.")
+        else:
+            logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

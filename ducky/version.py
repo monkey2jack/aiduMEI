@@ -3,75 +3,29 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v19.1.2 Athena (雅典娜 · 审计补丁自审修复版)
-    核心主题: v19.1.1 自审揪出 2 处真 bug 后修复——MCP 鉴权兼容 / 六型回填真实生效
-    1. MCP 带 AIDUMEM_API_TOKEN 时所有工具 401 → _api_get/_api_post 自动携带 Authorization
-    2. 六型回填 ref 优先级错（先 UUID 空查）→ fact_id 优先命中 fact:{id} 账本
-    3. 回归测试锁死上述两处，隔离库写入闭环 + 鉴权 + MCP 端到端实测通过
-
-v19.1.1 Athena (雅典娜 · 审计补丁版)
-    核心主题: 双源审计 + 小猴自查整改——接口安全 / MCP 契约 / 版本号诚信 / 六型逻辑尾巴
-    1. MCP stdio 运行时少注册 2 工具 → 主入口移至文件末尾
-    2. MCP mem_update 清空记忆 → content 直传 + 模型兼容 data
-    3. MCP mem_delete_all 删错用户 → body 模型接收 user_id
-    4. REST API 零鉴权 → AIDUMEM_API_TOKEN Bearer 中间件
-    5. Docker 默认 0.0.0.0 裸奔 → 默认 127.0.0.1 + 安全引导
-    6. 默认密码 123456 + hint 泄密 → 未设置时 hint 不吐明文
-    7. 版本号真相源 → pyproject / manifest / README badge 全对齐
-    8. 六型 / top_k / ref / 裸 except / 文档小尾巴一并收口
-
-v19.1 Athena (雅典娜 · 审计修复版)
-    核心主题: 社区审计 26 条问题全修——数据安全 / 主链接线 / 卖点打假
-    1. 联邦跨 Agent 隔离: 唯一索引 (agent_id,category,fact_key)，杜绝同 key 静默互覆盖
-    2. 全新部署开箱可用: 联邦 schema 迁移前置核心建表，修 fresh clone 联邦表缺失
-    3. 写入主链接线: 正常 /add 补 salience 登记 + FTS 索引 + 六型写时分类
-    4. Athena 断链修复: /crystals/approve 端点、REGEXP 注册、self_edit 相似度门控
-    5. 端点修复: /metrics 上线、search/deep 关键词检索、scenes 表、restore 端点、SETTINGS 保存
-    6. 卖点诚信: manifest 可配置项真读取，Tahoe-Gate/Ignition 等文档措辞对齐实现
-
-v19.0 Athena (雅典娜 · 从记忆到智慧)
-    核心主题: 认知闭环后半程——记完之后如何变聪明
-    1. Reflect 主动反思 (P0-3): 定期/会话结束触发，提炼模式/矛盾/知识缺口为洞察
-    2. 记忆去重自编辑 (P0-2): 写入前 LLM 判重复/冲突/全新，合并而非追加，可回滚
-    3. 记忆类型分离 (P1-1): FACTS/PREFERENCES/EXPERIENCES/OBSERVATIONS/REFLECTIONS/DECISIONS 六型
-    4. 自动 Skill 生长 + 精炼淘汰 (P1-2): 轨迹→草稿→人工approve；低效用技能自动待淘汰
-    5. 记忆递归精炼 (P1-3): 多条碎记忆聚类压缩为高层抽象，可回滚
-    6. 人格记忆基座 Persona Memory Layer: 一句话人设展开为可检索自传体记忆库，synthesis/grounded 双模式
-    7. 双时间轴 + 时间感知检索 (P0-1/P0-4): valid_from/valid_to/recorded_at + 向量+BM25+时间衰减混合召回
-
-v18.3 Zeus (宙斯 · 多模态感知纪元)
-    核心主题: 无损升级机制 + 多模态视觉记忆 + Obsidian 双链联动
-    1. 无损秒级平滑升级 SOP: user_version schema 版本化 + ALTER TABLE 增量补丁
-    2. 多模态 API: /add 原生支持 image_url，后端自动调用 Vision 模型生成 caption
-    3. Obsidian 双链: Wikilink 解析器 + 实体图谱节点打通 + /api/obsidian/sync
-    4. 前端适配: PULSE 统计多模态数据 / SETTINGS 展示 Vision 模型 / VAULT 渲染缩略图
-
-v18.2 Zeus (宙斯 · 可视化洞察纪元)
-    核心主题: aiduMEI 品牌升级 + 自带可视化控制台 + 全量代码审计
-    1. aiduMEI 控制台: 六面板(PULSE/VAULT/MAP/RECALL/EVOLVE/SETTINGS)零依赖纯静态
-    2. 后端自带 /ui 静态托管 + /api 别名层 + /config 路由(api_key 脱敏)
-    3. 全量代码审计: recall_funnel NoneType 崩溃 / _load_patterns 逻辑 bug / 7处静默异常补日志
-    4. 品牌升级: aiduMEM → aiduMEI (aidu Memory Engine Insight / 爱嘟优忆思)
-
-v18.1 Zeus (宙斯 · 检索自进化纪元)
-    核心主题: SimpleMem 核心理念 EvolveMem 融合，建立闭环反馈
-    1. EvolveMem 引擎: /evolve/feedback 与周期性 boost/decay 权重调整
-    2. MCP 工具扩充: expose evolve_feedback 与 evolve_report
-    3. 全方位质量审计: 清理架构遗留瑕疵，确保高稳定性
-    4. 三大借鉴完全落地: MemPalace(原味抽屉) + code-review-graph(代码图谱) + SimpleMem(检索进化)
+v19.2.0 (生产级加固与优化升级版 · 2026-08-14)
+    核心主题: 安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是
+    1. 品类安全防御: 建立三层存储型 Prompt 注入拦截网（原始+归一化+重复行），召回沙箱化隔离（[DATA] 边界）
+    2. 数据强一致性: 多仓原子级联删除（Qdrant + SQLite 三库 + FTS5 零孤儿），软归档实时剔除向量/FTS
+    3. 应用级 WAL: 引入 fsync 预写日志与启动自愈对账（Reconcile Diff）
+    4. 检索与打分收敛: 抽取统一 scoring.py 模块根治双套 λ 漂移，消除 N+1 查询，六型分类深度接入加权
+    5. 反静默降级: 84 处静默异常治理，/health 暴露 degraded_components 实时探针与水位预警
+    6. 文档诚信改良: 彻底去除神话夸大修辞与虚假基准宣传，交付真实规范的技术文档
 """
+from __future__ import annotations
 
-SERVICE_VERSION = "19.1.2"
+SERVICE_VERSION = "19.2.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
-CODENAME = "Athena"
-CODENAME_ZH = "雅典娜"
+CODENAME = "Wisdom"
+CODENAME_ZH = "智慧引擎"
 DISPLAY_NAME = f"aiduMEI {FULL_VERSION} · {CODENAME_ZH}"
 
-# 架构代号：从记忆到智慧——主动反思 · 自编辑 · 递归精炼 · Skill 自生长 · 人格记忆基座
-ARCHITECTURE = "AI Wisdom Engine with Active Reflection, Self-Editing Memory, Recursive Refinement & Persona Memory Layer"
+# 架构定位
+ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Layer Injection Defense, Multi-Store Consistency & Unified Scoring"
 
-# 历史版本谱系（大版本代号，最新在前）
+# 历史版本谱系（最新在前）
 LINEAGE = (
+    ("19.2.0", "Wisdom", "智慧引擎", "安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是"),
     ("19.1.2", "Athena", "雅典娜", "审计补丁自审修复 · MCP 鉴权兼容 · 六型回填生效"),
     ("19.1.1", "Athena", "雅典娜", "审计补丁 · 接口安全 · MCP 契约 · 版本号诚信"),
     ("19.1", "Athena", "雅典娜", "审计修复 · 联邦隔离 · 主链接线 · 卖点诚信"),
@@ -90,4 +44,3 @@ LINEAGE = (
     ("11.0", "Hyperion", "海伯利安", "线程本地连接池 · 性能纪元"),
     ("9.1", "Mnemosyne", "谟涅摩绪涅", "潮浪并忆 · 双策分档"),
 )
-

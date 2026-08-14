@@ -57,6 +57,12 @@ def write_fact(
     fact_value = (fact_value or "").strip()
     if not fact_key or not fact_value:
         return {"status": "error", "detail": "fact_key 和 fact_value 不能为空"}
+    from ducky.security.injection_guard import validate_and_sanitize_memory_content
+    is_safe, sanitized_val, rejection = validate_and_sanitize_memory_content(fact_value)
+    if not is_safe:
+        logger.warning("🛡️ [InjectionGuard] 联邦写入拦截注入: %s", rejection)
+        return {"status": "error", "detail": f"Fact value rejected: {rejection}"}
+    fact_value = sanitized_val
 
     category = (category or "general").strip()
     agent_id = (agent_id or DEFAULT_AGENT).strip() or DEFAULT_AGENT

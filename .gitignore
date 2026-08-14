@@ -59,3 +59,5 @@ Thumbs.db
 *.log
 .sensenova_key
 .local/
+
+uv.lock

@@ -12,6 +12,7 @@ from ducky.mem0_runtime import (
     get_memory,
     reset_memory_singleton,
 )
+from ducky.wal_engine import cascade_delete_memory, cascade_delete_all
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -61,6 +62,7 @@ def register_crud_routes(app: FastAPI) -> None:
                 conn = get_facts_conn()
                 vision_count = conn.execute("SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL").fetchone()[0]
                 obsidian_count = conn.execute("SELECT COUNT(*) FROM facts WHERE source = 'obsidian'").fetchone()[0]
+                conn.close()
             except Exception as _e:
                 logger.warning(f"统计多模态/obsidian数据异常: {_e}")
 
@@ -85,43 +87,42 @@ def register_crud_routes(app: FastAPI) -> None:
 
     @app.post("/delete")
     def delete(req: DeleteRequest):
+        # 🟡v19.2.0: 多仓级联原子删除（Qdrant + FTS + facts + salience + evolve）
         try:
-            mem = get_memory()
-            mem.delete(req.memory_id)
-            try:
-                from ducky.text_fts import _unindex_memory
-                _unindex_memory(req.memory_id)
-            except Exception as e:
-                logger.debug(f"FTS unindex on delete 跳过: {e}")
-            return {"status": "ok"}
+            res = cascade_delete_memory(req.memory_id)
+            return {"status": "ok", "details": res.get("details", {})}
         except Exception as e:
             logger.error(f"delete 失败: {e}")
             raise HTTPException(500, str(e))
 
     @app.post("/delete_all")
     def delete_all(req: DeleteAllRequest):
-        # 🟡P0-3：改 body 模型接收 user_id，杜绝 MCP/客户端把 user_id 放 body
-        # 却被 FastAPI 当 query 取不到、永远回落 default 的删错用户事故。
+        # 🟡v19.2.0: 多仓级联原子清空，根绝 SQLite / FTS 孤儿记忆
         try:
-            mem = get_memory()
-            mem.delete_all(user_id=req.user_id)
-            return {"status": "ok"}
+            res = cascade_delete_all(user_id=req.user_id)
+            return {"status": "ok", "details": res.get("details", {})}
         except Exception as e:
+            logger.error(f"delete_all 失败: {e}")
             raise HTTPException(500, str(e))
 
     @app.post("/update")
     def update(req: UpdateRequest):
         try:
             mem = get_memory()
-            # 🟡P0-2：兼容旧调用方误传 data 字段；content 为空才回落到 data，
-            # 防止 UpdateRequest 把 data 丢弃后把记忆清空。
             content = req.content
             if not content:
                 extra = getattr(req, "model_extra", None) or {}
                 content = extra.get("data", "")
             mem.update(req.memory_id, data=content)
+            # 同步更新 FTS
+            try:
+                from ducky.text_fts import _index_memory
+                _index_memory(req.memory_id, content)
+            except Exception as fe:
+                logger.debug(f"FTS index on update 跳过: {fe}")
             return {"status": "ok"}
         except Exception as e:
+            logger.error(f"update 失败: {e}")
             raise HTTPException(500, str(e))
 
     @app.get("/usage")
@@ -162,4 +163,3 @@ def register_crud_routes(app: FastAPI) -> None:
     @app.post("/facts/inject-context")
     def inject_context(req: dict):
         return _do_inject_context(InjectContextRequest(**req))
-

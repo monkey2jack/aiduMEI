@@ -10,7 +10,7 @@
 > *Memory is not note-taking, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Version](https://img.shields.io/badge/version-19.0.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
+[![Version](https://img.shields.io/badge/version-19.2.0-blue.svg)](https://github.com/monkey2jack/aiduMEI)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
@@ -24,7 +24,7 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-> **v19.0 · Athena — from memory to wisdom.** Zeus solved *what to remember and how*; Athena, born fully armed from Zeus's head, closes the cognitive loop with *how to grow wiser after remembering* — **active reflection, memory self-editing, recursive refinement, autonomous skill growth, and a persona memory layer.** Memory (Mnemosyne) → consolidation → **wisdom (Athena)**.
+> **v19.2.0 · AI Wisdom Engine — Production Hardening & Full Consistency.** Building on v19.0 Athena (active reflection, self-editing, recursive refinement, persona layer), v19.2.0 focuses on **rock-solid security, multi-store consistency, unified scoring, and dynamic observability in high-frequency production environments** — featuring 3-layer prompt injection defense, multi-store cascade atomic deletion with application WAL, single-source-of-truth recency decay, and live degradation tracking.
 
 Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
@@ -50,6 +50,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
+| **v19.2.0** | **Wisdom** | AI Wisdom Engine · Production Hardening | **Prompt injection defense · Multi-store cascade delete & WAL · Unified scoring · Dynamic health** |
 | **v19.0** | **Athena** | Goddess of Wisdom · From Memory to Wisdom | **Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer** |
 | **v18.3** | **Zeus** | King of the Gods · Multimodal | Lossless fast-update · multimodal vision memory · Obsidian bi-directional links · console password change |
 | **v18.2** | **Zeus** | King of the Gods · Insight | Built-in aiduMEI console · EvolveMem feedback loop · quality audit |
@@ -65,6 +66,30 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 | **v9.1** | **Mnemosyne** | Goddess of Memory | Tidal coalescing · dual-strategy tiering |
 
 [Full version history →](CHANGELOG.md)
+
+---
+
+## 🛡️ Key Upgrades in v19.2.0 · Production Hardening
+
+> Validated against high-frequency real-world workloads and comprehensive security audits, v19.2.0 delivers 5 essential production guarantees:
+
+1. **3-Layer Prompt Injection Defense & Context Sandboxing** (`ducky/security/injection_guard.py`)
+   - **Pattern Matching + Normalized Bypass Crushing + Repetition Throttling**: Blocks jailbreak/override instructions in both English and Chinese across all ingestion paths (`/add`, `/drawer/store`, federation, reflect, self-edit).
+   - **Context Sandboxing**: Recalled memories are wrapped in `[DATA: MEMORY CONTEXT ...]` tags before injection into host system prompts to prevent adversarial command execution.
+2. **Multi-Store Cascade Atomic Deletion & Application WAL** (`ducky/wal_engine.py`)
+   - Deletions (`DELETE /memory/{id}` and `DELETE /all`) synchronously purge **Qdrant vector store, SQLite FTS5 index, facts.db, salience.db, and evolve_mem.db**.
+   - `wal_journal.jsonl` (with `fsync`) tracks state transitions; `reconcile_startup()` automatically heals orphaned records on boot.
+   - Refinement operations soft-archive vectors and unindex FTS5 to eliminate ghost memory recalls.
+3. **Unified 5-Dimension Scoring Engine** (`ducky/scoring.py`)
+   - Standardized scoring across Vector + BM25 + Time Decay + Reliability + Heat with a single truth decay constant `AIDUMEM_RECENCY_LAMBDA=0.05`.
+   - **Fact-Seeking Bias (+35%)**: Prioritizes `FACTS`, `PREFERENCES`, and `DECISIONS` in QA retrieval.
+   - **Zero N+1 Queries**: Batch-loads salience and heat records for steady retrieval latency.
+4. **Dynamic Health Probes & Degradation Observability** (`ducky/degradation.py` & `GET /health`)
+   - Real-time tracking of Qdrant, SQLite, LLM, FTS5, and Reranker health; exposes `degraded_components` dynamically instead of returning fake 200 OKs.
+   - High-watermark capacity warnings (>800 active facts) to guide pruning and refinement.
+5. **Network & Credential Hardening**
+   - Refuses startup when bound to public interfaces (`0.0.0.0`) without `AIDUMEM_API_TOKEN`.
+   - Replaces plaintext `.env` password writes with Salt+SHA256 hashed storage in `data/.ui_password_hash`.
 
 ---
 
@@ -111,7 +136,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│        🦉 aiduMEI v19.0 · Athena · AI Wisdom Engine │
+│        🦉 aiduMEI v19.2.0 · Wisdom · AI Wisdom Engine │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
