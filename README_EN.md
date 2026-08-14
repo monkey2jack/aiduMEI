@@ -69,27 +69,31 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ---
 
-## 🛡️ Key Upgrades in v19.2.0 · Production Hardening
+## 🛡️ v19.2.0 Production Hardening Highlights
 
-> Validated against high-frequency real-world workloads and comprehensive security audits, v19.2.0 delivers 5 essential production guarantees:
+> Verified in real-world production environments (1,000+ active production facts) and comprehensive security audits, v19.2.0 delivers 6 key production-grade hardenings:
 
 1. **3-Layer Prompt Injection Defense & Context Sandboxing** (`ducky/security/injection_guard.py`)
-   - **Pattern Matching + Normalized Bypass Crushing + Repetition Throttling**: Blocks jailbreak/override instructions in both English and Chinese across all ingestion paths (`/add`, `/drawer/store`, federation, reflect, self-edit).
-   - **Context Sandboxing**: Recalled memories are wrapped in `[DATA: MEMORY CONTEXT ...]` tags before injection into host system prompts to prevent adversarial command execution.
-2. **Multi-Store Cascade Atomic Deletion & Application WAL** (`ducky/wal_engine.py`)
-   - Deletions (`DELETE /memory/{id}` and `DELETE /all`) synchronously purge **Qdrant vector store, SQLite FTS5 index, facts.db, salience.db, and evolve_mem.db**.
-   - `wal_journal.jsonl` (with `fsync`) tracks state transitions; `reconcile_startup()` automatically heals orphaned records on boot.
-   - Refinement operations soft-archive vectors and unindex FTS5 to eliminate ghost memory recalls.
-3. **Unified 5-Dimension Scoring Engine** (`ducky/scoring.py`)
-   - Standardized scoring across Vector + BM25 + Time Decay + Reliability + Heat with a single truth decay constant `AIDUMEM_RECENCY_LAMBDA=0.05`.
-   - **Fact-Seeking Bias (+35%)**: Prioritizes `FACTS`, `PREFERENCES`, and `DECISIONS` in QA retrieval.
-   - **Zero N+1 Queries**: Batch-loads salience and heat records for steady retrieval latency.
-4. **Dynamic Health Probes & Degradation Observability** (`ducky/degradation.py` & `GET /health`)
-   - Real-time tracking of Qdrant, SQLite, LLM, FTS5, and Reranker health; exposes `degraded_components` dynamically instead of returning fake 200 OKs.
-   - High-watermark capacity warnings (>800 active facts) to guide pruning and refinement.
-5. **Network & Credential Hardening**
-   - Refuses startup when bound to public interfaces (`0.0.0.0`) without `AIDUMEM_API_TOKEN`.
-   - Replaces plaintext `.env` password writes with Salt+SHA256 hashed storage in `data/.ui_password_hash`.
+   - **Multi-layer Filter**: Layer 1 regex pattern filter (jailbreaks / prompt overrides), Layer 2 normalization filter (strips punctuations/spaces to defeat obfuscation bypasses), and Layer 3 repetition/overflow rate-limiter.
+   - **Benign Whitelist**: Whitelists legitimate DevOps phrases and common natural language patterns to prevent false positives.
+   - **Context Sandboxing**: Recalled memories injected into System Prompts are strictly wrapped with `[DATA: MEMORY CONTEXT ...]` boundary tags, declaring them as pure data.
+2. **Multi-Tenant Isolation & Exact-Match Deletion (P0)** (`ducky/hot/crud.py` & `ducky/wal_engine.py`)
+   - **Strict Tenant Scoping**: `/delete` and `/update` enforce tenant ownership (`user_id`), eliminating cross-tenant access.
+   - **Exact Matching**: Replaced substring SQL `LIKE '%...%'` queries with exact `id=? OR fact_key=?` matching, preventing accidental substring deletions.
+3. **Anti-Accidental Clear Guard (P0)**
+   - `/delete_all` strictly rejects empty payloads with HTTP 400.
+   - Purging the `default` tenant requires explicit `confirm: true` to prevent accidental wipeouts.
+4. **Multi-Store Cascade Atomic Deletion & Application WAL (P0)** (`ducky/wal_engine.py`)
+   - Single deletion and tenant wipeouts synchronously purge **Qdrant vector store, SQLite FTS5 full-text index, facts.db, salience.db, and evolve_mem.db**, leaving zero orphan records.
+   - Lightweight `wal_journal.jsonl` with `fsync` logging; automatically reconciles and self-heals orphaned records via `reconcile_startup()` on boot.
+   - Recursive refinement soft-archives vector points and unindexes FTS5 records, eliminating ghost memory recalls.
+5. **Unified 5-Dimension Scoring Engine & Zero N+1 Queries (P1)** (`ducky/scoring.py`)
+   - Standardized scoring across Vector + BM25 + Time Decay + Reliability + Heat with a single truth decay constant `AIDUMEM_RECENCY_LAMBDA`.
+   - **Zero N+1 Query Overhead**: `get_batch_memory_types` loads 6-type classifications via a single SQL batch query.
+6. **Network / Credential Hardening & Live Degradation Telemetry (P1)** (`ducky/degradation.py` & `api_server.py`)
+   - Binding to public interfaces (`0.0.0.0`) without `AIDUMEM_API_TOKEN` raises a fatal error on boot to prevent unprotected exposure.
+   - Eliminates default weak passwords; automatically generates a 16-character secure random password with Salt+SHA256 hashed persistence.
+   - `/health` exposes live `degraded_components` and memory high-watermark capacity warnings (>800 facts).
 
 ---
 
