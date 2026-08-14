@@ -1,7 +1,7 @@
 """
 ducky — aiduMEM 思想引擎智能模块包
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v18.0 Zeus (宙斯) — Cross-Pollinated Self-Evolving Memory OS
+v19.2.0 Wisdom (智慧引擎) — Production Hardened AI Memory & Wisdom Engine
 """
 
 from .layer1_selfcheck import (
