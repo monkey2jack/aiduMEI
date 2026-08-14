@@ -134,25 +134,29 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
 
 ## 🛡️ v19.2.0 核心加固与升级亮点
 
-> 经历真实高频生产环境与全量安全审计验证，v19.2.0 带来 5 大关键生产级加固：
+> 经历真实生产环境（千条级真实事实库）与全量安全审计验证，v19.2.0 聚焦工程可靠性与生产安全性，带来 6 大核心加固：
 
-1. **三层 Prompt 注入防御与上下文沙箱** (`ducky/security/injection_guard.py`)
-   - **正则防御 + 去噪规范化绕过粉碎 + 重复行截断**：防御针对记忆写入与反思的越狱指令（如 `ignore previous instructions` 及其点号/空格/变体绕过）。
-   - **上下文沙箱隔离**：召回记忆注入 System Prompt 前强制包裹 `[DATA: MEMORY CONTEXT]` 隔离标记，防止对抗性注入劫持模型。
-2. **多仓级联原子删除与应用级 WAL** (`ducky/wal_engine.py`)
-   - 单条删除与全量清空同步物理级联清理 **Qdrant 向量库、SQLite FTS5 全文索引、facts.db、salience.db、evolve_mem.db**。
-   - `wal_journal.jsonl`（带 `fsync`）记录关键状态转移，服务启动自动执行 `reconcile_startup()` 扫描修复孤儿记录。
-   - 递归精炼自动从 FTS5 和向量索引中软标记/解挂，根绝旧记忆虚假召回（幽灵记忆）。
-3. **统一五维打分体系与时效衰减** (`ducky/scoring.py`)
-   - 向量 + BM25 + 时间衰减 + 可靠性 + 热度五维打分全链路统一，衰减系数由 `AIDUMEM_RECENCY_LAMBDA=0.05` 单真相源控制。
-   - **事实倾向提振（+35%）**：显著增强事实、偏好与决策类记忆在问答中的精准排序。
-   - **0 N+1 查询**：批量加载显著性与热度，检索性能稳定可控。
-4. **动态可观测性与健康诊断** (`ducky/degradation.py` & `GET /health`)
-   - 实时记录 Qdrant、SQLite、LLM、FTS5、Reranker 组件降级与熔断状态，拒绝假绿健康检查。
-   - 事实库容量水位线监控（激活记忆 > 800 条时告警），辅助精炼与运维治理。
-5. **网络与凭据硬化**
-   - 绑定非回环地址（`0.0.0.0`）且未配置 `AIDUMEM_API_TOKEN` 时拒绝启动。
-   - 控制台密码通过 Salt+SHA256 存储在 `data/.ui_password_hash`，废除 `.env` 明文写入。
+1. **三层 Prompt 注入防御网与沙箱隔离** (`ducky/security/injection_guard.py`)
+   - **三层拦截**：第 1 层原始正则过滤（越狱/指令覆盖模式）、第 2 层去噪规范化（强力粉碎空格/标点变形绕过）、第 3 层重复行溢出防御。
+   - **精准白名单**：内置合法运维与日常口语白名单，防止日常会话误拦截。
+   - **上下文沙箱隔离**：召回记忆注入 System Prompt 前强制包裹 `[DATA: MEMORY CONTEXT ...]` 边界标记，向宿主模型显式声明为纯数据片段。
+2. **多租户隔离与精确匹配删除（P0）** (`ducky/hot/crud.py` & `ducky/wal_engine.py`)
+   - **严格租户归属校验**：`/delete` 与 `/update` 强制校验 `user_id`，禁止跨租户越权操作。
+   - **精确匹配删除**：彻底废除 SQL `LIKE '%...%'` 模糊匹配，采用 `id=? OR fact_key=?` 精确匹配，杜绝误伤子串记录。
+3. **核弹级防爆门禁（P0）**
+   - `/delete_all` 严禁空参数调用（直接抛 HTTP 400）。
+   - 清空 `default` 租户全库必须显式传递 `confirm: true` 二次确认，防止运维误触清库。
+4. **多仓级联原子删除与应用级 WAL（P0）** (`ducky/wal_engine.py`)
+   - 单条删除与全量清空同步级联物理清理 **Qdrant 向量库、SQLite FTS5 全文索引、facts.db、salience.db、evolve_mem.db**，根绝孤儿与幽灵记忆。
+   - 引入带 `fsync` 的 `wal_journal.jsonl` 预写日志，服务启动自动运行 `reconcile_startup()` 扫描并自愈对账。
+   - 递归精炼归档后自动从 FTS5 索引解挂并在向量库中软标记，防止已精炼旧记忆虚假召回。
+5. **统一五维打分体系与 0 N+1 查询（P1）** (`ducky/scoring.py`)
+   - 统一向量 + BM25 + 时间衰减 + 可靠性 + 热度五维打分算法，衰减率由 `AIDUMEM_RECENCY_LAMBDA` 单真相源管控。
+   - **消除 N+1 读查询**：`get_batch_memory_types` 采用单次 SQL 批量加载六型分类，大幅降低高并发下的数据库开销。
+6. **网络与凭据硬化及动态健康观测（P1）** (`ducky/degradation.py` & `api_server.py`)
+   - 监听公网（`0.0.0.0`）且未配置 `AIDUMEM_API_TOKEN` 时拒绝启动，杜绝未授权公网裸奔。
+   - 废除弱口令，首次启动自动生成 16 位高强度随机密码并持久化 Salt+SHA256 哈希至 `data/.ui_password_hash`。
+   - `/health` 实时暴露 `degraded_components` 与事实库容量水位线预警（>800 条提示精炼）。
 
 ---
 
