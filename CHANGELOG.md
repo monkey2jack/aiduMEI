@@ -4,6 +4,19 @@
 
 ---
 
+## v19.2.1 — 打分收敛与 Hermes 插件对齐（2026-08-14）
+
+> 修复检索衰减率（λ）多处分裂问题，收敛单一真相源，同步更新 Hermes 插件版本。
+
+### 🔧 检索打分与衰减收敛
+- **消除 RECENCY_LAMBDA 重复定义** (`ducky/engine.py`)：移除模块内二次冗余环境变量覆盖，完全继承 `ducky.scoring` 统一常量。
+- **收敛衰减率单一真相源** (`ducky/recall_funnel.py` / `ducky/hybrid_recall.py` / `docker-compose.yml`)：召回漏斗与混合检索统一从 `scoring.py` 导入 `RECENCY_LAMBDA=0.05`，消除 0.01 与 0.05 的逻辑分裂。
+
+### 🔌 插件生态与元数据对齐
+- **Hermes 插件版本升级** (`integrations/hermes-plugin/aidumem/plugin.yaml`)：版本号对齐至 `19.2.1`。
+
+---
+
 ## v19.2.0 — 雅典娜生产级加固与优化升级版（2026-08-14）
 
 > 综合助手实测反馈（生产环境 1131-fact 生产实例）、社区多份代码审计报告、小猴深度自省及 xuantie-persona-system 架构精华，aiduMEI 迎来坚实的工程化与生产级加固升级。实事求是，安全筑基，闭环一致，可观测透明。
