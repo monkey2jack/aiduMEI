@@ -311,11 +311,9 @@ def main():
             "⚠️ 未设置 AIDUMEM_API_TOKEN：REST 接口无鉴权。"
             "本机/回环使用可接受；对外部署请务必设置 token。"
         )
-    if _UI_PASSWORD == _DEFAULT_UI_PASSWORD:
-        logger.warning(
-            "⚠️ 未设置 AIDUMEM_UI_PASSWORD：UI 登录回退为默认密码。"
-            "对外部署请务必设置自己的强密码。"
-        )
+    env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
+    if not env_pwd:
+        logger.info("🔐 UI 登录使用 data/.ui_password_hash 安全凭据（或通过环境变量 AIDUMEM_UI_PASSWORD 配置）")
     if host not in ("127.0.0.1", "localhost") and not _API_TOKEN:
         allow_insecure = os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
         if not allow_insecure:
