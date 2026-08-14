@@ -328,6 +328,7 @@ except Exception as e:
 
 m = None  # 模块级单例（延迟填充）
 _mem_init_lock = threading.Lock()
+_lazy_lock = threading.Lock()
 
 
 def _patch_usage_tracking(mem_instance):
@@ -415,16 +416,12 @@ def _normalize_user_id(user_id: str) -> str:
 def get_memory():
     """延迟初始化 mem0 单例，绑定到 sys 命名空间防止跨模块双重导入"""
     global m
-    if hasattr(sys, "_aidumem_singleton") and sys._aidumem_singleton is not None:
-        m = sys._aidumem_singleton
-        return m
-    if m is not None:
-        sys._aidumem_singleton = m
-        return m
-
     with _mem_init_lock:
         if hasattr(sys, "_aidumem_singleton") and sys._aidumem_singleton is not None:
             m = sys._aidumem_singleton
+            return m
+        if m is not None:
+            sys._aidumem_singleton = m
             return m
         try:
             if Memory is None:
@@ -470,24 +467,30 @@ _hybrid = None
 def lazy_import_layer1():
     global _layer1
     if _layer1 is None:
-        from ducky.layer1_selfcheck import layer1_add_wrapper
-        _layer1 = layer1_add_wrapper
+        with _lazy_lock:
+            if _layer1 is None:
+                from ducky.layer1_selfcheck import layer1_add_wrapper
+                _layer1 = layer1_add_wrapper
     return _layer1
 
 
 def lazy_import_funnel():
     global _funnel
     if _funnel is None:
-        from ducky.recall_funnel import funnel_search
-        _funnel = funnel_search
+        with _lazy_lock:
+            if _funnel is None:
+                from ducky.recall_funnel import funnel_search
+                _funnel = funnel_search
     return _funnel
 
 
 def lazy_import_hybrid():
     global _hybrid
     if _hybrid is None:
-        from ducky.hybrid_recall import hybrid_search
-        _hybrid = hybrid_search
+        with _lazy_lock:
+            if _hybrid is None:
+                from ducky.hybrid_recall import hybrid_search
+                _hybrid = hybrid_search
     return _hybrid
 
 
