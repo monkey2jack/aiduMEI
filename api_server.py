@@ -139,10 +139,36 @@ async def _require_api_token(request: Request, call_next):
     return await call_next(request)
 
 # ── UI 登录 ─────────────────────────────────────────────
-# 控制台登录门禁：/api/login 校验访问密码（AIDUMEM_UI_PASSWORD）。
-# 密码只来自环境变量，不入仓库；未配置时回退到开源默认密码 123456。
-_DEFAULT_UI_PASSWORD = "123456"
-_UI_PASSWORD = _os.environ.get("AIDUMEM_UI_PASSWORD") or _DEFAULT_UI_PASSWORD
+# 控制台登录门禁：/api/login 校验访问密码（AIDUMEM_UI_PASSWORD 或 data/.ui_password_hash）。
+# 🔴P1-3: 废除弱口令 123456。未配置且无哈希文件时，自动生成 16 位高强度随机密码并持久化哈希，并在启动日志中显式打印。
+
+
+def _ensure_ui_password() -> None:
+    """初始化控制台密码：若既无环境变量又无哈希文件，则自动生成安全随机密码并存储哈希。"""
+    import secrets
+    import hashlib
+    from ducky.utils import DATA_DIR
+    env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
+    hash_file = os.path.join(DATA_DIR, ".ui_password_hash")
+    if not env_pwd and not os.path.exists(hash_file):
+        gen_pwd = secrets.token_urlsafe(12)
+        salt = os.urandom(16).hex()
+        pw_hash = hashlib.sha256((salt + gen_pwd).encode()).hexdigest()
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(hash_file, "w") as f:
+                f.write(f"{salt}:{pw_hash}")
+            logger.warning(
+                "🔐 [安全加固] 未配置 AIDUMEM_UI_PASSWORD，已自动生成随机控制台初始密码: %s "
+                "(已安全加密持久化至 %s，请妥善保存或通过控制台修改)",
+                gen_pwd,
+                hash_file,
+            )
+        except Exception as e:
+            logger.error("生成初始 UI 密码哈希失败: %s", e)
+
+
+_ensure_ui_password()
 
 
 def _register_login(route_app: FastAPI) -> None:
@@ -153,8 +179,8 @@ def _register_login(route_app: FastAPI) -> None:
         except Exception:
             payload = {}
         given = payload.get("password")
-        if not isinstance(given, str):
-            return JSONResponse({"success": False, "message": "密码格式错误"}, status_code=401)
+        if not isinstance(given, str) or not given:
+            return JSONResponse({"success": False, "message": "密码不能为空或格式错误"}, status_code=401)
 
         # 优先校验安全哈希文件
         import hashlib
@@ -174,8 +200,8 @@ def _register_login(route_app: FastAPI) -> None:
                 pass
 
         if not valid:
-            current_pwd = os.environ.get("AIDUMEM_UI_PASSWORD") or _UI_PASSWORD
-            if hmac.compare_digest(given, current_pwd):
+            current_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
+            if current_pwd and hmac.compare_digest(given, current_pwd):
                 valid = True
 
         if valid:

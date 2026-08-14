@@ -192,6 +192,42 @@ def classify_and_record(memory_ref: str, text: str, *, use_llm: bool = False) ->
     return {"memory_type": memory_type, "source": source, "confidence": confidence}
 
 
+def get_batch_memory_types(memory_refs: list[str]) -> dict[str, str]:
+    """批量查询多条记忆的类型（0 N+1 数据库往返）。
+    未记录的默认返回 FACTS。
+    """
+    if not memory_refs:
+        return {}
+    ensure_memory_types_schema()
+    conn = get_facts_conn()
+    unique_refs = list(set(str(r) for r in memory_refs if r))
+    if not unique_refs:
+        return {}
+    result: dict[str, str] = {r: "FACTS" for r in unique_refs}
+    try:
+        placeholders = ",".join("?" for _ in unique_refs)
+        query = f"""
+            SELECT memory_ref, ref_alt, memory_type 
+            FROM memory_types 
+            WHERE memory_ref IN ({placeholders}) 
+               OR (ref_alt IS NOT NULL AND ref_alt IN ({placeholders}))
+        """
+        rows = conn.execute(query, unique_refs + unique_refs).fetchall()
+        for r in rows:
+            mtype = r["memory_type"]
+            mref = r["memory_ref"]
+            ralt = r["ref_alt"]
+            if mref:
+                result[mref] = mtype
+            if ralt:
+                result[ralt] = mtype
+        return result
+    except Exception as e:
+        logger.warning(f"get_batch_memory_types 失败: {e}")
+        return result
+    finally:
+        conn.close()
+
 def get_memory_type(memory_ref: str) -> str:
     """查询某条记忆的类型；未记录返回 FACTS（老数据默认事实）。
 

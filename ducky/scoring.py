@@ -140,16 +140,13 @@ def score_and_rank_candidates(
     mem_ids = [str(it.get("id") or it.get("memory_id") or "") for it in candidates if it.get("id") or it.get("memory_id")]
     salience_map = get_batch_salience_records(mem_ids)
 
-    # 2. 批量查询 Memory Types（若存在）
+    # 2. 批量查询 Memory Types（单次 SQL 批量加载，彻底消除 N+1 数据库往返）
     type_map: Dict[str, str] = {}
     try:
-        from ducky.memory_types import get_memory_type
-        for mid in mem_ids:
-            t = get_memory_type(mid)
-            if t:
-                type_map[mid] = t
-    except Exception:
-        pass
+        from ducky.memory_types import get_batch_memory_types
+        type_map = get_batch_memory_types(mem_ids)
+    except Exception as e:
+        logger.debug(f"批量查询 memory_types 跳过: {e}")
 
     scored: List[dict] = []
     for item in candidates:

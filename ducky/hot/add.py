@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 
 from ducky.api_models import AddRequest
 from ducky.mem0_runtime import (
+    _normalize_user_id,
     get_memory,
     lazy_import_layer1,
     register_salience_for_add,
@@ -28,6 +29,9 @@ def register_add_routes(app: FastAPI) -> None:
         默认同步：完整抽取后返回，兼容旧调用方。
         """
         try:
+            # 🔴P1-4: 统一规范化 user_id，杜绝脏租户与空租户写入
+            req.user_id = _normalize_user_id(req.user_id) if req.user_id else "default"
+
             from ducky.add_speed import (
                 coalesce_enqueue,
                 coalesce_should_buffer,

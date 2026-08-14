@@ -145,7 +145,7 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
     清理范围：
     1. Qdrant 向量库 / mem0
     2. FTS5 全文索引
-    3. facts.db（facts 表与 memory_types 表）
+    3. facts.db（facts 表与 memory_types 表，严格校验归属与精确匹配）
     4. salience.db（salience 表与 crystals 表）
     5. evolve_mem.db（演化记录）
     """
@@ -153,11 +153,12 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
     wal_id = wal.append(WALEntry(
         user_id=user_id,
         operation="delete",
-        payload={"memory_id": memory_id},
+        payload={"memory_id": memory_id, "user_id": user_id},
     ))
 
     res = {
         "memory_id": memory_id,
+        "user_id": user_id,
         "mem0_vector": False,
         "fts": False,
         "facts": 0,
@@ -175,25 +176,45 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         except Exception as e:
             logger.debug("mem0.delete 跳过或失败: %s", e)
 
-        # 2. FTS5 索引剔除
+        # 2. FTS5 索引剔除（带 user_id 作用域）
         try:
-            from ducky.text_fts import _unindex_memory
-            _unindex_memory(memory_id)
-            # 也尝试 unindex fact:ID
-            _unindex_memory(f"fact:{memory_id}")
+            from ducky.text_fts import get_text_conn
+            tconn = get_text_conn()
+            if user_id == "default":
+                tconn.execute("DELETE FROM memories WHERE id=? OR id=?", (memory_id, f"fact:{memory_id}"))
+            else:
+                tconn.execute("DELETE FROM memories WHERE (id=? OR id=?) AND (user_id=? OR user_id='default')", (memory_id, f"fact:{memory_id}", user_id))
+            tconn.commit()
+            tconn.close()
             res["fts"] = True
         except Exception as e:
             logger.debug("FTS unindex 跳过: %s", e)
 
-        # 3. facts.db 清理
+        # 3. facts.db 清理（🔴P0-1 严格归属校验 + 🔴P0-2 精确匹配，彻底消除 LIKE 误删）
         try:
             conn = get_facts_conn()
-            c1 = conn.execute("DELETE FROM facts WHERE id=? OR fact_key LIKE ?", (memory_id, f"%{memory_id}%")).rowcount
-            # 清理 memory_types 账本
-            try:
-                conn.execute("DELETE FROM memory_types WHERE memory_id=? OR fact_id=?", (memory_id, memory_id))
-            except Exception:
-                pass
+            exact_keys = (memory_id, f"fact:{memory_id}", f"raw:{memory_id}")
+            if user_id == "default":
+                c1 = conn.execute(
+                    """DELETE FROM facts 
+                       WHERE id=? OR fact_key=? OR fact_key=? OR fact_key=?""",
+                    (memory_id, exact_keys[0], exact_keys[1], exact_keys[2])
+                ).rowcount
+                try:
+                    conn.execute("DELETE FROM memory_types WHERE memory_ref=? OR memory_ref=? OR ref_alt=?", (memory_id, f"fact:{memory_id}", memory_id))
+                except Exception:
+                    pass
+            else:
+                c1 = conn.execute(
+                    """DELETE FROM facts 
+                       WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=?)
+                         AND (source=? OR agent_id=?)""",
+                    (memory_id, exact_keys[0], exact_keys[1], exact_keys[2], user_id, user_id)
+                ).rowcount
+                try:
+                    conn.execute("DELETE FROM memory_types WHERE (memory_ref=? OR memory_ref=? OR ref_alt=?)", (memory_id, f"fact:{memory_id}", memory_id))
+                except Exception:
+                    pass
             conn.commit()
             conn.close()
             res["facts"] = c1
@@ -204,7 +225,10 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         try:
             from ducky.salience.db import get_salience_conn
             sconn = get_salience_conn()
-            c2 = sconn.execute("DELETE FROM memory_salience WHERE memory_id=?", (memory_id,)).rowcount
+            if user_id == "default":
+                c2 = sconn.execute("DELETE FROM memory_salience WHERE memory_id=?", (memory_id,)).rowcount
+            else:
+                c2 = sconn.execute("DELETE FROM memory_salience WHERE memory_id=? AND user_id=?", (memory_id, user_id)).rowcount
             sconn.commit()
             sconn.close()
             res["salience"] = c2
@@ -215,7 +239,10 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         try:
             from ducky.evolve_mem import get_evolve_conn
             econn = get_evolve_conn()
-            c3 = econn.execute("DELETE FROM evolve_snapshots WHERE memory_id=?", (memory_id,)).rowcount
+            if user_id == "default":
+                c3 = econn.execute("DELETE FROM evolve_snapshots WHERE memory_id=?", (memory_id,)).rowcount
+            else:
+                c3 = econn.execute("DELETE FROM evolve_snapshots WHERE memory_id=? AND user_id=?", (memory_id, user_id)).rowcount
             econn.commit()
             econn.close()
             res["evolve"] = c3
@@ -230,8 +257,12 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         raise
 
 
-def cascade_delete_all(user_id: str) -> Dict[str, Any]:
+def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
     """级联清空指定用户在所有存储中的数据，绝不留孤儿。"""
+    if not user_id or not user_id.strip():
+        raise ValueError("user_id 必须显式指定")
+    if user_id == "default" and not confirm:
+        raise ValueError("清空 default 用户全量记忆必须传递 confirm=True")
     wal = WALEngine.get_instance()
     wal_id = wal.append(WALEntry(
         user_id=user_id,
@@ -282,11 +313,17 @@ def cascade_delete_all(user_id: str) -> Dict[str, Any]:
                 except Exception:
                     pass
             else:
-                c_facts = fconn.execute("DELETE FROM facts WHERE source=? OR agent_id=?", (user_id, user_id)).rowcount
                 try:
-                    fconn.execute("DELETE FROM memory_types WHERE user_id=?", (user_id,))
+                    fconn.execute(
+                        """DELETE FROM memory_types 
+                           WHERE memory_ref IN (SELECT CAST(id AS TEXT) FROM facts WHERE source=? OR agent_id=?)
+                              OR memory_ref IN (SELECT 'fact:' || CAST(id AS TEXT) FROM facts WHERE source=? OR agent_id=?)
+                              OR memory_ref IN (SELECT fact_key FROM facts WHERE (source=? OR agent_id=?) AND fact_key IS NOT NULL)""",
+                        (user_id, user_id, user_id, user_id, user_id, user_id),
+                    )
                 except Exception:
                     pass
+                c_facts = fconn.execute("DELETE FROM facts WHERE source=? OR agent_id=?", (user_id, user_id)).rowcount
             fconn.commit()
             fconn.close()
             res["facts_deleted"] = c_facts

@@ -211,36 +211,39 @@ def mem_recent(user_id: str = DEFAULT_USER_ID, limit: int = 10) -> str:
 
 
 @mcp.tool()
-def mem_update(memory_id: str, content: str) -> str:
+def mem_update(memory_id: str, content: str, user_id: str = DEFAULT_USER_ID) -> str:
     """更新指定 ID 的记忆内容。
 
     Args:
         memory_id: 记忆 UUID
         content:   新的记忆文本
+        user_id:   用户标识
     """
-    result = _api_post("/update", {"memory_id": memory_id, "content": content})
+    result = _api_post("/update", {"memory_id": memory_id, "content": content, "user_id": user_id})
     return _ok(result)
 
 
 @mcp.tool()
-def mem_delete(memory_id: str) -> str:
+def mem_delete(memory_id: str, user_id: str = DEFAULT_USER_ID) -> str:
     """删除指定 ID 的记忆。
 
     Args:
         memory_id: 记忆 UUID
+        user_id:   用户标识
     """
-    result = _api_post("/delete", {"memory_id": memory_id})
+    result = _api_post("/delete", {"memory_id": memory_id, "user_id": user_id})
     return _ok(result)
 
 
 @mcp.tool()
-def mem_delete_all(user_id: str = DEFAULT_USER_ID) -> str:
+def mem_delete_all(user_id: str = DEFAULT_USER_ID, confirm: bool = False) -> str:
     """⚠️ 危险：清空指定用户的全部记忆。操作不可逆，请谨慎使用。
 
     Args:
         user_id: 用户标识
+        confirm: 是否二次确认（清空 default 用户必须为 True）
     """
-    result = _api_post("/delete_all", {"user_id": user_id})
+    result = _api_post("/delete_all", {"user_id": user_id, "confirm": confirm})
     return _ok(result)
 
 
