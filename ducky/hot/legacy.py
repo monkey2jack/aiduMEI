@@ -11,6 +11,8 @@ from ducky.hot.legacy_helpers import (
     _auto_extract_and_link,
     _cluster_scenes_impl,
     _extract_validity,
+    _background_consolidation_loop,
+    _background_scene_cluster_loop,
     TAGS_FILE,
     SKILL_PATTERNS_FILE,
 )
@@ -26,6 +28,8 @@ __all__ = [
     "_auto_extract_and_link",
     "_cluster_scenes_impl",
     "_extract_validity",
+    "_background_consolidation_loop",
+    "_background_scene_cluster_loop",
     "TAGS_FILE",
     "SKILL_PATTERNS_FILE",
     "register_legacy_routes",
