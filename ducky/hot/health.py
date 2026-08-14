@@ -7,11 +7,13 @@ import time
 
 from fastapi import FastAPI
 
-# 版本信息：由 api_server.py 启动时通过 set_version_info() 注入
+from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
+
+# 版本信息：默认绑定 ducky.version，亦支持由 api_server.py 启动时通过 set_version_info() 注入
 _version_info = {
-    "service_version": "19.2.0",
-    "codename": "Athena",
-    "codename_zh": "雅典娜",
+    "service_version": SERVICE_VERSION,
+    "codename": CODENAME,
+    "codename_zh": CODENAME_ZH,
 }
 
 
@@ -146,12 +148,13 @@ def register_health_routes(app: FastAPI) -> None:
             probes["facts_active_count"] = -1
             probes["facts_error"] = str(e)[:120]
 
-        # 汇总所有降级组件
+        # 汇总所有降级组件（全量扫描 module_ok 与 probes 中 _ok=False 项）
         degraded = [k for k, v in module_ok.items() if not v]
-        if not probes.get("fts_ok"):
-            degraded.append("fts")
-        if not probes.get("wal_engine_ok"):
-            degraded.append("wal_engine")
+        for p_key, p_val in probes.items():
+            if p_key.endswith("_ok") and not p_val:
+                probe_comp = p_key[:-3]
+                if probe_comp not in degraded:
+                    degraded.append(probe_comp)
 
         # 合并动态降级追踪器记录的事件
         for active_deg in DegradationTracker.get_degraded_summary():

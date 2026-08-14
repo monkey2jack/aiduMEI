@@ -19,9 +19,10 @@ from ducky.salience.core import get_batch_salience_records
 
 logger = logging.getLogger("aiduMEM.scoring")
 
-# 统一衰减率（单一真相源，支持环境变量微调）
+# 统一衰减率与映射参数（单一真相源，支持环境变量微调）
 RECENCY_LAMBDA = float(os.environ.get("AIDUMEM_RECENCY_LAMBDA", "0.05"))
 RERANK_WEIGHT = float(os.environ.get("AIDUMEM_RERANK_WEIGHT", "0.4"))
+SIGMOIDAL_TEMPERATURE = float(os.environ.get("AIDUMEM_SIGMOIDAL_TEMP", "10.0"))
 
 DEFAULT_WEIGHTS = {
     "vector": 0.35,
@@ -48,8 +49,9 @@ def normalize_score(score: Any) -> float:
     if s < 0:
         return 0.0
     if s > 1.0:
-        # 如果是欧氏距离或大分值，采用 sigmoidal 映射
-        return round(1.0 / (1.0 + math.exp(-s / 10.0)), 4)
+        # 对欧氏距离或未归一化大分值，采用 Sigmoidal 平滑压缩到 (0.5, 1.0]
+        # 温度参数 SIGMOIDAL_TEMPERATURE=10.0 保证 s 在 [0, 50] 内具有良好梯度区分度
+        return round(1.0 / (1.0 + math.exp(-s / SIGMOIDAL_TEMPERATURE)), 4)
     return round(s, 4)
 
 

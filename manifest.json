@@ -1,7 +1,7 @@
 {
   "plugin_id": "ducky.aidumem",
   "name": "aiduMEI",
-  "version": "19.2.0",
+  "version": "19.3.0",
   "description": "aiduMEI v19.2.0 · 雅典娜生产加固版：Prompt 注入防护 + 多仓级联原子删除与 WAL + 统一打分体系 + 动态健康观测 + 主动反思自编辑",
   "homepage": "https://github.com/monkey2jack/aiduMEM",
   "license": "MIT",

@@ -88,9 +88,9 @@ def _filter_results_by_time(results: list, before: str, after: str) -> None:
         b_prefix = None
         a_prefix = None
         try:
-            from ducky.engine import _norm_bound
-            b_prefix = _norm_bound(before, is_before=True)
-            a_prefix = _norm_bound(after, is_before=False)
+            from ducky.engine import _parse_time_boundary
+            b_prefix = _parse_time_boundary(before)
+            a_prefix = _parse_time_boundary(after)
         except Exception:
             from ducky.engine import _date_prefix
             b_prefix = _date_prefix(before)

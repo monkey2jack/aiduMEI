@@ -56,7 +56,7 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
     # 9. 注册 Zeus (v18.0) Code Graph 代码图谱路由
     register_code_graph_routes(app)
 
-        # 10. 注册 EvolveMem (v18.1) 检索自进化路由
+    # 10. 注册 EvolveMem (v18.1) 检索自进化路由
     register_evolve_routes(app)
 
     # 11. 注册 aiduMEI 控制台配置路由 (GET /config, GET/POST /config/_speed)

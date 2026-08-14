@@ -8,7 +8,8 @@ Aletheia Memory 设计哲学：
 - 每步决策可追溯、可调试
 """
 
-import time, math, logging
+import time
+from ducky.scoring import score_and_rank_candidates, math, logging
 
 from .utils import parse_iso_timestamp, get_salience_conn, get_facts_conn
 from .salience.config import LANE_DECAY_MULTIPLIER
@@ -161,50 +162,34 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
             continue
         filtered_ignited.append(item)
 
-    for item in filtered_remaining + filtered_ignited:
-        created = item.get("created_at", "")
-        age_days = 0
-        if created:
-            try:
-                created_ts = parse_iso_timestamp(created)
-                age_days = (now_ts - created_ts) / 86400
-            except Exception:
-                pass
-        
-        # 确定 lane
-        item_id = item.get("id")
-        lane = lane_map.get(item_id) if item_id else None
-        if not lane:
-            # metadata 可能显式为 None（mem0 个别条目），必须兜底
-            md = item.get("metadata") or {}
-            lane = md.get("lane") if isinstance(md, dict) else None
-        if not lane:
-            lane = _detect_lane(item.get("memory", ""))
-            
-        decay_multiplier = LANE_DECAY_MULTIPLIER.get(lane, 1.0)
-        
-        # Ebbinghaus 指数遗忘公式 (DECAY_MULTIPLIER=0.0 为永久，=1.5 为快衰)
-        decay = math.exp(-RECENCY_LAMBDA * decay_multiplier * max(age_days, 0))
-        
-        # Ignition 记忆衰减减半（保持优先）
+    # Stage 4: 统一 5 维打分与时效衰减（委托 scoring.py 单一真源）
+    candidates_to_score = filtered_ignited + filtered_remaining
+    for item in candidates_to_score:
         if item.get("_ignited"):
-            decay = max(decay, 0.6)
-        item["_decay"] = round(decay, 4)
-    stages.append({"name": "time_decay", "count": len(filtered_remaining) + len(filtered_ignited), "ms": int((time.time()-t0)*1000)})
+            # Ignition 特征融合进入 score 供 scoring 引擎归一化
+            ign_score = item.get("_ignition_score", 0) or 0
+            base_s = item.get("score", 0) or 0
+            item["score"] = max(base_s, ign_score)
+            item.setdefault("metadata", {})
+            if isinstance(item["metadata"], dict):
+                item["metadata"]["is_ignited"] = True
 
-    # Stage 5: 最终排序 — Ignition 加权 + Score * Decay
+    ranked_candidates = score_and_rank_candidates(
+        query=query,
+        candidates=candidates_to_score,
+        user_id=user_id,
+        limit=limit * 2,
+    )
+    stages.append({"name": "unified_scoring", "count": len(ranked_candidates), "ms": int((time.time()-t0)*1000)})
+
+    # Stage 5: 最终排序与 Ignition 增益收敛
     t0 = time.time()
-    scored = []
-    for item in filtered_ignited + filtered_remaining:
-        boost = IGNITION_BOOST if item.get("_ignited") else 1.0
-        base_score = item.get("score", 0) or 0
-        ignition_score = item.get("_ignition_score", 0) or 0
-        composite = (0.5 * base_score + 0.5 * ignition_score) * boost * (item.get("_decay", 1.0))
-        item["_composite"] = round(composite, 4)
-        scored.append(item)
+    for item in ranked_candidates:
+        if item.get("_ignited"):
+            item["_hybrid_score"] = round(item.get("_hybrid_score", 0) * IGNITION_BOOST, 4)
 
-    scored.sort(key=lambda x: x.get("_composite", 0), reverse=True)
-    final = scored[:limit]
+    ranked_candidates.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
+    final = ranked_candidates[:limit]
 
     # 清理内部字段
     for item in final:
