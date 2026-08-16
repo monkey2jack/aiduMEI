@@ -129,8 +129,8 @@ def _gather_recent_memories(memory, user_id: str, top_k: int) -> list[dict]:
     try:
         from ducky.mem0_runtime import _normalize_user_id
         user_id = _normalize_user_id(user_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"_gather_recent_memories: suppressed exception: {e}")
 
     try:
         all_mem = None
@@ -173,8 +173,8 @@ def _gather_topic_memories(memory, user_id: str, topic: str, top_k: int) -> list
     try:
         from ducky.mem0_runtime import _normalize_user_id
         user_id = _normalize_user_id(user_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"_gather_topic_memories: suppressed exception: {e}")
     try:
         try:
             raw = memory.search(topic, filters={"user_id": user_id}, top_k=max(top_k, 10))
@@ -509,8 +509,8 @@ def reflect_background_loop() -> None:
     # 手动 POST /reflect 不受此影响。
     try:
         time.sleep(REFLECT_INTERVAL_HOURS * 3600)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"reflect_background_loop: suppressed exception: {e}")
     while True:
         try:
             report = run_reflect(source="background")

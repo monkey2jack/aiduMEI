@@ -3,17 +3,16 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v19.3.0 (架构大一统与全链路加固版 · 2026-08-14)
-    核心主题: 架构大一统 · 召回打分单一真相源 · 单例加锁治理 · 模块解耦与防线统一
-    1. 召回与打分单一真相源: recall_funnel 彻底委托 scoring.py 5 维打分，消除双套 λ 漂移
-    2. 全生命周期并发加固: RecallEngine 单例与 lazy_import 模块全面实施 Double-Checked Locking 互斥锁
-    3. 写入统一注入防护 Gate: speed/pipeline 最终落库前设立强制注入清洗 Gate
-    4. 消除运行时静默降级: 修复 search.py 时间边界导入，/health 探针全量捕获
-    5. 巨型模块解耦: 800+ 行 legacy.py 拆分为 legacy_helpers 与 legacy_routes
+v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
+    核心主题: 审计问题修复 · 版本号全量对齐 · 静默异常可观测 · 占位符根除
+    1. 静默异常治理: 18 处 except Exception: pass 补 debug/warning 日志上下文，safe-ignore 处补注释
+    2. Reranker 占位符根除: 配置兜底默认值从 your-rerank-endpoint 改为空串，缺配置时干净跳过不再发 DNS 请求
+    3. 脚本层 HTTP timeout 补齐: restore_bg.py 补 timeout=15
+    4. 版本号五文件全量对齐: version.py / pyproject.toml / manifest.json / __init__.py / CHANGELOG.md
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "19.3.0"
+SERVICE_VERSION = "19.3.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
@@ -24,6 +23,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("19.3.1", "Athena", "雅典娜", "审计修复 · 静默异常可观测 · 占位符根除 · 版本号全量对齐"),
     ("19.3.0", "Athena", "雅典娜", "架构大一统 · 召回打分单一真相源 · 单例加锁治理 · 模块解耦与防线统一"),
     ("19.2.1", "Athena", "雅典娜", "生产热修复 · 助手深度复验"),
     ("19.2.0", "Athena", "雅典娜", "安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是"),
