@@ -40,8 +40,8 @@ def patch_llm_for_speed(mem_instance) -> None:
             with open(_CFG_PATH) as f:
                 cfg = json.load(f)
             max_tokens = int(cfg.get("llm", {}).get("config", {}).get("max_tokens", 2048))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"patch_llm_for_speed: suppressed exception: {e}")
 
         _orig = client.chat.completions.create
 

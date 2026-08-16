@@ -91,8 +91,8 @@ def extract_vision_caption(media_url_or_base64: str) -> str:
                 output_tokens=usage.get("completion_tokens", 0),
                 total_tokens=usage.get("total_tokens", 0),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"extract_vision_caption: suppressed exception: {e}")
         logger.info("多模态记忆提取完成！")
         return caption
     except Exception as e:

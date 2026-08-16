@@ -21,7 +21,7 @@ except Exception as e:
 # ── 读取 Embedding 配置 ──
 emb_cfg = cfg.get("embedder", {}).get("config", {})
 emb_model = emb_cfg.get("model", "your-embedding-model")
-emb_base_url = emb_cfg.get("openai_base_url", "https://your-rerank-endpoint/v1")
+emb_base_url = emb_cfg.get("openai_base_url", "")
 emb_api_key = emb_cfg.get("api_key", "")
 if emb_api_key == "__SF_KEY__" or not emb_api_key:
     kp = os.path.join(SCRIPT_DIR, ".sf_key")
