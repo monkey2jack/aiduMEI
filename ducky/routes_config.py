@@ -232,8 +232,8 @@ def register_config_routes(app: FastAPI) -> None:
                     cand_hash = hashlib.sha256((salt + current).encode()).hexdigest()
                     if hmac.compare_digest(cand_hash, expected_hash):
                         current_valid = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"change_password: suppressed exception: {e}")
 
         if not current_valid:
             current_stored = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()

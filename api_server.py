@@ -196,8 +196,8 @@ def _register_login(route_app: FastAPI) -> None:
                     cand_hash = hashlib.sha256((salt + given).encode()).hexdigest()
                     if hmac.compare_digest(cand_hash, exp_hash):
                         valid = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"ui_login: suppressed exception: {e}")
 
         if not valid:
             current_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()

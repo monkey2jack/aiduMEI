@@ -202,8 +202,8 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
                 ).rowcount
                 try:
                     conn.execute("DELETE FROM memory_types WHERE memory_ref=? OR memory_ref=? OR ref_alt=?", (memory_id, f"fact:{memory_id}", memory_id))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"cascade_delete_memory: suppressed exception: {e}")
             else:
                 c1 = conn.execute(
                     """DELETE FROM facts 
@@ -213,8 +213,8 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
                 ).rowcount
                 try:
                     conn.execute("DELETE FROM memory_types WHERE (memory_ref=? OR memory_ref=? OR ref_alt=?)", (memory_id, f"fact:{memory_id}", memory_id))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"cascade_delete_memory: suppressed exception: {e}")
             conn.commit()
             conn.close()
             res["facts"] = c1
@@ -310,8 +310,8 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
                 c_facts = fconn.execute("DELETE FROM facts").rowcount
                 try:
                     fconn.execute("DELETE FROM memory_types")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"cascade_delete_all: suppressed exception: {e}")
             else:
                 try:
                     fconn.execute(
@@ -321,8 +321,8 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
                               OR memory_ref IN (SELECT fact_key FROM facts WHERE (source=? OR agent_id=?) AND fact_key IS NOT NULL)""",
                         (user_id, user_id, user_id, user_id, user_id, user_id),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"cascade_delete_all: suppressed exception: {e}")
                 c_facts = fconn.execute("DELETE FROM facts WHERE source=? OR agent_id=?", (user_id, user_id)).rowcount
             fconn.commit()
             fconn.close()

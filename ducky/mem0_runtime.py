@@ -260,8 +260,8 @@ def _load_rerank_config() -> dict:
             rerank = j.get("rerank") or j.get("reranker") or {}
             rc = rerank.get("config", {})
             cfg["provider"] = rerank.get("provider", DEFAULT_RERANK_PROVIDER)
-            cfg["model"] = rc.get("model", "your-rerank-model")
-            cfg["base_url"] = rc.get("openai_base_url", "https://your-rerank-endpoint/v1")
+            cfg["model"] = rc.get("model", "")
+            cfg["base_url"] = rc.get("openai_base_url", "")
             api_key = rc.get("api_key", "")
             if api_key == "__SF_KEY__" or not api_key:
                 kp = os.path.join(BASE_DIR, ".sf_key")
@@ -273,8 +273,8 @@ def _load_rerank_config() -> dict:
             # 兜底：跟 embedding 一样
             cfg = {
                 "provider": DEFAULT_RERANK_PROVIDER,
-                "model": "your-rerank-model",
-                "base_url": "https://your-rerank-endpoint/v1",
+                "model": "",
+                "base_url": "",
                 "api_key": "",
             }
             kp = os.path.join(BASE_DIR, ".sf_key")
@@ -297,7 +297,8 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
         return []
     cfg = _load_rerank_config()
     api_key = cfg.get("api_key", "")
-    if not api_key:
+    base_url = cfg.get("base_url", "")
+    if not api_key or not base_url:
         return []
     provider = cfg.get("provider", DEFAULT_RERANK_PROVIDER)
     handler = RERANK_PROVIDERS.get(provider.lower(), _rerank_openai_compatible)

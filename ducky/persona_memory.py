@@ -302,8 +302,8 @@ def build_persona(
     except Exception as e:
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"build_persona: suppressed exception: {e}")
         return {"status": "error", "detail": f"基座建档失败: {e}"}
 
     start = time.time()
@@ -390,8 +390,8 @@ def _mark_failed(bank_id: int) -> None:
         )
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"_mark_failed: 标记失败状态未落库: {e}")
 
 
 def _rule_fallback(persona_card: str) -> dict:
