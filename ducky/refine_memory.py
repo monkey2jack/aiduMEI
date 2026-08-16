@@ -305,8 +305,8 @@ def rollback_refinement(refine_id: int) -> dict:
         try:
             from ducky.text_fts import _unindex_memory
             _unindex_memory(f"refined:{refine_id}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"rollback_refinement: suppressed exception: {e}")
 
         conn.execute("UPDATE refined_memories SET state='rolled_back' WHERE refine_id=?", (refine_id,))
         conn.commit()

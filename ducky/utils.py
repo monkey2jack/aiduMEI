@@ -171,8 +171,8 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
             # 连接已断开，重新创建
             try:
                 real_conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"_get_thread_conn: suppressed exception: {e}")
     # 新建连接
     real_conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10.0)
     real_conn.row_factory = sqlite3.Row

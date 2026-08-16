@@ -28,8 +28,8 @@ from ducky.mem0_runtime import lazy_import_funnel, lazy_import_hybrid, lazy_impo
 
 
 def test_v19_3_version_alignment():
-    """验证全生态版本号统一为 19.3.0"""
-    assert SERVICE_VERSION == "19.3.0"
+    """验证全生态版本号统一为 19.3.1"""
+    assert SERVICE_VERSION == "19.3.1"
     assert CODENAME == "Athena"
 
 

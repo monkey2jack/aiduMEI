@@ -1,6 +1,46 @@
 # aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，直至 v19.2.0 雅典娜生产级加固。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐。
+
+---
+
+## v19.3.1 — 审计修复与发布链对齐版（2026-08-16）
+
+> 基于助手 v19.3.0 烧烤审计报告的问题清单逐项修复，并将版本号五文件全量对齐，补齐发布链。
+
+### 🔧 静默异常治理
+- **18 处 `except Exception: pass` 补日志上下文**：核心路径（WAL 级联删除、反思循环、打分时间解析、密码校验、人格建档等）改为 `except Exception as e` + `logger.debug/warning` 携带函数名与异常信息，彻底消除静默吞错；确属安全忽略处（salience 配置回退、并发建表）补 safe-ignore 注释。
+
+### 🧹 占位符根除
+- **Reranker 配置兜底去占位符** (`ducky/mem0_runtime.py`)：`_load_rerank_config` 默认值从 `your-rerank-endpoint` / `your-rerank-model` 改为空串；`rerank()` 在 api_key 或 base_url 缺失时直接干净跳过，不再向占位符域名发起 DNS 请求。
+- **健康检查脚本同步** (`scripts/health_check.py`)：embedding base_url 兜底占位符一并清除。
+
+### ⏱️ 脚本层 HTTP timeout 补齐
+- `scripts/restore_bg.py`：search 探活请求补 `timeout=15`，对齐项目内其余 HTTP 调用规范。
+
+### 📦 版本号五文件全量对齐
+- `ducky/version.py` · `pyproject.toml` · `manifest.json` · `ducky/__init__.py` · `CHANGELOG.md` 统一升至 `19.3.1`，并补齐 CHANGELOG 缺失的 v19.3.0 段落。
+
+---
+
+## v19.3.0 — 架构大一统与全链路加固版（2026-08-14）
+
+> 召回与打分收敛为单一真相源，全生命周期并发加固，写入防线统一，巨型模块解耦。
+
+### 🎯 召回与打分单一真相源
+- `recall_funnel` 彻底委托 `scoring.py` 五维打分，消除双套 λ 漂移。
+
+### 🔒 全生命周期并发加固
+- RecallEngine 单例与 lazy_import 模块全面实施 Double-Checked Locking 互斥锁。
+
+### 🛡️ 写入统一注入防护 Gate
+- speed/pipeline 最终落库前设立强制注入清洗 Gate。
+
+### 📊 消除运行时静默降级
+- 修复 search.py 时间边界导入，/health 探针全量捕获。
+
+### 🏗️ 巨型模块解耦
+- 800+ 行 legacy.py 拆分为 legacy_helpers 与 legacy_routes。
 
 ---
 

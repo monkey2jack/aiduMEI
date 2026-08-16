@@ -30,6 +30,7 @@ def _manifest_num(key: str, fallback: float) -> float:
         if isinstance(node, dict) and "default" in node:
             return float(node["default"])
     except Exception:
+        # safe-ignore: 配置读取失败回退默认值，无需上抛
         pass
     return fallback
 

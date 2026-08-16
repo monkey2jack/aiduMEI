@@ -81,8 +81,8 @@ def extract_timestamp(item: dict) -> float:
                 # 处理 ISO 字符串
                 dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
                 return dt.timestamp()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"extract_timestamp: suppressed exception: {e}")
     md = item.get("metadata") or {}
     if isinstance(md, dict):
         for key in ("timestamp", "created_at", "recorded_at", "updated_at", "valid_from", "valid_to", "expires_at"):
@@ -94,8 +94,8 @@ def extract_timestamp(item: dict) -> float:
                     from datetime import datetime
                     dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
                     return dt.timestamp()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"extract_timestamp: suppressed exception: {e}")
     return 0.0
 
 
