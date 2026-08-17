@@ -47,7 +47,7 @@ def _fresh_db():
 # ── 1. 合成模式规则降级 + 三层落库 ─────────────────────────
 def test_synthesis_rule_fallback_and_levels():
     res = pm.build_persona(
-        "一名在生产环境做独立开发的技术顾问，喜欢围棋，常去咖啡馆写作。",
+        "一名做独立开发的技术顾问，喜欢围棋，常去咖啡馆写作。",
         mode="synthesis",
         persona_key="tech-advisor",
         persona_name="技术顾问",
@@ -164,8 +164,8 @@ def test_rollback_switches_version():
 
 # ── 7. 中文 key slugify 稳定性 ─────────────────────────────
 def test_slugify_chinese_stable():
-    a = pm._slugify("维护者")
-    b = pm._slugify("维护者")
+    a = pm._slugify("用户")
+    b = pm._slugify("用户")
     assert a == b
     assert a.startswith("persona-")
     assert pm._slugify("tech-advisor") == "tech-advisor"
