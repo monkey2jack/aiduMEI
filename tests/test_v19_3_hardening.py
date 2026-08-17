@@ -28,8 +28,8 @@ from ducky.mem0_runtime import lazy_import_funnel, lazy_import_hybrid, lazy_impo
 
 
 def test_v19_3_version_alignment():
-    """验证全生态版本号统一为 19.3.3"""
-    assert SERVICE_VERSION == "19.3.3"
+    """验证全生态版本号统一为当前真相源版本"""
+    assert SERVICE_VERSION == "19.4.0"
     assert CODENAME == "Athena"
 
 
@@ -117,8 +117,8 @@ def test_v19_3_unified_scoring_and_funnel_stages():
     class MockMem0:
         def search(self, query, filters=None, limit=10, **kwargs):
             return [
-                {"id": "m1", "memory": "助手最喜欢吃草莓蛋糕", "score": 0.9, "created_at": "2026-08-14T00:00:00Z"},
-                {"id": "m2", "memory": "用户的服务器部署在两个可用区", "score": 0.8, "created_at": "2026-08-10T00:00:00Z"},
+                {"id": "m1", "memory": "小明最喜欢吃草莓蛋糕", "score": 0.9, "created_at": "2026-08-14T00:00:00Z"},
+                {"id": "m2", "memory": "朋友的服务器部署在多个城市", "score": 0.8, "created_at": "2026-08-10T00:00:00Z"},
             ]
 
     res = funnel_search(MockMem0(), "蛋糕", user_id="test_user", limit=5)
@@ -145,7 +145,7 @@ def test_v19_3_speed_pipeline_injection_defense_gate():
 
 def test_v19_3_legacy_split_backwards_compatibility():
     """验证 legacy.py 拆分后 helper 与 routes 均可正常导入与向后兼容"""
-    entities = _extract_entities('助手 aka "用户" 在生产环境开发 "aiduMEI" 项目')
+    entities = _extract_entities('小明 aka "老张" 在本地开发 "aiduMEI" 项目')
     assert isinstance(entities, list)
     assert len(entities) > 0
 

@@ -69,10 +69,19 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
     def persona_ai_self_add(category:str, key:str, value:str):
         db = _get_facts_conn()
         now = datetime.now(timezone.utc).isoformat()
-        db.execute("""INSERT INTO facts (category,fact_key,fact_value,peer,trust_score,created_at,updated_at)
+        cur = db.execute("""INSERT INTO facts (category,fact_key,fact_value,peer,trust_score,created_at,updated_at)
             VALUES (?,?,?,'ai',0.7,?,?)""", (category,key,value,now,now))
+        fid = cur.lastrowid or 0
+        # 📒 事件账本（v19.4.0 🟡-D）：AI 自我认知写入留痕，同事务
+        try:
+            from ducky.event_ledger import content_hash, record_event
+            record_event(db, actor="ai-self", action="add",
+                         target_id=f"fact:{key}",
+                         reason=f"persona ai-self: category={category}",
+                         after_hash=content_hash(value))
+        except Exception:
+            pass  # 账本失败不阻断写入
         db.commit()
-        fid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         db.close()
         # 触发实体提取保持与旧端点一致；当前提取器为纯函数，不另行落库。
         _extract_entities(f"{key}: {value}")

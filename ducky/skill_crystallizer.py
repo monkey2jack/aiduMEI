@@ -52,7 +52,7 @@ def _migrate_crystal_columns(conn) -> None:
     """v19.0 P1-2 迁移：给旧 skill_crystals 表补全代码引用的列（幂等）。
 
     兼容两代历史 schema：
-      - 最老版（生产）：sample_facts，无 source_categories/sample_keys/candidate_count
+      - 最老版（生产环境）：sample_facts，无 source_categories/sample_keys/candidate_count
       - v17 版：有 source_categories/sample_keys/candidate_count，无 use/success/fail
     新代码（skill_growth / record_skill_use / prune_low_utility_skills）需要的列：
       source_categories TEXT, sample_keys TEXT, candidate_count INT,

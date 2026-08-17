@@ -64,7 +64,7 @@ def register_add_routes(app: FastAPI) -> None:
             # metadata 里也可带 async
             md = dict(req.metadata or {})
 
-            # P0-1 写入侧自动时间戳（与生产对齐）：
+            # P0-1 写入侧自动时间戳（与生产环境对齐）：
             # 调用方未显式传 recorded_at 时自动补 UTC ISO 时间，供
             # 时间过滤（before/after）和三级时间戳回退使用。
             # 注意：仅新写入路径需要该时间戳。md 会被透传给 memory.add
@@ -163,6 +163,15 @@ def register_add_routes(app: FastAPI) -> None:
             if not _is_safe:
                 logger.warning(f"🛡️ [InjectionGuard] POST /add 拦截注入: {_rejection}")
                 raise HTTPException(400, f"Memory content rejected: {_rejection}")
+
+            # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文保真层
+            # 注入防御通过后，把逐字原文并行落库（mem0 抽取之外的第二层）。
+            # 幂等去重 + 失败干净降级，绝不阻断主链路。
+            try:
+                from ducky.verbatim_vault import store_verbatim
+                store_verbatim(req.user_id, messages_json, md)
+            except Exception as _ve:
+                logger.debug(f"📼 [VerbatimVault] 原文落库跳过: {_ve}")
 
             # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
             try:

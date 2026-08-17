@@ -3,10 +3,10 @@
    -----------------------------------------------------------------------------
    Six panels, all bilingual (EN/CN), all talking to live aiduMEM.
    - PULSE:   health + storage layers + usage + probes
-   - VAULT:   search + edit/delete/feedback + categories + recent facts
+   - VAULT:   search + edit/delete/feedback + categories + recent facts + 遗忘记录(B3)
    - MAP:     knowledge-tree star map (hand-drawn SVG)
-   - RECALL:  search_trace funnel + ignition scores
-   - EVOLVE:  quality report + adjustments + trust + crystals
+   - RECALL:  search_trace funnel + ignition scores + 变更史(B5)
+   - EVOLVE:  quality report + adjustments + trust + crystals + 治理队列(B1) + 信念层(B6)
    - SETTINGS:model config read/edit/test + modules + federation + params
    ============================================================================= */
 
@@ -230,7 +230,8 @@ async function renderPulse(body) {
   const nFts = probes.fts_memories || 0;
   const nVec = stats.total_memories || 0;
   const nRaw = probes.raw_drawer_count || 0;
-  const peak = Math.max(nFacts, nFts, nVec, nRaw) || 1;
+  const nVerbatim = probes.verbatim_count || 0;
+  const peak = Math.max(nFacts, nFts, nVec, nRaw, nVerbatim) || 1;
 
   const kTree = readKnowledgeTree(tree);
   const usageRows = readUsage(usage, 14);
@@ -258,6 +259,7 @@ async function renderPulse(body) {
     '<div class="sec">' + secHead('它记住了多少', 'STORAGE LAYERS', '同一套记忆分四层存放') +
       '<div class="layers">' +
         layerRow('事实账本', 'FACTS', nFacts, peak, '', '结构化事实') +
+        layerRow('原文保真', 'VERBATIM', nVerbatim, peak, 'accent', '说过的话一字不丢') +
         layerRow('全文索引', 'FULL-TEXT', nFts, peak, 'soft', '可关键词命中') +
         layerRow('向量记忆', 'VECTOR', nVec, peak, 'accent', '可语义召回') +
         layerRow('原味抽屉', 'RAW DRAWER', nRaw, peak, 'soft', '原文零改写') +
@@ -312,9 +314,9 @@ function probeCells(probes) {
   const labels = {
     facts_db: '事实库 Facts', text_fts_db: '全文库 Full-text', mem0_singleton: '记忆引擎 Mem0',
     port_service: '端口服务 Port', fts_ok: '全文索引 FTS', entity_keywords_ok: '实体词表 Entities',
-    raw_drawer_ok: '原味抽屉 Raw Drawer', code_graph_ok: '代码图谱 Code Graph', evolve_mem_ok: '自进化 EvolveMem',
+    raw_drawer_ok: '原味抽屉 Raw Drawer', verbatim_ok: '原文保真 Verbatim', code_graph_ok: '代码图谱 Code Graph', evolve_mem_ok: '自进化 EvolveMem',
   };
-  const counts = { fts_memories: '全文条数 FTS', entity_keywords: '实体词 Entities', raw_drawer_count: '原味条数 Raw' };
+  const counts = { fts_memories: '全文条数 FTS', entity_keywords: '实体词 Entities', raw_drawer_count: '原味条数 Raw', verbatim_count: '原文条数 Verbatim' };
   let out = '';
   for (const [k, label] of Object.entries(labels)) {
     if (probes[k] === undefined) continue;
@@ -341,7 +343,8 @@ async function renderVault(body) {
       '<div id="vaultResults"></div>' +
     '</div>' +
     '<div class="sec" id="vaultCats">' + secHead('分类家底', 'CATEGORIES', '') + loading('分类') + '</div>' +
-    '<div class="sec" id="vaultRecent">' + secHead('最近写入的事实', 'RECENT FACTS', '') + loading('事实账本') + '</div>';
+    '<div class="sec" id="vaultRecent">' + secHead('最近写入的事实', 'RECENT FACTS', '') + loading('事实账本') + '</div>' +
+    '<div class="sec" id="vaultTombs">' + secHead('遗忘记录', 'FORGOTTEN', '遗忘不是删除 · 留痕可恢复') + loading('遗忘记录') + '</div>';
 
   const q = body.querySelector('#vaultQ');
   const go = body.querySelector('#vaultGo');
@@ -390,6 +393,59 @@ async function renderVault(body) {
       '<div class="recs">' + facts.map(factRow).join('') + '</div>';
   } catch (e) {
     body.querySelector('#vaultRecent').innerHTML = secHead('最近写入的事实', 'RECENT FACTS', '') + failure(e);
+  }
+
+  // tombstones — forgotten memories (B3): traceable, restorable
+  await loadTombstones(body.querySelector('#vaultTombs'));
+}
+
+/* B3 遗忘记录：列出被遗忘/驳回的记忆，全文与理由可查，可一键恢复 */
+async function loadTombstones(sec) {
+  try {
+    const r = await API.get('/tombstones', { limit: 12 });
+    const rows = r.results || [];
+    if (!rows.length) {
+      sec.innerHTML = secHead('遗忘记录', 'FORGOTTEN', '遗忘不是删除 · 留痕可恢复') +
+        '<div class="hint">还没有被遗忘的记忆 / Nothing forgotten yet. 删除或被治理驳回的记忆会在这里留痕，可一键恢复。</div>';
+      return;
+    }
+    sec.innerHTML = secHead('遗忘记录', 'FORGOTTEN', rows.length + ' 条可恢复') +
+      '<div class="recs">' + rows.map(tombRow).join('') + '</div>';
+    sec.querySelectorAll('.ract.restore').forEach(function (btn) {
+      btn.addEventListener('click', function () { restoreTombstone(this.dataset.tid, this.closest('.rec')); });
+    });
+  } catch (e) {
+    sec.innerHTML = secHead('遗忘记录', 'FORGOTTEN', '') + failure(e);
+  }
+}
+
+function tombRow(t) {
+  const bits = [];
+  if (t.target_id) bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(t.target_id) + '</span>');
+  if (t.reason) bits.push('理由 ' + esc(t.reason));
+  if (t.actor) bits.push('操作者 ' + esc(t.actor));
+  if (t.tombstoned_at) bits.push(fmtWhen(t.tombstoned_at));
+  const restored = !!t.restored_at;
+  const acts = restored
+    ? '<span class="hint">已恢复 ' + fmtWhen(t.restored_at) + '</span>'
+    : '<button class="ract restore" data-tid="' + esc(t.tombstone_id) + '">恢复 Restore</button>';
+  return '<div class="rec" style="' + (restored ? 'opacity:.55' : '') + '"><div class="rtext">' +
+    esc(clip(stripMd(t.content_snapshot || ''), 260)) + '</div>' +
+    '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div>' +
+    '<div class="racts">' + acts + '</div></div>';
+}
+
+async function restoreTombstone(tid, card) {
+  if (!confirm('把这条记忆恢复回活动检索？\nRestore this memory?')) return;
+  try {
+    const r = await API.post('/tombstone/restore', { tombstone_id: Number(tid) });
+    const ok = r.details && r.details.restored;
+    card.style.opacity = ok ? '0.55' : '';
+    card.querySelector('.racts').innerHTML = ok
+      ? '<span class="hint">已恢复 / Restored（' + esc((r.details && r.details.detail) || '') + '）</span>'
+      : '<span class="hint bad">' + esc((r.details && r.details.detail) || '恢复失败') + '</span>';
+  } catch (e) {
+    card.querySelector('.racts').innerHTML = '<span class="hint bad">' + esc(e.message || '恢复失败') + '</span>';
   }
 }
 
@@ -751,13 +807,22 @@ async function renderRecall(body) {
   body.innerHTML =
     '<div class="sec">' + secHead('看它想一遍', 'RECALL TRACE', '输入一句话，看完整召回过程') +
       '<div class="searchrow">' +
-        '<input class="sinput" id="rcQ" type="search" placeholder="比如 / e.g.：助手的生日礼物" autocomplete="off" />' +
+        '<input class="sinput" id="rcQ" type="search" placeholder="比如 / e.g.：用户的生日礼物" autocomplete="off" />' +
         '<button class="sbtn" id="rcGo">追踪 Trace</button>' +
       '</div>' +
       '<div class="hint" style="padding-top:10px">这一屏是 aiduMEI 最想做好的地方：' +
         '别家的记忆面板只给你"存了什么"，这里给你"它凭什么想起这条"。<br>' +
         '<span class="en-label">This panel shows WHY each memory was recalled, not just WHAT was stored.</span></div>' +
       '<div id="rcOut"></div>' +
+    '</div>' +
+    '<div class="sec">' + secHead('一条记忆的变更史', 'CHANGE HISTORY', '谁、何时、做了什么、为什么') +
+      '<div class="searchrow">' +
+        '<input class="sinput" id="rcHid" type="search" placeholder="目标 ID / target_id，如 fact:coffee" autocomplete="off" />' +
+        '<button class="sbtn" id="rcHgo">查变更史 History</button>' +
+      '</div>' +
+      '<div class="hint" style="padding-top:10px">事件溯源账本：任意记忆的 add / update / delete / 遗忘 / 恢复 / 治理裁决全程留痕。' +
+        '<span class="en-label">Event-sourced ledger — every mutation traced.</span></div>' +
+      '<div id="rcHist"></div>' +
     '</div>';
 
   const q = body.querySelector('#rcQ');
@@ -777,6 +842,23 @@ async function renderRecall(body) {
 
   body.querySelector('#rcGo').addEventListener('click', trace);
   q.addEventListener('keydown', function (e) { if (e.key === 'Enter') trace(); });
+
+  // B5 事件账本：变更史查询
+  const hid = body.querySelector('#rcHid');
+  const hout = body.querySelector('#rcHist');
+  const history = async function () {
+    const tid = hid.value.trim();
+    if (!tid) return;
+    hout.innerHTML = loading('变更史 / history');
+    try {
+      const r = await API.get('/events/history', { target_id: tid, limit: 50 });
+      hout.innerHTML = renderHistory(r.results || []);
+    } catch (e) {
+      hout.innerHTML = failure(e);
+    }
+  };
+  body.querySelector('#rcHgo').addEventListener('click', history);
+  hid.addEventListener('keydown', function (e) { if (e.key === 'Enter') history(); });
 }
 
 const TRACE_STAGES = {
@@ -844,6 +926,30 @@ function renderTrace(payload) {
       (cards ? '<div class="recs">' + cards + '</div>'
              : '<div class="hint">这次没有命中任何记忆 / No matches.</div>') +
     '</div>';
+}
+
+const LEDGER_ACTION = {
+  add: '写入 add', update: '更新 update', delete: '删除 delete',
+  tombstone: '遗忘 tombstone', restore: '恢复 restore',
+  approve: '批准 approve', reject: '驳回 reject', opinion_set: '表态 opinion',
+};
+
+/* B5 事件账本：把一条记忆的变更史渲染成时间线 */
+function renderHistory(events) {
+  if (!events.length) {
+    return '<div class="hint">这条记忆没有变更记录 / No change history. 确认 target_id 是否正确（如 fact:coffee）。</div>';
+  }
+  return '<div class="funnel">' + events.map(function (e) {
+    const bits = [];
+    if (e.actor) bits.push('操作者 ' + esc(e.actor));
+    if (e.reason) bits.push(esc(clip(e.reason, 80)));
+    if (e.timestamp) bits.push(fmtWhen(e.timestamp));
+    return '<div class="fstage">' +
+      '<div class="fname">' + esc(LEDGER_ACTION[e.action] || e.action) +
+        '<span>#' + esc(e.event_id != null ? e.event_id : '') + '</span></div>' +
+      '<div class="fnote" style="flex:1">' + bits.join('<span style="opacity:.4"> · </span>') + '</div>' +
+      '</div>';
+  }).join('') + '</div>';
 }
 
 /* ===========================================================================
@@ -916,7 +1022,165 @@ async function renderEvolve(body) {
             return '<div class="rec"><div class="rtext">' + esc(clip(c.pattern || c.text || JSON.stringify(c), 200)) + '</div></div>';
           }).join('') + '</div>'
         : '<div class="hint">目前没有待结晶的模式 / No crystal candidates. 结晶是把反复出现的事实压成"技能"，数据量上来之后才会有。</div>') +
+    '</div>' +
+
+    '<div class="sec" id="evGov">' + secHead('治理候选队列', 'GOVERNANCE', '第二双眼睛 · 未过审即降权') + loading('候选队列') + '</div>' +
+    '<div class="sec" id="evOpinion">' + secHead('信念层', 'BELIEF', '事实是「是什么」·信念是「我多确定」') + '</div>';
+
+  // B1 治理候选队列 + 人审入口
+  await loadGovernance(body.querySelector('#evGov'));
+  // B6 信念层：查/写/聚合
+  renderOpinionTool(body.querySelector('#evOpinion'));
+}
+
+/* B1 治理管线：候选队列 + 人审 approve/reject */
+async function loadGovernance(sec) {
+  try {
+    const [pend, evald] = await Promise.all([
+      API.get('/governance/candidates', { status: 'pending', limit: 20 }),
+      API.get('/governance/candidates', { status: 'evaluated', limit: 20 }),
+    ]);
+    const rows = (pend.results || []).concat(evald.results || []);
+    if (!rows.length) {
+      sec.innerHTML = secHead('治理候选队列', 'GOVERNANCE', '队列为空') +
+        '<div class="hint">没有待审候选 / No candidates awaiting review. 新写入的事实先降权待审，规则命中密钥/噪声的已自动驳回留痕（见忆思·遗忘记录）。</div>';
+      return;
+    }
+    sec.innerHTML = secHead('治理候选队列', 'GOVERNANCE', rows.length + ' 条待裁决') +
+      '<div class="recs">' + rows.map(candRow).join('') + '</div>';
+    sec.querySelectorAll('.ract.approve').forEach(function (b) {
+      b.addEventListener('click', function () { reviewCandidate(this.dataset.cid, 'approve', this.closest('.rec')); });
+    });
+    sec.querySelectorAll('.ract.reject').forEach(function (b) {
+      b.addEventListener('click', function () { reviewCandidate(this.dataset.cid, 'reject', this.closest('.rec')); });
+    });
+  } catch (e) {
+    sec.innerHTML = secHead('治理候选队列', 'GOVERNANCE', '') + failure(e);
+  }
+}
+
+function candRow(c) {
+  const bits = [];
+  if (c.category) bits.push('<span class="cat">' + esc(c.category) + '</span>');
+  bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(c.fact_key || '') + '</span>');
+  if (c.rule_verdict) bits.push('规则 ' + esc(c.rule_verdict));
+  if (c.eval_verdict) bits.push('评估 ' + esc(c.eval_verdict) + (c.eval_confidence ? ' ' + Number(c.eval_confidence).toFixed(2) : ''));
+  bits.push('状态 ' + esc(c.status || ''));
+  if (c.user_id) bits.push(esc(c.user_id));
+  const note = c.eval_reason ? '<div class="rmeta" style="opacity:.8">评估理由：' + esc(clip(c.eval_reason, 120)) + '</div>' : '';
+  return '<div class="rec" data-cid="' + esc(c.candidate_id) + '"><div class="rtext">' +
+    esc(clip(stripMd(c.fact_value || ''), 220)) + '</div>' +
+    '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div>' + note +
+    '<div class="racts">' +
+      '<button class="ract approve useful" data-cid="' + esc(c.candidate_id) + '">批准 Approve</button>' +
+      '<button class="ract reject del" data-cid="' + esc(c.candidate_id) + '">驳回 Reject</button>' +
+    '</div></div>';
+}
+
+async function reviewCandidate(cid, decision, card) {
+  const reason = decision === 'reject'
+    ? (prompt('驳回理由（可留空）\nReject reason (optional):', '') || '')
+    : (prompt('批准备注（可留空）\nApprove note (optional):', '') || '');
+  try {
+    const r = await API.post('/governance/review', { candidate_id: Number(cid), decision: decision, reason: reason });
+    const st = r.details && r.details.status;
+    card.style.opacity = '0.55';
+    card.querySelector('.racts').innerHTML = '<span class="hint">已' +
+      (decision === 'approve' ? '批准 / committed' : '驳回 / rejected') +
+      '（' + esc(st || '') + '）</span>';
+  } catch (e) {
+    card.querySelector('.racts').innerHTML = '<span class="hint bad">' + esc(e.message || '裁决失败') + '</span>';
+  }
+}
+
+/* B6 信念层：输入 fact_id → 查信念清单 + 聚合，可写三态信念 */
+function renderOpinionTool(sec) {
+  sec.innerHTML = secHead('信念层', 'BELIEF', '≥2 个不同来源才聚合 · 防回声室') +
+    '<div class="searchrow">' +
+      '<input class="sinput" id="opFid" type="number" min="1" placeholder="事实 ID / fact_id" autocomplete="off" />' +
+      '<button class="sbtn" id="opLoad">查信念 Load</button>' +
+    '</div>' +
+    '<div id="opOut"><div class="hint">输入一个事实 ID，查看它的信念清单与聚合结论；也可对它表态（支持/反对/中立）。</div></div>';
+
+  const fid = sec.querySelector('#opFid');
+  const out = sec.querySelector('#opOut');
+  const load = async function () {
+    const id = Number(fid.value);
+    if (!id) return;
+    out.innerHTML = loading('信念 / opinions');
+    try {
+      const [list, agg] = await Promise.all([
+        API.get('/opinions', { fact_id: id }),
+        API.get('/opinions/aggregate', { fact_id: id }),
+      ]);
+      out.innerHTML = renderOpinions(id, list.results || [], agg.details || {});
+      bindOpinionSetter(out, id, load);
+    } catch (e) {
+      out.innerHTML = failure(e);
+    }
+  };
+  sec.querySelector('#opLoad').addEventListener('click', load);
+  fid.addEventListener('keydown', function (e) { if (e.key === 'Enter') load(); });
+}
+
+const STANCE_LABEL = { support: '支持 Support', oppose: '反对 Oppose', neutral: '中立 Neutral' };
+
+function renderOpinions(fid, rows, agg) {
+  let aggHtml;
+  if (agg && agg.aggregated) {
+    aggHtml = '<div class="probe" data-ok="1"><i></i>聚合结论 ' +
+      esc(STANCE_LABEL[agg.stance] || agg.stance) +
+      '<b>' + Number(agg.confidence || 0).toFixed(2) + ' · ' + (agg.distinct_sources || 0) + ' 来源</b></div>';
+  } else {
+    const why = agg && agg.reason === 'insufficient_sources'
+      ? '来源不足（需 ≥2 个不同来源，当前 ' + ((agg && agg.distinct_sources) || 0) + '）'
+      : '尚未聚合';
+    aggHtml = '<div class="probe" data-ok="0"><i></i>聚合结论<b>' + esc(why) + '</b></div>';
+  }
+
+  const listHtml = rows.length
+    ? '<div class="recs">' + rows.map(function (o) {
+        const bits = [
+          '<span class="cat">' + esc(STANCE_LABEL[o.stance] || o.stance) + '</span>',
+          '<span class="src" style="color:var(--hex-cn)">' + esc(o.source || '') + '</span>',
+          '把握 ' + Number(o.confidence || 0).toFixed(2),
+        ];
+        if (o.owner) bits.push(esc(o.owner));
+        if (o.updated_at) bits.push(fmtWhen(o.updated_at));
+        return '<div class="rec"><div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div></div>';
+      }).join('') + '</div>'
+    : '<div class="hint">这条事实还没有任何信念 / No opinions yet.</div>';
+
+  return '<div class="probes" style="margin-bottom:12px">' + aggHtml + '</div>' + listHtml +
+    '<div class="editor" style="margin-top:12px">' +
+      '<div class="searchrow" style="margin:0">' +
+        '<select class="sinput" id="opStance" style="flex:0 0 130px">' +
+          '<option value="support">支持 Support</option>' +
+          '<option value="oppose">反对 Oppose</option>' +
+          '<option value="neutral">中立 Neutral</option>' +
+        '</select>' +
+        '<input class="sinput" id="opSrc" placeholder="证据来源 source（必填）" autocomplete="off" />' +
+        '<input class="sinput" id="opConf" type="number" min="0" max="1" step="0.05" value="0.7" style="flex:0 0 90px" />' +
+        '<button class="sbtn" id="opSet">表态 Set</button>' +
+      '</div>' +
     '</div>';
+}
+
+function bindOpinionSetter(out, fid, reload) {
+  const btn = out.querySelector('#opSet');
+  if (!btn) return;
+  btn.addEventListener('click', async function () {
+    const stance = out.querySelector('#opStance').value;
+    const source = out.querySelector('#opSrc').value.trim();
+    const confidence = Number(out.querySelector('#opConf').value);
+    if (!source) { alert('证据来源 source 必填 / source is required'); return; }
+    try {
+      await API.post('/opinions/set', { fact_id: fid, stance: stance, source: source, confidence: confidence });
+      reload();
+    } catch (e) {
+      alert('表态失败 / Set failed: ' + (e.message || ''));
+    }
+  });
 }
 
 /* ===========================================================================

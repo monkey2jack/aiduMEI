@@ -69,7 +69,7 @@ def test_classify_rules():
     assert mt.classify_text("用户决定使用 Qdrant 作为向量库") == "DECISIONS"
     assert mt.classify_text("用户偏好 Python，不太喜欢 React") == "PREFERENCES"
     assert mt.classify_text("我帮用户部署了 Dashboard API") == "EXPERIENCES"
-    assert mt.classify_text("东京服务器 18888 端口暴露在公网") == "OBSERVATIONS"
+    assert mt.classify_text("某服务器端口暴露在公网") == "OBSERVATIONS"
     assert mt.classify_text("没有明确信号的普通内容") == "FACTS"
 
 

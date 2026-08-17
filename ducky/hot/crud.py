@@ -5,7 +5,15 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 
-from ducky.api_models import DeleteAllRequest, DeleteRequest, InjectContextRequest, UpdateRequest
+from ducky.api_models import (
+    DeleteAllRequest,
+    DeleteRequest,
+    GovernanceReviewRequest,
+    InjectContextRequest,
+    OpinionSetRequest,
+    TombstoneRestoreRequest,
+    UpdateRequest,
+)
 from ducky.utils import DEFAULT_USER_ID
 from ducky.mem0_runtime import (
     _normalize_user_id,
@@ -113,6 +121,114 @@ def register_crud_routes(app: FastAPI) -> None:
             return {"status": "ok", "details": res.get("details", {})}
         except Exception as e:
             logger.error(f"delete_all 失败: {e}")
+            raise HTTPException(500, str(e))
+
+    # 🪦 tombstone 遗忘层（v19.4.0 Mímir 借鉴 B3）：遗忘不是删除，留痕可恢复
+    @app.get("/tombstones")
+    def tombstones(user_id: str = DEFAULT_USER_ID, limit: int = 50):
+        """列某租户的遗忘记录（全文与撤回理由可查）"""
+        try:
+            from ducky.tombstone import list_tombstones
+            uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
+            return {"status": "ok", "results": list_tombstones(uid, limit=limit)}
+        except Exception as e:
+            logger.error(f"tombstones 失败: {e}")
+            raise HTTPException(500, str(e))
+
+    @app.post("/tombstone/restore")
+    def tombstone_restore(req: TombstoneRestoreRequest):
+        """从 tombstone 快照一键恢复一条记忆"""
+        if not req.tombstone_id:
+            raise HTTPException(400, "tombstone_id 不能为空")
+        try:
+            from ducky.tombstone import restore_tombstone
+            uid = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
+            res = restore_tombstone(req.tombstone_id, user_id=uid)
+            return {"status": "ok" if res.get("restored") else "noop", "details": res}
+        except Exception as e:
+            logger.error(f"tombstone/restore 失败: {e}")
+            raise HTTPException(500, str(e))
+
+    # 📒 事件溯源账本（v19.4.0 Mímir 借鉴 B5）：任意记忆的完整变更史可查
+    @app.get("/events/history")
+    def events_history(target_id: str = "", limit: int = 100):
+        """查某条记忆的完整变更史（谁、何时、做了什么、为什么）"""
+        if not target_id or not target_id.strip():
+            raise HTTPException(400, "target_id 不能为空")
+        try:
+            from ducky.event_ledger import get_history
+            return {"status": "ok", "results": get_history(target_id.strip(), limit=limit)}
+        except Exception as e:
+            logger.error(f"events/history 失败: {e}")
+            raise HTTPException(500, str(e))
+
+    # 🏛️ 治理管线（v19.4.0 Mímir 借鉴 B1）：候选队列 + 人审入口
+    @app.get("/governance/candidates")
+    def governance_candidates(status: str = "", user_id: str = "", limit: int = 50):
+        """候选事实队列（可按状态过滤：pending/evaluated/approved/rejected/committed）"""
+        try:
+            from ducky.governance import list_candidates
+            return {"status": "ok", "results": list_candidates(status, user_id, limit)}
+        except Exception as e:
+            logger.error(f"governance/candidates 失败: {e}")
+            raise HTTPException(500, str(e))
+
+    @app.post("/governance/review")
+    def governance_review(req: GovernanceReviewRequest):
+        """人审裁决：approve/reject 一条候选，带 reason 留痕"""
+        if not req.candidate_id:
+            raise HTTPException(400, "candidate_id 不能为空")
+        if req.decision not in ("approve", "reject"):
+            raise HTTPException(400, "decision 必须是 approve 或 reject")
+        try:
+            from ducky.governance import review_candidate
+            res = review_candidate(req.candidate_id, req.decision,
+                                   reason=req.reason, user_id=req.user_id)
+            return {"status": "ok", "details": res}
+        except Exception as e:
+            logger.error(f"governance/review 失败: {e}")
+            raise HTTPException(500, str(e))
+
+    # 🧭 信念层 Opinion（v19.4.0 Mímir 借鉴 B6）：三态信念写入 + 聚合判定
+    @app.post("/opinions/set")
+    def opinion_set(req: OpinionSetRequest):
+        """写入一条信念（support/oppose/neutral 三态皆可），账本留痕"""
+        if not req.fact_id:
+            raise HTTPException(400, "fact_id 不能为空")
+        if not req.source or not req.source.strip():
+            raise HTTPException(400, "source（证据来源标识）不能为空")
+        try:
+            from ducky.opinion import set_opinion
+            res = set_opinion(req.fact_id, req.stance, confidence=req.confidence,
+                              evidence_ids=req.evidence_ids, source=req.source,
+                              owner=req.owner)
+            return {"status": "ok" if res.get("ok") else "error", "details": res}
+        except Exception as e:
+            logger.error(f"opinions/set 失败: {e}")
+            raise HTTPException(500, str(e))
+
+    @app.get("/opinions")
+    def opinions_list(fact_id: int = 0):
+        """查某事实的信念清单"""
+        if not fact_id:
+            raise HTTPException(400, "fact_id 不能为空")
+        try:
+            from ducky.opinion import list_opinions
+            return {"status": "ok", "results": list_opinions(fact_id)}
+        except Exception as e:
+            logger.error(f"opinions 查询失败: {e}")
+            raise HTTPException(500, str(e))
+
+    @app.get("/opinions/aggregate")
+    def opinions_aggregate(fact_id: int = 0):
+        """聚合判定：≥2 个不同证据来源才聚合（单来源刷好评不聚合）"""
+        if not fact_id:
+            raise HTTPException(400, "fact_id 不能为空")
+        try:
+            from ducky.opinion import aggregate_opinion
+            return {"status": "ok", "details": aggregate_opinion(fact_id)}
+        except Exception as e:
+            logger.error(f"opinions/aggregate 失败: {e}")
             raise HTTPException(500, str(e))
 
     @app.post("/update")

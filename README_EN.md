@@ -23,7 +23,7 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-> **v19.3.3 · Athena — Architectural Unification & Audit-Driven Hardening.** Building on v19.2.0 production hardening, the v19.3 series delivers **single-source-of-truth unification of the recall pipeline and scoring engine**: funnel stages fully delegate to the unified 5-dimension scoring, singleton and lazy-import lifecycle hardened with double-checked locking, the 800+ line legacy module decoupled, and a unified injection-defense gate placed before final persistence. v19.3.1–v19.3.3 are consecutive audit-driven fixes: silent-exception observability, reranker placeholder removal, legacy route import completion (fixing /facts/add 500), nested exception-handler regression fix, and test assertion alignment.
+> **v19.4.0 · Athena — Project Mirror Phase 1 · Verbatim Vault + Production Audit Fix Release.** Building on the v19.3 architectural unification, v19.4.0 opens "Project Mirror": using public memory-evaluation leaderboards as a mirror to see our own gaps — no competition, just craft. **Every word you said is kept** — the new Verbatim Vault stores verbatim conversation turns in parallel with mem0's fact extraction (hard tenant isolation + idempotent dedup + trigram full-text index), and fuses verbatim evidence into recall results, so memory keeps not only the distilled skeleton but the warmth of the original words. After a full production audit (2🔴5🟡), every finding is fixed and shipped with this release: the B4 injection frame is now enforced at the server-side recall exit (production is self-defending with or without the hook), call_llm is hardened against the gateway's fake-SSE responses and auto-retries with a bigger budget on reasoning-model truncation so the governance evaluator is alive again, noise rules catch keyboard-mash junk, backup_gate is wired into the upgrade flow as a hard gate, ledger target_id queries expand aliases so one parameter retrieves the whole history, and secondary write paths (federation/refine/ai-self) get governance and ledger coverage. Full suite: 244 passed. v19.3.3 · Athena — Architectural Unification & Audit-Driven Hardening. Building on v19.2.0 production hardening, the v19.3 series delivers **single-source-of-truth unification of the recall pipeline and scoring engine**: funnel stages fully delegate to the unified 5-dimension scoring, singleton and lazy-import lifecycle hardened with double-checked locking, the 800+ line legacy module decoupled, and a unified injection-defense gate placed before final persistence. v19.3.1–v19.3.3 are consecutive audit-driven fixes: silent-exception observability, reranker placeholder removal, legacy route import completion (fixing /facts/add 500), nested exception-handler regression fix, and test assertion alignment.
 
 Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
@@ -49,6 +49,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
+| **v19.4.0** | **Athena** | Goddess of Wisdom · Project Mirror · Audit Fix | **Verbatim Vault · Verbatim-evidence fused recall · Server-side injection frame · LLM hardening · Noise rule upgrade · Backup hard gate · Ledger alias expansion · Secondary-path governance & ledger** |
 | **v19.3.3** | **Athena** | Goddess of Wisdom · Architectural Unification | **Single-source scoring · Singleton concurrency hardening · Unified injection gate · Silent-exception observability · Legacy decoupling** |
 | **v19.2.0** | **Athena** | Goddess of Wisdom · Production Hardening | **Prompt injection defense · Multi-store cascade delete & WAL · Unified scoring · Dynamic health** |
 | **v19.0** | **Athena** | Goddess of Wisdom · From Memory to Wisdom | **Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer** |
@@ -140,7 +141,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│        🦉 aiduMEI v19.3.3 · Athena · AI Wisdom Engine │
+│        🦉 aiduMEI v19.4.0 · Athena · AI Wisdom Engine │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤

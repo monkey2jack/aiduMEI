@@ -148,6 +148,29 @@ def register_health_routes(app: FastAPI) -> None:
             probes["facts_active_count"] = -1
             probes["facts_error"] = str(e)[:120]
 
+        # 📼 原文保真层探针（v19.4.0 明镜工程 Phase 1）
+        try:
+            from ducky.verbatim_vault import count_verbatim_all
+            probes["verbatim_count"] = int(count_verbatim_all())
+            probes["verbatim_ok"] = True
+        except Exception as e:
+            probes["verbatim_ok"] = False
+            probes["verbatim_error"] = str(e)[:120]
+
+        # 原味抽屉探针（前端 STORAGE LAYERS 长期引用但后端从未产出，此处接上）
+        try:
+            from ducky.utils import get_text_conn
+            conn_r = get_text_conn()
+            n_raw = conn_r.execute(
+                "SELECT COUNT(*) FROM memories WHERE id LIKE 'raw-%'"
+            ).fetchone()[0]
+            conn_r.close()
+            probes["raw_drawer_count"] = int(n_raw)
+            probes["raw_drawer_ok"] = True
+        except Exception as e:
+            probes["raw_drawer_ok"] = False
+            probes["raw_drawer_error"] = str(e)[:120]
+
         # 汇总所有降级组件（全量扫描 module_ok 与 probes 中 _ok=False 项）
         degraded = [k for k, v in module_ok.items() if not v]
         for p_key, p_val in probes.items():

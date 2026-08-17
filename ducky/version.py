@@ -3,8 +3,38 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v19.4.0 (明镜工程 Phase 1 · 原文保真层 · 生产审计修复版 · 2026-08-17)
+    核心主题: 说过的话一字不丢 · 原文证据与原子事实融合召回 · 生产路径自防御 · 治理账本无死角
+    背景: AML 榜单调研证实显式事实召回靠「原文保真 + 混合检索」，不靠更花的抽取。
+    我们不参赛，只把干货拿来打磨，开源惠及大众。
+    对 v19.4.0 生产部署全面审计（2🔴5🟡）后逐项修复，随 v19.4.0 一并发布。
+
+    —— 明镜工程 Phase 1 · 原文保真层 ——
+    1. 新增 ducky/verbatim_vault.py 原文保真层: verbatim_turns 表（facts.db，租户硬隔离 +
+       幂等去重）+ verbatim_fts trigram 全文索引（text_fts.db），mem0 抽取之外的第二层
+    2. /add 注入防御通过后逐字原文落库；/search 原文证据融合返回（主干优先 + 配额保留）
+    3. cascade_delete_all 级联清理原文层，绝不留孤儿；启动时幂等建表
+    4. 失败干净降级，绝不阻断主链路；对现有 facts 零影响
+
+    —— 生产审计修复（2🔴5🟡 逐项）——
+    5. 🔴-A B4 注入框架服务端出口包装: /facts/inject-context 返回即带框架 +
+       <memory> 标记，hook 侧凭标记防双重包装，生产路径不依赖 hook 也自防御
+    6. 🔴-B call_llm 根治上游网关 SSE 假响应: 请求显式 stream:False +
+       _parse_completion_body 三态兜底解析（标准 JSON / 拼接体 / 真 SSE 流）；
+       生产实测补强——上游推理模型，思考与输出共享预算，
+       检测到「推理截断」（content 空 + finish_reason=length + 有 reasoning_content）
+       自动放大预算 ×4 重试（封顶 4096），治理评估器恢复真实运转
+    7. 🟡-A 噪声规则升级: 键盘行/重复字符/连续数字/纯符号随机组合识别，
+       含 CJK 一律放行交 LLM，不误杀真实记忆
+    8. 🟡-B backup_gate 嵌进 pre-upgrade-check 硬门禁: 备份→require 校验→
+       冒烟→cron→e2e 五步，无验证备份拒绝升级
+    9. 🟡-C 账本 target_id 别名展开: fact:{key}/fact:{id}/裸 id 一个参数查全链
+    10. 🟡-D 次路径补账本与治理: 联邦 insert 全治理 + 三路径账本，
+        refine_memory/ai-self 内部路径补账本
+    11. 🟡-E 既有备份补 SHA256SUMS（部署时执行）
+
 v19.3.3 (审计回归修复与发布链接续版 · 2026-08-17)
-    核心主题: 小猴审计修复 · 测试断言对齐 · 发布链接续
+    核心主题: 审计修复 · 测试断言对齐 · 发布链接续
     1. 修复 persona_memory.py 嵌套 except-as-e 同名遮蔽导致的 NameError 回归（v19.3.1 静默异常治理时引入）
     2. 测试断言对齐: test_v19_3_hardening / test_v19_2 版本白名单同步，恢复测试套件全绿
     3. LINEAGE 谱系补全 19.3.2 / 19.3.3 条目
@@ -25,7 +55,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "19.3.3"
+SERVICE_VERSION = "19.4.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
@@ -36,11 +66,12 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("19.4.0", "Athena", "雅典娜", "明镜工程 Phase 1 · 原文保真层 · 生产审计修复 · 注入框架服务端自防御 · LLM 通道根治 · 治理账本无死角"),
     ("19.3.3", "Athena", "雅典娜", "审计回归修复 · 测试断言对齐 · 发布链接续"),
     ("19.3.2", "Athena", "雅典娜", "legacy 路由 import 修复 · /facts/add 500 根治"),
     ("19.3.1", "Athena", "雅典娜", "审计修复 · 静默异常可观测 · 占位符根除 · 版本号全量对齐"),
     ("19.3.0", "Athena", "雅典娜", "架构大一统 · 召回打分单一真相源 · 单例加锁治理 · 模块解耦与防线统一"),
-    ("19.2.1", "Athena", "雅典娜", "生产热修复 · 助手深度复验"),
+    ("19.2.1", "Athena", "雅典娜", "生产热修复 · 深度复验"),
     ("19.2.0", "Athena", "雅典娜", "安全筑基 · 一致闭环 · 观测透明 · 检索提质 · 架构收敛 · 实事求是"),
     ("19.1.2", "Athena", "雅典娜", "审计补丁自审修复 · MCP 鉴权兼容 · 六型回填生效"),
     ("19.1.1", "Athena", "雅典娜", "审计补丁 · 接口安全 · MCP 契约 · 版本号诚信"),

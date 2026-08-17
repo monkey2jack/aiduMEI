@@ -258,6 +258,12 @@ def _start_background() -> None:
         logger.warning(f"⚠️ mem0 预热失败（主服务仍会启动）: {exc}")
 
     _init_text_fts()
+    # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文保真层建表（幂等，失败降级）
+    try:
+        from ducky.verbatim_vault import ensure_verbatim_schema
+        ensure_verbatim_schema()
+    except Exception as _vs:
+        logger.warning(f"📼 Verbatim Vault 建表跳过（主服务仍会启动）: {_vs}")
     init_core_memory()
     # 启动 WAL 对账与自愈（v19.2.0 P0-DATA）
     try:

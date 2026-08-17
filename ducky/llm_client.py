@@ -89,6 +89,115 @@ def _resolve_key(api_key: str, purpose: str) -> str:
     return api_key if api_key not in placeholders else ""
 
 
+def _extract_content(data: dict) -> Optional[str]:
+    """从一个 chat/completions 响应对象里提取 assistant 文本。
+
+    兼容非流式（choices[0].message.content）与流式块（choices[0].delta.content）。
+    """
+    choices = data.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return None
+    choice = choices[0]
+    message = choice.get("message") or choice.get("delta") or {}
+    content = message.get("content") if isinstance(message, dict) else None
+    if content:
+        return str(content).strip()
+    return None
+
+
+def _parse_completion_body(text: str) -> Optional[str]:
+    """解析 chat/completions 响应体（v19.4.0 · 生产审计 🔴-B）。
+
+    上游网关实测会返回 Content-Type: text/event-stream，body 却是
+    「完整 JSON + data: [DONE]」拼接体，r.json() 直接抛异常——
+    v19.4.0 评估器因此永远记 evaluator_unavailable。兜底策略：
+
+      1. 标准 JSON → 直接提取
+      2. 拼接体 / 真 SSE 流 → 逐行剥 `data: ` 前缀、跳过 [DONE]：
+         · 出现完整响应对象 → 取 message.content
+         · 全是 delta 块    → 拼接 delta.content
+    解析不出内容返回 None（调用方降级），绝不抛异常。
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    # 1) 标准 JSON 直通
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return _extract_content(data)
+    except Exception:
+        pass
+    # 2) SSE / 拼接体逐行兜底
+    full_parts: list[str] = []
+    delta_chunks: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("data:"):
+            line = line[len("data:"):].strip()
+        if not line or line == "[DONE]":
+            continue
+        try:
+            data = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        content = _extract_content(data)
+        if content:
+            choices = data.get("choices") or [{}]
+            is_delta = isinstance(choices[0], dict) and "delta" in choices[0]
+            (delta_chunks if is_delta else full_parts).append(content)
+    if full_parts:
+        return "\n".join(full_parts).strip() or None
+    if delta_chunks:
+        return "".join(delta_chunks).strip() or None
+    return None
+
+
+def _post_completion(endpoint: str, api_key: str, model: str, messages: list,
+                     max_tokens: int, temperature: float, timeout: int) -> tuple[Optional[str], bool]:
+    """发一次 chat/completions，返回 (content, 推理截断标志)。
+
+    推理截断 = HTTP 200 但 content 为空、finish_reason=length 且响应带
+    reasoning_content——推理模型把全部预算耗在思考上，没来得及输出正文。
+    """
+    r = requests.post(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            # 🔴-B：显式要求非流式。部分网关无视该字段仍回 SSE，
+            # 响应体交给 _parse_completion_body 兜底解析。
+            "stream": False,
+        },
+        timeout=timeout,
+    )
+    if r.status_code != 200:
+        logger.warning(f"LLM 直接调用失败: HTTP {r.status_code} {r.text[:200]}")
+        return None, False
+    content = _parse_completion_body(r.text)
+    if content:
+        return content, False
+    # 探测「推理截断」：content 空 + finish_reason=length + 有 reasoning_content
+    try:
+        data = json.loads(r.text.strip().splitlines()[0].removeprefix("data:").strip())
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        if choice.get("finish_reason") == "length" and msg.get("reasoning_content"):
+            return None, True
+    except Exception:
+        pass
+    logger.warning("LLM 直接调用: HTTP 200 但响应体解析不出内容: %s", r.text[:200])
+    return None, False
+
+
 def call_llm(
     prompt: str,
     *,
@@ -106,6 +215,10 @@ def call_llm(
         max_tokens: 输出上限
         temperature: 采样温度（认知类任务用低温度求稳定）
         timeout: 请求超时秒数
+
+    🔴-B 根治（v19.4.0 生产实测补强）：上游网关的推理模型，
+    请求级 reasoning_effort/enable_thinking 均被网关无视；小预算下思考耗尽
+    预算 → content 空 + finish_reason=length。检测到该形态自动放大预算重试一次。
     """
     cfg = get_llm_config()
     if not cfg.get("api_key") or not cfg.get("model"):
@@ -128,27 +241,20 @@ def call_llm(
         endpoint = f"{base}/chat/completions"
 
     try:
-        r = requests.post(
-            endpoint,
-            headers={
-                "Authorization": f"Bearer {cfg['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": cfg["model"],
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
-            timeout=timeout,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            choices = data.get("choices") or []
-            if choices:
-                return (choices[0].get("message") or {}).get("content", "").strip()
-            return None
-        logger.warning(f"LLM 直接调用失败: HTTP {r.status_code} {r.text[:200]}")
+        content, reasoning_truncated = _post_completion(
+            endpoint, cfg["api_key"], cfg["model"], messages,
+            max_tokens, temperature, timeout)
+        if content:
+            return content
+        if reasoning_truncated:
+            retry_budget = min(max_tokens * 4, 4096)
+            logger.info("LLM 推理截断（思考耗尽预算），放大预算重试: %d → %d",
+                        max_tokens, retry_budget)
+            content, _ = _post_completion(
+                endpoint, cfg["api_key"], cfg["model"], messages,
+                retry_budget, temperature, timeout)
+            if content:
+                return content
         return None
     except Exception as e:
         logger.warning(f"LLM 直接调用异常: {e}")

@@ -1,7 +1,7 @@
 """
 ducky — aiduMEI 智慧引擎智能模块包
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v19.3.3 Athena (雅典娜) — Production Hardened AI Memory & Wisdom Engine
+v19.4.0 Athena (雅典娜) — Production Hardened AI Memory & Wisdom Engine
 """
 
 from .layer1_selfcheck import (

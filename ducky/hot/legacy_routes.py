@@ -113,13 +113,38 @@ def register_legacy_routes(app):
         """, (category, fact_key, fact_value, source, summary, overview, resolved_level,
               vf, vt, _PANTHEON_DEFAULT_AGENT, _PANTHEON_DEFAULT_PROFILE, fed_tier,
               recorded_at.isoformat(), decay_at))
-        conn.commit()
+        # 📒 事件账本（v19.4.0 Mímir 借鉴 B5）：与事实写入同事务留痕，同生共死
+        try:
+            from ducky.event_ledger import content_hash, record_event
+            record_event(conn, actor=source or "tool", action="add",
+                         target_id=f"fact:{fact_key}", reason=f"category={category}",
+                         after_hash=content_hash(fact_value))
+        except Exception as le:
+            logger.debug("ledger 记录跳过: %s", le)
         fid = cur.lastrowid or 0
+        # 🏛️ 治理管线（v19.4.0 Mímir 借鉴 B1）：写入后审计 + provisional 语义。
+        #    规则 reject 同事务归档+tombstone 留痕；待审事实降权 0.30。
+        gov = {"route": "skipped"}
+        try:
+            from ducky.governance import govern_fact_write
+            gov = govern_fact_write(conn, fid, category, fact_key, fact_value,
+                                    user_id=source or DEFAULT_USER_ID)
+        except Exception as ge:
+            logger.debug("governance 钩子跳过: %s", ge)
+        conn.commit()
+        # 独立评估器异步补审（commit 后；评估器失败/超时保守进人审，绝不自动批准）
+        if gov.get("route") == "llm_eval" and gov.get("candidate_id"):
+            try:
+                from ducky.governance import spawn_async_eval
+                spawn_async_eval(gov["candidate_id"])
+            except Exception as ae:
+                logger.debug("异步评估派发跳过: %s", ae)
         auto_link = _auto_extract_and_link(fid, fact_value, conn)
         conn.close()
         return {"status":"ok","message":f"事实已存储: {category}/{fact_key}","level":resolved_level,
                 "validity":{"valid_from":vf,"valid_to":vt},
                 "memory_tier": fed_tier,
+                "governance": gov,
                 "refinement":_vault_refine(category, fact_key, fact_value, resolved_level),
                 "auto_entities": auto_link}
 

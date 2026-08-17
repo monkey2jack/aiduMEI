@@ -64,6 +64,34 @@ class DeleteAllRequest(BaseModel):
     confirm: bool = False
 
 
+class TombstoneRestoreRequest(BaseModel):
+    """🪦 tombstone 恢复请求（v19.4.0 Mímir 借鉴 B3）"""
+    model_config = ConfigDict(extra="allow")
+
+    tombstone_id: int
+    user_id: str = DEFAULT_USER_ID
+
+class GovernanceReviewRequest(BaseModel):
+    """🏛️ 治理管线人审请求（v19.4.0 Mímir 借鉴 B1）"""
+    model_config = ConfigDict(extra="allow")
+
+    candidate_id: int
+    decision: str  # approve | reject
+    reason: str = ""
+    user_id: str = DEFAULT_USER_ID
+
+class OpinionSetRequest(BaseModel):
+    """🧭 信念层写入请求（v19.4.0 Mímir 借鉴 B6）"""
+    model_config = ConfigDict(extra="allow")
+
+    fact_id: int
+    stance: str  # support | oppose | neutral
+    confidence: float = 0.5
+    evidence_ids: list = []
+    source: str  # 证据来源标识（必填，聚合按来源去重）
+    owner: str = DEFAULT_USER_ID
+
+
 class UpdateRequest(BaseModel):
     # 🟡P0-2：放开额外字段并兼容旧调用方传 data 的写法，
     # 避免 data 被 Pydantic 静默丢弃后把记忆更新成空串。
