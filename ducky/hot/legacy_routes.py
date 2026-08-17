@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
+import datetime as _dt
 from typing import Optional
 from collections import defaultdict
 from fastapi import FastAPI, HTTPException, Form, Query
@@ -31,6 +33,13 @@ from ducky.hot.legacy_helpers import (
     _pantheon_tier,
     _PANTHEON_DEFAULT_AGENT,
     _PANTHEON_DEFAULT_PROFILE,
+    CONTRADICTION_WORDS,
+    _auto_detect_level,
+    _ensure_scenes_table,
+    _fact_feedback_impl,
+    _load_tags,
+    _run_consolidation,
+    _vault_refine,
 )
 
 logger = logging.getLogger("aiduMEM.legacy.routes")
