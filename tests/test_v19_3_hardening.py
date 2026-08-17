@@ -28,8 +28,8 @@ from ducky.mem0_runtime import lazy_import_funnel, lazy_import_hybrid, lazy_impo
 
 
 def test_v19_3_version_alignment():
-    """验证全生态版本号统一为 19.3.1"""
-    assert SERVICE_VERSION == "19.3.1"
+    """验证全生态版本号统一为 19.3.3"""
+    assert SERVICE_VERSION == "19.3.3"
     assert CODENAME == "Athena"
 
 
@@ -150,3 +150,68 @@ def test_v19_3_legacy_split_backwards_compatibility():
     assert len(entities) > 0
 
     assert callable(register_legacy_routes)
+
+# ─────────────────────────────────────────────────────────────
+# v19.3.3 审计回归修复专项
+# ─────────────────────────────────────────────────────────────
+
+
+def test_v19_3_3_no_nested_except_same_name_shadowing():
+    """v19.3.3: 结构性根除嵌套 except-as-e 同名遮蔽（Python 语义：内层 except 退出时删除变量，
+    外层再引用即 NameError）。AST 全库扫描，防止此类回归在任何文件再出现。"""
+    import ast
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    targets = []
+    for base in ("ducky", "scripts", "tests"):
+        base_path = os.path.join(repo_root, base)
+        for root, _dirs, files in os.walk(base_path):
+            for f in files:
+                if f.endswith(".py"):
+                    targets.append(os.path.join(root, f))
+    for top in ("api_server.py", "mcp_server.py"):
+        p = os.path.join(repo_root, top)
+        if os.path.exists(p):
+            targets.append(p)
+
+    offenders = []
+    for path in targets:
+        with open(path, "r", encoding="utf-8") as fh:
+            try:
+                tree = ast.parse(fh.read())
+            except SyntaxError:
+                continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler) and node.name:
+                for sub in ast.walk(node):
+                    if sub is node:
+                        continue
+                    if isinstance(sub, ast.ExceptHandler) and sub.name == node.name:
+                        offenders.append(f"{path}:{node.lineno}/{sub.lineno}")
+    assert not offenders, f"嵌套 except-as-e 同名遮蔽（外层变量被内层删除，再引用即 NameError）: {offenders}"
+
+
+def test_v19_3_3_persona_error_path_no_nameerror(monkeypatch):
+    """v19.3.3: build_persona 错误路径回归实测——当建档失败且 conn.close() 也失败时，
+    必须正常返回 error dict，而不是因变量遮蔽抛 NameError。"""
+    import sqlite3
+    import ducky.persona_memory as pm
+
+    class BrokenConn:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("no such table: persona_banks")
+
+        def commit(self):
+            raise sqlite3.OperationalError("cannot commit")
+
+        def close(self):
+            raise sqlite3.OperationalError("cannot close")
+
+    monkeypatch.setattr(pm, "ensure_persona_schema", lambda: None)
+    monkeypatch.setattr(pm, "_get_conn", lambda: BrokenConn())
+
+    res = pm.build_persona("测试人格卡", use_llm=False)
+    assert isinstance(res, dict)
+    assert res["status"] == "error"
+    assert "基座建档失败" in res["detail"]
+    assert "no such table" in res["detail"]
