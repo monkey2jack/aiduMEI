@@ -164,9 +164,20 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         "facts": 0,
         "salience": 0,
         "evolve": 0,
+        "tombstone_id": None,
     }
 
     try:
+        # 0. 🪦 tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
+        #    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。
+        try:
+            from ducky.tombstone import snapshot_before_delete
+            res["tombstone_id"] = snapshot_before_delete(
+                memory_id, user_id=user_id, reason="cascade_delete", actor="wal_engine"
+            )
+        except Exception as te:
+            logger.debug("tombstone 快照跳过: %s", te)
+
         # 1. mem0 向量删除
         try:
             from ducky.mem0_runtime import get_memory
@@ -215,6 +226,13 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
                     conn.execute("DELETE FROM memory_types WHERE (memory_ref=? OR memory_ref=? OR ref_alt=?)", (memory_id, f"fact:{memory_id}", memory_id))
                 except Exception as e:
                     logger.debug(f"cascade_delete_memory: suppressed exception: {e}")
+            # 📒 事件账本（v19.4.0 Mímir 借鉴 B5）：与删除同事务留痕，同生共死
+            try:
+                from ducky.event_ledger import record_event
+                record_event(conn, actor=user_id or "system", action="delete",
+                             target_id=memory_id, reason="cascade_delete_memory")
+            except Exception as le:
+                logger.debug("ledger 记录跳过: %s", le)
             conn.commit()
             conn.close()
             res["facts"] = c1
@@ -277,6 +295,7 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
         "facts_deleted": 0,
         "salience_deleted": 0,
         "evolve_deleted": 0,
+        "verbatim_deleted": 0,
     }
 
     try:
@@ -357,6 +376,13 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
             res["evolve_deleted"] = c_evo
         except Exception as e:
             logger.debug("evolve delete_all 跳过: %s", e)
+
+        # 6. Verbatim Vault 原文保真层（v19.4.0 明镜工程 Phase 1）
+        try:
+            from ducky.verbatim_vault import cascade_delete_verbatim
+            res["verbatim_deleted"] = cascade_delete_verbatim(user_id)
+        except Exception as e:
+            logger.debug("verbatim delete_all 跳过: %s", e)
 
         wal.mark_status(wal_id, "committed")
         logger.info("🧹 多仓原子级联清空完成 user=%s: %s", user_id, res)

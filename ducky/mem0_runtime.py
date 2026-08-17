@@ -429,7 +429,7 @@ def get_memory():
                 raise RuntimeError("mem0 SDK 未加载")
             cfg = json.loads(open(MEM0_CONFIG).read())
             cfg = _resolve_api_keys(cfg)
-            # 启动时清理 Qdrant 锁（与生产对齐：先读配置再清理）
+            # 启动时清理 Qdrant 锁（与生产环境对齐：先读配置再清理）
             _clear_qdrant_lock()
             m = Memory.from_config(cfg)
             _patch_usage_tracking(m)

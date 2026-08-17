@@ -156,6 +156,17 @@ def register_search_routes(app: FastAPI) -> None:
             boost_salience_for_results(results)
             _annotate_memory_types(results)
 
+            # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文证据融合
+            # 在既有召回结果之上，并行检索原文层并融合返回（主干优先、保留配额、
+            # 失败干净降级）。让召回的不只是蒸馏后的事实，还有说过的原话。
+            try:
+                from ducky.verbatim_vault import verbatim_search, fuse_verbatim
+                v_hits = verbatim_search(req.query, _normalize_user_id(req.user_id), limit=effective_limit)
+                if v_hits:
+                    results = fuse_verbatim(results, v_hits, limit=effective_limit, query=req.query)
+            except Exception as _ve:
+                logger.debug(f"📼 [VerbatimVault] 原文融合跳过: {_ve}")
+
             try:
                 from ducky.memory_workspace import ws_feed_from_results
                 ws_feed_from_results(req.user_id, results)
