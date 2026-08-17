@@ -133,7 +133,7 @@ def test_prompt_injection_legitimate_content_allowed():
         "用户喜欢喝热拿铁，不加糖，偏好燕麦奶",
         "Project deadline is 2026-09-01 for the v19.2 release",
         "会议纪要：讨论了 SQLite WAL 模式和 Qdrant 索引优化",
-        "生产环境团队在 8 月 13 日完成了 1131 条事实记忆的压力测试",
+        "团队近期完成了上千条事实记忆的压力测试",
         "User prefers Python for backend development and Vue for frontend",
         "这个配置要忽略之前的设定规则",
         "act as a helper for me please",
@@ -400,10 +400,10 @@ def test_password_salt_sha256_hash():
 
 def test_version_truth():
     """测试版本号在真相源与各配置文件一致"""
-    assert SERVICE_VERSION in ("19.2.0", "19.2.1", "19.3.0", "19.3.1", "19.3.2", "19.3.3")
+    assert SERVICE_VERSION in ("19.2.0", "19.2.1", "19.3.0", "19.3.1", "19.3.2", "19.3.3", "19.4.0")
     with open(os.path.join(_REPO_ROOT, "manifest.json"), "r", encoding="utf-8") as f:
         manifest = json.load(f)
-    assert manifest["version"] in ("19.2.0", "19.2.1", "19.3.0", "19.3.1", "19.3.2", "19.3.3")
+    assert manifest["version"] in ("19.2.0", "19.2.1", "19.3.0", "19.3.1", "19.3.2", "19.3.3", "19.4.0")
     with open(os.path.join(_REPO_ROOT, "pyproject.toml"), "r", encoding="utf-8") as f:
         toml_content = f.read()
     assert f'version = "{SERVICE_VERSION}"' in toml_content

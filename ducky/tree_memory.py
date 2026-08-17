@@ -5,7 +5,7 @@ ducky.tree_memory — 树状记忆架构 (v17.0 · 借鉴 Mímir 联邦记忆系
 让分类与事实支持 parent_id、node_path 的下钻与向上追溯。
 
 借鉴来源: Mímir v9.1 联邦记忆系统 + MemOS TreeMemory
-  - 树形结构表达 aidu 矩阵的父子关系（aiduBOX -> 小猴 等层级）
+  - 树形结构表达 aidu 矩阵的父子关系（父节点 -> 子节点 等层级）
   - 节点路径索引 (node_path) 支持前缀查询
   - 与 facts 表关联统计：每个节点挂载的事实数
 

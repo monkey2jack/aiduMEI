@@ -243,6 +243,14 @@ def apply_refinement(refine_id: int) -> dict:
         ids = json.loads(row["source_ids"] or "[]")
         for fid in ids:
             conn.execute("UPDATE facts SET archived=1, archived_at=CURRENT_TIMESTAMP WHERE id=?", (fid,))
+            # 📒 事件账本（v19.4.0 🟡-D）：精炼归档留痕，同事务
+            try:
+                from ducky.event_ledger import record_event
+                record_event(conn, actor="refine_memory", action="update",
+                             target_id=f"fact:{fid}",
+                             reason=f"refine_memory: archived, replaced by refined:{refine_id}")
+            except Exception as le:
+                logger.debug("refine 归档账本记录跳过: %s", le)
             # 同步剔除 FTS 索引，消除幽灵召回
             try:
                 from ducky.text_fts import _unindex_memory
@@ -260,6 +268,15 @@ def apply_refinement(refine_id: int) -> dict:
             "VALUES (?, ?, ?, 'refine_memory')",
             (cat, f"refined:{refine_id}", summary_val)
         )
+        # 📒 事件账本（v19.4.0 🟡-D）：精炼摘要入库留痕，同事务
+        try:
+            from ducky.event_ledger import content_hash, record_event
+            record_event(conn, actor="refine_memory", action="add",
+                         target_id=f"fact:refined:{refine_id}",
+                         reason=f"refine_memory: merged from {len(ids)} facts",
+                         after_hash=content_hash(summary_val))
+        except Exception as le:
+            logger.debug("refine 摘要账本记录跳过: %s", le)
         conn.execute("UPDATE refined_memories SET state='applied' WHERE refine_id=?", (refine_id,))
         conn.commit()
 
