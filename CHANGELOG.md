@@ -1,6 +1,18 @@
 # aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复。
+
+---
+
+## v19.3.2 — legacy 路由 import 修复版（2026-08-17）
+
+> 根治 legacy 兼容层写入接口 500 的隐藏 bug，版本号五文件对齐。
+
+### 🔧 legacy_routes 缺失 import 补全
+- **`ducky/hot/legacy_routes.py` 补全 9 个缺失 import**：`re`、`datetime as _dt`，以及 `legacy_helpers` 的 7 个符号（`CONTRADICTION_WORDS`、`_auto_detect_level`、`_ensure_scenes_table`、`_fact_feedback_impl`、`_load_tags`、`_run_consolidation`、`_vault_refine`）。此前服务可正常启动，但 `/facts/add` 一旦写入即触发 NameError 返回 500；补全后生产实测写入成功。
+
+### 📦 版本号五文件全量对齐
+- `ducky/version.py` · `pyproject.toml` · `manifest.json` · `ducky/__init__.py` · `CHANGELOG.md` 统一升至 `19.3.2`。
 
 ---
 
