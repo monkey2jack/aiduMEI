@@ -23,7 +23,7 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-> **v19.2.0 · Athena — Production Hardening & Full Consistency.** Building on v19.0 Athena (active reflection, self-editing, recursive refinement, persona layer), v19.2.0 focuses on **rock-solid security, multi-store consistency, unified scoring, and dynamic observability in high-frequency production environments** — featuring 3-layer prompt injection defense, multi-store cascade atomic deletion with application WAL, single-source-of-truth recency decay, and live degradation tracking.
+> **v19.3.3 · Athena — Architectural Unification & Audit-Driven Hardening.** Building on v19.2.0 production hardening, the v19.3 series delivers **single-source-of-truth unification of the recall pipeline and scoring engine**: funnel stages fully delegate to the unified 5-dimension scoring, singleton and lazy-import lifecycle hardened with double-checked locking, the 800+ line legacy module decoupled, and a unified injection-defense gate placed before final persistence. v19.3.1–v19.3.3 are consecutive audit-driven fixes: silent-exception observability, reranker placeholder removal, legacy route import completion (fixing /facts/add 500), nested exception-handler regression fix, and test assertion alignment.
 
 Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
@@ -49,6 +49,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
+| **v19.3.3** | **Athena** | Goddess of Wisdom · Architectural Unification | **Single-source scoring · Singleton concurrency hardening · Unified injection gate · Silent-exception observability · Legacy decoupling** |
 | **v19.2.0** | **Athena** | Goddess of Wisdom · Production Hardening | **Prompt injection defense · Multi-store cascade delete & WAL · Unified scoring · Dynamic health** |
 | **v19.0** | **Athena** | Goddess of Wisdom · From Memory to Wisdom | **Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer** |
 | **v18.3** | **Zeus** | King of the Gods · Multimodal | Lossless fast-update · multimodal vision memory · Obsidian bi-directional links · console password change |
@@ -139,7 +140,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│        🦉 aiduMEI v19.2.0 · Athena · AI Wisdom Engine │
+│        🦉 aiduMEI v19.3.3 · Athena · AI Wisdom Engine │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
