@@ -3,6 +3,12 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v19.3.2 (legacy 路由 import 修复版 · 2026-08-17)
+    核心主题: legacy_routes 缺失 import 补全 · /facts/add 接口 500 根治
+    1. legacy_routes.py 补全 9 个缺失 import（re / datetime(_dt) + 7 个 legacy_helpers 函数），
+       修复服务能启动但 /facts/add 一写入即 NameError 500 的隐藏 bug
+    2. 版本号五文件全量对齐 19.3.2
+
 v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
     核心主题: 审计问题修复 · 版本号全量对齐 · 静默异常可观测 · 占位符根除
     1. 静默异常治理: 18 处 except Exception: pass 补 debug/warning 日志上下文，safe-ignore 处补注释
@@ -12,7 +18,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "19.3.1"
+SERVICE_VERSION = "19.3.2"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
