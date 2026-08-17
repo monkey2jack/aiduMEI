@@ -302,8 +302,8 @@ def build_persona(
     except Exception as e:
         try:
             conn.close()
-        except Exception as e:
-            logger.debug(f"build_persona: suppressed exception: {e}")
+        except Exception as close_err:
+            logger.debug(f"build_persona: close after failure suppressed: {close_err}")
         return {"status": "error", "detail": f"基座建档失败: {e}"}
 
     start = time.time()

@@ -1,6 +1,26 @@
 # aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复，v19.3.3 审计回归修复与发布链接续。
+
+---
+
+## v19.3.3 — 审计回归修复与发布链接续版（2026-08-17）
+
+> 基于小猴对 v19.3.1/v19.3.2 的独立审计（实跑测试 + AST 扫描 + 最小用例实证）逐项修复，恢复测试套件全绿，接续 PyPI 发布链。
+
+### 🐛 嵌套异常处理回归修复
+- **`ducky/persona_memory.py` 嵌套 `except as e` 同名遮蔽根治**：v19.3.1 静默异常治理时，`build_persona` 错误路径的内层 `except Exception as e` 与外层同名，Python 语义下内层退出即删除变量，外层再引用 `e` 触发 `NameError: local variable 'e' referenced before assignment`（已用最小用例实证）。内层改用独立变量名 `close_err`，错误路径恢复正常返回 error dict。
+
+### ✅ 测试断言对齐与结构守卫
+- `test_v19_3_hardening.py` 版本断言对齐 `19.3.3`；`test_v19_2_security_and_consistency.py` 版本白名单补齐 `19.3.2` / `19.3.3`，恢复测试套件全绿（此前 v19.3.2 发布时断言未同步，套件 2 项失败）。
+- 新增 `test_v19_3_3_no_nested_except_same_name_shadowing`：AST 全库结构扫描，杜绝嵌套 except 同名遮蔽在任何文件再出现。
+- 新增 `test_v19_3_3_persona_error_path_no_nameerror`：monkeypatch 断裂连接实测错误路径，确保不再 NameError。
+
+### 📦 版本号五文件全量对齐与谱系补全
+- `ducky/version.py` · `pyproject.toml` · `manifest.json` · `ducky/__init__.py` · `CHANGELOG.md` 统一升至 `19.3.3`。
+- `version.py` LINEAGE 谱系补全 `19.3.2` / `19.3.3` 条目；`ducky/__init__.py` 包描述正名为「aiduMEI 智慧引擎」。
+- README 中英文版本横幅、版本表、架构图同步至 `v19.3.3`（补齐 README_EN 自 v19.2.0 起的文档债）。
+- PyPI 发布链接续：补发 `19.3.3`（此前 v19.3.1 / v19.3.2 未发包，PyPI 停留在 19.3.0）。
 
 ---
 
