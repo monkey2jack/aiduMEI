@@ -117,6 +117,66 @@ SALIENCE_DB   = os.path.join(DATA_DIR, "salience.db")
 # 直接 ImportError —— 与 memory_salience 门面缺口是同一类静默故障。
 CONSOLIDATOR_LOCK = os.path.join(DATA_DIR, "consolidator.lock")
 
+
+# ═══════════════════════════════════════════════
+# .env 兜底加载与 API 凭据（v19.4.1 · P0-1 配套）
+# ═══════════════════════════════════════════════
+#
+# 为什么需要这个（v19.4.1 部署体检发现的定时炸弹）：
+#     服务进程靠 systemd `EnvironmentFile=/opt/aidumem/.env` 拿到
+#     AIDUMEM_API_TOKEN，但 **cron 不会加载 .env** —— 它的环境几乎是空的。
+#     于是鉴权门禁一开启，所有 cron 任务（consolidator 每日 2:30、
+#     健康检查等）在下一次触发时会集体 401。
+#     这类失败还特别安静：脚本失败只写日志，没有人被通知。
+#
+#     解法不是让运维记得去改 crontab（那是靠自觉），而是让脚本自己
+#     从仓库根的 .env 兜底读取凭据 —— 与服务端读同一份文件，单一真相源。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_env_file(path: str | None = None, *, override: bool = False) -> int:
+    """把 .env 里的键值补进 os.environ。返回实际注入的条数。
+
+    · 只做最简解析（KEY=VALUE、# 注释、可选引号），不引入 dotenv 依赖；
+    · 默认 **不覆盖** 已存在的环境变量（显式传入的优先级最高）；
+    · 文件不存在或读失败一律静默返回 0，绝不影响调用方主流程。
+    """
+    target = path or os.environ.get("AIDUMEM_ENV_FILE") or os.path.join(_REPO_ROOT, ".env")
+    if not os.path.isfile(target):
+        return 0
+    injected = 0
+    try:
+        with open(target, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if not key:
+                    continue
+                if override or key not in os.environ:
+                    os.environ[key] = value
+                    injected += 1
+    except Exception as exc:
+        logger.debug("load_env_file 跳过 (%s): %s", target, exc)
+        return 0
+    return injected
+
+
+def api_auth_headers() -> dict:
+    """构造调用本服务 REST 接口的鉴权头（单一真相源）。
+
+    取值顺序：环境变量 → 仓库根 .env 兜底。未配置 token 时返回空 dict，
+    行为与门禁未启用时完全一致（本机零配置可用）。
+    """
+    token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    if not token:
+        load_env_file()
+        token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
 # ═══════════════════════════════════════════════
 # 默认身份标识 — 单一真源
 # ═══════════════════════════════════════════════

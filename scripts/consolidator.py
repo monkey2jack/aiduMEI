@@ -25,6 +25,11 @@ from ducky.memory_salience import (decay_all, get_stats, detect_conflicts,
                                     audit_health_anomalies)
 from ducky.skill_crystallizer import detect_and_crystallize_patterns
 
+# 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
+# cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -54,17 +59,6 @@ def _with_file_lock(fn):
             return fn()
         finally:
             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-
-
-def _auth_headers() -> dict:
-    """🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
-
-    后端启用鉴权门禁后，不带凭据的调用一律 401。本脚本由 cron 驱动、
-    失败只写日志，若不同步携带凭据，症状是「合并悄悄不干活了」——
-    没有报警、没有人察觉，直到有人去翻日志。
-    """
-    token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
-    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _api_get(endpoint: str) -> dict:

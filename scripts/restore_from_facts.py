@@ -10,12 +10,9 @@ os.chdir(_REPO)
 
 from ducky.utils import get_facts_conn
 
-# 🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
-# 后端启用鉴权门禁后不带凭据一律 401；本脚本属运维工具，
-# 失败往往只体现为「没干活」，不补凭据会让配置错误长期潜伏。
-def _auth_headers() -> dict:
-    _token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
-    return {"Authorization": f"Bearer {_token}"} if _token else {}
+# 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
+# cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
 
 
 # 1. 从facts.db读

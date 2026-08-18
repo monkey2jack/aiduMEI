@@ -371,3 +371,105 @@ def test_consolidator_logs_auth_failure_loudly():
     assert "AIDUMEM_API_TOKEN" in text
     assert text.count("_auth_headers()") >= 2, "GET 与 POST 都要带凭据"
     assert "401" in text and "logger.error" in text, "鉴权失败必须响亮报错"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# cron 场景：.env 兜底加载（门禁开启后的定时任务不能静默 401）
+# ═══════════════════════════════════════════════════════════════════
+
+def test_load_env_file_injects_without_override(tmp_path, monkeypatch):
+    """.env 兜底加载：补空缺、不覆盖已显式设置的变量"""
+    from ducky.utils import load_env_file
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# 注释行\n"
+        "\n"
+        'AIDUMEM_API_TOKEN="token-from-file"\n'
+        "AIDUMEM_SOME_OTHER=plain-value\n"
+        "MALFORMED_LINE_NO_EQUALS\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
+    monkeypatch.setenv("AIDUMEM_SOME_OTHER", "already-set")
+
+    injected = load_env_file(str(env_file))
+    assert injected == 1, "只应注入缺失的那一个"
+    assert os.environ["AIDUMEM_API_TOKEN"] == "token-from-file", "引号应被去掉"
+    assert os.environ["AIDUMEM_SOME_OTHER"] == "already-set", "已存在的变量不得被覆盖"
+
+    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
+    monkeypatch.delenv("AIDUMEM_SOME_OTHER", raising=False)
+
+
+def test_load_env_file_is_silent_when_missing(tmp_path):
+    """文件不存在时静默返回 0，绝不影响调用方"""
+    from ducky.utils import load_env_file
+
+    assert load_env_file(str(tmp_path / "nope.env")) == 0
+
+
+def test_api_auth_headers_falls_back_to_env_file(tmp_path, monkeypatch):
+    """cron 场景核心断言：环境变量为空时，凭据必须能从 .env 兜底读到
+
+    这是 v19.4.1 部署体检发现的定时炸弹：服务进程靠 systemd EnvironmentFile
+    拿到 token，但 **cron 不加载 .env**，其环境几乎是空的。门禁一开启，
+    consolidator（每日 2:30）等定时任务会在下一次触发时集体 401 ——
+    而它们失败只写日志，没有人被通知。
+    """
+    from ducky.utils import api_auth_headers
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("AIDUMEM_API_TOKEN=cron-token\n", encoding="utf-8")
+
+    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
+    monkeypatch.setenv("AIDUMEM_ENV_FILE", str(env_file))
+
+    headers = api_auth_headers()
+    assert headers == {"Authorization": "Bearer cron-token"}
+
+
+def test_api_auth_headers_empty_when_no_token(tmp_path, monkeypatch):
+    """未配置 token 时返回空 dict —— 行为与门禁未启用时完全一致"""
+    from ducky.utils import api_auth_headers
+
+    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
+    monkeypatch.setenv("AIDUMEM_ENV_FILE", str(tmp_path / "absent.env"))
+    assert api_auth_headers() == {}
+
+
+def test_scripts_share_single_credential_source():
+    """源码守卫：脚本不得各自实现凭据读取，必须复用 utils.api_auth_headers
+
+    各脚本自行 os.environ.get 会导致「有的带 .env 兜底、有的没有」，
+    门禁开启后表现为部分任务莫名 401 —— 排查成本极高。
+    """
+    import pathlib
+    import re
+
+    offenders = []
+    for path in sorted(pathlib.Path(_REPO_ROOT, "scripts").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if not re.search(r"8767|AIDUMEM_API_BASE", text):
+            continue
+        assert "api_auth_headers" in text, f"{path.name} 未复用统一凭据入口"
+        # 不应再有本地定义
+        if re.search(r"^def _auth_headers\(", text, re.M):
+            offenders.append(path.name)
+    assert not offenders, "以下脚本仍自带 _auth_headers 实现: " + ", ".join(offenders)
+
+
+def test_scripts_add_repo_root_to_syspath():
+    """cron 的 cwd 不是仓库根：调本服务的脚本必须显式补 sys.path，否则 import ducky 直接失败"""
+    import pathlib
+    import re
+
+    offenders = []
+    for path in sorted(pathlib.Path(_REPO_ROOT, "scripts").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "api_auth_headers" not in text:
+            continue
+        if "sys.path.insert" not in text:
+            offenders.append(path.name)
+    assert not offenders, "以下脚本缺 sys.path 修正，cron 下会 ImportError: " + ", ".join(offenders)
