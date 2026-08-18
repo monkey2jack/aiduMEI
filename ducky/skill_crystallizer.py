@@ -118,17 +118,30 @@ def detect_and_crystallize_patterns() -> list[dict[str, Any]]:
 
     try:
         # 查找有效状态的高频分类（精确过滤噪声分类）
+        #
+        # v19.4.1 修复：原写法 `GROUP_CONCAT(DISTINCT fact_key, ' | ')` 在 SQLite
+        # 下直接报 "DISTINCT aggregates must have exactly one argument" ——
+        # SQLite 的 GROUP_CONCAT 不允许同时用 DISTINCT 和自定义分隔符。
+        # 该异常被外层 except 吞成一行 ERROR 日志，于是「技能结晶感知」
+        # 每次 consolidator 运行都报 0 个候选项，看起来像「暂时没发现模式」，
+        # 实际是这条 SQL 从来没成功执行过（实机日志确认）。
+        #
+        # 改法：先在子查询里 DISTINCT，外层再用默认逗号分隔符聚合，
+        # 展示分隔符交给 Python 侧处理 —— 避免依赖 SQLite 的方言细节。
         rows = conn.execute(
             f"""
             SELECT
                 category,
                 COUNT(*) AS cnt,
-                GROUP_CONCAT(DISTINCT fact_key, ' | ') AS key_summary
-            FROM facts
-            WHERE
-                archived = 0
-                AND category NOT IN ({','.join('?' * len(_EXCLUDED_CATEGORIES))})
-                AND (valid_to IS NULL OR valid_to > CURRENT_TIMESTAMP)
+                GROUP_CONCAT(fact_key) AS key_summary
+            FROM (
+                SELECT DISTINCT category, fact_key
+                FROM facts
+                WHERE
+                    archived = 0
+                    AND category NOT IN ({','.join('?' * len(_EXCLUDED_CATEGORIES))})
+                    AND (valid_to IS NULL OR valid_to > CURRENT_TIMESTAMP)
+            )
             GROUP BY category
             HAVING cnt >= ?
             ORDER BY cnt DESC
@@ -141,7 +154,10 @@ def detect_and_crystallize_patterns() -> list[dict[str, Any]]:
             skill_name = f"crystallized-{category.lower().replace(' ', '-')[:40]}"
             trigger_rule = f"当出现与「{category}」相关的连续需求或重复操作时触发"
             # procedure 只记录 fact_key 摘要，不塞完整内容
-            keys_preview = (key_summary or "")[:300]
+            # 子查询用默认逗号聚合，这里换回可读的 " | " 展示分隔符
+            keys_preview = " | ".join(
+                k.strip() for k in (key_summary or "").split(",") if k.strip()
+            )[:300]
             procedure = (
                 f"分类「{category}」下共有 {cnt} 条记忆事实，\n"
                 f"高频操作键：{keys_preview}\n"

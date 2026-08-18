@@ -928,3 +928,61 @@ def test_cascade_delete_reports_all_stores():
     assert details["salience"] == 1, f"salience 未被清理: {details}"
     assert details["verbatim"] == 1, f"原文层未被清理: {details}"
     assert details["fts"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SkillCrystallizer SQL 方言（异常被吞成「暂时没发现模式」）
+# ═══════════════════════════════════════════════════════════════════
+
+def test_skill_crystallizer_sql_runs_on_sqlite():
+    """技能结晶的聚合 SQL 必须能在 SQLite 上真正执行
+
+    实机日志：consolidator 每次都报
+      「🐙 [SkillCrystallizer] detect_and_crystallize_patterns 失败:
+        DISTINCT aggregates must have exactly one argument」
+      「🐙 [Opus Octopod] 技能结晶感知完成: 生成 0 个候选项」
+    第二行看起来像「暂时没发现模式」，实际是上一行的异常导致这条 SQL
+    从来没成功执行过 —— SQLite 的 GROUP_CONCAT 不允许同时用 DISTINCT
+    和自定义分隔符。又一个「异常被吞掉后伪装成正常业务结果」的例子。
+    """
+    from ducky.skill_crystallizer import (
+        _MIN_FACTS_FOR_CRYSTAL,
+        detect_and_crystallize_patterns,
+    )
+    from ducky.schema_bootstrap import ensure_core_schema
+
+    ensure_core_schema(force=True)
+    conn = utils.get_facts_conn()
+    for i in range(_MIN_FACTS_FOR_CRYSTAL + 1):
+        conn.execute(
+            "INSERT INTO facts (category, fact_key, fact_value, archived, agent_id)"
+            " VALUES ('skilltest', ?, ?, 0, 'skill_tenant')",
+            (f"sk-key-{i}", f"value {i}"),
+        )
+    conn.commit()
+
+    result = detect_and_crystallize_patterns()
+    names = [r["skill_name"] for r in result]
+    assert any("skilltest" in n for n in names), (
+        f"结晶未产出候选项，SQL 可能又挂了: {result}"
+    )
+
+
+def test_group_concat_distinct_dialect_guard():
+    """源码守卫：不得再出现 SQLite 不支持的 GROUP_CONCAT(DISTINCT x, sep)"""
+    import pathlib
+    import re
+
+    offenders = []
+    pattern = re.compile(r"GROUP_CONCAT\s*\(\s*DISTINCT[^)]*,", re.I)
+    for path in pathlib.Path(_REPO_ROOT, "ducky").rglob("*.py"):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            # 跳过注释行：注释里保留「为什么这样写会挂」的说明是有价值的
+            if line.lstrip().startswith("#"):
+                continue
+            if pattern.search(line):
+                offenders.append(f"{path.name}:{lineno}")
+    assert not offenders, (
+        "SQLite 不支持 GROUP_CONCAT(DISTINCT x, sep)，会抛 "
+        "'DISTINCT aggregates must have exactly one argument': " + ", ".join(offenders)
+    )
