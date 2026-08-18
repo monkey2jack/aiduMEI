@@ -820,3 +820,111 @@ def test_evolve_cleanup_targets_real_tables():
     ]
     assert not code_lines, f"wal_engine 仍在操作不存在的 evolve_snapshots 表: {code_lines}"
     assert "delete_evolve_by_memory_ids" in wal
+
+
+# ═══════════════════════════════════════════════════════════════════
+# salience 级联清理（同类静默故障：表名 + 列名双错）
+# ═══════════════════════════════════════════════════════════════════
+
+def test_salience_cleanup_uses_real_table():
+    """salience 清理必须打在真实表 `salience` 上，且不假设有 user_id 列
+
+    wal_engine 原实现 `DELETE FROM memory_salience WHERE memory_id=? AND user_id=?`
+    两处都错（真实表名是 salience，且无 user_id 列），被 except 吞成 debug。
+    实测后果：生产 salience 1099 条里 252 条是向量库中早已不存在的幽灵 id；
+    幽灵被 decay_all 当正常记忆持续衰减 → 进入 evicted → consolidator 逐个
+    调 /delete 去删「早就不存在的东西」，日志报「删除成功 25/25」全是空转。
+    """
+    import pathlib
+    import time
+
+    from ducky.salience import delete_salience
+    from ducky.salience.db import _ensure_db
+    from ducky.utils import get_salience_conn
+
+    _ensure_db()
+    conn = get_salience_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(salience)")}
+    assert "user_id" not in cols, "若真加了 user_id 列，请回头核对清理逻辑"
+
+    now = time.time()
+    conn.execute(
+        "INSERT OR REPLACE INTO salience (memory_id, salience, last_access, access_count, created_at)"
+        " VALUES (?,?,?,?,?)",
+        ("mem-sal-test", 0.5, now, 0, now),
+    )
+    conn.commit()
+    assert delete_salience(["mem-sal-test"]) == 1
+    assert delete_salience([]) == 0
+
+    wal = pathlib.Path(_REPO_ROOT, "ducky", "wal_engine.py").read_text(encoding="utf-8")
+    code_lines = [
+        ln for ln in wal.splitlines()
+        if "memory_salience" in ln and not ln.lstrip().startswith("#")
+    ]
+    assert not code_lines, f"wal_engine 仍在操作不存在的 memory_salience 表: {code_lines}"
+
+
+def test_prune_orphan_salience_refuses_empty_known_set():
+    """幽灵清理在拿不到「真实记忆全集」时必须拒绝执行，否则会清空全表"""
+    import time
+
+    from ducky.salience import prune_orphan_salience
+    from ducky.salience.db import _ensure_db
+    from ducky.utils import get_salience_conn
+
+    _ensure_db()
+    conn = get_salience_conn()
+    now = time.time()
+    for mid in ("orphan-a", "orphan-b", "alive-a"):
+        conn.execute(
+            "INSERT OR REPLACE INTO salience (memory_id, salience, last_access, access_count, created_at)"
+            " VALUES (?,?,?,?,?)",
+            (mid, 0.5, now, 0, now),
+        )
+    conn.commit()
+
+    before = {r[0] for r in conn.execute("SELECT memory_id FROM salience")}
+    assert {"orphan-a", "orphan-b", "alive-a"} <= before
+
+    # 空 known_ids 必须整表不动（这是本测试的核心断言）
+    assert prune_orphan_salience([]) == 0, "空 known_ids 时不得删除任何记录"
+    assert prune_orphan_salience(None) == 0
+    assert {r[0] for r in conn.execute("SELECT memory_id FROM salience")} == before
+
+    # 正常清理：只保留 known_ids 里的条目。
+    # 注意 salience.db 在同一 pytest 进程内被多个测试共享，
+    # 因此断言写成「我插入的两条被清掉、保留项仍在」，
+    # 而不是断言删除总数 —— 否则会被其它测试的残留记录干扰
+    # （这类跨测试污染本身就是本版在修的问题之一）。
+    prune_orphan_salience(["alive-a"])
+    remaining = {r[0] for r in conn.execute("SELECT memory_id FROM salience")}
+    assert remaining == {"alive-a"}, f"清理后应只剩 known_ids: {remaining}"
+
+
+def test_cascade_delete_reports_all_stores():
+    """级联删除的 details 必须如实反映每个仓的清理结果
+
+    此前 salience / evolve 恒为 0 却无人察觉 —— 因为没有任何断言检查过它们。
+    """
+    from ducky.evolve_mem import ensure_evolve_schema
+    from ducky.salience import on_memory_added
+    from ducky.salience.db import _ensure_db
+    from ducky.text_fts import _index_memory, _init_text_fts
+    from ducky.wal_engine import cascade_delete_memory
+
+    _ensure_db()
+    _init_text_fts()
+    ensure_evolve_schema()
+
+    mid = "mem-cascade-report"
+    uid = "cascade_tenant"
+    _index_memory(mid, "级联删除报告测试内容", user_id=uid)
+    on_memory_added(mid, "级联删除报告测试内容")
+    store_verbatim(uid, [{"role": "user", "content": "级联删除报告测试内容"}],
+                   {"session_id": "cr"})
+
+    details = cascade_delete_memory(mid, user_id=uid)["details"]
+    assert details["salience"] == 1, f"salience 未被清理: {details}"
+    assert details["verbatim"] == 1, f"原文层未被清理: {details}"
+    assert details["fts"] is True
