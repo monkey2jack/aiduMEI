@@ -55,6 +55,7 @@ from ducky.verbatim_vault import (  # noqa: E402
     cascade_delete_verbatim,
     count_verbatim,
     delete_verbatim_by_content,
+    delete_verbatim_by_id,
     ensure_verbatim_schema,
     purge_all_verbatim,
     store_verbatim,
@@ -624,3 +625,73 @@ def test_p14_no_handler_swallows_httpexception():
     assert not offenders, (
         "以下 except Exception 会把 HTTPException 降级成 500: " + ", ".join(offenders)
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# P0-4b  原文条目可删（/search 给出的句柄必须能删掉它自己）
+# ═══════════════════════════════════════════════════════════════════
+
+def test_p04b_verbatim_handle_is_deletable():
+    """用 /search 返回的 `verbatim:<n>` 句柄必须真能删掉那条原文
+
+    实机冒烟发现 P0-4 只修了一半：/delete 只认 mem0 记忆 id 与 fact_key，
+    拿 `verbatim:44` 去删会「成功返回、什么都没删」（verbatim=0，原文照旧可检索）。
+    而这类原文常常没有对应的 mem0 记忆，于是既不能被连带清掉、也不能被直接删除
+    —— 成为可检索但删不掉的孤儿。对一条含身份证号的原文，这就是删除权失效。
+    """
+    from ducky.wal_engine import cascade_delete_memory
+
+    secret = "P04B 我的身份证号是 310101199001011234"
+    store_verbatim("p04b_alice", [{"role": "user", "content": secret}], {"session_id": "s1"})
+    hits = verbatim_search("身份证", user_id="p04b_alice", limit=5)
+    assert hits, "前提：原文应可检索"
+    handle = hits[0]["id"]
+    assert str(handle).startswith("verbatim:"), f"句柄形态变了: {handle}"
+
+    res = cascade_delete_memory(handle, user_id="p04b_alice")
+    assert res["details"]["verbatim"] == 1, "拿 /search 的句柄删不掉原文（P0-4b 回退）"
+    assert count_verbatim("p04b_alice") == 0
+    assert verbatim_search("身份证", user_id="p04b_alice", limit=5) == []
+
+
+def test_p04b_verbatim_delete_is_tenant_scoped():
+    """越权防护：拿别人的 verbatim 句柄删不动对方的原文"""
+    same = "P04B 两个租户都说过的同一句话"
+    store_verbatim("p04b_a", [{"role": "user", "content": same}], {"session_id": "x"})
+    store_verbatim("p04b_b", [{"role": "user", "content": same}], {"session_id": "x"})
+
+    hits = verbatim_search("同一句话", user_id="p04b_a", limit=5)
+    handle = hits[0]["id"]
+
+    assert delete_verbatim_by_id("p04b_b", handle) == 0, "跨租户越权删除成功了"
+    assert count_verbatim("p04b_a") == 1, "本租户原文被别人删掉了"
+
+    assert delete_verbatim_by_id("p04b_a", handle) == 1
+    assert count_verbatim("p04b_a") == 0
+    assert count_verbatim("p04b_b") == 1, "删 A 连带误伤了 B"
+
+
+def test_p04b_verbatim_delete_leaves_tombstone():
+    """删原文条目必须留 tombstone —— 否则「误删可一键恢复」对原文层不成立"""
+    from ducky.tombstone import ensure_tombstone_schema, list_tombstones
+    from ducky.wal_engine import cascade_delete_memory
+
+    ensure_tombstone_schema()
+    text = "P04B 需要留痕的原文内容"
+    store_verbatim("p04b_ts", [{"role": "user", "content": text}], {"session_id": "t"})
+    handle = verbatim_search("留痕", user_id="p04b_ts", limit=5)[0]["id"]
+
+    res = cascade_delete_memory(handle, user_id="p04b_ts")
+    assert res["details"]["tombstone_id"], "原文删除未留 tombstone"
+
+    snaps = [t.get("content_snapshot", "") for t in list_tombstones("p04b_ts", limit=10)]
+    assert any(text in s for s in snaps), "tombstone 快照里没有原文正文"
+
+
+def test_p04b_malformed_handles_are_rejected():
+    """畸形句柄不得误删任何东西"""
+    store_verbatim("p04b_mal", [{"role": "user", "content": "P04B 畸形句柄测试"}],
+                   {"session_id": "m"})
+    for bad in ("verbatim:", "verbatim:abc", "verbatim:-1", "", None, "12x"):
+        assert delete_verbatim_by_id("p04b_mal", bad) == 0, f"畸形句柄被接受: {bad!r}"
+    assert count_verbatim("p04b_mal") == 1

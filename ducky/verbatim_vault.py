@@ -33,6 +33,7 @@ ducky.verbatim_vault — 原文保真层 Verbatim Vault (v19.4.0 · 明镜工程
     fuse_verbatim(...)                把原文证据融合进召回结果
     cascade_delete_verbatim(...)      级联删除某租户原文（wal_engine 调用，精确按 user_id）
     delete_verbatim_by_content(...)   按内容精确删除某租户原文（单条删除级联用）
+    delete_verbatim_by_id(...)        按 verbatim:<id> 句柄精确删除（/delete 直删用）
     purge_all_verbatim(confirm=True)  清空全库所有租户原文（高危，显式入口）
     count_verbatim(...)               统计某租户原文条数（运维/验收用）
 """
@@ -611,6 +612,46 @@ def purge_all_verbatim(confirm: bool = False) -> int:
         logger.warning("🧨 purge_all_verbatim 已清空全库原文 %d 条", deleted)
     except Exception as exc:
         logger.warning("purge_all_verbatim 降级: %s", exc)
+    return deleted
+
+
+def delete_verbatim_by_id(user_id: str, verbatim_id) -> int:
+    """按原文条目 id 精确删除（支持 "verbatim:44" 或裸 44）。
+
+    🔴P0-4b（v19.4.1 实机冒烟发现，P0-4 只修了一半）：
+        /search 把原文证据以 `id="verbatim:<turn_id>"` 返回给调用方 ——
+        这是用户拿到的**唯一句柄**。但 /delete 只认 mem0 记忆 id 与
+        fact_key，拿 `verbatim:44` 去删会「成功返回、什么都没删」
+        （实机：verbatim=0，原文照旧可检索）。
+
+        更糟的是这类原文常常没有对应的 mem0 记忆（抽取未产出、
+        或被蒸馏成了别的事实），于是它既不能通过删记忆被连带清掉，
+        也不能被直接删除 —— 成为**可检索但删不掉的孤儿**。
+        对一条含身份证号的原文来说，这就是删除权失效。
+
+    返回删除条数。
+    """
+    if not user_id or verbatim_id in (None, ""):
+        return 0
+    raw = str(verbatim_id).strip()
+    if raw.lower().startswith("verbatim:"):
+        raw = raw.split(":", 1)[1].strip()
+    if not raw.isdigit():
+        return 0
+    deleted = 0
+    try:
+        ensure_verbatim_schema()
+        fconn = get_facts_conn()
+        # 必须带 user_id：杜绝拿别人的 verbatim id 越权删除
+        ids = [r["id"] for r in fconn.execute(
+            "SELECT id FROM verbatim_turns WHERE id=? AND user_id=?",
+            (int(raw), user_id),
+        ).fetchall()]
+        deleted = _delete_turn_ids(fconn, ids)
+        if deleted:
+            logger.info("📼 原文层按 id 删除 %d 条 (user=%s, id=%s)", deleted, user_id, raw)
+    except Exception as exc:
+        logger.debug("delete_verbatim_by_id 跳过: %s", exc)
     return deleted
 
 

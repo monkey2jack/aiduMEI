@@ -109,6 +109,30 @@ def _capture_facts_row(memory_id: str, user_id: str) -> dict | None:
         return None
 
 
+def _capture_verbatim_content(memory_id: str, user_id: str) -> str:
+    """P0-4b：memory_id 形如 "verbatim:<n>" 时，从原文层抓正文做快照。
+
+    否则删除原文条目时 tombstone 抓不到任何内容，快照被跳过，
+    「误删可一键恢复」对原文层就不成立。
+    """
+    raw = str(memory_id or "")
+    if not raw.lower().startswith("verbatim:"):
+        return ""
+    ident = raw.split(":", 1)[1].strip()
+    if not ident.isdigit():
+        return ""
+    try:
+        conn = get_facts_conn()
+        row = conn.execute(
+            "SELECT content FROM verbatim_turns WHERE id=? AND user_id=? LIMIT 1",
+            (int(ident), user_id),
+        ).fetchone()
+        return row["content"] if row else ""
+    except Exception as exc:
+        logger.debug("tombstone 原文快照跳过: %s", exc)
+        return ""
+
+
 def _capture_fts_content(memory_id: str, user_id: str) -> str:
     """从 text_fts.db 抓该记忆的原文内容；无则空串。"""
     try:
@@ -145,7 +169,9 @@ def snapshot_before_delete(
     try:
         ensure_tombstone_schema()
         facts_row = _capture_facts_row(memory_id, user_id)
-        fts_content = _capture_fts_content(memory_id, user_id)
+        fts_content = _capture_fts_content(memory_id, user_id) or _capture_verbatim_content(
+            memory_id, user_id
+        )
 
         # 至少抓到一样东西才值得留快照；两者皆空说明这条记忆本就不在结构化仓里
         if not facts_row and not fts_content:
