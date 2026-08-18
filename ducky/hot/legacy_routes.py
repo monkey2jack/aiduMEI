@@ -38,6 +38,7 @@ from ducky.hot.legacy_helpers import (
     _auto_detect_level,
     _ensure_observations_table,
     _ensure_scenes_table,
+    _observations_columns,
     _fact_feedback_impl,
     _load_tags,
     _run_consolidation,
@@ -451,13 +452,18 @@ def register_legacy_routes(app):
         params = []
         if category: where+=" AND category=?"; params.append(category)
         if not include_stale: where+=" AND is_stale=0"
-        # 🔴P0-2：observations 自带 user_id 列（v19.4.1 建表时预留）。
-        # 空 user_id 的历史行视为未标记归属，在宽松档下对本机可见。
+        # 🔴P0-2：按 user_id 收窄可见范围。
+        # 但**必须先确认列存在**：生产库的 observations 是 v7 时代手工建的，
+        # 没有 user_id 列。若无条件拼进 WHERE，实机会直接
+        # `no such column: user_id` 500 —— 这正是本地测试库与生产库
+        # schema 分叉能造成的伤害（v19.4.1 施工中在实机 schema 探针下发现）。
+        # 迁移会补列，但补列可能因权限/锁失败，读取路径不能依赖它成功。
         _uid = (user_id or "").strip()
-        if _uid and _uid != DEFAULT_USER_ID:
+        if _uid and _uid != DEFAULT_USER_ID and "user_id" in _observations_columns(conn):
             if _strict_tenant_enabled():
                 where += " AND user_id=?"; params.append(_uid)
             else:
+                # 空 user_id 的历史行视为未标记归属，宽松档下对本机可见
                 where += " AND (user_id=? OR user_id='' OR user_id IS NULL)"; params.append(_uid)
         rows = conn.execute(f"SELECT * FROM observations {where} ORDER BY updated_at DESC LIMIT ?", params+[limit]).fetchall()
         conn.close()

@@ -397,3 +397,123 @@ def test_p24_router_usage_never_spawns_ssh_when_disabled(monkeypatch):
     monkeypatch.setattr(ru.subprocess, "check_output", _boom)
     assert ru.fetch_router_llm_usage() == {}
     assert called["n"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# P1-3  observations 建表与生产 schema 兼容
+# ═══════════════════════════════════════════════════════════════════
+
+_PRODUCTION_OBS_DDL = """
+CREATE TABLE observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL DEFAULT 'general',
+    summary TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_ids TEXT NOT NULL DEFAULT '[]',
+    proof_count INTEGER NOT NULL DEFAULT 1,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    is_stale INTEGER NOT NULL DEFAULT 0,
+    history TEXT NOT NULL DEFAULT '[]'
+);
+"""
+
+
+def _fresh_obs_conn(tmp_path, *, legacy: bool):
+    """造一个 observations 库连接。legacy=True 时用生产存量 schema（无 user_id）。"""
+    import sqlite3
+
+    db = tmp_path / "observations.db"
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    if legacy:
+        conn.executescript(_PRODUCTION_OBS_DDL)
+        conn.execute(
+            "INSERT INTO observations (category, summary, content) VALUES (?,?,?)",
+            ("habit", "早起", "用户习惯早上六点起床"),
+        )
+        conn.commit()
+    return conn
+
+
+def test_p13_ensure_observations_is_idempotent(tmp_path):
+    """全新库：幂等建表，重复调用无副作用"""
+    from ducky.hot.legacy_helpers import _ensure_observations_table, _observations_columns
+
+    conn = _fresh_obs_conn(tmp_path, legacy=False)
+    _ensure_observations_table(conn)
+    _ensure_observations_table(conn)
+    cols = _observations_columns(conn)
+    assert {"id", "category", "summary", "content", "is_stale", "user_id"} <= cols
+    n = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='observations'"
+    ).fetchone()[0]
+    assert n == 1
+
+
+def test_p13_legacy_production_schema_gets_user_id_column(tmp_path):
+    """存量库（v7 手工建表，无 user_id）必须被幂等补列，且历史数据零丢失
+
+    这条断言来自生产实机 schema 探针：生产 observations 表的列集与本地
+    新建表不同，本地测试库替代不了实机验证。
+    """
+    from ducky.hot.legacy_helpers import _ensure_observations_table, _observations_columns
+
+    conn = _fresh_obs_conn(tmp_path, legacy=True)
+    assert "user_id" not in _observations_columns(conn), "前提：存量 schema 无 user_id"
+
+    _ensure_observations_table(conn)
+
+    assert "user_id" in _observations_columns(conn), "存量库未补上 user_id 列"
+    rows = conn.execute("SELECT summary, user_id FROM observations").fetchall()
+    assert len(rows) == 1, "迁移丢了历史观察数据（零破坏铁律违反）"
+    assert rows[0]["summary"] == "早起"
+    # 历史行 user_id 为空 → 宽松档下视为未标记归属，仍对本机可见
+    assert (rows[0]["user_id"] or "") == ""
+
+
+def test_p13_legacy_columns_preserved(tmp_path):
+    """建表 DDL 必须对齐生产列集，不得另发明一套让新旧数据分叉"""
+    from ducky.hot.legacy_helpers import _ensure_observations_table, _observations_columns
+
+    conn = _fresh_obs_conn(tmp_path, legacy=False)
+    _ensure_observations_table(conn)
+    cols = _observations_columns(conn)
+    for col in ("summary", "source_ids", "proof_count", "confidence", "history"):
+        assert col in cols, f"缺少生产 schema 的列 {col}，新旧库将分叉"
+
+
+def test_p13_observe_route_guards_missing_user_id_column(tmp_path, monkeypatch):
+    """路由不得假设 user_id 列存在 —— 补列失败时也必须能读，不能 500
+
+    模拟「迁移因锁/权限失败」：打桩让补列成为 no-op，再传 user_id 查询。
+    """
+    import sqlite3
+
+    import ducky.hot.legacy_helpers as helpers
+    from ducky.hot.legacy_routes import register_legacy_routes
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    db = tmp_path / "observations.db"
+    conn0 = sqlite3.connect(str(db))
+    conn0.executescript(_PRODUCTION_OBS_DDL)
+    conn0.execute(
+        "INSERT INTO observations (category, summary, content) VALUES ('habit','早起','六点起床')"
+    )
+    conn0.commit()
+    conn0.close()
+
+    monkeypatch.setattr(utils, "OBS_DB", str(db))
+    monkeypatch.setattr(helpers, "OBS_DB", str(db))
+    # 让补列变成 no-op，模拟迁移失败后的运行时状态
+    monkeypatch.setattr(helpers, "_ensure_observations_table", lambda conn: None)
+
+    app = FastAPI()
+    register_legacy_routes(app)
+    client = TestClient(app)
+
+    resp = client.get("/observe", params={"user_id": "some_tenant"})
+    assert resp.status_code == 200, "缺列时应降级为不过滤，而不是 500"
+    assert resp.json()["status"] == "ok"
