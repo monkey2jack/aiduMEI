@@ -56,24 +56,47 @@ def _with_file_lock(fn):
             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
+def _auth_headers() -> dict:
+    """🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
+
+    后端启用鉴权门禁后，不带凭据的调用一律 401。本脚本由 cron 驱动、
+    失败只写日志，若不同步携带凭据，症状是「合并悄悄不干活了」——
+    没有报警、没有人察觉，直到有人去翻日志。
+    """
+    token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _api_get(endpoint: str) -> dict:
     url = f"{API_BASE}{endpoint}"
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        req = urllib.request.Request(url, headers=_auth_headers())
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
-    except Exception:
+    except urllib.error.HTTPError as e:
+        # 401/403 必须显式记日志：静默失败会让「门禁开了但脚本没带钥匙」
+        # 这种配置错误长期潜伏。
+        logger.error(f"  HTTP {e.code} → GET {endpoint}"
+                     f"{'（未携带 AIDUMEM_API_TOKEN？）' if e.code in (401, 403) else ''}")
+        return {}
+    except Exception as e:
+        logger.debug(f"  API GET 失败 {endpoint}: {e}")
         return {}
 
 def _api_post(endpoint: str, data: dict) -> dict:
     url = f"{API_BASE}{endpoint}"
     body = json.dumps(data).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json", **_auth_headers()}
+    req = urllib.request.Request(url, data=body, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        logger.error(f"  HTTP {e.code} → {endpoint}")
+        logger.error(f"  HTTP {e.code} → {endpoint}"
+                     f"{'（未携带 AIDUMEM_API_TOKEN？）' if e.code in (401, 403) else ''}")
         return {}
+    except Exception as e:
+        # 原实现这里是 HTTPError 分支 return 之后的死代码，异常被完全吞掉。
         logger.error(f"  API 调用失败 {endpoint}: {e}")
         return {}
 

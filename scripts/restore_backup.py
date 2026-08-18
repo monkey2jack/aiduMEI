@@ -1,7 +1,16 @@
+import os
 import sqlite3, json, requests, shutil, tempfile, os, sys, time
 
 sys.path.insert(0, 'venv/lib/python3.12/site-packages')
 from qdrant_client import QdrantClient
+
+# 🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
+# 后端启用鉴权门禁后不带凭据一律 401；本脚本属运维工具，
+# 失败往往只体现为「没干活」，不补凭据会让配置错误长期潜伏。
+def _auth_headers() -> dict:
+    _token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {_token}"} if _token else {}
+
 
 backup_path = 'data/qdrant/collection/mem0/storage.sqlite.bak.20260727_111301'
 
@@ -39,7 +48,7 @@ for i, pt in enumerate(all_points):
         'user_id': payload.get('user_id', 'default'),
     }
     try:
-        resp = requests.post(f'{api_url}/add', json=body, timeout=15)
+        resp = requests.post(f'{api_url}/add', json=body, timeout=15, headers=_auth_headers())
         if resp.status_code == 200:
             success += 1
         else:
