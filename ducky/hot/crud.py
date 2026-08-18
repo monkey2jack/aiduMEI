@@ -33,6 +33,11 @@ def register_crud_routes(app: FastAPI) -> None:
             mem = get_memory()
             results = mem.get_all(filters={"user_id": user_id}, limit=limit)
             return {"status": "ok", "results": results}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"recent 失败: {e}")
             raise HTTPException(500, str(e))
@@ -90,6 +95,11 @@ def register_crud_routes(app: FastAPI) -> None:
                 "obsidian_count": obsidian_count,
                 "memories": all_mem,
             }
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"stats 失败: {e}")
             raise HTTPException(500, str(e))
@@ -103,6 +113,11 @@ def register_crud_routes(app: FastAPI) -> None:
             user_id = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
             res = cascade_delete_memory(req.memory_id, user_id=user_id)
             return {"status": "ok", "details": res.get("details", {})}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"delete 失败: {e}")
             raise HTTPException(500, str(e))
@@ -119,6 +134,11 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             res = cascade_delete_all(user_id=user_id, confirm=getattr(req, "confirm", False))
             return {"status": "ok", "details": res.get("details", {})}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"delete_all 失败: {e}")
             raise HTTPException(500, str(e))
@@ -131,6 +151,11 @@ def register_crud_routes(app: FastAPI) -> None:
             from ducky.tombstone import list_tombstones
             uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
             return {"status": "ok", "results": list_tombstones(uid, limit=limit)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"tombstones 失败: {e}")
             raise HTTPException(500, str(e))
@@ -145,6 +170,11 @@ def register_crud_routes(app: FastAPI) -> None:
             uid = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
             res = restore_tombstone(req.tombstone_id, user_id=uid)
             return {"status": "ok" if res.get("restored") else "noop", "details": res}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"tombstone/restore 失败: {e}")
             raise HTTPException(500, str(e))
@@ -158,6 +188,11 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             from ducky.event_ledger import get_history
             return {"status": "ok", "results": get_history(target_id.strip(), limit=limit)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"events/history 失败: {e}")
             raise HTTPException(500, str(e))
@@ -169,6 +204,11 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             from ducky.governance import list_candidates
             return {"status": "ok", "results": list_candidates(status, user_id, limit)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"governance/candidates 失败: {e}")
             raise HTTPException(500, str(e))
@@ -185,6 +225,11 @@ def register_crud_routes(app: FastAPI) -> None:
             res = review_candidate(req.candidate_id, req.decision,
                                    reason=req.reason, user_id=req.user_id)
             return {"status": "ok", "details": res}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"governance/review 失败: {e}")
             raise HTTPException(500, str(e))
@@ -203,6 +248,11 @@ def register_crud_routes(app: FastAPI) -> None:
                               evidence_ids=req.evidence_ids, source=req.source,
                               owner=req.owner)
             return {"status": "ok" if res.get("ok") else "error", "details": res}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"opinions/set 失败: {e}")
             raise HTTPException(500, str(e))
@@ -215,6 +265,11 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             from ducky.opinion import list_opinions
             return {"status": "ok", "results": list_opinions(fact_id)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"opinions 查询失败: {e}")
             raise HTTPException(500, str(e))
@@ -227,6 +282,11 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             from ducky.opinion import aggregate_opinion
             return {"status": "ok", "details": aggregate_opinion(fact_id)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"opinions/aggregate 失败: {e}")
             raise HTTPException(500, str(e))
@@ -273,6 +333,11 @@ def register_crud_routes(app: FastAPI) -> None:
                 logger.debug(f"facts update on update 跳过: {fte}")
 
             return {"status": "ok"}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"update 失败: {e}")
             raise HTTPException(500, str(e))
