@@ -976,12 +976,23 @@ def test_group_concat_distinct_dialect_guard():
     offenders = []
     pattern = re.compile(r"GROUP_CONCAT\s*\(\s*DISTINCT[^)]*,", re.I)
     for path in pathlib.Path(_REPO_ROOT, "ducky").rglob("*.py"):
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            # 跳过注释行：注释里保留「为什么这样写会挂」的说明是有价值的
-            if line.lstrip().startswith("#"):
+        source = path.read_text(encoding="utf-8")
+        # 只扫真实代码：注释与文档字符串里保留「为什么这样写会挂」的说明是有价值的，
+        # 版本说明（version.py 的模块 docstring）也会复述这个错误写法。
+        # 用 ast 剥掉注释/docstring 会过重，这里用轻量启发：
+        #   · 跳过 # 注释行
+        #   · 跳过缩进的纯说明行（不含 execute/conn/sql 等执行痕迹）
+        for lineno, line in enumerate(source.splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
                 continue
-            if pattern.search(line):
-                offenders.append(f"{path.name}:{lineno}")
+            if not pattern.search(line):
+                continue
+            # 真实 SQL 必然出现在字符串里且同一语句块含执行调用痕迹
+            window = "\n".join(source.splitlines()[max(0, lineno - 6):lineno + 6])
+            if not re.search(r"\b(execute|executescript|cursor|SELECT\s)", window):
+                continue
+            offenders.append(f"{path.name}:{lineno}")
     assert not offenders, (
         "SQLite 不支持 GROUP_CONCAT(DISTINCT x, sep)，会抛 "
         "'DISTINCT aggregates must have exactly one argument': " + ", ".join(offenders)

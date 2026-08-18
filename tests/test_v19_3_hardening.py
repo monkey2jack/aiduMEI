@@ -28,9 +28,51 @@ from ducky.mem0_runtime import lazy_import_funnel, lazy_import_hybrid, lazy_impo
 
 
 def test_v19_3_version_alignment():
-    """验证全生态版本号统一为当前真相源版本"""
-    assert SERVICE_VERSION == "19.4.0"
+    """验证全生态版本号统一为当前真相源版本
+
+    v19.4.1：断言从硬编码字面量（原为 `== "19.4.0"`）改为**跨文件一致性比对**。
+    硬编码的后果是每次发版都要手改测试 —— 一旦忘改就红灯，改了又只是让
+    数字对上、并没有真正验证「五处真相源是否一致」这件事本身。
+    这与 README 测试数字三版互相矛盾是同一类毛病：**用人手同步代替可执行校验**。
+    """
+    import json
+    import os
+    import re
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # 格式必须合法（语义化版本），代号锁死 Athena（v19 世代唯一神格）
+    assert re.fullmatch(r"\d+\.\d+\.\d+", SERVICE_VERSION), f"版本号格式非法: {SERVICE_VERSION}"
+    assert SERVICE_VERSION.startswith("19."), "本测试属 v19 世代"
     assert CODENAME == "Athena"
+
+    # manifest.json 与 pyproject.toml 必须与真相源逐字一致
+    with open(os.path.join(repo_root, "manifest.json"), encoding="utf-8") as f:
+        manifest = json.load(f)
+    assert manifest["version"] == SERVICE_VERSION, (
+        f'manifest.json {manifest["version"]} ≠ version.py {SERVICE_VERSION}'
+    )
+    assert manifest["codename"] == CODENAME
+
+    with open(os.path.join(repo_root, "pyproject.toml"), encoding="utf-8") as f:
+        toml_text = f.read()
+    assert f'version = "{SERVICE_VERSION}"' in toml_text, "pyproject.toml 版本号未对齐"
+
+    # LINEAGE 首条必须是当前版本（谱系不能漏记本次发布）
+    from ducky.version import LINEAGE
+
+    assert LINEAGE[0][0] == SERVICE_VERSION, (
+        f"LINEAGE 首条 {LINEAGE[0][0]} ≠ 当前版本 {SERVICE_VERSION}，谱系漏记"
+    )
+
+    # CHANGELOG 首条条目必须是当前版本
+    with open(os.path.join(repo_root, "CHANGELOG.md"), encoding="utf-8") as f:
+        changelog = f.read()
+    first_entry = re.search(r"^## v(\d+\.\d+\.\d+)", changelog, re.M)
+    assert first_entry, "CHANGELOG 未找到版本条目"
+    assert first_entry.group(1) == SERVICE_VERSION, (
+        f"CHANGELOG 首条 {first_entry.group(1)} ≠ 当前版本 {SERVICE_VERSION}"
+    )
 
 
 def test_v19_3_search_time_boundary_fix():
