@@ -58,6 +58,54 @@ def _get_evolve_conn() -> sqlite3.Connection:
     return conn
 
 
+# 公开别名 + 清理入口（v19.4.1）
+#
+# 为什么补这两个符号：
+#     wal_engine 的级联删除第 5 步写的是
+#         `from ducky.evolve_mem import get_evolve_conn`
+#         `DELETE FROM evolve_snapshots WHERE ...`
+#     但本模块从来只有私有的 `_get_evolve_conn`，而且**没有**
+#     `evolve_snapshots` 这张表（真实表是 evolve_queries / evolve_feedback /
+#     evolve_adjustments / evolve_meta）。
+#     两个错误都被 `except Exception: logger.debug(...)` 吞掉，
+#     于是「删除记忆会清理 evolve_mem.db」这件事**从引入起从未真正发生过** ——
+#     删掉的记忆在检索自进化库里留下永久的反馈与调权残留（孤儿数据），
+#     而 res["evolve"] 一直如实报 0，没人多看一眼。
+#
+#     这里补公开别名与按 memory_id 的精确清理入口，让那一步真的干活。
+def get_evolve_conn() -> sqlite3.Connection:
+    """公开连接入口（与 salience/facts 各仓的 get_*_conn 命名对齐）。"""
+    return _get_evolve_conn()
+
+
+def delete_evolve_by_memory_ids(memory_ids) -> int:
+    """按 memory_id 批量清理 evolve 反馈与调权记录。返回删除行数。
+
+    evolve 各表没有 user_id 列（它记录的是检索质量信号，不是租户数据），
+    因此租户维度由调用方在传入 memory_ids 时保证 —— 调用方只会传
+    自己租户下的记忆 id。
+    """
+    ids = [str(m) for m in (memory_ids or []) if str(m or "").strip()]
+    if not ids:
+        return 0
+    deleted = 0
+    try:
+        conn = _get_evolve_conn()
+        placeholders = ",".join("?" for _ in ids)
+        for table in ("evolve_feedback", "evolve_adjustments"):
+            try:
+                deleted += conn.execute(
+                    f"DELETE FROM {table} WHERE memory_id IN ({placeholders})", ids
+                ).rowcount or 0
+            except Exception as exc:
+                logger.debug("evolve %s 清理跳过: %s", table, exc)
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("delete_evolve_by_memory_ids 降级: %s", exc)
+    return deleted
+
+
 def ensure_evolve_schema() -> None:
     """建表（幂等）。"""
     conn = _get_evolve_conn()

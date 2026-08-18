@@ -17,10 +17,12 @@ from ducky.salience.conflict import detect_conflicts, resolve_conflict_salience
 from ducky.salience.core import (
     _detect_lane,
     decay_all,
+    delete_salience,
     get_salience,
     get_stats,
     on_memory_accessed,
     on_memory_added,
+    prune_orphan_salience,
 )
 from ducky.salience.db import _ensure_db, ensure_db
 from ducky.salience.metrics import get_historical_metrics, record_daily_metrics
@@ -33,6 +35,8 @@ __all__ = [
     "on_memory_added",
     "on_memory_accessed",
     "decay_all",
+    "delete_salience",
+    "prune_orphan_salience",
     "get_salience",
     "get_stats",
     "record_daily_metrics",

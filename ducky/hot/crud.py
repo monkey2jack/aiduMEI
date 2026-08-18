@@ -33,6 +33,11 @@ def register_crud_routes(app: FastAPI) -> None:
             mem = get_memory()
             results = mem.get_all(filters={"user_id": user_id}, limit=limit)
             return {"status": "ok", "results": results}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"recent 失败: {e}")
             raise HTTPException(500, str(e))
@@ -63,14 +68,28 @@ def register_crud_routes(app: FastAPI) -> None:
             dupes = {h: c for h, c in hash_counts.items() if c > 1}
             total_dupes = sum(c - 1 for c in dupes.values())
 
-            # --- 多模态记忆统计 (v18.3) ---
+            # --- 多模态记忆统计 (v18.3 · v19.4.1 补租户收窄) ---
+            #
+            # 🟡（v19.4.1 用户审计）：这两个计数原本是全库 COUNT(*)，不带租户条件。
+            #     其余字段都随 user_id 变化，唯独它们恒定 —— 于是陌生租户查
+            #     /stats 时会看到 total=0 但 vision_count=1136，从计数即可推断
+            #     本机记忆总规模。属于侧信道信息泄漏（量级泄漏，非内容泄漏）。
+            #     现按 tenant_clause 同一套可见性规则收窄，与 /facts 等路由一致。
             vision_count = 0
             obsidian_count = 0
             try:
+                from ducky.facts_recall import tenant_clause
                 from ducky.utils import get_facts_conn
                 conn = get_facts_conn()
-                vision_count = conn.execute("SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL").fetchone()[0]
-                obsidian_count = conn.execute("SELECT COUNT(*) FROM facts WHERE source = 'obsidian'").fetchone()[0]
+                t_clause, t_params = tenant_clause(user_id)
+                vision_count = conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL" + t_clause,
+                    t_params,
+                ).fetchone()[0]
+                obsidian_count = conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE source = 'obsidian'" + t_clause,
+                    t_params,
+                ).fetchone()[0]
                 conn.close()
             except Exception as _e:
                 logger.warning(f"统计多模态/obsidian数据异常: {_e}")
@@ -90,6 +109,11 @@ def register_crud_routes(app: FastAPI) -> None:
                 "obsidian_count": obsidian_count,
                 "memories": all_mem,
             }
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"stats 失败: {e}")
             raise HTTPException(500, str(e))
@@ -103,6 +127,11 @@ def register_crud_routes(app: FastAPI) -> None:
             user_id = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
             res = cascade_delete_memory(req.memory_id, user_id=user_id)
             return {"status": "ok", "details": res.get("details", {})}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"delete 失败: {e}")
             raise HTTPException(500, str(e))
@@ -119,6 +148,11 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             res = cascade_delete_all(user_id=user_id, confirm=getattr(req, "confirm", False))
             return {"status": "ok", "details": res.get("details", {})}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"delete_all 失败: {e}")
             raise HTTPException(500, str(e))
@@ -131,6 +165,11 @@ def register_crud_routes(app: FastAPI) -> None:
             from ducky.tombstone import list_tombstones
             uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
             return {"status": "ok", "results": list_tombstones(uid, limit=limit)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"tombstones 失败: {e}")
             raise HTTPException(500, str(e))
@@ -145,19 +184,46 @@ def register_crud_routes(app: FastAPI) -> None:
             uid = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
             res = restore_tombstone(req.tombstone_id, user_id=uid)
             return {"status": "ok" if res.get("restored") else "noop", "details": res}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"tombstone/restore 失败: {e}")
             raise HTTPException(500, str(e))
 
     # 📒 事件溯源账本（v19.4.0 Mímir 借鉴 B5）：任意记忆的完整变更史可查
     @app.get("/events/history")
-    def events_history(target_id: str = "", limit: int = 100):
-        """查某条记忆的完整变更史（谁、何时、做了什么、为什么）"""
+    def events_history(target_id: str = "", limit: int = 100,
+                       user_id: str = DEFAULT_USER_ID):
+        """查某条记忆的完整变更史（谁、何时、做了什么、为什么）
+
+        🟡-D（v19.4.1）：target_id 常常是自增整数，可被顺序枚举。
+            宽松档（单机自托管默认）保持原行为；严格档
+            （AIDUMEM_STRICT_TENANT=1）下校验该事实是否属本租户可见范围，
+            不可见即当作不存在 —— 否则别处都收窄了，这条路由还敞着。
+        """
         if not target_id or not target_id.strip():
             raise HTTPException(400, "target_id 不能为空")
         try:
             from ducky.event_ledger import get_history
+            from ducky.facts_recall import fact_visible_to_tenant
+            from ducky.utils import get_facts_conn
+
+            bare = target_id.strip()
+            if bare.startswith("fact:"):
+                bare = bare[5:]
+            if bare.isdigit():
+                uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
+                if not fact_visible_to_tenant(get_facts_conn(), int(bare), uid):
+                    return {"status": "ok", "results": []}
             return {"status": "ok", "results": get_history(target_id.strip(), limit=limit)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"events/history 失败: {e}")
             raise HTTPException(500, str(e))
@@ -169,6 +235,11 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             from ducky.governance import list_candidates
             return {"status": "ok", "results": list_candidates(status, user_id, limit)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"governance/candidates 失败: {e}")
             raise HTTPException(500, str(e))
@@ -185,6 +256,11 @@ def register_crud_routes(app: FastAPI) -> None:
             res = review_candidate(req.candidate_id, req.decision,
                                    reason=req.reason, user_id=req.user_id)
             return {"status": "ok", "details": res}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"governance/review 失败: {e}")
             raise HTTPException(500, str(e))
@@ -203,30 +279,57 @@ def register_crud_routes(app: FastAPI) -> None:
                               evidence_ids=req.evidence_ids, source=req.source,
                               owner=req.owner)
             return {"status": "ok" if res.get("ok") else "error", "details": res}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"opinions/set 失败: {e}")
             raise HTTPException(500, str(e))
 
     @app.get("/opinions")
-    def opinions_list(fact_id: int = 0):
-        """查某事实的信念清单"""
+    def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID):
+        """查某事实的信念清单（严格档下按租户可见性校验，见 🟡-D）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
         try:
+            from ducky.facts_recall import fact_visible_to_tenant
             from ducky.opinion import list_opinions
+            from ducky.utils import get_facts_conn
+
+            uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
+            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid):
+                return {"status": "ok", "results": []}
             return {"status": "ok", "results": list_opinions(fact_id)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"opinions 查询失败: {e}")
             raise HTTPException(500, str(e))
 
     @app.get("/opinions/aggregate")
-    def opinions_aggregate(fact_id: int = 0):
+    def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID):
         """聚合判定：≥2 个不同证据来源才聚合（单来源刷好评不聚合）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
         try:
+            from ducky.facts_recall import fact_visible_to_tenant
             from ducky.opinion import aggregate_opinion
+            from ducky.utils import get_facts_conn
+
+            uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
+            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid):
+                return {"status": "ok", "details": {}}
             return {"status": "ok", "details": aggregate_opinion(fact_id)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"opinions/aggregate 失败: {e}")
             raise HTTPException(500, str(e))
@@ -273,6 +376,11 @@ def register_crud_routes(app: FastAPI) -> None:
                 logger.debug(f"facts update on update 跳过: {fte}")
 
             return {"status": "ok"}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"update 失败: {e}")
             raise HTTPException(500, str(e))
@@ -305,11 +413,15 @@ def register_crud_routes(app: FastAPI) -> None:
 
     def _do_inject_context(req: InjectContextRequest) -> dict:
         from ducky.facts_recall import inject_context as inject_facts_context
+        # 🔴P0-2（v19.4.1）：注入上下文按租户收窄 —— 注入是记忆流向宿主
+        # 模型的出口，此处漏租户等于把别人的事实喂进本租户的对话。
+        # InjectContextRequest 早已带 user_id 字段，此前未透传。
         return inject_facts_context(
             req.query,
             k=req.k,
             level=req.level,
             max_tokens=req.max_tokens,
+            user_id=req.user_id,
         )
 
     @app.post("/facts/inject-context")

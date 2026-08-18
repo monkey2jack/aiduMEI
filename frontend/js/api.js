@@ -13,15 +13,25 @@
 const API = {
   base: '/api',
 
+  /* v19.4.1 P0-1: every request carries the HttpOnly session cookie issued by
+     /api/login. Without credentials the backend's unified gate returns 401 —
+     previously the console sent no credentials at all, so enabling the gate
+     broke every panel. */
   async get(path, params) {
     let url = this.base + path;
     if (params) {
       const q = new URLSearchParams(params).toString();
       if (q) url += '?' + q;
     }
-    const r = await fetch(url, { headers: { Accept: 'application/json' } });
+    const r = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+    });
     const body = await r.json().catch(() => ({}));
-    if (!r.ok) throw new ApiError(r.status, body, path);
+    if (!r.ok) {
+      handleAuthFailure(r.status);
+      throw new ApiError(r.status, body, path);
+    }
     return body;
   },
 
@@ -29,13 +39,31 @@ const API = {
     const r = await fetch(this.base + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify(payload || {}),
     });
     const body = await r.json().catch(() => ({}));
-    if (!r.ok) throw new ApiError(r.status, body, path);
+    if (!r.ok) {
+      handleAuthFailure(r.status);
+      throw new ApiError(r.status, body, path);
+    }
     return body;
   },
 };
+
+/* Session expired or never established -> back to the login page.
+   The server is the single source of truth for auth; the client only reacts. */
+function handleAuthFailure(status) {
+  if (status !== 401) return;
+  try {
+    sessionStorage.removeItem('aidumei_auth');
+  } catch (e) {
+    /* sessionStorage may be unavailable in private mode; navigation still works */
+  }
+  if (!/login\.html$/.test(location.pathname)) {
+    location.replace('login.html');
+  }
+}
 
 class ApiError extends Error {
   constructor(status, body, path) {

@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """aiduMEM 全功能健康检查 — Layer 1/2/3/4 状态 + API + LLM + Embedding"""
 import json, base64, os, sys, time
+
 import requests
+
+# cron 的 cwd 不是仓库根，必须显式把仓库根加进 sys.path 才能 import ducky
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
+# cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+
 
 # 仓库根 = 本文件上一级（scripts/ 的父目录），可用 AIDUMEM_HOME 覆盖
 SCRIPT_DIR = os.environ.get("AIDUMEM_HOME") or os.path.dirname(
@@ -116,7 +125,7 @@ else:
 # ═══════════ 3. aiduMEM API Health ═══════════
 t0 = time.time()
 try:
-    r = requests.get(f"{API_BASE}/health", timeout=5)
+    r = requests.get(f"{API_BASE}/health", timeout=5, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
         checks["aidumem_api"] = {
@@ -135,7 +144,7 @@ except Exception as e:
 t0 = time.time()
 try:
     r = requests.post(f"{API_BASE}/search",
-        json={"query": "健康检查", "user_id": "health_check", "limit": 1}, timeout=10)
+        json={"query": "健康检查", "user_id": "health_check", "limit": 1}, timeout=10, headers=_auth_headers())
     checks["aidumem_search"] = {"ok": r.status_code == 200, "code": r.status_code, "ms": int((time.time()-t0)*1000)}
 except Exception as e:
     checks["aidumem_search"] = {"ok": False, "error": str(e)[:100], "ms": int((time.time()-t0)*1000)}
@@ -143,7 +152,7 @@ except Exception as e:
 # ═══════════ 5. aiduMEM Stats ═══════════
 t0 = time.time()
 try:
-    r = requests.get(f"{API_BASE}/stats?user_id={os.environ.get('AIDUMEM_DEFAULT_USER_ID', 'default')}", timeout=10)
+    r = requests.get(f"{API_BASE}/stats?user_id={os.environ.get('AIDUMEM_DEFAULT_USER_ID', 'default')}", timeout=10, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
         checks["aidumem_stats"] = {"ok": True, "total_memories": data.get("total", 0), "ms": int((time.time()-t0)*1000)}
