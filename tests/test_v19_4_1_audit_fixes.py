@@ -695,3 +695,128 @@ def test_p04b_malformed_handles_are_rejected():
     for bad in ("verbatim:", "verbatim:abc", "verbatim:-1", "", None, "12x"):
         assert delete_verbatim_by_id("p04b_mal", bad) == 0, f"畸形句柄被接受: {bad!r}"
     assert count_verbatim("p04b_mal") == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 门面缺口体检（静默 ImportError 类故障）
+# ═══════════════════════════════════════════════════════════════════
+
+def test_facade_exports_are_complete():
+    """全仓 `from ducky.X import (...)` 的符号必须真实存在
+
+    ⚠️ 这条守卫来自 v19.4.1 实机发现的一次静默死亡：
+        v11.1 重构把显著性能力拆进 ducky.salience 包，兼容门面
+        ducky/memory_salience.py 却只转发了两个写入钩子。
+        scripts/consolidator.py 仍按老接口导入 decay_all 等 6 个符号 ——
+        于是它自 2026-07-26 起每天凌晨 2:30 被 cron 拉起、每次都在第 23 行
+        ImportError 退出，日志累积 18 次同样堆栈，**三周无人发现**：
+        衰减没跑、每日指标没记、冲突没检测、教训闭环没验证。
+        服务 /health 全绿，因为这些活儿本就不在服务进程里。
+
+        同一次体检还查出 ducky.utils 缺 CONSOLIDATOR_LOCK、
+        ducky.evolve_mem 缺 get_evolve_conn（后者导致「删除记忆会清理
+        evolve_mem.db」从引入起从未真正发生过）。
+
+        因此把「门面导出齐全」升级为可执行的不变量。
+    """
+    import ast
+    import importlib
+    import importlib.util
+    import pathlib
+
+    repo = pathlib.Path(_REPO_ROOT)
+    candidates = (
+        list(repo.glob("scripts/*.py"))
+        + list(repo.glob("*.py"))
+        + list(repo.glob("ducky/**/*.py"))
+    )
+
+    broken = []
+    for path in candidates:
+        if ".venv" in str(path) or "__pycache__" in str(path):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            if not node.module.startswith("ducky"):
+                continue
+            names = [a.name for a in node.names if a.name != "*"]
+            if not names:
+                continue
+            try:
+                mod = importlib.import_module(node.module)
+            except Exception as exc:
+                broken.append(f"{path.name}:{node.lineno} 模块 {node.module} 导入失败: {exc!r}")
+                continue
+            for name in names:
+                if hasattr(mod, name):
+                    continue
+                # 可能是尚未被加载的子模块（如 ducky.federation.tier），
+                # 用 find_spec 判定，避免假阳性。
+                if importlib.util.find_spec(f"{node.module}.{name}") is not None:
+                    continue
+                broken.append(f"{path.name}:{node.lineno} from {node.module} 缺少 {name}")
+
+    assert not broken, "门面缺口（运行时会 ImportError）: " + "; ".join(broken)
+
+
+def test_consolidator_imports_resolve():
+    """consolidator 的全部依赖符号可用 —— 它由 cron 驱动，挂了没人知道"""
+    from ducky.memory_salience import (  # noqa: F401
+        audit_health_anomalies,
+        decay_all,
+        detect_conflicts,
+        get_stats,
+        record_daily_metrics,
+        resolve_conflict_salience,
+        verify_lessons_closed,
+    )
+    from ducky.utils import CONSOLIDATOR_LOCK
+
+    assert CONSOLIDATOR_LOCK.endswith("consolidator.lock")
+
+
+def test_evolve_cleanup_targets_real_tables():
+    """evolve 清理必须打在真实存在的表上
+
+    原实现 `DELETE FROM evolve_snapshots` —— 该表根本不存在
+    （真实表是 evolve_queries / evolve_feedback / evolve_adjustments / evolve_meta），
+    错误被 except 吞成 debug，res["evolve"] 恒为 0。
+    """
+    import pathlib
+
+    from ducky.evolve_mem import delete_evolve_by_memory_ids, ensure_evolve_schema, get_evolve_conn
+
+    ensure_evolve_schema()
+    conn = get_evolve_conn()
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "evolve_feedback" in tables and "evolve_adjustments" in tables
+    assert "evolve_snapshots" not in tables, "如果这张表真存在了，请回头核对清理逻辑"
+
+    now = "2026-08-18T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO evolve_feedback (memory_id, query, signal, ts) VALUES (?,?,?,?)",
+        ("mem-evolve-1", "q", "positive", now),
+    )
+    conn.execute(
+        "INSERT INTO evolve_adjustments (memory_id, action, delta, reason, ts) VALUES (?,?,?,?,?)",
+        ("mem-evolve-1", "boost", 0.1, "test", now),
+    )
+    conn.commit()
+    conn.close()
+
+    assert delete_evolve_by_memory_ids(["mem-evolve-1"]) == 2
+    assert delete_evolve_by_memory_ids([]) == 0
+
+    wal = pathlib.Path(_REPO_ROOT, "ducky", "wal_engine.py").read_text(encoding="utf-8")
+    # 只看代码行，注释里保留「为什么错」的说明是有价值的
+    code_lines = [
+        ln for ln in wal.splitlines()
+        if "evolve_snapshots" in ln and not ln.lstrip().startswith("#")
+    ]
+    assert not code_lines, f"wal_engine 仍在操作不存在的 evolve_snapshots 表: {code_lines}"
+    assert "delete_evolve_by_memory_ids" in wal
