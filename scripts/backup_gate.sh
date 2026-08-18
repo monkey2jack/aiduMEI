@@ -34,7 +34,62 @@ fi
 ok()  { echo -e "  ${GREEN}✅${RESET} $1"; }
 bad() { echo -e "  ${RED}❌${RESET} $1" >&2; }
 
-# SQLite 完整性校验（python3 兜底，不依赖 sqlite3 CLI）
+# ── 一致性快照 + 完整性校验（v19.4.1 修复）─────────────────────────────
+#
+# 为什么不能直接 cp WAL 库（v19.4.1 生产实机暴露的真问题）：
+#   生产库跑在 journal_mode=WAL 下，目录里有 facts.db / facts.db-wal /
+#   facts.db-shm 三个文件。此前 cmd_create 的顺序是：
+#     ① cp -a 整个 data 目录（连 -wal/-shm 一起拷）
+#     ② 对所有文件生成 SHA256SUMS
+#     ③ 再对每个 .db 跑 quick_check
+#   第 ③ 步打开数据库会重建 -shm 并把 -wal 的页 checkpoint 进主库 ——
+#   第 ② 步刚算好的 facts.db 与 facts.db-shm 校验和当场失效。
+#   实机复现：create 报「备份完成并通过校验」，紧接着 require 却判
+#   「没有任何通过 sha256 验证的备份——拒绝迁移」，4 个 -shm 全部 FAILED。
+#   结果是 B2 备份纪律形同虚设：门禁永远拦，运维只会学会绕过它。
+#
+# 正确做法：用 SQLite 在线备份 API 生成**已合并 WAL 的单文件一致快照**，
+# 备份目录不留 -wal/-shm，校验和从此稳定；快照落盘后再算 sha256。
+snapshot_db() {
+  local src="$1" dst="$2"
+  python3 - "$src" "$dst" <<'PYEOF'
+import os
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    # 源库以读写方式打开：在线备份 API 需要读锁，WAL 库还需能访问 -shm。
+    # 备份本身不修改源库数据（只可能推进 WAL checkpoint，语义无损）。
+    s = sqlite3.connect(src)
+    d = sqlite3.connect(dst)
+    with d:
+        s.backup(d)          # 一致性快照，自动合并 WAL
+    # 快照转 DELETE 日志模式：备份件不再需要 -wal/-shm 伴生文件，
+    # 之后 quick_check 能纯只读打开，sha256 基线不会被打开动作改写。
+    d.execute("PRAGMA journal_mode=DELETE")
+    r = d.execute("PRAGMA quick_check").fetchone()[0]
+    d.close()
+    s.close()
+    if r != "ok":
+        print(f"quick_check 不通过: {r}", file=sys.stderr)
+        sys.exit(1)
+    # 显式清掉快照的伴生文件：转 DELETE 模式后它们已无意义，
+    # 但 SQLite 不保证关闭时一定删除 -shm。留着会让 verify 阶段的
+    # quick_check 重建它、从而打废 SHA256SUMS 基线（本次要根治的正是这点）。
+    for suffix in ("-wal", "-shm", "-journal"):
+        side = dst + suffix
+        if os.path.exists(side):
+            try:
+                os.remove(side)
+            except OSError as oe:
+                print(f"清理伴生文件 {side} 失败（不致命）: {oe}", file=sys.stderr)
+    sys.exit(0)
+except Exception as e:
+    print(f"snapshot 失败: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
+# 只读完整性校验（verify / require 复验已落盘的快照）
 quick_check() {
   local db="$1"
   python3 - "$db" <<'PYEOF'
@@ -73,24 +128,42 @@ cmd_create() {
   ts="$(date +%Y%m%d_%H%M%S)"
   dest="${BACKUP_ROOT}/pre-${label}-${ts}"
   echo "📦 备份 ${DATA_DIR} → ${dest}"
-  cp -a "$DATA_DIR" "$dest"
+  mkdir -p "$dest"
 
-  echo "🔐 生成 sha256 校验和"
-  ( cd "$dest" && find . -type f ! -name SHA256SUMS ! -name .backup_verified \
-      -exec sh -c 'sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"' _ {} \; > SHA256SUMS )
-
-  echo "🩺 SQLite quick_check"
-  local db
-  for db in "$dest"/*.db; do
-    [[ -f "$db" ]] || continue
-    if quick_check "$db"; then
-      ok "quick_check $(basename "$db")"
+  # ① 数据库走在线备份 API 生成一致快照（合并 WAL，不留 -wal/-shm）
+  echo "🩺 SQLite 一致性快照 + quick_check"
+  local db base
+  shopt -s nullglob
+  for db in "$DATA_DIR"/*.db; do
+    base="$(basename "$db")"
+    if snapshot_db "$db" "${dest}/${base}"; then
+      ok "snapshot + quick_check ${base}"
     else
-      bad "quick_check 失败: $db（备份不可信，已删除）"
+      bad "快照或校验失败: ${base}（备份不可信，已删除）"
       rm -rf "$dest"
       exit 1
     fi
   done
+
+  # ② 其余文件（json / lock / 子目录如 qdrant）原样拷贝。
+  #    -wal/-shm 刻意排除：内容已被快照合并，留着只会让校验和永远漂移。
+  local item name
+  for item in "$DATA_DIR"/* "$DATA_DIR"/.[!.]*; do
+    [[ -e "$item" ]] || continue
+    name="$(basename "$item")"
+    case "$name" in
+      *.db|*.db-wal|*.db-shm|*.db-journal) continue ;;
+    esac
+    cp -a "$item" "${dest}/${name}"
+  done
+  shopt -u nullglob
+
+  # ③ sha256 放在最后算：原实现是「先算校验和再 quick_check」，
+  #    而 quick_check 打开库会重建 -shm 并 checkpoint WAL，
+  #    当场把刚算好的基线打废（实机：create 通过、require 立刻拒绝）。
+  echo "🔐 生成 sha256 校验和"
+  ( cd "$dest" && find . -type f ! -name SHA256SUMS ! -name .backup_verified \
+      -exec sh -c 'sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"' _ {} \; > SHA256SUMS )
 
   # 验证标记：require 模式只认带此标记且 sha256 可复验的备份
   echo "label=${label}" >  "$dest/.backup_verified"
