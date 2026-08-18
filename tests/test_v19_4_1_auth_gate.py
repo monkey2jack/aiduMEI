@@ -321,3 +321,53 @@ def test_hermes_plugin_carries_api_token():
     ).read_text(encoding="utf-8")
     assert "AIDUMEM_API_TOKEN" in plugin
     assert 'headers["Authorization"] = f"Bearer {self.api_token}"' in plugin
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 门禁开启后，所有内部调用方都必须带凭据（否则静默全挂）
+# ═══════════════════════════════════════════════════════════════════
+
+def test_all_http_callers_carry_credentials():
+    """源码级守卫：凡走 HTTP 调本服务的运维脚本，都必须携带 Bearer token
+
+    这类脚本由 cron 驱动、失败只写日志。门禁开启后若不带凭据，
+    症状是「合并/健康检查悄悄不干活了」—— 没有报警、没人察觉，
+    直到有人去翻日志。因此把「带凭据」变成源码级不变量。
+    """
+    import pathlib
+    import re
+
+    offenders = []
+    scripts_dir = pathlib.Path(_REPO_ROOT, "scripts")
+
+    for path in sorted(scripts_dir.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        # 只关心调用本服务（8767 / AIDUMEM_API_BASE）的脚本
+        if not re.search(r"8767|AIDUMEM_API_BASE", text):
+            continue
+        if "_auth_headers" not in text:
+            offenders.append(f"{path.name}: 未定义 _auth_headers")
+            continue
+        # 每个对本服务的 requests/urlopen 调用都应带上 headers
+        for m in re.finditer(r"requests\.(get|post)\((?P<args>[^;]*?)\)\s*$", text, re.M):
+            if "_auth_headers" not in m.group("args") and "Authorization" not in m.group("args"):
+                offenders.append(f"{path.name}:{text[:m.start()].count(chr(10)) + 1} 调用未带凭据")
+
+    for path in sorted(scripts_dir.glob("*.sh")):
+        text = path.read_text(encoding="utf-8")
+        if not re.search(r"AIDUMEM_API_BASE|8767", text):
+            continue
+        if "curl" in text and "AUTH_ARGS" not in text:
+            offenders.append(f"{path.name}: curl 未带 AUTH_ARGS")
+
+    assert not offenders, "门禁开启后这些调用方会静默 401: " + "; ".join(offenders)
+
+
+def test_consolidator_logs_auth_failure_loudly():
+    """401/403 必须显式记 error —— 静默 return {} 会让配置错误长期潜伏"""
+    import pathlib
+
+    text = pathlib.Path(_REPO_ROOT, "scripts", "consolidator.py").read_text(encoding="utf-8")
+    assert "AIDUMEM_API_TOKEN" in text
+    assert text.count("_auth_headers()") >= 2, "GET 与 POST 都要带凭据"
+    assert "401" in text and "logger.error" in text, "鉴权失败必须响亮报错"

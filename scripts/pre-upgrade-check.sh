@@ -20,6 +20,13 @@ set -euo pipefail
 # 仓库根自动解析（本文件位于 <repo>/scripts/），可用 AIDUMEM_HOME 覆盖
 REPO_ROOT="${AIDUMEM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 API_BASE="${AIDUMEM_API_BASE:-http://127.0.0.1:8767}"
+# 🔴P0-1（v19.4.1）：门禁开启后不带凭据的 curl 一律 401。
+# 这里统一构造 auth 头，未设 token 时为空数组（行为与旧版一致）。
+AUTH_ARGS=()
+if [[ -n "${AIDUMEM_API_TOKEN:-}" ]]; then
+  AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
+fi
+
 BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-$(dirname "${REPO_ROOT}")}"
 SCRIPTS_DIR="${REPO_ROOT}/scripts"
 TESTS_DIR="${REPO_ROOT}/tests"
@@ -105,9 +112,9 @@ smoke() {
   t0=$(date +%s%3N)
   local code
   if [[ "${method}" == "GET" ]]; then
-    code=$(curl -s -o /tmp/pre_upg_body -w "%{http_code}" "${API_BASE}${path}" || echo "000")
+    code=$(curl -s "${AUTH_ARGS[@]}" -o /tmp/pre_upg_body -w "%{http_code}" "${API_BASE}${path}" || echo "000")
   else
-    code=$(curl -s -o /tmp/pre_upg_body -w "%{http_code}" -X "${method}" \
+    code=$(curl -s "${AUTH_ARGS[@]}" -o /tmp/pre_upg_body -w "%{http_code}" -X "${method}" \
               -H "Content-Type: application/json" -d "${extra}" \
               "${API_BASE}${path}" || echo "000")
   fi
