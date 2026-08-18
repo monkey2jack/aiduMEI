@@ -295,19 +295,19 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         except Exception as e:
             logger.debug("salience.db 清理跳过: %s", e)
 
-        # 5. evolve_mem.db 清理
+        # 5. evolve_mem.db 清理（v19.4.1 修复：此前这一步从未真正执行过）
+        #
+        #    原实现 `from ducky.evolve_mem import get_evolve_conn` +
+        #    `DELETE FROM evolve_snapshots` 有两个错误：该模块只有私有的
+        #    `_get_evolve_conn`，且**不存在** evolve_snapshots 表
+        #    （真实表是 evolve_queries / evolve_feedback / evolve_adjustments）。
+        #    两个错误都被 except 吞成 debug 日志，res["evolve"] 一直如实报 0，
+        #    于是删掉的记忆在检索自进化库里留下永久的反馈与调权孤儿。
         try:
-            from ducky.evolve_mem import get_evolve_conn
-            econn = get_evolve_conn()
-            if user_id == "default":
-                c3 = econn.execute("DELETE FROM evolve_snapshots WHERE memory_id=?", (memory_id,)).rowcount
-            else:
-                c3 = econn.execute("DELETE FROM evolve_snapshots WHERE memory_id=? AND user_id=?", (memory_id, user_id)).rowcount
-            econn.commit()
-            econn.close()
-            res["evolve"] = c3
+            from ducky.evolve_mem import delete_evolve_by_memory_ids
+            res["evolve"] = delete_evolve_by_memory_ids([memory_id])
         except Exception as e:
-            logger.debug("evolve_mem.db 清理跳过: %s", e)
+            logger.warning("evolve_mem.db 清理失败: %s", e)
 
         # 6. 📼 原文保真层清理（🔴P0-4 v19.4.1）：删除权必须兑现到逐字原文。
         #    以 content_hash 精确匹配（延续 v19.2.0 精确匹配铁律，杜绝 LIKE 误伤）。
@@ -370,9 +370,20 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
             logger.warning("mem0.delete_all 失败: %s", e)
 
         # 2. FTS5
+        _tenant_memory_ids: list = []
         try:
             from ducky.text_fts import get_text_conn
             tconn = get_text_conn()
+            # 先取出本租户的 memory_id 集合：evolve 各表无 user_id 列，
+            # 只能靠这个集合精确清理（必须在 DELETE 之前取）。
+            try:
+                _tenant_memory_ids = [
+                    r[0] for r in tconn.execute(
+                        "SELECT id FROM memories WHERE user_id=?", (user_id,)
+                    ).fetchall()
+                ]
+            except Exception as idexc:
+                logger.debug("租户 memory_id 集合获取跳过: %s", idexc)
             # 🔴P0-3（v19.4.1）：一律精确按 user_id 删除。此前 default 分支
             # 走无 WHERE 全表删，会把其他租户数据一并灭掉 —— 而 default 正是
             # 系统默认 user_id，属于高频误触路径。全库清空另走显式入口。
@@ -416,17 +427,15 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
         except Exception as e:
             logger.debug("salience delete_all 跳过: %s", e)
 
-        # 5. evolve_mem.db
+        # 5. evolve_mem.db（v19.4.1 修复：同上，此前从未真正执行）
+        #    evolve 各表没有 user_id 列 —— 它记录的是检索质量信号而非租户数据。
+        #    因此按「本租户已删除的 memory_id 集合」来清，而不是按 user_id 过滤。
+        #    memory_id 集合取自本次清空前的 FTS 索引（已按租户收窄）。
         try:
-            from ducky.evolve_mem import get_evolve_conn
-            econn = get_evolve_conn()
-            # 🔴P0-3：精确按租户，不再全表删
-            c_evo = econn.execute("DELETE FROM evolve_snapshots WHERE user_id=?", (user_id,)).rowcount
-            econn.commit()
-            econn.close()
-            res["evolve_deleted"] = c_evo
+            from ducky.evolve_mem import delete_evolve_by_memory_ids
+            res["evolve_deleted"] = delete_evolve_by_memory_ids(_tenant_memory_ids)
         except Exception as e:
-            logger.debug("evolve delete_all 跳过: %s", e)
+            logger.warning("evolve delete_all 失败: %s", e)
 
         # 6. Verbatim Vault 原文保真层（v19.4.0 明镜工程 Phase 1）
         try:

@@ -111,6 +111,12 @@ SCENES_DB     = os.path.join(DATA_DIR, "scenes.db")
 TEXT_FTS_DB   = os.path.join(DATA_DIR, "text_fts.db")
 SALIENCE_DB   = os.path.join(DATA_DIR, "salience.db")
 
+# 合并任务互斥锁（v19.4.1 补齐）：scripts/consolidator.py 与服务内的
+# 后台合并循环共用同一个文件锁防双跑。该常量此前从未定义，
+# consolidator 在 _with_file_lock 里 `from ducky.utils import CONSOLIDATOR_LOCK`
+# 直接 ImportError —— 与 memory_salience 门面缺口是同一类静默故障。
+CONSOLIDATOR_LOCK = os.path.join(DATA_DIR, "consolidator.lock")
+
 # ═══════════════════════════════════════════════
 # 默认身份标识 — 单一真源
 # ═══════════════════════════════════════════════
