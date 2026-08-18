@@ -281,19 +281,22 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         except Exception as e:
             logger.warning("facts.db 清理失败: %s", e)
 
-        # 4. salience.db 清理
+        # 4. salience.db 清理（v19.4.1 修复：此前同样从未真正执行）
+        #
+        #    原实现 `DELETE FROM memory_salience WHERE memory_id=? AND user_id=?`
+        #    有两个错误：真实表名是 `salience`（不是 memory_salience），
+        #    且该表**没有 user_id 列**（显著性是记忆级信号，不按租户分区）。
+        #    两个错误都被 except 吞成 debug，res["salience"] 恒为 0。
+        #
+        #    实测后果远不止「留了脏数据」：生产 salience 1099 条里有 252 条
+        #    是向量库中早已不存在的幽灵 id。幽灵被 decay_all 当正常记忆持续衰减，
+        #    最终进入 evicted 列表，consolidator 再逐个调 /delete 去删
+        #    「早就不存在的东西」——日志报「删除成功 25/25」，实际全是空转。
         try:
-            from ducky.salience.db import get_salience_conn
-            sconn = get_salience_conn()
-            if user_id == "default":
-                c2 = sconn.execute("DELETE FROM memory_salience WHERE memory_id=?", (memory_id,)).rowcount
-            else:
-                c2 = sconn.execute("DELETE FROM memory_salience WHERE memory_id=? AND user_id=?", (memory_id, user_id)).rowcount
-            sconn.commit()
-            sconn.close()
-            res["salience"] = c2
+            from ducky.salience import delete_salience
+            res["salience"] = delete_salience([memory_id])
         except Exception as e:
-            logger.debug("salience.db 清理跳过: %s", e)
+            logger.warning("salience.db 清理失败: %s", e)
 
         # 5. evolve_mem.db 清理（v19.4.1 修复：此前这一步从未真正执行过）
         #
@@ -415,17 +418,13 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("facts delete_all 失败: %s", e)
 
-        # 4. salience.db
+        # 4. salience.db（v19.4.1 修复：同上，表名与列名双错，从未执行）
+        #    salience 表无 user_id 列，故按「本租户已删除的 memory_id 集合」清理。
         try:
-            from ducky.salience.db import get_salience_conn
-            sconn = get_salience_conn()
-            # 🔴P0-3：精确按租户，不再全表删
-            c_sal = sconn.execute("DELETE FROM memory_salience WHERE user_id=?", (user_id,)).rowcount
-            sconn.commit()
-            sconn.close()
-            res["salience_deleted"] = c_sal
+            from ducky.salience import delete_salience
+            res["salience_deleted"] = delete_salience(_tenant_memory_ids)
         except Exception as e:
-            logger.debug("salience delete_all 跳过: %s", e)
+            logger.warning("salience delete_all 失败: %s", e)
 
         # 5. evolve_mem.db（v19.4.1 修复：同上，此前从未真正执行）
         #    evolve 各表没有 user_id 列 —— 它记录的是检索质量信号而非租户数据。
