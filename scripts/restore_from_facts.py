@@ -1,4 +1,5 @@
 """从facts.db恢复所有活跃记忆到Qdrant（on_disk模式）"""
+import os
 import sys, os, json, requests, time
 
 
@@ -8,6 +9,14 @@ sys.path.insert(0, _REPO)
 os.chdir(_REPO)
 
 from ducky.utils import get_facts_conn
+
+# 🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
+# 后端启用鉴权门禁后不带凭据一律 401；本脚本属运维工具，
+# 失败往往只体现为「没干活」，不补凭据会让配置错误长期潜伏。
+def _auth_headers() -> dict:
+    _token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {_token}"} if _token else {}
+
 
 # 1. 从facts.db读
 conn = get_facts_conn()
@@ -41,7 +50,7 @@ for i, row in enumerate(rows):
     }
     
     try:
-        resp = requests.post(f'{api}/add', json=body, timeout=30)
+        resp = requests.post(f'{api}/add', json=body, timeout=30, headers=_auth_headers())
         if resp.status_code == 200:
             success += 1
         else:

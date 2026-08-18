@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """aiduMEM 全功能健康检查 — Layer 1/2/3/4 状态 + API + LLM + Embedding"""
+import os
 import json, base64, os, sys, time
 import requests
+
+# 🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
+# 后端启用鉴权门禁后不带凭据一律 401；本脚本属运维工具，
+# 失败往往只体现为「没干活」，不补凭据会让配置错误长期潜伏。
+def _auth_headers() -> dict:
+    _token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {_token}"} if _token else {}
+
 
 # 仓库根 = 本文件上一级（scripts/ 的父目录），可用 AIDUMEM_HOME 覆盖
 SCRIPT_DIR = os.environ.get("AIDUMEM_HOME") or os.path.dirname(
@@ -116,7 +125,7 @@ else:
 # ═══════════ 3. aiduMEM API Health ═══════════
 t0 = time.time()
 try:
-    r = requests.get(f"{API_BASE}/health", timeout=5)
+    r = requests.get(f"{API_BASE}/health", timeout=5, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
         checks["aidumem_api"] = {
@@ -135,7 +144,7 @@ except Exception as e:
 t0 = time.time()
 try:
     r = requests.post(f"{API_BASE}/search",
-        json={"query": "健康检查", "user_id": "health_check", "limit": 1}, timeout=10)
+        json={"query": "健康检查", "user_id": "health_check", "limit": 1}, timeout=10, headers=_auth_headers())
     checks["aidumem_search"] = {"ok": r.status_code == 200, "code": r.status_code, "ms": int((time.time()-t0)*1000)}
 except Exception as e:
     checks["aidumem_search"] = {"ok": False, "error": str(e)[:100], "ms": int((time.time()-t0)*1000)}
@@ -143,7 +152,7 @@ except Exception as e:
 # ═══════════ 5. aiduMEM Stats ═══════════
 t0 = time.time()
 try:
-    r = requests.get(f"{API_BASE}/stats?user_id={os.environ.get('AIDUMEM_DEFAULT_USER_ID', 'default')}", timeout=10)
+    r = requests.get(f"{API_BASE}/stats?user_id={os.environ.get('AIDUMEM_DEFAULT_USER_ID', 'default')}", timeout=10, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
         checks["aidumem_stats"] = {"ok": True, "total_memories": data.get("total", 0), "ms": int((time.time()-t0)*1000)}
