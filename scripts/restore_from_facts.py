@@ -1,4 +1,5 @@
 """从facts.db恢复所有活跃记忆到Qdrant（on_disk模式）"""
+import os
 import sys, os, json, requests, time
 
 
@@ -8,6 +9,11 @@ sys.path.insert(0, _REPO)
 os.chdir(_REPO)
 
 from ducky.utils import get_facts_conn
+
+# 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
+# cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+
 
 # 1. 从facts.db读
 conn = get_facts_conn()
@@ -41,7 +47,7 @@ for i, row in enumerate(rows):
     }
     
     try:
-        resp = requests.post(f'{api}/add', json=body, timeout=30)
+        resp = requests.post(f'{api}/add', json=body, timeout=30, headers=_auth_headers())
         if resp.status_code == 200:
             success += 1
         else:

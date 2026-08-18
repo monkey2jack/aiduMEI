@@ -25,6 +25,11 @@ from ducky.memory_salience import (decay_all, get_stats, detect_conflicts,
                                     audit_health_anomalies)
 from ducky.skill_crystallizer import detect_and_crystallize_patterns
 
+# 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
+# cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -59,21 +64,33 @@ def _with_file_lock(fn):
 def _api_get(endpoint: str) -> dict:
     url = f"{API_BASE}{endpoint}"
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        req = urllib.request.Request(url, headers=_auth_headers())
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
-    except Exception:
+    except urllib.error.HTTPError as e:
+        # 401/403 必须显式记日志：静默失败会让「门禁开了但脚本没带钥匙」
+        # 这种配置错误长期潜伏。
+        logger.error(f"  HTTP {e.code} → GET {endpoint}"
+                     f"{'（未携带 AIDUMEM_API_TOKEN？）' if e.code in (401, 403) else ''}")
+        return {}
+    except Exception as e:
+        logger.debug(f"  API GET 失败 {endpoint}: {e}")
         return {}
 
 def _api_post(endpoint: str, data: dict) -> dict:
     url = f"{API_BASE}{endpoint}"
     body = json.dumps(data).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json", **_auth_headers()}
+    req = urllib.request.Request(url, data=body, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        logger.error(f"  HTTP {e.code} → {endpoint}")
+        logger.error(f"  HTTP {e.code} → {endpoint}"
+                     f"{'（未携带 AIDUMEM_API_TOKEN？）' if e.code in (401, 403) else ''}")
         return {}
+    except Exception as e:
+        # 原实现这里是 HTTPError 分支 return 之后的死代码，异常被完全吞掉。
         logger.error(f"  API 调用失败 {endpoint}: {e}")
         return {}
 

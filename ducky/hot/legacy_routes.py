@@ -19,6 +19,7 @@ from ducky.utils import (
     OBS_DB,
     SCENES_DB,
 )
+from ducky.facts_recall import _strict_tenant_enabled, tenant_clause
 from ducky.hot.legacy_helpers import (
     _get_facts_conn,
     _get_obs_conn,
@@ -35,7 +36,9 @@ from ducky.hot.legacy_helpers import (
     _PANTHEON_DEFAULT_PROFILE,
     CONTRADICTION_WORDS,
     _auto_detect_level,
+    _ensure_observations_table,
     _ensure_scenes_table,
+    _observations_columns,
     _fact_feedback_impl,
     _load_tags,
     _run_consolidation,
@@ -49,7 +52,8 @@ def register_legacy_routes(app):
 
     # ── 6.2  Facts CRUD ──
     @app.get("/facts")
-    def list_facts(category: str = None, key: str = None, level: str = "L2"):
+    def list_facts(category: str = None, key: str = None, level: str = "L2",
+                   user_id: str = DEFAULT_USER_ID):
         level_norm = (level or "L2").upper()
         if level_norm not in ("L0","L1","L2"): level_norm = "L2"
         conn = _get_facts_conn()
@@ -57,7 +61,13 @@ def register_legacy_routes(app):
         where, params = [], []
         if category: where.append("category = ?"); params.append(category)
         if key:      where.append("fact_key = ?");   params.append(key)
-        sql = "SELECT * FROM facts" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY category, fact_key"
+        sql = "SELECT * FROM facts" + (" WHERE " + " AND ".join(where) if where else " WHERE 1=1")
+        # 🔴P0-2（v19.4.1）：租户可见性收窄。默认租户保持全库可见（向后兼容），
+        # 传具体 user_id 时只返回该租户可见的事实。
+        t_clause, t_params = tenant_clause(user_id)
+        sql += t_clause
+        params.extend(t_params)
+        sql += " ORDER BY category, fact_key"
         cur.execute(sql, params)
         raw = [dict(r) for r in cur.fetchall()]
         conn.close()
@@ -73,7 +83,8 @@ def register_legacy_routes(app):
     @app.post("/facts/add")
     def add_fact(category: str = "general", fact_key: str = "", fact_value: str = "",
                  source: str = DEFAULT_USER_ID, level: str = "",
-                 valid_from: str = "", valid_to: str = ""):
+                 valid_from: str = "", valid_to: str = "",
+                 agent_id: str = ""):
         if not fact_key or not fact_value:
             return {"status":"error","detail":"fact_key 和 fact_value 不能为空"}
         from ducky.security.injection_guard import validate_and_sanitize_memory_content
@@ -94,6 +105,19 @@ def register_legacy_routes(app):
         fed_tier = _pantheon_tier.infer_tier(category, fact_key, fact_value)
         recorded_at = _dt.datetime.now(_dt.timezone.utc)
         decay_at = _pantheon_tier.decay_deadline(fed_tier, recorded_at)
+        # 🔴P0-2b（v19.4.1 施工中新发现，比可见性泄漏更严重）：
+        #     此前 agent_id 恒写常量 _PANTHEON_DEFAULT_AGENT，而唯一约束是
+        #     ON CONFLICT(agent_id, category, fact_key) —— 于是不同租户写同一
+        #     (category, fact_key) 会命中同一冲突键，**后写者直接覆盖前者的
+        #     fact_value**。实测：alice 写 favorite_drink 后 bob 再写，库里只剩
+        #     bob 的值，alice 的事实被静默销毁。这是跨租户数据破坏，不是泄漏。
+        #     修复：agent_id 显式可传；未传时回退 source（租户名），
+        #     source 也为默认值时才用 _PANTHEON_DEFAULT_AGENT，保证存量部署
+        #     （靠 AIDUMEM_DEFAULT_AGENT_ID 统一归属）行为零变化。
+        effective_agent = (agent_id or "").strip()
+        if not effective_agent:
+            _src = (source or "").strip()
+            effective_agent = _src if (_src and _src != DEFAULT_USER_ID) else _PANTHEON_DEFAULT_AGENT
         conn = _get_facts_conn()
         cur = conn.cursor()
         cur.execute("""
@@ -111,7 +135,7 @@ def register_legacy_routes(app):
                 valid_from=COALESCE(excluded.valid_from, facts.valid_from),
                 valid_to=COALESCE(excluded.valid_to, facts.valid_to)
         """, (category, fact_key, fact_value, source, summary, overview, resolved_level,
-              vf, vt, _PANTHEON_DEFAULT_AGENT, _PANTHEON_DEFAULT_PROFILE, fed_tier,
+              vf, vt, effective_agent, _PANTHEON_DEFAULT_PROFILE, fed_tier,
               recorded_at.isoformat(), decay_at))
         # 📒 事件账本（v19.4.0 Mímir 借鉴 B5）：与事实写入同事务留痕，同生共死
         try:
@@ -149,18 +173,35 @@ def register_legacy_routes(app):
                 "auto_entities": auto_link}
 
     @app.get("/facts/categories")
-    def list_fact_categories():
+    def list_fact_categories(user_id: str = DEFAULT_USER_ID):
         conn = _get_facts_conn()
-        rows = conn.execute("SELECT category, COUNT(*) AS cnt FROM facts GROUP BY category ORDER BY category").fetchall()
+        # 🔴P0-2：类别计数也按租户收窄，否则可从类别分布反推他人数据规模
+        t_clause, t_params = tenant_clause(user_id)
+        rows = conn.execute(
+            "SELECT category, COUNT(*) AS cnt FROM facts WHERE 1=1" + t_clause
+            + " GROUP BY category ORDER BY category",
+            t_params,
+        ).fetchall()
         conn.close()
         return {"status":"ok","categories":[dict(r) for r in rows]}
 
     # ── 6.3  实体 API ──
     @app.get("/facts/entities")
-    def fact_entities(fact_id: int = None, entity: str = None, limit: int = 20):
+    def fact_entities(fact_id: int = None, entity: str = None, limit: int = 20,
+                      user_id: str = DEFAULT_USER_ID):
         conn = _get_facts_conn()
         cur = conn.cursor()
+        t_clause, t_params = tenant_clause(user_id, alias="f")
         if fact_id:
+            # 🔴P0-2：先校验该 fact 是否属于本租户可见范围，再吐它的实体，
+            # 否则可用他人 fact_id 探测其实体图谱。
+            owned = cur.execute(
+                "SELECT 1 FROM facts f WHERE f.id=?" + t_clause,
+                [fact_id] + t_params,
+            ).fetchone()
+            if not owned:
+                conn.close()
+                return {"status":"ok","fact_id":fact_id,"entities":[],"count":0}
             rows = cur.execute("""
                 SELECT e.entity_id, e.name, e.entity_type
                 FROM entities e JOIN fact_entities fe ON fe.entity_id=e.entity_id
@@ -174,8 +215,9 @@ def register_legacy_routes(app):
                 FROM facts f JOIN fact_entities fe ON fe.fact_id=f.id
                 JOIN entities e ON e.entity_id=fe.entity_id
                 WHERE e.name LIKE ? AND f.archived=0
+            """ + t_clause + """
                 ORDER BY f.updated_at DESC LIMIT ?
-            """, (entity, limit)).fetchall()
+            """, [entity] + t_params + [limit]).fetchall()
             conn.close()
             return {"status":"ok","entity":entity,"facts":[dict(r) for r in rows],"count":len(rows)}
         else:
@@ -183,9 +225,10 @@ def register_legacy_routes(app):
             return {"status":"error","detail":"需要 fact_id 或 entity 参数"}
 
     @app.get("/facts/related")
-    def fact_related(entity: str = "", limit: int = 10):
+    def fact_related(entity: str = "", limit: int = 10, user_id: str = DEFAULT_USER_ID):
         if not entity: return {"status":"error","detail":"需要 entity 参数"}
         conn = _get_facts_conn()
+        t_clause, t_params = tenant_clause(user_id, alias="f")
         rows = conn.execute("""
             SELECT f.id, f.category, f.fact_key, f.fact_value, f.trust_score, f.updated_at,
                    (SELECT GROUP_CONCAT(DISTINCT e3.name) FROM fact_entities fe3
@@ -199,18 +242,20 @@ def register_legacy_routes(app):
                 JOIN entities e2 ON e2.entity_id=fe2.entity_id
                 WHERE e2.name LIKE ?
             )
+            """ + t_clause + """
             GROUP BY f.id ORDER BY f.trust_score DESC, COUNT(DISTINCT e.name) DESC LIMIT ?
-        """, (entity, entity, limit)).fetchall()
+        """, [entity, entity] + t_params + [limit]).fetchall()
         conn.close()
         return {"status":"ok","entity":entity,"related":[dict(r) for r in rows],"count":len(rows)}
 
     @app.get("/facts/reason")
-    def fact_reason(entities: str = "", limit: int = 10):
+    def fact_reason(entities: str = "", limit: int = 10, user_id: str = DEFAULT_USER_ID):
         if not entities: return {"status":"error","detail":"需要 entities 参数（逗号分隔）"}
         e_list = [e.strip() for e in entities.split(",") if e.strip()]
         if len(e_list) < 2: return {"status":"error","detail":"需要至少 2 个实体"}
         conn = _get_facts_conn()
         placeholders = ",".join("?" * len(e_list))
+        t_clause, t_params = tenant_clause(user_id, alias="f")
         rows = conn.execute(f"""
             SELECT f.id, f.category, f.fact_key, f.fact_value, f.trust_score, f.updated_at,
                    GROUP_CONCAT(DISTINCT e.name) as matched_entities,
@@ -218,11 +263,11 @@ def register_legacy_routes(app):
             FROM facts f
             JOIN fact_entities fe ON fe.fact_id=f.id
             JOIN entities e ON e.entity_id=fe.entity_id
-            WHERE e.name IN ({placeholders}) AND f.archived=0
+            WHERE e.name IN ({placeholders}) AND f.archived=0 {t_clause}
             GROUP BY f.id
             HAVING COUNT(DISTINCT e.name) >= ?
             ORDER BY f.trust_score DESC, match_count DESC LIMIT ?
-        """, e_list + [len(e_list), limit]).fetchall()
+        """, e_list + t_params + [len(e_list), limit]).fetchall()
         conn.close()
         return {"status":"ok","query_entities":e_list,"results":[dict(r) for r in rows],
                 "count":len(rows),"min_match":len(e_list)}
@@ -358,14 +403,16 @@ def register_legacy_routes(app):
         return {"status":"ok","tags":_load_tags()}
 
     @app.get("/facts/trust-stats")
-    def fact_trust_stats():
+    def fact_trust_stats(user_id: str = DEFAULT_USER_ID):
         conn = _get_facts_conn()
+        t_clause, t_params = tenant_clause(user_id)
         rows = conn.execute("""
             SELECT category,
                    COUNT(*) as cnt, AVG(trust_score) as avg_trust,
                    SUM(helpful_count) as helpful, SUM(unhelpful_count) as unhelpful
-            FROM facts WHERE archived=0 GROUP BY category ORDER BY cnt DESC
-        """).fetchall()
+            FROM facts WHERE archived=0
+        """ + t_clause + """ GROUP BY category ORDER BY cnt DESC
+        """, t_params).fetchall()
         conn.close()
         return {"status":"ok","categories":[dict(r) for r in rows]}
 
@@ -373,7 +420,8 @@ def register_legacy_routes(app):
     @app.get("/facts/search")
     def search_facts(query: str = "", category: str = None, top_k: int = 10,
                      min_trust: float = 0.0, use_hybrid: bool = True,
-                     level: str = "L2", before: str = "", after: str = ""):
+                     level: str = "L2", before: str = "", after: str = "",
+                     user_id: str = DEFAULT_USER_ID):
         # facts 是独立结构化知识库，不再绕经 mem0/Qdrant；use_hybrid 保留为兼容参数。
         # P0-1 时间过滤：before/after 支持 YYYY[-MM[-DD]] 粒度。
         from ducky.facts_recall import search_facts as recall_facts
@@ -385,6 +433,7 @@ def register_legacy_routes(app):
             min_trust=min_trust,
             before=before,
             after=after,
+            user_id=user_id,
         )
 
     # ── §8  Observations + Reflect ──
@@ -393,12 +442,29 @@ def register_legacy_routes(app):
         return _run_consolidation(user_id)
 
     @app.get("/observe")
-    def list_observations(category: str = None, limit: int = 20, include_stale: bool = False):
+    def list_observations(category: str = None, limit: int = 20, include_stale: bool = False,
+                          user_id: str = DEFAULT_USER_ID):
         conn = _get_obs_conn()
+        # 🔴P1-3（v19.4.1）：observations 表此前全仓无 DDL，全新部署调
+        # /observe 直接 no such table 500。此处幂等建表，开箱返回空集。
+        _ensure_observations_table(conn)
         where = "WHERE 1=1"
         params = []
         if category: where+=" AND category=?"; params.append(category)
         if not include_stale: where+=" AND is_stale=0"
+        # 🔴P0-2：按 user_id 收窄可见范围。
+        # 但**必须先确认列存在**：生产库的 observations 是 v7 时代手工建的，
+        # 没有 user_id 列。若无条件拼进 WHERE，实机会直接
+        # `no such column: user_id` 500 —— 这正是本地测试库与生产库
+        # schema 分叉能造成的伤害（v19.4.1 施工中在实机 schema 探针下发现）。
+        # 迁移会补列，但补列可能因权限/锁失败，读取路径不能依赖它成功。
+        _uid = (user_id or "").strip()
+        if _uid and _uid != DEFAULT_USER_ID and "user_id" in _observations_columns(conn):
+            if _strict_tenant_enabled():
+                where += " AND user_id=?"; params.append(_uid)
+            else:
+                # 空 user_id 的历史行视为未标记归属，宽松档下对本机可见
+                where += " AND (user_id=? OR user_id='' OR user_id IS NULL)"; params.append(_uid)
         rows = conn.execute(f"SELECT * FROM observations {where} ORDER BY updated_at DESC LIMIT ?", params+[limit]).fetchall()
         conn.close()
         return {"status":"ok","observations":[dict(r) for r in rows],"count":len(rows)}
