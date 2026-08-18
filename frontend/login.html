@@ -256,9 +256,12 @@ fetch('/api/login/hint', { headers: { Accept: 'application/json' } })
     btn.disabled = true;
     btn.textContent = '验证中… / Verifying…';
 
+    /* v19.4.1 P0-1: credentials:'same-origin' so the HttpOnly session cookie
+       issued by the backend is stored and sent on subsequent panel requests. */
     fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ password: password })
     })
       .then(function (r) {

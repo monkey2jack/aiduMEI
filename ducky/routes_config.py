@@ -211,58 +211,45 @@ def register_config_routes(app: FastAPI) -> None:
     # ═══════════════════════════════════════════════════════════════════
     @app.post("/config/password")
     def change_password(body: dict) -> dict:
-        """修改 UI 登录密码。安全加固：哈希存储，禁止明文写 .env 文件。"""
-        import hmac
-        import hashlib
-        from ducky.utils import DATA_DIR
+        """修改 UI 登录口令。
+
+        v19.4.1（P2-2 / P0-1）：
+          · 哈希统一走 ducky.security.auth（PBKDF2-HMAC-SHA256 200k 轮），
+            旧格式 `salt:sha256hex` 校验通过后自动升级，存量部署无感；
+          · 改密成功后**撤销全部既有会话**，强制所有端重新登录 ——
+            否则老会话仍能用旧凭据继续访问，改密等于没改。
+        """
+        from ducky.security.auth import (
+            check_ui_password,
+            hash_password,
+            revoke_all_sessions,
+            write_password_hash,
+        )
 
         current = body.get("current_password", "")
         new = body.get("new_password", "")
         confirm = body.get("confirm_password", "")
 
-        # 验证当前密码（先查哈希文件，再查环境变量）
-        hash_file = os.path.join(DATA_DIR, ".ui_password_hash")
-        current_valid = False
-        if os.path.exists(hash_file):
-            try:
-                with open(hash_file, "r") as f:
-                    stored_hash = f.read().strip()
-                if ":" in stored_hash:
-                    salt, expected_hash = stored_hash.split(":", 1)
-                    cand_hash = hashlib.sha256((salt + current).encode()).hexdigest()
-                    if hmac.compare_digest(cand_hash, expected_hash):
-                        current_valid = True
-            except Exception as e:
-                logger.debug(f"change_password: suppressed exception: {e}")
-
-        if not current_valid:
-            current_stored = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
-            if current_stored and isinstance(current, str) and hmac.compare_digest(current, current_stored):
-                current_valid = True
-
-        if not current_valid:
+        if not check_ui_password(current if isinstance(current, str) else ""):
             return {"status": "error", "detail": "当前密码错误 / Current password incorrect"}
 
-        # 验证新密码
-        if not isinstance(new, str) or len(new) < 4:
-            return {"status": "error", "detail": "新密码至少 4 位 / New password too short"}
+        if not isinstance(new, str) or len(new) < 8:
+            # v19.4.1：下限从 4 位提到 8 位。控制台口令是记忆库的唯一门禁，
+            # 4 位口令在本地爆破面前形同虚设。
+            return {"status": "error", "detail": "新密码至少 8 位 / New password too short (min 8)"}
         if new != confirm:
             return {"status": "error", "detail": "两次输入不一致 / Passwords do not match"}
 
-        # 哈希写入保护文件（不写明文 .env）
-        try:
-            salt = os.urandom(16).hex()
-            pw_hash = hashlib.sha256((salt + new).encode()).hexdigest()
-            os.makedirs(DATA_DIR, exist_ok=True)
-            with open(hash_file, "w") as f:
-                f.write(f"{salt}:{pw_hash}")
-            os.environ["AIDUMEM_UI_PASSWORD"] = new
-            logger.info("🔐 UI 登录密码已安全更新（已哈希存储）")
-            return {
-                "status": "ok",
-                "detail": "密码已更新并即时生效 / Password updated securely",
-                "restart_required": False
-            }
-        except Exception as e:
-            logger.error(f"密码更新失败: {e}")
-            return {"status": "error", "detail": f"更新失败: {e}"}
+        if not write_password_hash(hash_password(new)):
+            return {"status": "error", "detail": "更新失败：无法写入口令哈希文件"}
+
+        os.environ["AIDUMEM_UI_PASSWORD"] = new
+        revoked = revoke_all_sessions()
+        logger.info("🔐 UI 登录口令已更新（PBKDF2 哈希），已撤销 %d 个既有会话", revoked)
+        return {
+            "status": "ok",
+            "detail": "密码已更新并即时生效，所有已登录会话已失效 / "
+                      "Password updated; all existing sessions revoked",
+            "sessions_revoked": revoked,
+            "restart_required": False,
+        }

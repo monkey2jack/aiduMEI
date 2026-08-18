@@ -11,6 +11,9 @@ authors = [
     { name = "aiduMEI Team" }
 ]
 license = { text = "MIT" }
+# P2-1：README 声明支持 3.10-3.12，此前未声明 requires-python，
+# pip 不会拦住 3.9 用户（代码里大量 `X | None` 语法在 3.9 上直接 SyntaxError）。
+requires-python = ">=3.10"
 keywords = ["memory", "mem0", "hermes", "hermes-agent", "aiduMEI", "ai", "rag", "qdrant", "fts5", "memory-provider", "obsidian", "multimodal"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -20,13 +23,18 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+# P2-1（v19.4.1）：与 requirements.txt 的实锁对齐。
+# 此前 pyproject 是松范围（fastapi>=0.100.0）而 requirements 是精确锁
+# （==0.136.3），`pip install aidumei` 的用户与克隆源码的用户跑在两套
+# 依赖树上 —— 前者可能装到 2023 年的 fastapi，行为与我们测过的完全不同。
+# 现在下限对齐实锁的主版本，上限拦住已知不兼容的下一个大版本。
 dependencies = [
     "mem0ai==2.0.18",
-    "fastapi>=0.100.0",
-    "uvicorn[standard]>=0.20.0",
-    "pydantic>=2.0",
-    "qdrant-client>=1.7.0",
-    "python-multipart>=0.0.6",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "pydantic>=2.9,<3.0",
+    "qdrant-client>=1.15,<2.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

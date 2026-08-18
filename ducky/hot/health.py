@@ -171,6 +171,37 @@ def register_health_routes(app: FastAPI) -> None:
             probes["raw_drawer_ok"] = False
             probes["raw_drawer_error"] = str(e)[:120]
 
+        # 🔐 鉴权门禁探针（P0-1/P1-4 v19.4.1）：让部署方一眼看清
+        #    「我的记忆库现在到底有没有门禁」。此前 UI 口令与 API token
+        #    两套凭据互斥，部署方无从判断自己是被保护还是在裸奔。
+        #    只暴露「是否启用/启用来源」，绝不吐任何凭据内容。
+        try:
+            import os as _os
+            from ducky.security.auth import active_session_count, password_source
+            _tok = bool(_os.environ.get("AIDUMEM_API_TOKEN", "").strip())
+            _pwd_src = password_source()
+            _pwd_explicit = bool(_os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()) or _pwd_src == "user"
+            probes["auth_gate_enabled"] = bool(_tok or _pwd_explicit)
+            probes["auth_api_token_set"] = _tok
+            probes["auth_ui_password"] = _pwd_src or "unset"
+            probes["auth_active_sessions"] = active_session_count()
+            probes["auth_ok"] = True
+        except Exception as e:
+            probes["auth_ok"] = False
+            probes["auth_error"] = str(e)[:120]
+
+        # 🔍 召回路径探针（P1-2/P1-4）：中文查询到底走了 FTS 索引还是 LIKE 全表扫。
+        #    v19.4.0 之前中文恒落 LIKE 而文档宣称 trigram 索引，
+        #    部署方完全无从察觉。这里用一个探测查询把真实路径暴露出来。
+        try:
+            from ducky.text_fts import fts_is_authoritative, fts_match_terms
+            probes["fts_chinese_indexed"] = bool(fts_match_terms("记忆引擎"))
+            probes["fts_authoritative_empty"] = bool(fts_is_authoritative("记忆引擎"))
+            probes["fts_terms_ok"] = True
+        except Exception as e:
+            probes["fts_terms_ok"] = False
+            probes["fts_terms_error"] = str(e)[:120]
+
         # 汇总所有降级组件（全量扫描 module_ok 与 probes 中 _ok=False 项）
         degraded = [k for k, v in module_ok.items() if not v]
         for p_key, p_val in probes.items():
@@ -183,6 +214,14 @@ def register_health_routes(app: FastAPI) -> None:
         for active_deg in DegradationTracker.get_degraded_summary():
             if active_deg not in degraded:
                 degraded.append(active_deg)
+
+        # 裸奔告警（P0-1）：门禁未启用时明确写进 warnings，
+        # 不让「以为设了密码就安全」的部署方继续误会。
+        if probes.get("auth_ok") and not probes.get("auth_gate_enabled"):
+            warnings.append(
+                "auth_gate_disabled: REST 接口无鉴权。设置 AIDUMEM_API_TOKEN "
+                "或通过控制台设置访问口令后门禁生效（仅回环访问时可接受）。"
+            )
 
         status = "ok" if not degraded else "degraded"
 

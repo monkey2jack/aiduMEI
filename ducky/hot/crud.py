@@ -305,11 +305,15 @@ def register_crud_routes(app: FastAPI) -> None:
 
     def _do_inject_context(req: InjectContextRequest) -> dict:
         from ducky.facts_recall import inject_context as inject_facts_context
+        # 🔴P0-2（v19.4.1）：注入上下文按租户收窄 —— 注入是记忆流向宿主
+        # 模型的出口，此处漏租户等于把别人的事实喂进本租户的对话。
+        # InjectContextRequest 早已带 user_id 字段，此前未透传。
         return inject_facts_context(
             req.query,
             k=req.k,
             level=req.level,
             max_tokens=req.max_tokens,
+            user_id=req.user_id,
         )
 
     @app.post("/facts/inject-context")

@@ -31,7 +31,9 @@ ducky.verbatim_vault — 原文保真层 Verbatim Vault (v19.4.0 · 明镜工程
     store_verbatim(...)               写入原文（/add 钩子调用）
     verbatim_search(...)              原文全文检索
     fuse_verbatim(...)                把原文证据融合进召回结果
-    cascade_delete_verbatim(...)      级联删除某租户原文（wal_engine 调用）
+    cascade_delete_verbatim(...)      级联删除某租户原文（wal_engine 调用，精确按 user_id）
+    delete_verbatim_by_content(...)   按内容精确删除某租户原文（单条删除级联用）
+    purge_all_verbatim(confirm=True)  清空全库所有租户原文（高危，显式入口）
     count_verbatim(...)               统计某租户原文条数（运维/验收用）
 """
 from __future__ import annotations
@@ -63,15 +65,39 @@ CREATE TABLE IF NOT EXISTS verbatim_turns (
     content      TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     recorded_at  TEXT,
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- P1-1（v19.4.1）：重复表述不再新增行，而是累加计数 + 更新末次时间。
+    -- 「说过的话一字不丢」由 content 保证；「说过几次」由 occurrences 显式记录，
+    -- 比堆重复行的信息量更大，也不会让表随重试无界膨胀。
+    occurrences  INTEGER DEFAULT 1,
+    last_seen_at TEXT
 )
 """
 
 _VERBATIM_INDEXES = (
     "CREATE INDEX        IF NOT EXISTS idx_verbatim_user ON verbatim_turns(user_id)",
-    # 幂等去重：同租户同内容同时间戳只落一条（防重放），不同时间的重复表述照常保留
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_verbatim_dedup ON verbatim_turns(user_id, content_hash, recorded_at)",
+    # 🟠P1-1（v19.4.1）：幂等键从 (user_id, content_hash, recorded_at) 改为
+    #     (user_id, content_hash, session_id)。
+    #
+    #     为什么原来的键是假幂等：
+    #         唯一索引里含 recorded_at，而生产实际写入路径（hermes 插件
+    #         sync_turn 发的是 user/assistant 拼接后的**纯字符串**）不带
+    #         per-message timestamp，_normalize_ts 于是回落到 now() ——
+    #         每次重放时间戳都不同，唯一约束永远撞不上。
+    #         实测同一轮 blob 连写 3 次落 3 条。
+    #         v19.4.0 的幂等测试只覆盖了带显式 timestamp 的 list[dict] 形态，
+    #         恰好绕开了生产真实走的那条路 —— 典型「假绿灯」。
+    #
+    #     现在幂等键只含稳定因子（租户 + 内容哈希 + 会话），与载荷形态无关。
+    #     跨会话的真实重复表述仍保留独立行（session_id 不同）。
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_verbatim_dedup_v2 "
+    "ON verbatim_turns(user_id, content_hash, session_id)",
 )
+
+# 老库上可能已存在按旧键写入的重复行，导致新唯一索引建不起来。
+# 这不影响正确性：store_verbatim 走的是显式「先查后写」的应用层幂等，
+# 不依赖数据库唯一约束兜底。索引只是加速与二次保险。
+_LEGACY_DEDUP_INDEX = "idx_verbatim_dedup"
 
 # text_fts.db 侧的 FTS 映射表 + trigram 虚拟表（与 memories_fts 同一套外挂 content= 模式）
 _VERBATIM_FTS_DDL = """
@@ -105,14 +131,36 @@ def _content_hash(text: str) -> str:
 
 
 def ensure_verbatim_schema() -> None:
-    """幂等建表。对既有库是 no-op，任何异常只记日志不抛。"""
+    """幂等建表 + 幂等迁移。对既有库是 no-op，任何异常只记日志不抛。
+
+    迁移只做 ADD COLUMN 与建索引，绝不 DROP / 改类型 / 删数据
+    （v19.4.0 起的原文层数据在升级后 100% 保留）。
+    """
     try:
         fconn = get_facts_conn()
         fconn.execute(_VERBATIM_TURNS_DDL)
+
+        # P1-1 迁移：老库（v19.4.0 建的表）缺 occurrences / last_seen_at，补列。
+        try:
+            existing_cols = {
+                r[1] for r in fconn.execute("PRAGMA table_info(verbatim_turns)").fetchall()
+            }
+            for col, ddl in (
+                ("occurrences", "INTEGER DEFAULT 1"),
+                ("last_seen_at", "TEXT"),
+            ):
+                if col not in existing_cols:
+                    fconn.execute(f"ALTER TABLE verbatim_turns ADD COLUMN {col} {ddl}")
+                    logger.info("📼 verbatim_turns 迁移：已补列 %s", col)
+        except Exception as mexc:
+            logger.debug("verbatim 列迁移跳过: %s", mexc)
+
         for stmt in _VERBATIM_INDEXES:
             try:
                 fconn.execute(stmt)
             except Exception as exc:
+                # 老库若有按旧键写入的重复行，新唯一索引会建不起来。
+                # 应用层「先查后写」已保证幂等，索引失败不影响正确性。
                 logger.debug("verbatim 索引跳过: %s", exc)
         fconn.commit()
     except Exception as exc:
@@ -192,15 +240,44 @@ def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) ->
         fconn = get_facts_conn()
         tconn = get_text_conn()
 
+        # 🟠P1-1（v19.4.1）：幂等改为**显式先查后写**，不再依赖含时间戳的
+        #     唯一索引兜底。判重键 = (user_id, content_hash, session_id)，
+        #     三者都是与载荷形态无关的稳定因子 —— 无论调用方发的是
+        #     list[dict]（带 timestamp）还是纯字符串（不带），重放都只落一条。
+        #     命中已有行时累加 occurrences 并刷新 last_seen_at：
+        #     「说过几次」被显式记录，而不是靠堆重复行来表达。
         for role, content, ts in _iter_turns(messages_json):
             recorded_at = _normalize_ts(ts)
             chash = _content_hash(content)
             try:
+                existing = fconn.execute(
+                    """SELECT id, occurrences FROM verbatim_turns
+                       WHERE user_id=? AND content_hash=? AND session_id=?
+                       LIMIT 1""",
+                    (user_id, chash, session_id),
+                ).fetchone()
+
+                if existing is not None:
+                    try:
+                        fconn.execute(
+                            """UPDATE verbatim_turns
+                               SET occurrences = COALESCE(occurrences, 1) + 1,
+                                   last_seen_at = ?
+                               WHERE id = ?""",
+                            (recorded_at, existing["id"]),
+                        )
+                        fconn.commit()
+                    except Exception as ue:
+                        logger.debug("verbatim occurrences 累加跳过: %s", ue)
+                    result["skipped"] += 1
+                    continue
+
                 cur = fconn.execute(
-                    """INSERT OR IGNORE INTO verbatim_turns
-                       (user_id, session_id, role, content, content_hash, recorded_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (user_id, session_id, role, content, chash, recorded_at),
+                    """INSERT INTO verbatim_turns
+                       (user_id, session_id, role, content, content_hash,
+                        recorded_at, occurrences, last_seen_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+                    (user_id, session_id, role, content, chash, recorded_at, recorded_at),
                 )
                 fconn.commit()
                 if cur.rowcount and cur.rowcount > 0:
@@ -232,15 +309,38 @@ def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) ->
 # 检索 — 原文全文召回
 # ─────────────────────────────────────────────────────────────
 
-def _fts_terms(query: str) -> list:
-    """中英混合切词：中文 2-gram + 英文/数字词（与 text_fts 同策略）。"""
+# 🟠P1-2（v19.4.1）：切词收敛为单一真相源。
+#     此前 verbatim_vault 与 text_fts 各自实现了一份 `_fts_terms`，两份都切
+#     中文 2-gram、都与 trigram 索引失配，且互相独立漂移 —— 改一处修不了另一处。
+#     现在统一复用 ducky.text_fts 的实现（3-gram，与索引对齐）。
+from ducky.text_fts import _fts_terms, fts_is_authoritative, fts_match_terms  # noqa: E402
+
+
+# ── 相关度门槛专用切词（与索引切词解耦）──────────────────────────────────
+#
+# 为什么不能复用 _fts_terms（v19.4.1 施工中暴露的隐性耦合）：
+#     _fts_terms 的职责是「产出能命中 FTS 索引的词元」，粒度必须跟着索引
+#     走（trigram → 3-gram）。fuse_verbatim 的相关度门槛职责完全不同 ——
+#     它衡量的是「这条原文跟查询有多相关」，只需要一个稳定的词重合度量。
+#     v19.4.0 让两者共用 _fts_terms，于是 P1-2 把索引切词改成 3-gram 时，
+#     门槛的实际严格度被连带改掉了：
+#         查询「热拿铁 咖啡」× 原文「用户喜欢热拿铁」
+#         2-gram 重合 {热拿, 拿铁} = 2 → 入选（v19.4.0 行为，测试断言的预期）
+#         3-gram 重合 {热拿铁}     = 1 → 被拦（回归）
+#     门槛值 2 是按 2-gram 粒度校准的，一个 3 字词在 3-gram 下只产出 1 个
+#     词元，等于把门槛悄悄提到「须有 4+ 字连续重合」。
+#
+#     根因是职责耦合，不是阈值不对。因此这里给门槛一套独立的 2-gram 切词，
+#     索引怎么变都不影响相关度判定的校准。
+def _gate_terms(text: str) -> list:
+    """相关度门槛专用切词：中文 2-gram + 英文/数字词（>=2 字符）。"""
     import re
-    q = (query or "").strip()
-    if not q:
+    s = (text or "").strip()
+    if not s:
         return []
     terms = []
-    terms.extend(re.findall(r"[A-Za-z0-9_]{2,}", q))
-    for seg in re.findall(r"[一-鿿]+", q):
+    terms.extend(re.findall(r"[A-Za-z0-9_]{2,}", s))
+    for seg in re.findall(r"[\u4e00-\u9fff]+", s):
         if len(seg) == 1:
             terms.append(seg)
         else:
@@ -250,7 +350,7 @@ def _fts_terms(query: str) -> list:
         if t not in seen:
             seen.add(t)
             out.append(t)
-    return out[:16]
+    return out[:32]
 
 
 def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10) -> list:
@@ -258,6 +358,9 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
 
     返回形如 [{id, memory, user_id, role, session_id, recorded_at, _verbatim: True}]，
     字段对齐召回结果形态，便于 fuse_verbatim 融合。失败返回 []（干净降级）。
+
+    每条结果带 `_recall_path`（fts | like），显式暴露本次真走的哪条路
+    （P1-2/P1-4：降级不再静默）。
     """
     if not query or not user_id:
         return []
@@ -265,10 +368,14 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
         ensure_verbatim_schema()
         tconn = get_text_conn()
         terms = _fts_terms(query)
+        # 🟠P1-2：只有 >= 3 字的词元能命中 trigram 索引
+        match_terms = fts_match_terms(query)
         rows = []
-        if terms:
+        recall_path = "like"
+        fts_attempted = False
+        if match_terms:
             safe = []
-            for t in terms[:12]:
+            for t in match_terms[:12]:
                 t = t.replace('"', '""')
                 if t:
                     safe.append(f'"{t}"')
@@ -285,11 +392,17 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
                     """,
                     (match_expr, user_id, max(limit * 2, limit)),
                 ).fetchall()
+                fts_attempted = True
+                if rows:
+                    recall_path = "fts"
+                elif fts_is_authoritative(query):
+                    recall_path = "fts"
             except Exception as me:
                 logger.debug("verbatim FTS MATCH 失败，降级 LIKE: %s", me)
                 rows = []
 
-        if not rows:
+        # FTS 权威零命中时不再白扫 LIKE（P1-2：20 万条实测省下 23.8 ms）
+        if not rows and not (fts_attempted and fts_is_authoritative(query)):
             # LIKE 兜底（与 text_fts._like_search 同语义）
             like_terms = terms or [query.strip()]
             clauses = ["content LIKE ?" for _ in like_terms]
@@ -300,6 +413,7 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
                     f"WHERE ({' OR '.join(clauses)}) AND user_id=? LIMIT ?",
                     params,
                 ).fetchall()
+                recall_path = "like"
             except Exception as le:
                 logger.debug("verbatim LIKE 兜底失败: %s", le)
                 rows = []
@@ -336,6 +450,7 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
                 "recorded_at": meta.get("recorded_at"),
                 "_verbatim": True,
                 "_bm25_rank": r["rank"] if "rank" in r.keys() else 0,
+                "_recall_path": recall_path,
             })
         return results[:limit]
     except Exception as exc:
@@ -378,7 +493,7 @@ def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: st
                 existing_norms.add(_norm(item.get("memory") or item.get("content")))
 
         # 相关度门槛：查询词太少（短于门槛值）时不设卡，命中本身已是 BM25 召回
-        q_terms = set(_fts_terms(query)) if query else set()
+        q_terms = set(_gate_terms(query)) if query else set()
         gate_on = len(q_terms) >= VERBATIM_FUSE_MIN_OVERLAP
 
         fresh = []
@@ -394,7 +509,7 @@ def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: st
                         break
                 continue
             if gate_on:
-                hit_terms = set(_fts_terms(hit.get("memory") or hit.get("content") or ""))
+                hit_terms = set(_gate_terms(hit.get("memory") or hit.get("content") or ""))
                 if len(q_terms & hit_terms) < VERBATIM_FUSE_MIN_OVERLAP:
                     continue  # 低相关原文不配占位，主干事实优先
             hit = dict(hit)
@@ -421,12 +536,37 @@ def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: st
 # 级联删除 — wal_engine 调用
 # ─────────────────────────────────────────────────────────────
 
-def cascade_delete_verbatim(user_id: str) -> int:
-    """删除某租户全部原文（facts.db + text_fts.db 双侧）。返回删除条数。
+def _delete_turn_ids(fconn, ids: list) -> int:
+    """按 turn_id 精确删除原文行 + FTS 映射。返回删除条数。"""
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    deleted = fconn.execute(
+        f"DELETE FROM verbatim_turns WHERE id IN ({placeholders})", ids
+    ).rowcount or 0
+    fconn.commit()
+    try:
+        tconn = get_text_conn()
+        tconn.execute(
+            f"DELETE FROM verbatim_fts_map WHERE turn_id IN ({placeholders})", ids
+        )
+        tconn.commit()
+    except Exception as fe:
+        logger.debug("verbatim FTS 清理跳过: %s", fe)
+    return deleted
 
-    供 cascade_delete_all 调用，绝不留孤儿。失败只记日志，返回 0。
-    与既有级联语义对齐：default 租户全清（防爆门禁在上游已把守），
-    其余租户精确按 user_id 删除。
+
+def cascade_delete_verbatim(user_id: str) -> int:
+    """删除**指定租户**的全部原文（facts.db + text_fts.db 双侧）。返回删除条数。
+
+    🔴P0-3（v19.4.1）：此前 `user_id == "default"` 走的是无 WHERE 的
+        `DELETE FROM verbatim_turns` —— 实测清 default 会把 alice/bob 的原文
+        一起灭掉（before alice=1 bob=1 → after 0/0）。`default` 恰恰是系统
+        默认 user_id，等于给开源用户埋了个装了保险栓的地雷。
+        现在**一律精确 `WHERE user_id=?`**，任何租户名都不再触发全表删。
+        确需清空全库请显式调用 `purge_all_verbatim(confirm=True)`。
+
+    失败只记日志，返回 0（干净降级，绝不阻断删除主链路）。
     """
     if not user_id or not user_id.strip():
         return 0
@@ -434,36 +574,67 @@ def cascade_delete_verbatim(user_id: str) -> int:
     try:
         ensure_verbatim_schema()
         fconn = get_facts_conn()
-        # 先拿到 turn_id 用于清理 FTS 映射
         try:
-            if user_id == "default":
-                ids = [r["id"] for r in fconn.execute(
-                    "SELECT id FROM verbatim_turns"
-                ).fetchall()]
-            else:
-                ids = [r["id"] for r in fconn.execute(
-                    "SELECT id FROM verbatim_turns WHERE user_id=?", (user_id,)
-                ).fetchall()]
-        except Exception:
+            ids = [r["id"] for r in fconn.execute(
+                "SELECT id FROM verbatim_turns WHERE user_id=?", (user_id,)
+            ).fetchall()]
+        except Exception as qe:
+            logger.debug("verbatim turn_id 查询跳过: %s", qe)
             ids = []
-
-        if user_id == "default":
-            c = fconn.execute("DELETE FROM verbatim_turns").rowcount
-        else:
-            c = fconn.execute("DELETE FROM verbatim_turns WHERE user_id=?", (user_id,)).rowcount
-        fconn.commit()
-        deleted = c or 0
-
-        if ids:
-            try:
-                tconn = get_text_conn()
-                placeholders = ",".join("?" for _ in ids)
-                tconn.execute(f"DELETE FROM verbatim_fts_map WHERE turn_id IN ({placeholders})", ids)
-                tconn.commit()
-            except Exception as fe:
-                logger.debug("verbatim FTS 清理跳过: %s", fe)
+        deleted = _delete_turn_ids(fconn, ids)
     except Exception as exc:
         logger.warning("cascade_delete_verbatim 降级: %s", exc)
+    return deleted
+
+
+def purge_all_verbatim(confirm: bool = False) -> int:
+    """清空**全库所有租户**的原文。高危操作，必须显式 confirm=True。
+
+    v19.4.1 P0-3：把「全表删」从 cascade_delete_verbatim 的隐式分支里
+    抽出来变成显式入口 —— 危险动作必须写在调用方的字面上，
+    不能藏在某个租户名的 if 分支里。
+    """
+    if not confirm:
+        raise ValueError("purge_all_verbatim 会清空全部租户原文，必须显式传 confirm=True")
+    deleted = 0
+    try:
+        ensure_verbatim_schema()
+        fconn = get_facts_conn()
+        deleted = fconn.execute("DELETE FROM verbatim_turns").rowcount or 0
+        fconn.commit()
+        try:
+            tconn = get_text_conn()
+            tconn.execute("DELETE FROM verbatim_fts_map")
+            tconn.commit()
+        except Exception as fe:
+            logger.debug("verbatim FTS 全清跳过: %s", fe)
+        logger.warning("🧨 purge_all_verbatim 已清空全库原文 %d 条", deleted)
+    except Exception as exc:
+        logger.warning("purge_all_verbatim 降级: %s", exc)
+    return deleted
+
+
+def delete_verbatim_by_content(user_id: str, content: str) -> int:
+    """按内容精确删除某租户的原文（P0-4 单条删除级联用）。
+
+    以 content_hash 精确匹配，避免 LIKE 模糊误伤（延续 v19.2.0 精确匹配铁律）。
+    """
+    if not user_id or not content or not str(content).strip():
+        return 0
+    deleted = 0
+    try:
+        ensure_verbatim_schema()
+        fconn = get_facts_conn()
+        chash = _content_hash(str(content).strip())
+        ids = [r["id"] for r in fconn.execute(
+            "SELECT id FROM verbatim_turns WHERE user_id=? AND content_hash=?",
+            (user_id, chash),
+        ).fetchall()]
+        deleted = _delete_turn_ids(fconn, ids)
+        if deleted:
+            logger.info("📼 原文层级联删除 %d 条 (user=%s)", deleted, user_id)
+    except Exception as exc:
+        logger.debug("delete_verbatim_by_content 跳过: %s", exc)
     return deleted
 
 
