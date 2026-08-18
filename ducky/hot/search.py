@@ -192,6 +192,11 @@ def register_search_routes(app: FastAPI) -> None:
             return result
         except ImportError:
             raise HTTPException(503, "Recall Funnel 模块未就绪")
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"search_trace 失败: {e}")
             return {
