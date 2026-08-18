@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """aiduMEM 全功能健康检查 — Layer 1/2/3/4 状态 + API + LLM + Embedding"""
-import os
 import json, base64, os, sys, time
+
 import requests
 
-# 🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
-# 后端启用鉴权门禁后不带凭据一律 401；本脚本属运维工具，
-# 失败往往只体现为「没干活」，不补凭据会让配置错误长期潜伏。
-def _auth_headers() -> dict:
-    _token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
-    return {"Authorization": f"Bearer {_token}"} if _token else {}
+# cron 的 cwd 不是仓库根，必须显式把仓库根加进 sys.path 才能 import ducky
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
+# cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
 
 
 # 仓库根 = 本文件上一级（scripts/ 的父目录），可用 AIDUMEM_HOME 覆盖
