@@ -55,6 +55,11 @@ class _Client:
     def __init__(self, base_url: str, user_id: str):
         self.base = base_url.rstrip("/")
         self.user_id = user_id
+        # 🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
+        # 后端一旦启用门禁（设了 AIDUMEM_API_TOKEN），插件不带凭据会全线 401，
+        # 而记忆层失败是静默的（try_request 吞异常）—— 用户只会觉得
+        # 「记忆突然不好用了」，排查成本极高。这里主动对齐。
+        self.api_token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
 
     def request(
         self,
@@ -65,11 +70,14 @@ class _Client:
         timeout: float = _QUERY_TIMEOUT,
     ) -> Any:
         data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Content-Type": "application/json"} if data else {}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
         req = urlrequest.Request(
             f"{self.base}{path}",
             data=data,
             method=method,
-            headers={"Content-Type": "application/json"} if data else {},
+            headers=headers,
         )
         with urlrequest.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")

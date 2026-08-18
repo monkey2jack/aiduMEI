@@ -105,67 +105,157 @@ _api_alias = FastAPI(title="aiduMEM /api alias")
 register_all_routes(_api_alias, get_memory, _get_db, _extract_entities)
 app.mount("/api", _api_alias)
 
-# ── API 访问令牌（开源裸奔防线）────────────────────────────
-# 部署方设置 AIDUMEM_API_TOKEN 后，除登录/健康检查/静态 UI 外，
-# 所有 REST 端点强制校验 Authorization: Bearer <token>。
-# 未设置时保持旧行为（本机零配置可用），Docker 部署文档会强制引导设置。
-_API_TOKEN = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+# ── 统一鉴权门禁（🔴P0-1 v19.4.1 鉴权贯通）──────────────────────────────
+#
+# v19.4.0 的问题：UI 口令与 API token 是两套互不相通的凭据，实测两种组合
+# 都不可用 ——
+#   · 只设 AIDUMEM_UI_PASSWORD：中间件因 token 为空整段放行，未登录直接
+#     GET /api/facts → 200，全部记忆裸奔（UI 登录只是前端 sessionStorage 障眼法）；
+#   · 只设 AIDUMEM_API_TOKEN：/api/login 返回 200，但前端从不发 Authorization 头，
+#     登录后所有面板 → 401，控制台报废。
+#
+# v19.4.1 的解法：**一道门禁，两把钥匙**。
+#   钥匙 A：HttpOnly session cookie（/login 成功后服务端签发，浏览器自动携带）
+#   钥匙 B：Authorization: Bearer <AIDUMEM_API_TOKEN>（脚本 / MCP / CI 用）
+# 任一有效即放行。门禁在「配置了 token **或** 配置了 UI 口令」时启用 ——
+# 于是只设 UI 口令的部署方也真的被保护，而不是自以为被保护。
+# 两者都没配时保持旧行为（本机回环零配置可用）。
+#
+# 注意：token 与口令状态都在**请求时**实时读取，不在模块加载时定格。
+# 理由有二：① `/config/password` 可在运行时首次设置口令，门禁必须立刻生效；
+# ② 模块级常量会迫使测试用 sys.modules 清洗来切换部署形态，那会连带
+# 抹掉其它测试文件在 import 期做的 DB 重定向（本版施工中真实踩到）。
+def _api_token() -> str:
+    return os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+
+
+# 交互式 API 文档（/docs /redoc /openapi.json）是否免凭据。
+#
+# 🟡（v19.4.1 用户审计）：门禁启用后这三个路径仍返回 200，等于把 135 个
+#     端点的完整清单（含参数与请求体结构）交给未授权访问者。对自托管
+#     记忆库而言，这是一份现成的攻击面地图。
+#     但它同时也是开发调试与接入排障的主要入口，直接锁死会明显劣化体验。
+#     取舍：**门禁启用时默认一并保护**，需要公开时显式设
+#     AIDUMEM_PUBLIC_DOCS=1（例如本机开发、或已在反代层另加保护）。
+#     门禁未启用时（本机零配置）行为完全不变。
+def _public_docs_enabled() -> bool:
+    return os.environ.get("AIDUMEM_PUBLIC_DOCS", "0").strip().lower() in {"1", "true", "yes"}
+
+
+_DOC_PATHS = frozenset({
+    "/docs", "/api/docs",
+    "/redoc", "/api/redoc",
+    "/openapi.json", "/api/openapi.json",
+})
+
+# 登录与健康检查必须永久免凭据：前者是拿到凭据的唯一入口，
+# 后者是监控探针的依赖，锁死会让服务「看起来挂了」。
+_ALWAYS_PUBLIC_PATHS = frozenset({
+    "/", "/ui",
+    "/login", "/api/login",
+    "/login/hint", "/api/login/hint",
+    "/logout", "/api/logout",
+    "/health", "/api/health",
+})
 
 
 def _is_public_path(path: str) -> bool:
-    """无需 API token 即可访问的路径（登录、健康检查、静态 UI、文档）。"""
-    if path in ("/", "/ui", "/login", "/api/login", "/login/hint", "/api/login/hint",
-                "/health", "/api/health", "/docs", "/api/docs", "/openapi.json",
-                "/api/openapi.json", "/redoc", "/api/redoc"):
+    """无需凭据即可访问的路径（登录、健康检查、静态 UI，以及可选的文档）。"""
+    if path in _ALWAYS_PUBLIC_PATHS:
         return True
+    if path in _DOC_PATHS:
+        return _public_docs_enabled()
     if path.startswith("/ui/"):
         return True
     return False
 
 
+def _auth_enabled() -> bool:
+    """门禁是否启用：配了 API token 或 UI 口令任一即启用。
+
+    每次请求实时判定 —— `/config/password` 可在运行时首次设置口令，
+    门禁必须立刻生效，不能等重启。
+    """
+    if _api_token():
+        return True
+    try:
+        from ducky.security.auth import ui_password_configured
+        return ui_password_configured()
+    except Exception as exc:
+        # 判定失败时**保守启用**门禁：宁可要求凭据，也不裸奔。
+        logger.debug("门禁启用判定失败，保守启用: %s", exc)
+        return True
+
+
+def _request_authorized(request: Request) -> bool:
+    """钥匙 A（session cookie）∨ 钥匙 B（Bearer token），任一有效即放行。"""
+    from ducky.security.auth import SESSION_COOKIE_NAME, validate_session
+
+    session_token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if session_token and validate_session(session_token):
+        return True
+
+    token = _api_token()
+    if token:
+        supplied = request.headers.get("Authorization", "")
+        if supplied and hmac.compare_digest(supplied, f"Bearer {token}"):
+            return True
+        # 兼容以 X-API-Token 头传递的调用方
+        alt = request.headers.get("X-API-Token", "")
+        if alt and hmac.compare_digest(alt, token):
+            return True
+    return False
+
+
 @app.middleware("http")
-async def _require_api_token(request: Request, call_next):
-    if not _API_TOKEN:
+async def _require_credentials(request: Request, call_next):
+    if not _auth_enabled():
         return await call_next(request)
     if _is_public_path(request.url.path):
         return await call_next(request)
-    supplied = request.headers.get("Authorization", "")
-    expected = f"Bearer {_API_TOKEN}"
-    if not (supplied and hmac.compare_digest(supplied, expected)):
-        return JSONResponse(
-            {"error": "unauthorized", "detail": "Missing or invalid API token"},
-            status_code=401,
-        )
-    return await call_next(request)
+    if _request_authorized(request):
+        return await call_next(request)
+    return JSONResponse(
+        {
+            "error": "unauthorized",
+            "detail": "Missing or invalid credentials: log in to the console "
+                      "or send Authorization: Bearer <AIDUMEM_API_TOKEN>",
+        },
+        status_code=401,
+    )
 
-# ── UI 登录 ─────────────────────────────────────────────
-# 控制台登录门禁：/api/login 校验访问密码（AIDUMEM_UI_PASSWORD 或 data/.ui_password_hash）。
-# 🔴P1-3: 废除弱口令 123456。未配置且无哈希文件时，自动生成 16 位高强度随机密码并持久化哈希，并在启动日志中显式打印。
+# ── UI 登录与会话（🔴P0-1 v19.4.1）───────────────────────────────────────
+# /login 校验口令后**服务端签发会话**（HttpOnly cookie），不再只在浏览器
+# sessionStorage 打个标记 —— 后者对 REST 接口毫无约束力。
+# 口令统一走 ducky.security.auth：PBKDF2 存储、旧格式自动升级（P2-2）。
 
 
 def _ensure_ui_password() -> None:
-    """初始化控制台密码：若既无环境变量又无哈希文件，则自动生成安全随机密码并存储哈希。"""
+    """初始化控制台口令：既无环境变量又无哈希文件时，自动生成强随机口令。
+
+    v19.4.1：哈希改用 PBKDF2-HMAC-SHA256（200k 轮），文件权限收紧 0600。
+    """
+    from ducky.security.auth import (
+        hash_password,
+        password_hash_path,
+        write_password_hash,
+    )
     import secrets
-    import hashlib
-    from ducky.utils import DATA_DIR
+
     env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
-    hash_file = os.path.join(DATA_DIR, ".ui_password_hash")
+    hash_file = password_hash_path()
     if not env_pwd and not os.path.exists(hash_file):
         gen_pwd = secrets.token_urlsafe(12)
-        salt = os.urandom(16).hex()
-        pw_hash = hashlib.sha256((salt + gen_pwd).encode()).hexdigest()
-        try:
-            os.makedirs(DATA_DIR, exist_ok=True)
-            with open(hash_file, "w") as f:
-                f.write(f"{salt}:{pw_hash}")
+        # source="auto"：自动生成的口令只守 UI 登录，不启用 API 门禁 ——
+        # 否则存量部署（hermes 插件 / MCP / cron 全走回环不带凭据）
+        # 会在升级瞬间集体 401。详见 ducky/security/auth.py 的 provenance 说明。
+        if write_password_hash(hash_password(gen_pwd), source="auto"):
             logger.warning(
-                "🔐 [安全加固] 未配置 AIDUMEM_UI_PASSWORD，已自动生成随机控制台初始密码: %s "
-                "(已安全加密持久化至 %s，请妥善保存或通过控制台修改)",
+                "🔐 [安全加固] 未配置 AIDUMEM_UI_PASSWORD，已自动生成随机控制台初始口令: %s "
+                "(PBKDF2 哈希持久化至 %s，权限 0600，请妥善保存或通过控制台修改)",
                 gen_pwd,
                 hash_file,
             )
-        except Exception as e:
-            logger.error("生成初始 UI 密码哈希失败: %s", e)
 
 
 _ensure_ui_password()
@@ -174,44 +264,59 @@ _ensure_ui_password()
 def _register_login(route_app: FastAPI) -> None:
     @route_app.post("/login", include_in_schema=False)
     async def ui_login(request: Request):
+        from ducky.security.auth import (
+            SESSION_COOKIE_NAME,
+            check_ui_password,
+            create_session,
+        )
+
         try:
             payload = await request.json()
         except Exception:
             payload = {}
         given = payload.get("password")
         if not isinstance(given, str) or not given:
-            return JSONResponse({"success": False, "message": "密码不能为空或格式错误"}, status_code=401)
+            return JSONResponse(
+                {"success": False, "message": "密码不能为空或格式错误"}, status_code=401
+            )
 
-        # 优先校验安全哈希文件
-        import hashlib
-        from ducky.utils import DATA_DIR
-        hash_file = os.path.join(DATA_DIR, ".ui_password_hash")
-        valid = False
-        if os.path.exists(hash_file):
-            try:
-                with open(hash_file, "r") as f:
-                    stored_hash = f.read().strip()
-                if ":" in stored_hash:
-                    salt, exp_hash = stored_hash.split(":", 1)
-                    cand_hash = hashlib.sha256((salt + given).encode()).hexdigest()
-                    if hmac.compare_digest(cand_hash, exp_hash):
-                        valid = True
-            except Exception as e:
-                logger.debug(f"ui_login: suppressed exception: {e}")
+        if not check_ui_password(given):
+            logger.warning("🚪 UI 登录失败（密码错误）")
+            return JSONResponse(
+                {"success": False, "message": "访问密码错误 / Wrong password"},
+                status_code=401,
+            )
 
-        if not valid:
-            current_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
-            if current_pwd and hmac.compare_digest(given, current_pwd):
-                valid = True
-
-        if valid:
-            logger.info("🚪 UI 登录成功")
-            return {"success": True}
-        logger.warning("🚪 UI 登录失败（密码错误）")
-        return JSONResponse(
-            {"success": False, "message": "访问密码错误 / Wrong password"},
-            status_code=401,
+        # 🔴P0-1：签发服务端会话，浏览器后续请求靠它自证身份。
+        # HttpOnly 阻断 JS 读取（防 XSS 窃取）；SameSite=Lax 防基础 CSRF。
+        # secure 标志按部署形态决定：HTTPS 反代后设 AIDUMEM_COOKIE_SECURE=1。
+        token, ttl = create_session()
+        secure_flag = os.environ.get("AIDUMEM_COOKIE_SECURE", "0").strip().lower() in {
+            "1", "true", "yes",
+        }
+        resp = JSONResponse({"success": True, "expires_in": ttl})
+        resp.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=token,
+            max_age=ttl,
+            httponly=True,
+            samesite="lax",
+            secure=secure_flag,
+            path="/",
         )
+        logger.info("🚪 UI 登录成功（已签发会话，有效期 %d 秒）", ttl)
+        return resp
+
+    @route_app.post("/logout", include_in_schema=False)
+    async def ui_logout(request: Request):
+        """登出：撤销服务端会话并清 cookie（会话可撤销是 cookie 方案的要点）。"""
+        from ducky.security.auth import SESSION_COOKIE_NAME, revoke_session
+
+        token = request.cookies.get(SESSION_COOKIE_NAME, "")
+        revoked = revoke_session(token) if token else False
+        resp = JSONResponse({"success": True, "revoked": revoked})
+        resp.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+        return resp
 
     @route_app.get("/login/hint", include_in_schema=False)
     async def ui_login_hint():
@@ -312,7 +417,7 @@ def main():
     _start_background()
     host = os.environ.get("AIDUMEM_HOST", "127.0.0.1")
     port = int(os.environ.get("AIDUMEM_API_PORT") or os.environ.get("MEM0_API_PORT") or 8767)
-    if not _API_TOKEN:
+    if not _api_token():
         logger.warning(
             "⚠️ 未设置 AIDUMEM_API_TOKEN：REST 接口无鉴权。"
             "本机/回环使用可接受；对外部署请务必设置 token。"
@@ -320,7 +425,7 @@ def main():
     env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
     if not env_pwd:
         logger.info("🔐 UI 登录使用 data/.ui_password_hash 安全凭据（或通过环境变量 AIDUMEM_UI_PASSWORD 配置）")
-    if host not in ("127.0.0.1", "localhost") and not _API_TOKEN:
+    if host not in ("127.0.0.1", "localhost") and not _api_token():
         allow_insecure = os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
         if not allow_insecure:
             logger.critical(
