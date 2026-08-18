@@ -310,6 +310,40 @@ def _background_scene_cluster_loop():
         first_run = False
         time.sleep(43200)
 
+def _ensure_observations_table(conn):
+    """幂等建 observations 表。
+
+    v19.4.1（P1-3）：该表自 v7 起只有读取方（GET /observe），
+    写入方 `_run_consolidation` 早已退化为占位（由 Layer1 自检 +
+    Instinct 毕业接管），全仓从未有过 DDL —— 全新部署调 /observe
+    直接 `no such table: observations` 500。此处按 scenes 表同一
+    模式幂等建表，并预留 user_id 租户列（与 v19.4.1 租户贯通对齐）。
+
+    只 CREATE IF NOT EXISTS，绝不 DROP / 改类型 / 删数据。
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS observations (
+            obs_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     TEXT DEFAULT '',
+            category    TEXT DEFAULT '',
+            content     TEXT DEFAULT '',
+            evidence    TEXT DEFAULT '',
+            confidence  REAL DEFAULT 0.5,
+            is_stale    INTEGER DEFAULT 0,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_obs_user ON observations(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_obs_category ON observations(category)",
+    ):
+        try:
+            conn.execute(stmt)
+        except Exception as exc:
+            logger.debug("observations 索引跳过: %s", exc)
+    conn.commit()
+
 def _ensure_scenes_table(conn):
     """🔴6：scenes 表此前从未建，导致 /scene 开箱 500。此处幂等建表。
 

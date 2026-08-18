@@ -183,7 +183,7 @@ def register_add_routes(app: FastAPI) -> None:
             def _run_pipeline(uid, msgs, meta):
                 try:
                     return lazy_import_layer1()(mem, msgs, uid, meta)
-                except (ImportError, Exception) as e:
+                except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
                     logger.warning(f"Layer 1 自检异常，降级为直接写入: {e}")
                     add_result = mem.add(msgs, user_id=uid, metadata=meta)
                     register_salience_for_add(add_result)
