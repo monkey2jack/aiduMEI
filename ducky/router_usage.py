@@ -3,9 +3,10 @@
 本模块通过 SSH 读取一台运行 LLM 路由网关的主机上的
 SQLite 用量库，把每日 prompt/completion token 数汇总回来，供 /usage 类端点展示。
 
-属于纯可选的增强能力：所有连接参数都从环境变量读取，任一项缺失即直接跳过，
-不影响 aiduMEM 主链路。需要启用时配置：
+属于纯可选的增强能力：**默认关闭**（v19.4.1 P2-4），且所有连接参数都从环境
+变量读取，任一项缺失即直接跳过，不影响 aiduMEM 主链路。需要启用时配置：
 
+    AIDUMEM_ROUTER_USAGE_ENABLED=1   总开关，不设则本模块完全不执行
     AIDUMEM_ROUTER_SSH_HOSTS   逗号分隔的 ssh 目标，按顺序尝试，如 "user@10.0.0.2,user@203.0.113.5"
     AIDUMEM_ROUTER_SSH_KEY     ssh 私钥路径
     AIDUMEM_ROUTER_DB_PATH     远端用量 SQLite 路径，默认 ~/router-data/db/data.sqlite
@@ -71,8 +72,30 @@ def _build_remote_script() -> str:
     )
 
 
+def router_usage_enabled() -> bool:
+    """本模块是否启用（P2-4 v19.4.1：默认关闭，必须显式开启）。
+
+    为什么加这道开关：
+        本模块通过 `ssh` 在远端主机上执行 `python3 -c "exec(base64...)"`。
+        SQL 已参数化、脚本内容由本地生成而非外部输入，实际注入面为零，
+        但 `exec(base64_decode(...))` 这个形态会在任何开源安全审查
+        （以及用户的第一次通读）里触发红灯，需要读者花时间自证无害。
+        它又只是一个可选的运维观测能力，与记忆主链路无关。
+
+        因此改为**默认不加载不执行**：需要的部署方显式设
+        `AIDUMEM_ROUTER_USAGE_ENABLED=1`，并自行确认其信任前提
+        （远端主机可信、ssh 私钥可信、known_hosts 已预置）。
+    """
+    return os.environ.get("AIDUMEM_ROUTER_USAGE_ENABLED", "0").strip().lower() in {
+        "1", "true", "yes",
+    }
+
+
 def fetch_router_llm_usage() -> Dict[str, Any]:
-    """按日汇总上游网关的 LLM token 用量；未配置或全部主机失败时返回 {}。"""
+    """按日汇总上游网关的 LLM token 用量；未启用/未配置/全部失败均返回 {}。"""
+    if not router_usage_enabled():
+        logger.debug("router_usage 未启用（设 AIDUMEM_ROUTER_USAGE_ENABLED=1 开启），跳过")
+        return {}
     hosts = _ssh_hosts()
     ssh_key = os.environ.get("AIDUMEM_ROUTER_SSH_KEY", "")
     if not hosts or not ssh_key:
@@ -87,7 +110,12 @@ def fetch_router_llm_usage() -> Dict[str, Any]:
 
     for host in hosts:
         cmd = [
-            "ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=3",
+            # accept-new 会在首次连接时接受任意主机密钥（TOFU）。
+            # 生产环境建议预置 known_hosts 后改为 StrictHostKeyChecking=yes，
+            # 可通过 AIDUMEM_ROUTER_SSH_STRICT=yes 覆盖。
+            "ssh",
+            "-o", f"StrictHostKeyChecking={os.environ.get('AIDUMEM_ROUTER_SSH_STRICT', 'accept-new')}",
+            "-o", "ConnectTimeout=3",
             "-i", ssh_key,
             host,
             remote_cmd,

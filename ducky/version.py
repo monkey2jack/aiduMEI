@@ -3,6 +3,101 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v19.4.1 (审计补丁 · 鉴权贯通与租户闭环 · 2026-08-18)
+    核心主题: 宣称即承诺 · 静默失败终结 · 删除权兑现 · 一道门禁两把钥匙
+    定性: **审计补丁版**，不引入新功能。修的全是「文档说了但代码没做到」的裂缝。
+    方法: 审计从「逐行读代码」改为**探针实测** —— 对 README/CHANGELOG 每一句宣称，
+    写最小可运行程序去试着推翻它。四条宣称被实测推翻，逐条修复并写进断言。
+
+    —— 🔴 安全与数据权利 ——
+    1. P0-1 鉴权贯通「一道门禁两把钥匙」: 新增 ducky/security/auth.py。
+       修复前两种部署都不可用——只设 UI 口令则接口 200 全裸奔（口令仅前端标记）；
+       只设 API 令牌则控制台登录后全 401 报废（前端从不发 Authorization）。
+       根因是认证结果没有服务端载体。现 /login 签发 HttpOnly+SameSite=Lax
+       session cookie，与 Bearer 令牌任一有效即放行；新增 /logout 服务端撤销。
+       存量零破坏: 口令哈希加 source=auto|user 标记，自动生成的口令只守控制台登录，
+       不改变既有回环调用方（插件/MCP/cron）的 API 语义。
+    2. P0-2 facts 层租户可见性贯通: 新增 tenant_clause()，覆盖 9 个路由与注入出口；
+       宽松档（默认，兜住未标记归属的历史数据）/ 严格档（AIDUMEM_STRICT_TENANT=1）双档。
+    3. P0-2b 跨租户静默覆盖（施工中新发现，比泄漏更严重）: /facts/add 原将 agent_id
+       恒写常量，而唯一约束是 (agent_id, category, fact_key) —— 不同租户写同一键位
+       会命中同一约束，后写者直接销毁前者的值。现按租户落 agent_id。
+    4. P0-3 移除无 WHERE 全表删: 各仓原有 `if user_id == "default": DELETE FROM 表`，
+       而 default 正是系统默认租户 —— 清 default 会连带清空所有租户。
+       现一律精确 WHERE user_id=?；全库清空抽成显式 confirm=True 入口。
+    5. P0-4 删除权兑现到原文层: cascade_delete_memory 原清 5 个库独漏 verbatim_turns，
+       含敏感信息的原文删除后仍可检索。补第 6 步按内容哈希精确清理双侧。
+    6. P0-4b 原文条目可删（实机发现，P0-4 只修了一半）: /search 返回 verbatim:<n>
+       句柄是调用方唯一句柄，但 /delete 不认它 —— 返回成功却什么都没删。此类原文
+       常无对应 mem0 记忆，遂成「可检索但删不掉的孤儿」。新增按句柄精确删除，
+       强制租户匹配防越权，删前留 tombstone。
+
+    —— 🟠 功能真伪与可观测 ——
+    7. P1-1 幂等键根治: 判重键原含 recorded_at，而生产载荷（纯字符串）无时间戳，
+       回落 now() 导致永不撞键，实测同一轮重放 3 次落 3 条。改为稳定因子
+       (user_id, content_hash, session_id)；重复表述累加 occurrences 而非堆行。
+    8. P1-2 中文切词与 trigram 索引对齐: 原切 2-gram 而索引为 trigram，**中文查询
+       恒不命中索引**，一直全表扫描（20 万条实测稀有词 32.8ms）。改 3-gram 后
+       同量级 0.05ms；两处重复切词实现收敛为一份；新增 fts_is_authoritative()
+       避免权威零命中后白扫 LIKE；召回结果带 _recall_path(fts|like) 自证路径。
+    9. P1-3 observations 幂等建表: 该表自 v7 起只有读取方、全仓无 DDL，全新部署
+       /observe 直接 500。列集对齐生产存量 schema，user_id 用 ADD COLUMN 幂等补齐，
+       读取路径先探测列集再决定是否施加过滤（迁移可能失败，读取不能依赖它成功）。
+    10. P1-4 4xx 不再被降级成 500: 注入拦截的 400 被外层 except Exception 吞掉再包
+        500，调用方无法区分「内容被拒」与「服务端故障」，带重试的客户端会死循环。
+        18 处统一先放行 HTTPException，配 AST 源码守卫防复发。
+
+    —— 🔍 三个「静默失败自我掩盖」连环案（实机排查所得）——
+    11. 兼容门面缺口致 consolidator 静默死亡三周: v11.1 重构把显著性能力拆进子包，
+        门面只转发两个钩子，而 consolidator 仍按老接口导入 6 个符号，自 2026-07-26
+        起每日凌晨崩在 import 行、日志累积 18 次同样堆栈。期间衰减/指标/冲突检测/
+        技能结晶/教训闭环全部未运行，而 /health 一直全绿（这些活儿不在服务进程里）。
+        修法是补门面而非改调用方，保持向后兼容。同时补 ducky.utils.CONSOLIDATOR_LOCK。
+    12. salience/evolve 级联清理从引入起从未执行: wal_engine 用的表名与列名双错
+        （memory_salience 真名 salience 且无 user_id 列；evolve_snapshots 表不存在），
+        错误被 except 吞成 debug，计数恒报 0。后果是一条自我掩盖链——salience 留下
+        252 条幽灵 id → 被当正常记忆持续衰减 → 进入淘汰名单 → consolidator 逐个删
+        「早已不存在的东西」→ 日志漂亮报「成功删除 25/25」而向量库分毫未变。
+        新增 delete_salience / prune_orphan_salience / delete_evolve_by_memory_ids。
+    13. SkillCrystallizer SQL 方言错误: GROUP_CONCAT(DISTINCT x, sep) 在 SQLite 报错，
+        异常被吞后输出「技能结晶感知完成: 生成 0 个候选项」—— 看似「暂时没发现模式」，
+        实则该 SQL 从未成功执行。DISTINCT 移进子查询后实测正常产出候选项。
+
+    —— 🛡️ 备份纪律与 cron 凭据 ——
+    14. backup_gate 一致性快照: 原流程「先算校验和 → 再逐个打开库跑完整性检查」，
+        而打开 WAL 库会重建 -shm 并合并日志，当场打废刚算好的基线 —— create 报通过、
+        require 立刻拒绝，硬门禁 100% 拦人，备份纪律退化为形同虚设。改用 SQLite
+        在线备份接口生成已合并日志的单文件快照，不留伴生文件，校验和最后算。
+        **不变量: 校验动作本身不得破坏校验基线。**
+    15. cron 凭据兜底: 服务靠 systemd EnvironmentFile 读令牌，但 cron 不加载 .env
+        （实测取到 None）—— 门禁一开，定时任务下次触发即集体 401，且失败只写日志
+        无人知晓。新增 ducky.utils.load_env_file / api_auth_headers 作为凭据单一
+        真相源，9 个运维脚本统一复用，health_check 补 sys.path（cron 的 cwd 非仓库根）。
+
+    —— 🟡 供应链与加固 ——
+    16. pyproject 依赖下限对齐 requirements 实锁 + requires-python >=3.10
+        （此前 pip 安装与源码安装跑两套依赖树）
+    17. 口令改 PBKDF2-HMAC-SHA256 200k 轮，文件权限 0600，旧单轮 sha256 首次登录
+        自动升级；改密撤销全部会话；口令下限 4→8 位
+    18. echarts 落本地 frontend/js/vendor（去掉无 SRI 的第三方 CDN 外链，离线可用）
+    19. router_usage（ssh + exec 形态）默认禁用，需显式 AIDUMEM_ROUTER_USAGE_ENABLED=1
+    20. /docs /redoc /openapi.json 纳入门禁（135 个端点清单等于攻击面地图），
+        AIDUMEM_PUBLIC_DOCS=1 可显式放开；登录与健康检查永久免凭据
+    21. /stats 的 vision_count / obsidian_count 按租户收窄（原为全库计数，
+        陌生租户可从中推断本机记忆总规模，属量级侧信道泄漏）
+    22. 严格档下 /events/history 与 /opinions 补租户校验（自增整数 id 可枚举）
+
+    —— 🟢 文档诚信（宣称即承诺铁律的执行）——
+    23. 「租户硬隔离」改为准确的「按租户收窄可见性」并明示单机自托管定位；
+        README_EN 补齐 Testing & Quality 与 Security Model 两章并与中文版对齐
+    24. 测试数字改为**自校验**: 新增守卫从 pytest --collect-only 取真值与 README
+        比对，并校验「通过数 + 跳过数 = 总数」—— 数字过期会立刻红灯，而非靠人手同步
+    25. 补充 trigram 中文切词策略与 LIKE 兜底边界；删除范围清单补上原文层
+
+    质量: 339 通过 / 12 跳过（完整环境 351 全绿）· 编译 0 错误 · 脱密 0 泄漏
+    新增测试 107 项，全部遵循「反假绿灯纪律」：载荷/凭据/查询形态多形态并测，
+    索引类断言校验 _recall_path 而非仅看命中数。
+
 v19.4.0 (明镜工程 Phase 1 · 原文保真层 · 生产审计修复版 · 2026-08-17)
     核心主题: 说过的话一字不丢 · 原文证据与原子事实融合召回 · 生产路径自防御 · 治理账本无死角
     背景: AML 榜单调研证实显式事实召回靠「原文保真 + 混合检索」，不靠更花的抽取。
@@ -55,7 +150,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "19.4.0"
+SERVICE_VERSION = "19.4.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
@@ -66,6 +161,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("19.4.1", "Athena", "雅典娜", "审计补丁 · 鉴权贯通与租户闭环 · 静默失败终结 · 删除权兑现 · 宣称即承诺"),
     ("19.4.0", "Athena", "雅典娜", "明镜工程 Phase 1 · 原文保真层 · 生产审计修复 · 注入框架服务端自防御 · LLM 通道根治 · 治理账本无死角"),
     ("19.3.3", "Athena", "雅典娜", "审计回归修复 · 测试断言对齐 · 发布链接续"),
     ("19.3.2", "Athena", "雅典娜", "legacy 路由 import 修复 · /facts/add 500 根治"),

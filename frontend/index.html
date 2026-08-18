@@ -54,10 +54,18 @@
     .slogan-cn { left: 20px; }
   }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<!-- P2-3（v19.4.1）：echarts 改为本地随包分发。
+     此前从 cdn.jsdelivr.net 外链且无 SRI —— 内网/离线/断网部署下控制台
+     图表直接白屏，且第三方 CDN 一旦被投毒即等于在控制台里执行任意 JS。
+     自托管记忆系统不该为了省 1MB 把控制台的完整性交给外部 CDN。 -->
+<script src="js/vendor/echarts.min.js"></script>
 </head>
 <body>
 <script>
+/* v19.4.1 P0-1: this is a UX shortcut only — it avoids rendering an empty
+   console before the first 401. The real gate lives server-side (HttpOnly
+   session cookie validated by the auth middleware); API.get/post redirect
+   here on any 401. Clearing sessionStorage grants no access. */
 if (!sessionStorage.getItem('aidumei_auth')) {
   location.replace('login.html');
 }

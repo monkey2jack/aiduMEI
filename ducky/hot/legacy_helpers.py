@@ -310,6 +310,65 @@ def _background_scene_cluster_loop():
         first_run = False
         time.sleep(43200)
 
+def _observations_columns(conn) -> set:
+    """返回 observations 表的实际列集（表不存在返回空集）。"""
+    try:
+        return {r[1] for r in conn.execute("PRAGMA table_info(observations)").fetchall()}
+    except Exception as exc:
+        logger.debug("observations 列探测跳过: %s", exc)
+        return set()
+
+
+def _ensure_observations_table(conn):
+    """幂等建 observations 表，并按需补 user_id 列。
+
+    v19.4.1（P1-3）：该表自 v7 起只有读取方（GET /observe），
+    写入方 `_run_consolidation` 早已退化为占位（由 Layer1 自检 +
+    Instinct 毕业接管），全仓从未有过 DDL —— 全新部署调 /observe
+    直接 `no such table: observations` 500。
+
+    列集刻意对齐**生产存量库的真实 schema**（v7 时代手工建的表：
+    id / category / summary / content / source_ids / proof_count /
+    confidence / created_at / updated_at / is_stale / history），
+    而不是另发明一套 —— 否则新旧两套列集会在同一份数据上分叉。
+    `CREATE TABLE IF NOT EXISTS` 对存量库是 no-op，绝不 DROP / 改类型 / 删数据。
+
+    user_id 列单独用 ADD COLUMN 幂等补齐（存量库没有这一列），
+    补不上也不影响读取 —— 路由侧会按实际列集决定是否施加租户过滤。
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS observations (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            category    TEXT NOT NULL DEFAULT 'general',
+            summary     TEXT NOT NULL DEFAULT '',
+            content     TEXT NOT NULL DEFAULT '',
+            source_ids  TEXT NOT NULL DEFAULT '[]',
+            proof_count INTEGER NOT NULL DEFAULT 1,
+            confidence  REAL NOT NULL DEFAULT 0.5,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            is_stale    INTEGER NOT NULL DEFAULT 0,
+            history     TEXT NOT NULL DEFAULT '[]',
+            user_id     TEXT DEFAULT ''
+        )
+    """)
+    # 存量库（v7 手工建表）没有 user_id 列，幂等补上。
+    if "user_id" not in _observations_columns(conn):
+        try:
+            conn.execute("ALTER TABLE observations ADD COLUMN user_id TEXT DEFAULT ''")
+            logger.info("🏗️ observations 迁移：已补列 user_id")
+        except Exception as exc:
+            logger.debug("observations user_id 补列跳过: %s", exc)
+
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_obs_category ON observations(category)",
+    ):
+        try:
+            conn.execute(stmt)
+        except Exception as exc:
+            logger.debug("observations 索引跳过: %s", exc)
+    conn.commit()
+
 def _ensure_scenes_table(conn):
     """🔴6：scenes 表此前从未建，导致 /scene 开箱 500。此处幂等建表。
 

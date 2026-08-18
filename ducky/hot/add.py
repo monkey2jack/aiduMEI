@@ -183,7 +183,7 @@ def register_add_routes(app: FastAPI) -> None:
             def _run_pipeline(uid, msgs, meta):
                 try:
                     return lazy_import_layer1()(mem, msgs, uid, meta)
-                except (ImportError, Exception) as e:
+                except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
                     logger.warning(f"Layer 1 自检异常，降级为直接写入: {e}")
                     add_result = mem.add(msgs, user_id=uid, metadata=meta)
                     register_salience_for_add(add_result)
@@ -337,6 +337,11 @@ def register_add_routes(app: FastAPI) -> None:
                 }
 
             return _run_pipeline(req.user_id, messages_json, md)
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"add 失败: {e}")
             raise HTTPException(500, str(e))
@@ -362,6 +367,11 @@ def register_add_routes(app: FastAPI) -> None:
             from ducky.add_speed import coalesce_status, ensure_coalesce_worker
             ensure_coalesce_worker()
             return {"status": "ok", **coalesce_status(user_id or None)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(500, str(e))
 
@@ -371,6 +381,11 @@ def register_add_routes(app: FastAPI) -> None:
         try:
             from ducky.add_speed import coalesce_stats_snapshot
             return {"status": "ok", **coalesce_stats_snapshot(reset=reset)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(500, str(e))
 
@@ -410,6 +425,11 @@ def register_add_routes(app: FastAPI) -> None:
                     flushed.append({"key": b.get("key"), "error": str(e)[:200]})
             ensure_coalesce_worker()
             return {"status": "ok", "flushed": flushed, "n": len(flushed)}
+        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
+        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
+        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(500, str(e))
 

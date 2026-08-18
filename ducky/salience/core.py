@@ -204,3 +204,64 @@ def get_batch_salience_records(memory_ids: list[str]) -> dict[str, dict]:
         return {r["memory_id"]: dict(r) for r in rows}
     finally:
         conn.close()
+
+def delete_salience(memory_ids) -> int:
+    """按 memory_id 批量删除显著性记录。返回删除行数。
+
+    v19.4.1 补齐：wal_engine 的级联删除第 4 步写的是
+        `DELETE FROM memory_salience WHERE memory_id=? AND user_id=?`
+    但本库的真实表名是 `salience`，且**没有 user_id 列**
+    （显著性是记忆级信号，不按租户分区）。两个错误都被
+    `except Exception: logger.debug(...)` 吞掉，res["salience"] 恒为 0 ——
+    「删除记忆会清理 salience.db」从引入起从未真正发生过。
+
+    实测后果：生产 salience 表 1099 条记录里有 252 条是向量库中
+    早已不存在的幽灵 id。这些幽灵会被 decay_all 当作正常记忆持续衰减、
+    最终进入 evicted 列表，consolidator 再逐个调 /delete 去删
+    「早就不存在的东西」——日志报「删除成功 25/25」，实际全是空转。
+    这解释了为什么删除计数漂亮而向量库数量分毫未变。
+
+    租户维度由调用方保证：只传本租户下的 memory_id。
+    """
+    ids = [str(m) for m in (memory_ids or []) if str(m or "").strip()]
+    if not ids:
+        return 0
+    try:
+        conn = get_salience_conn()
+        placeholders = ",".join("?" for _ in ids)
+        n = conn.execute(
+            f"DELETE FROM salience WHERE memory_id IN ({placeholders})", ids
+        ).rowcount or 0
+        conn.commit()
+        return n
+    except Exception as exc:
+        logger.warning("delete_salience 降级: %s", exc)
+        return 0
+
+
+def prune_orphan_salience(known_ids) -> int:
+    """清理幽灵记录：salience 里存在、但 known_ids 中不存在的条目。
+
+    known_ids 应为「当前真实存在的记忆 id 全集」（向量库 ∪ FTS）。
+    传空集合时**不做任何删除** —— 防止调用方拿不到全集时反而清空全表。
+    """
+    known = {str(i) for i in (known_ids or []) if str(i or "").strip()}
+    if not known:
+        logger.warning("prune_orphan_salience: known_ids 为空，跳过（防误清全表）")
+        return 0
+    try:
+        conn = get_salience_conn()
+        rows = [r[0] for r in conn.execute("SELECT memory_id FROM salience").fetchall()]
+        orphans = [r for r in rows if str(r) not in known]
+        if not orphans:
+            return 0
+        placeholders = ",".join("?" for _ in orphans)
+        n = conn.execute(
+            f"DELETE FROM salience WHERE memory_id IN ({placeholders})", orphans
+        ).rowcount or 0
+        conn.commit()
+        logger.info("🧹 清理 salience 幽灵记录 %d 条", n)
+        return n
+    except Exception as exc:
+        logger.warning("prune_orphan_salience 降级: %s", exc)
+        return 0

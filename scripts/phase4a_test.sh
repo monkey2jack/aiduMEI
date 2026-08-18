@@ -4,6 +4,13 @@
 
 set -u
 URL="${AIDUMEM_API_BASE:-http://127.0.0.1:8767}/api/mem0/inject-context"
+
+# 🔴P0-1（v19.4.1）：门禁开启后不带凭据的 curl 一律 401。
+# 未设 token 时为空数组（行为与旧版一致）。
+AUTH_ARGS=()
+if [[ -n "${AIDUMEM_API_TOKEN:-}" ]]; then
+  AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
+fi
 PASS=0
 FAIL=0
 declare -a RESULTS
@@ -21,7 +28,7 @@ run_test() {
   echo "   k: $k | 期望含类别: $expect_keywords"
   echo "────────────────────────────────────────"
   local resp
-  resp=$(curl -s -X POST "$URL" \
+  resp=$(curl -s "${AUTH_ARGS[@]}" -X POST "$URL" \
     -H "Content-Type: application/json" \
     -d "{\"query\": \"$query\", \"k\": $k}")
   if [ $? -ne 0 ]; then

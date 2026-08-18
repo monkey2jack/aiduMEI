@@ -1,4 +1,5 @@
 """后台恢复：从facts.db写回Qdrant（慢速，每条约1.5秒）"""
+import os
 import sys, os, json, requests, time
 
 _REPO = os.environ.get("AIDUMEM_HOME") or os.path.dirname(
@@ -8,6 +9,11 @@ os.chdir(_REPO)
 
 from ducky.utils import get_facts_conn
 
+# 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
+# cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+
+
 conn = get_facts_conn()
 # 跳过已恢复的：从Qdrant已有的数量推算
 rows = conn.execute(
@@ -16,7 +22,7 @@ rows = conn.execute(
 conn.close()
 
 # 快速check当前Qdrant有多少条了
-resp = requests.post('http://127.0.0.1:8767/search', json={'query':'test','user_id':'default','limit':1}, timeout=15)
+resp = requests.post('http://127.0.0.1:8767/search', json={'query':'test','user_id':'default','limit':1}, timeout=15, headers=_auth_headers())
 already = 0  # 不好直接查，直接全量覆盖写
 
 api = 'http://127.0.0.1:8767'
@@ -34,7 +40,7 @@ for i, row in enumerate(rows):
     body = {'messages': messages, 'user_id': 'default', 'metadata': {'fact_id': mem_id, 'category': category, 'fact_key': key}}
     
     try:
-        resp = requests.post(f'{api}/add', json=body, timeout=30)
+        resp = requests.post(f'{api}/add', json=body, timeout=30, headers=_auth_headers())
         if resp.status_code == 200:
             success += 1
         else:

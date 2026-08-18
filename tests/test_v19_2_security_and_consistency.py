@@ -399,11 +399,22 @@ def test_password_salt_sha256_hash():
 
 
 def test_version_truth():
-    """测试版本号在真相源与各配置文件一致"""
-    assert SERVICE_VERSION in ("19.2.0", "19.2.1", "19.3.0", "19.3.1", "19.3.2", "19.3.3", "19.4.0")
+    """测试版本号在真相源与各配置文件一致
+
+    v19.4.1：原实现用「允许的版本号白名单」，每次发版都要往列表里加一项 ——
+    忘加就红灯，加了也只是让测试通过，并未验证一致性本身。
+    改为直接比对：manifest / pyproject 必须与 version.py 逐字相同。
+    """
+    import re
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", SERVICE_VERSION), f"版本号格式非法: {SERVICE_VERSION}"
+
     with open(os.path.join(_REPO_ROOT, "manifest.json"), "r", encoding="utf-8") as f:
         manifest = json.load(f)
-    assert manifest["version"] in ("19.2.0", "19.2.1", "19.3.0", "19.3.1", "19.3.2", "19.3.3", "19.4.0")
+    assert manifest["version"] == SERVICE_VERSION, (
+        f'manifest.json {manifest["version"]} ≠ version.py {SERVICE_VERSION}'
+    )
+
     with open(os.path.join(_REPO_ROOT, "pyproject.toml"), "r", encoding="utf-8") as f:
         toml_content = f.read()
     assert f'version = "{SERVICE_VERSION}"' in toml_content

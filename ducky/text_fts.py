@@ -76,20 +76,44 @@ def _ensure_trigram_fts(conn: sqlite3.Connection):
             logger.warning(f"FTS 回灌跳过: {e}")
 
 
+# FTS5 trigram 分词器的硬性下限：少于 3 个字符的 MATCH 词元不可能命中索引。
+# 这不是可调参数，是 trigram tokenizer 的定义决定的。
+_TRIGRAM_MIN_LEN = 3
+
+
 def _fts_terms(query: str) -> list[str]:
-    """中英混合切词：中文 2-gram + 英文/数字词。"""
+    """中英混合切词，产出**可命中 trigram 索引**的 MATCH 词元。
+
+    🟠P1-2（v19.4.1）根治「切词与索引失配」：
+        此前中文切 2-gram，而虚拟表建的是 `tokenize='trigram'` ——
+        2 字词元在 trigram 索引里永远匹配不上。实测：
+            MATCH '"银行"'   → 0 行
+            MATCH '"银行卡"' → 1 行
+        于是**每一次中文查询都静默落到 LIKE 全表扫描**，
+        「trigram 全文索引」这个宣称对中文实际从未生效。
+        20 万条原文实测代价：稀有中文词 32.8 ms（LIKE）vs 0.2 ms（FTS）。
+
+    现在中文按 3-gram 切，与索引对齐；不足 3 字的中文查询（如「祖母」）
+    无法用 trigram 表达，交由 LIKE 兜底 —— 这是 trigram 的固有边界，
+    不再假装走了索引，由 `_recall_path` 字段显式暴露实际走的哪条路。
+    """
     q = (query or "").strip()
     if not q:
         return []
     terms: list[str] = []
-    # 英文数字
-    terms.extend(re.findall(r"[A-Za-z0-9_]{2,}", q))
-    # 中文连续段 → 2-gram（单字也保留）
+    # 英文/数字：trigram 对 ASCII 同样要求 >= 3 字符
+    terms.extend(
+        t for t in re.findall(r"[A-Za-z0-9_]+", q) if len(t) >= _TRIGRAM_MIN_LEN
+    )
+    # 中文连续段 → 3-gram 滑窗；整段不足 3 字则整段保留（留给 LIKE 兜底判断）
     for seg in re.findall(r"[\u4e00-\u9fff]+", q):
-        if len(seg) == 1:
+        if len(seg) < _TRIGRAM_MIN_LEN:
             terms.append(seg)
         else:
-            terms.extend(seg[i:i+2] for i in range(len(seg) - 1))
+            terms.extend(
+                seg[i:i + _TRIGRAM_MIN_LEN]
+                for i in range(len(seg) - _TRIGRAM_MIN_LEN + 1)
+            )
     # 去重保序
     seen, out = set(), []
     for t in terms:
@@ -97,6 +121,33 @@ def _fts_terms(query: str) -> list[str]:
             seen.add(t)
             out.append(t)
     return out[:16]
+
+
+def fts_match_terms(query: str) -> list[str]:
+    """只保留能真正命中 trigram 索引的词元（长度 >= 3）。
+
+    切词结果里可能混有不足 3 字的短词（如「祖母」），它们放进 MATCH 表达式
+    只会让整个 OR 串失配。这里把它们剔掉：有剩余词元就走 FTS，
+    一个都不剩说明这条查询天然无法用 trigram 表达，直接走 LIKE。
+    """
+    return [t for t in _fts_terms(query) if len(t) >= _TRIGRAM_MIN_LEN]
+
+
+def fts_is_authoritative(query: str) -> bool:
+    """FTS 的「零命中」是否可信（可信则无需再做 LIKE 全表扫）。
+
+    trigram 分词器把内容里所有 3 字窗口都建了索引，因此对 >= 3 字的词元，
+    `MATCH '"abc"'` 与 `content LIKE '%abc%'` 命中集合等价。
+    只要本次查询的**所有**词元都 >= 3 字，FTS 返回空就意味着真的没有，
+    再兜一次 LIKE 只是白扫一遍全表（20 万条实测白扫 23.8 ms）。
+
+    若查询里混有不足 3 字的词元（如「祖母」），它们没进 MATCH 表达式，
+    FTS 的空结果就不完整，此时必须兜 LIKE。
+    """
+    terms = _fts_terms(query)
+    if not terms:
+        return False
+    return all(len(t) >= _TRIGRAM_MIN_LEN for t in terms)
 
 
 def _init_text_fts():
@@ -231,10 +282,16 @@ def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USE
     if not terms:
         terms = [t for t in q.split() if t]
 
+    # 🟠P1-2：只把长度 >= 3 的词元送进 MATCH。短词元混进 OR 串会让整串失配，
+    # 这正是此前中文查询「看起来建了索引却从不命中」的直接原因。
+    match_terms = fts_match_terms(q)
+
     rows = []
-    if terms:
+    recall_path = "like"
+    fts_attempted = False
+    if match_terms:
         safe = []
-        for t in terms[:12]:
+        for t in match_terms[:12]:
             t = t.replace('"', '""')
             if t:
                 safe.append(f'"{t}"')
@@ -250,15 +307,24 @@ def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USE
                 """,
                 (match_expr, user_id, top_k),
             ).fetchall()
+            fts_attempted = True
+            if rows:
+                recall_path = "fts"
+            elif fts_is_authoritative(q):
+                # 权威零命中：这次确实走了索引，只是没有结果
+                recall_path = "fts"
         except Exception as e:
             logger.debug(f"FTS MATCH 失败，降级 LIKE: {e}")
             rows = []
 
-    if not rows:
+    # FTS 已权威给出「零命中」时不再白扫 LIKE（见 fts_is_authoritative）
+    if not rows and not (fts_attempted and fts_is_authoritative(q)):
         rows = _like_search(terms or [q], user_id, top_k, conn)
+        recall_path = "like"
 
     conn.close()
-    return [dict(r) for r in rows]
+    # P1-4 降级可观测：调用方（含测试）可自证这次召回真走的是索引还是全表扫。
+    return [dict(r, _recall_path=recall_path) for r in rows]
 
 
 def _hybrid_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID,

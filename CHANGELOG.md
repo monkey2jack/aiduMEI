@@ -1,6 +1,175 @@
 # aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复，v19.3.3 审计回归修复与发布链接续，v19.4.0 明镜工程原文保真层 + Mímir 借鉴六项 + 生产审计修复版。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复，v19.3.3 审计回归修复与发布链接续，v19.4.0 明镜工程原文保真层 + Mímir 借鉴六项 + 生产审计修复版，v19.4.1 审计补丁鉴权贯通与租户闭环。
+
+---
+
+## v19.4.1 — 审计补丁 · 鉴权贯通与租户闭环（2026-08-18）
+
+> **定性：审计补丁版，不引入新功能。** 修的全是「文档说了但代码没做到」的裂缝。
+> 审计方法从「逐行读代码」改为**探针实测**——对 README / CHANGELOG 每一句宣称，
+> 写一个最小可运行程序去试着推翻它。结论：代码纪律没问题，问题几乎全部集中在
+> 「宣称 > 实现」的缝里。四条宣称被实测推翻，逐条修复并写进断言锁死。
+
+### 🔴 安全与数据权利
+
+- **P0-1 鉴权贯通「一道门禁两把钥匙」**（新增 `ducky/security/auth.py`）
+  修复前两种部署形态**都不可用**：只设 `AIDUMEM_UI_PASSWORD` 时中间件整段放行，
+  未登录 `GET /api/facts` 返回 200 全裸奔（口令只是前端 sessionStorage 障眼法）；
+  只设 `AIDUMEM_API_TOKEN` 时前端从不发 `Authorization`，登录后所有面板 401 报废。
+  根因是**认证结果没有服务端载体**。现 `/login` 校验通过后签发 HttpOnly + SameSite=Lax
+  session cookie，与 Bearer 令牌构成同一道门禁的两把钥匙，任一有效即放行；
+  新增 `/logout` 服务端撤销会话；改密撤销全部既有会话。
+  前端 `get/post` 补 `credentials: 'same-origin'`，401 统一跳登录页；hermes 插件补带 Bearer。
+  **存量零破坏**：口令哈希加 `source=auto|user` 标记 —— 服务首次启动自动生成的口令
+  只守控制台登录，**不启用** REST 门禁，既有回环调用方（插件 / MCP / cron）升级后行为不变。
+- **P0-2 facts 层租户可见性贯通**：`facts_recall.py` 原本全文无 `user_id`，
+  `legacy_routes.py` 19 处 `FROM facts` 无一处过滤。新增 `tenant_clause()`，
+  覆盖 `/facts`、`/facts/search`、`/facts/categories`、`/facts/entities`、`/facts/related`、
+  `/facts/reason`、`/facts/trust-stats`、`/observe` 与 `/facts/inject-context` 出口。
+  宽松档（默认，兜住未标记归属的历史数据）/ 严格档（`AIDUMEM_STRICT_TENANT=1`）双档。
+  `trajectory` 增 `tenant_scope` 步骤，收窄行为可观测。
+- **P0-2b 跨租户静默覆盖**（施工中新发现，比可见性泄漏更严重）：`/facts/add` 原将
+  `agent_id` 恒写常量，而唯一约束是 `ON CONFLICT(agent_id, category, fact_key)` ——
+  不同租户写同一 `(类别, 键)` 会命中同一约束，**后写者直接销毁前者的 fact_value**。
+  现 `agent_id` 显式可传，未传时回退 `source`，默认租户仍用常量保证存量行为不变。
+- **P0-3 移除无 WHERE 全表删**：各仓原有 `if user_id == "default": DELETE FROM <表>`
+  分支，而 `default` 正是系统默认 `user_id` —— 清 default 会连带清空所有其他租户。
+  现一律精确 `WHERE user_id=?`；全库清空抽成显式入口 `purge_all_verbatim(confirm=True)`。
+- **P0-4 删除权兑现到原文层**：`cascade_delete_memory` 原清 5 个库却独漏 v19.4.0
+  新增的 `verbatim_turns`，含敏感信息的逐字原文删除后仍可被 `/search` 召回。
+  补第 6 步按 `content_hash` 精确清理双侧；正文抓取放在物理删除之前。
+- **P0-4b 原文条目可删**（实机冒烟发现，P0-4 只修了一半）：`/search` 以
+  `id="verbatim:<n>"` 返回原文证据，这是调用方**唯一句柄**，但 `/delete` 不认它 ——
+  返回成功却什么都没删。此类原文常无对应 mem0 记忆，遂成**可检索但删不掉的孤儿**。
+  新增 `delete_verbatim_by_id()`，强制带 `user_id` 匹配防越权，畸形输入一律拒绝，
+  删前留 tombstone（补 `_capture_verbatim_content` 否则快照抓不到正文）。
+
+### 🟠 功能真伪与可观测
+
+- **P1-1 幂等键根治**：唯一索引原含 `recorded_at`，而生产实际写入路径（hermes 插件
+  `sync_turn` 发的是拼接后的**纯字符串**）不带 per-message timestamp，`_normalize_ts`
+  回落 `now()` —— 每次重放时间戳都不同，唯一约束永远撞不上，实测同一轮落 3 条。
+  改为显式「先查后写」，判重键 = `(user_id, content_hash, session_id)` 全为稳定因子；
+  重复表述累加 `occurrences` 并刷新 `last_seen_at`，而非堆重复行；跨会话真实重复仍保留独立行。
+- **P1-2 中文切词与 trigram 索引对齐**：原切中文 2-gram 而虚拟表是 `tokenize='trigram'`,
+  2 字词元在 trigram 索引里**永远匹配不上** —— 每一次中文查询都静默落到 LIKE 全表扫描，
+  「trigram 全文索引」这个宣称对中文从未生效。20 万条实测稀有中文词 32.8ms → 0.05ms。
+  改 3-gram 对齐；`verbatim_vault` 与 `text_fts` 两份重复切词实现收敛为一份；
+  新增 `fts_is_authoritative()` —— 全部词元 ≥3 字时 FTS 零命中即权威，不再白扫 LIKE；
+  召回结果带 `_recall_path`（`fts` / `like`）自证本次真走的哪条路。
+  `fuse_verbatim` 的相关度门槛改用独立 `_gate_terms`（2-gram）与索引切词解耦。
+- **P1-3 `observations` 幂等建表**：该表自 v7 起只有读取方、全仓从无 DDL，
+  全新部署 `/observe` 直接 `no such table` 500。列集**对齐生产存量 schema**
+  （实机发现生产表是 v7 手工建的，列集与新建表完全不同），`user_id` 用
+  `ALTER TABLE` 幂等补齐，读取路径先 `PRAGMA` 探测列集再决定是否施加过滤 ——
+  补列可能因锁 / 权限失败，读取不能依赖迁移成功。
+- **P1-4 4xx 不再被降级成 500**：注入拦截的 `HTTPException(400)` 被同一 try 的
+  `except Exception` 捕获后重包成 500，调用方无法区分「内容被拒」与「服务器故障」，
+  带自动重试的客户端会对着永远会被拒的内容反复重试。AST 扫描出同一模式 18 处
+  （`add.py` 4 / `crud.py` 13 / `search.py` 1），统一先放行 `HTTPException`，
+  配源码守卫防后续新增路由复发。
+- **P1-4 降级可观测**：`/health` 增 `auth_gate_enabled` / `auth_api_token_set` /
+  `auth_ui_password` / `auth_active_sessions` 与 `fts_chinese_indexed` 探针；
+  门禁未启用时写入 `warnings`，不让「以为设了密码就安全」的部署方继续误会。
+
+### 🔍 三个「静默失败自我掩盖」连环案（实机排查所得）
+
+这三个同型：**异常被 `except` 吞掉后，业务层输出一个语法正确、语义完全错误的「正常结果」**。
+
+- **兼容门面缺口致 consolidator 静默死亡三周**：v11.1 重构把显著性能力拆进
+  `ducky.salience` 子包，兼容门面 `ducky/memory_salience.py` 却只转发了两个写入钩子，
+  而 `scripts/consolidator.py` 仍按老接口导入 6 个符号 —— 自 2026-07-26 起每天凌晨
+  被 cron 唤起、每次都在 import 行 `ImportError` 退出，日志累积 18 次同样堆栈。
+  期间衰减 / 每日指标 / 冲突检测 / 技能结晶 / 教训闭环**全部未运行**，
+  而 `/health` 一直全绿 —— 因为这些活儿本就不在服务进程里，在一个安静死掉的 cron 里。
+  修法是**补门面而非改调用方**，保持向后兼容。同时补 `ducky.utils.CONSOLIDATOR_LOCK`
+  （原缺失导致防双跑机制形同不存在）。
+- **salience / evolve 级联清理从引入起从未执行**：`wal_engine` 用的表名与列名双错
+  —— `memory_salience` 真名是 `salience` 且该表**无 `user_id` 列**；
+  `evolve_snapshots` 表根本不存在（真实表是 `evolve_queries` / `evolve_feedback` /
+  `evolve_adjustments` / `evolve_meta`）。两处错误都被 `except Exception: logger.debug`
+  吞掉，`res["salience"]` 与 `res["evolve"]` 恒报 0。后果是一条完整的自我掩盖链：
+  salience 留下 252 条向量库中早已不存在的**幽灵 id** → 幽灵被 `decay_all` 当正常记忆
+  持续衰减 → 显著性归零进入 evicted → consolidator 逐个调 `/delete` 去删
+  「早就不存在的东西」→ 每次都返回 ok → 日志漂亮地报「🗑️ 删除成功 25/25」
+  而向量库数量分毫未变。新增 `delete_salience()` / `prune_orphan_salience()`
+  （`known_ids` 为空时**拒绝执行**，防拿不到全集时清空全表）/ `delete_evolve_by_memory_ids()`。
+- **SkillCrystallizer SQL 方言错误**：`GROUP_CONCAT(DISTINCT x, ' | ')` 在 SQLite
+  直接报错（不允许 DISTINCT 与自定义分隔符同用），异常被吞后输出
+  「🐙 技能结晶感知完成: 生成 0 个候选项」—— 看似「暂时没发现模式」，
+  实则该 SQL 从未成功执行。DISTINCT 移进子查询后实测正常产出候选项。
+
+### 🛡️ 备份纪律与 cron 凭据
+
+- **backup_gate 一致性快照**：原流程「① `cp -a` 连 `-wal`/`-shm` 一起拷 → ② 对所有
+  文件算 SHA256SUMS → ③ 再逐个 `.db` 跑 `quick_check`」，而第 ③ 步打开 WAL 库会重建
+  `-shm` 并把日志 checkpoint 进主库，**当场打废第 ② 步刚算好的基线** ——
+  `create` 报「备份完成并通过校验」，紧接着 `require` 判「没有任何通过校验的备份，
+  拒绝迁移」。后果比备份失败更坏：硬门禁 100% 拦人，运维只会学会绕过它，
+  B2 备份纪律从「卡入口」退化成形同虚设。改用 SQLite 在线备份 API 生成
+  已合并 WAL 的单文件一致快照，转 DELETE 日志模式并显式清掉伴生文件，
+  顺序改为「先快照 → 再拷非 DB 文件 → 最后算 sha256」。
+  **不变量：校验动作本身不得破坏校验基线。**
+- **cron 凭据兜底**：服务进程靠 systemd `EnvironmentFile` 读 `.env` 拿到令牌，
+  但 **cron 不加载 `.env`**（实测干净环境取到 `None`）—— 门禁一开启，
+  consolidator（每日 2:30）等定时任务在下次触发时会集体 401，而它们失败只写日志、
+  无人被通知。新增 `ducky.utils.load_env_file()` 与 `api_auth_headers()` 作为凭据
+  单一真相源，9 个运维脚本统一复用；`health_check.py` 补 `sys.path.insert`
+  （cron 的 cwd 不是仓库根）。
+
+### 🟡 供应链与加固
+
+- `pyproject.toml` 依赖下限对齐 `requirements.txt` 实锁 + 补 `requires-python = ">=3.10"`
+  —— 此前 `pip install aidumei` 与克隆源码跑在两套依赖树上，且 3.9 用户不被 pip 拦住
+  （代码里大量 `X | None` 语法在 3.9 上直接 SyntaxError）。
+- 口令改 **PBKDF2-HMAC-SHA256（200k 轮）**，哈希文件权限 0600，
+  旧单轮 sha256 首次登录成功后自动升级；口令下限 4 → 8 位。
+- echarts 落本地 `frontend/js/vendor/` —— 去掉无 SRI 的第三方 CDN 外链，
+  内网 / 离线部署可用，且不再把控制台完整性交给外部 CDN。
+- `router_usage`（`ssh` + `base64` + `exec` 形态）改为**默认禁用**，
+  需显式 `AIDUMEM_ROUTER_USAGE_ENABLED=1`；`StrictHostKeyChecking` 可配。
+- `/docs`、`/redoc`、`/openapi.json` 纳入门禁保护 —— 这三个路径会吐出 135 个端点的
+  完整清单（含参数与请求体结构），门禁开着却公开等于给未授权访问者一份攻击面地图；
+  `AIDUMEM_PUBLIC_DOCS=1` 可显式放开。登录与健康检查抽成永久免凭据白名单
+  （前者是拿凭据的唯一入口，后者锁死会让监控误判服务挂了）。
+- `/stats` 的 `vision_count` / `obsidian_count` 按租户收窄 —— 原为全库 `COUNT(*)`，
+  其余字段都随 `user_id` 变化唯独它们恒定，陌生租户可从中推断本机记忆总规模
+  （量级侧信道泄漏）。
+- 严格档下 `/events/history` 与 `/opinions` 补租户校验（以自增整数 id 为入口可枚举）；
+  宽松档保持原行为不给单机用户添麻烦。
+- `except (ImportError, Exception)` 反模式修正（`ImportError` 本就是 `Exception` 子类）。
+
+### 🟢 文档诚信（「宣称即承诺铁律」的执行）
+
+- 「租户硬隔离」改为准确的「按租户收窄可见性」，并明示**单机自托管**定位与
+  「不等同于多租户 SaaS 安全边界」；`README_EN` 补齐 `Testing & Quality` 与
+  `Security Model` 两章（此前完全缺失）并与中文版逐项对齐。
+- **测试数字改为自校验**：新增守卫从 `pytest --collect-only` 取真值与 README 表格比对，
+  并校验「通过数 + 跳过数 = 总数」—— 此前 README 295 / 汇报 328 / 实测 340 三版互相矛盾，
+  根因是数字靠人手抄进文档。现在数字过期会立刻红灯，而不是等外部审计来发现。
+  README 同时标注两个环境（独立开发机 339 通过 / 12 跳过，完整环境 351 全绿）并说明差值成因。
+- 补充 trigram 中文切词策略与 LIKE 兜底边界说明；删除范围清单补上原文保真层。
+
+### 质量数据
+
+- **339 通过 / 12 跳过**（连跑三次稳定）；完整环境（宿主 Hermes 源码在场）**351 全绿**
+- 新增测试 **107 项**，全部遵循**反假绿灯纪律**：涉及载荷 / 凭据 / 查询形态的测试
+  一律多形态并测；索引类断言校验 `_recall_path` 这类自证字段，而非只看「有没有命中」
+- 语句覆盖率 48% → **51%**；编译 0 错误（含 4 个 shell 脚本语法检查）；脱密 0 泄漏
+- 生产实机验收：六项数据与升级前快照集合比对**丢失 0 条**，服务自崩 0 次
+
+### 本轮沉淀的四条铁律
+
+1. **假绿灯铁律**：新增断言必须覆盖生产实际走的代码路径。只测便于构造的形态而绕过
+   真实载荷，绿灯等于没测（v19.4.0 的幂等 bug 就是这样带着绿灯上线的）。
+2. **宣称即承诺铁律**：README / CHANGELOG 里每一句「硬隔离」「绝不留孤儿」「trigram 索引」
+   都是对全世界的承诺。代码没做到，先改文档。
+3. **静默失败铁律**：干净降级是好纪律，但被吞掉的异常若让业务层输出一个
+   「看起来正常的错误结果」，危害远大于崩溃。每个 `except` 都要能回答
+   「如果这里真失败了，谁会知道」。
+4. **校验不得破坏基线铁律**：任何校验动作（完整性检查、探测、体检）
+   都不得改变被校验对象的状态。
 
 ---
 
