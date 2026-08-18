@@ -23,7 +23,7 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-> **v19.4.0 · Athena — Project Mirror Phase 1 · Verbatim Vault + Production Audit Fix Release.** Building on the v19.3 architectural unification, v19.4.0 opens "Project Mirror": using public memory-evaluation leaderboards as a mirror to see our own gaps — no competition, just craft. **Every word you said is kept** — the new Verbatim Vault stores verbatim conversation turns in parallel with mem0's fact extraction (hard tenant isolation + idempotent dedup + trigram full-text index), and fuses verbatim evidence into recall results, so memory keeps not only the distilled skeleton but the warmth of the original words. After a full production audit (2🔴5🟡), every finding is fixed and shipped with this release: the B4 injection frame is now enforced at the server-side recall exit (production is self-defending with or without the hook), call_llm is hardened against the gateway's fake-SSE responses and auto-retries with a bigger budget on reasoning-model truncation so the governance evaluator is alive again, noise rules catch keyboard-mash junk, backup_gate is wired into the upgrade flow as a hard gate, ledger target_id queries expand aliases so one parameter retrieves the whole history, and secondary write paths (federation/refine/ai-self) get governance and ledger coverage. Full suite: 244 passed. v19.3.3 · Athena — Architectural Unification & Audit-Driven Hardening. Building on v19.2.0 production hardening, the v19.3 series delivers **single-source-of-truth unification of the recall pipeline and scoring engine**: funnel stages fully delegate to the unified 5-dimension scoring, singleton and lazy-import lifecycle hardened with double-checked locking, the 800+ line legacy module decoupled, and a unified injection-defense gate placed before final persistence. v19.3.1–v19.3.3 are consecutive audit-driven fixes: silent-exception observability, reranker placeholder removal, legacy route import completion (fixing /facts/add 500), nested exception-handler regression fix, and test assertion alignment.
+> **v19.4.0 · Athena — Project Mirror Phase 1 · Verbatim Vault + Production Audit Fix Release.** Building on the v19.3 architectural unification, v19.4.0 opens "Project Mirror": using public memory-evaluation leaderboards as a mirror to see our own gaps — no competition, just craft. **Every word you said is kept** — the new Verbatim Vault stores verbatim conversation turns in parallel with mem0's fact extraction (per-tenant visibility scoping + idempotent dedup + trigram full-text index), and fuses verbatim evidence into recall results, so memory keeps not only the distilled skeleton but the warmth of the original words. After a full production audit (2🔴5🟡), every finding is fixed and shipped with this release: the B4 injection frame is now enforced at the server-side recall exit (production is self-defending with or without the hook), call_llm is hardened against the gateway's fake-SSE responses and auto-retries with a bigger budget on reasoning-model truncation so the governance evaluator is alive again, noise rules catch keyboard-mash junk, backup_gate is wired into the upgrade flow as a hard gate, ledger target_id queries expand aliases so one parameter retrieves the whole history, and secondary write paths (federation/refine/ai-self) get governance and ledger coverage. Full suite at the time of v19.4.0: 244 passed. (Latest figures: see "Testing & Quality" below.) v19.3.3 · Athena — Architectural Unification & Audit-Driven Hardening. Building on v19.2.0 production hardening, the v19.3 series delivers **single-source-of-truth unification of the recall pipeline and scoring engine**: funnel stages fully delegate to the unified 5-dimension scoring, singleton and lazy-import lifecycle hardened with double-checked locking, the 800+ line legacy module decoupled, and a unified injection-defense gate placed before final persistence. v19.3.1–v19.3.3 are consecutive audit-driven fixes: silent-exception observability, reranker placeholder removal, legacy route import completion (fixing /facts/add 500), nested exception-handler regression fix, and test assertion alignment.
 
 Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
@@ -78,14 +78,15 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
    - **Multi-layer Filter**: Layer 1 regex pattern filter (jailbreaks / prompt overrides), Layer 2 normalization filter (strips punctuations/spaces to defeat obfuscation bypasses), and Layer 3 repetition/overflow rate-limiter.
    - **Benign Whitelist**: Whitelists legitimate DevOps phrases and common natural language patterns to prevent false positives.
    - **Context Sandboxing**: Recalled memories injected into System Prompts are strictly wrapped with `[DATA: MEMORY CONTEXT ...]` boundary tags, declaring them as pure data.
-2. **Multi-Tenant Isolation & Exact-Match Deletion (P0)** (`ducky/hot/crud.py` & `ducky/wal_engine.py`)
+2. **Tenant Ownership Checks & Exact-Match Deletion (P0)** (`ducky/hot/crud.py` & `ducky/wal_engine.py`)
    - **Strict Tenant Scoping**: `/delete` and `/update` enforce tenant ownership (`user_id`), eliminating cross-tenant access.
    - **Exact Matching**: Replaced substring SQL `LIKE '%...%'` queries with exact `id=? OR fact_key=?` matching, preventing accidental substring deletions.
+   - **Scope, not a security boundary (please do not over-read)**: aiduMEI is a **single-machine self-hosted** engine. The tenant dimension separates different agents/identities inside one deployment; it is **not** equivalent to the security boundary of a multi-tenant SaaS. Recall-side scoping covers the facts layer as of v19.4.1 (`AIDUMEM_STRICT_TENANT` switches to strict mode — see [`.env.example`](.env.example)). To host mutually untrusted parties, isolate by deployment instance rather than relying on this layer.
 3. **Anti-Accidental Clear Guard (P0)**
    - `/delete_all` strictly rejects empty payloads with HTTP 400.
    - Purging the `default` tenant requires explicit `confirm: true` to prevent accidental wipeouts.
 4. **Multi-Store Cascade Atomic Deletion & Application WAL (P0)** (`ducky/wal_engine.py`)
-   - Single deletion and tenant wipeouts synchronously purge **Qdrant vector store, SQLite FTS5 full-text index, facts.db, salience.db, and evolve_mem.db**, leaving zero orphan records.
+   - Single deletion and tenant wipeouts synchronously purge **Qdrant vector store, SQLite FTS5 full-text index, facts.db, salience.db, evolve_mem.db**, and — as of v19.4.1 — the **Verbatim Vault** (`verbatim_turns` + `verbatim_fts_map`), leaving zero orphan records.
    - Lightweight `wal_journal.jsonl` with `fsync` logging; automatically reconciles and self-heals orphaned records via `reconcile_startup()` on boot.
    - Recursive refinement soft-archives vector points and unindexes FTS5 records, eliminating ghost memory recalls.
 5. **Unified 5-Dimension Scoring Engine & Zero N+1 Queries (P1)** (`ducky/scoring.py`)
@@ -93,7 +94,8 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
    - **Zero N+1 Query Overhead**: `get_batch_memory_types` loads 6-type classifications via a single SQL batch query.
 6. **Network / Credential Hardening & Live Degradation Telemetry (P1)** (`ducky/degradation.py` & `api_server.py`)
    - Binding to public interfaces (`0.0.0.0`) without `AIDUMEM_API_TOKEN` raises a fatal error on boot to prevent unprotected exposure.
-   - Eliminates default weak passwords; automatically generates a 16-character secure random password with Salt+SHA256 hashed persistence.
+   - Eliminates default weak passwords; automatically generates a strong random password, persisted as a hash in `data/.ui_password_hash` (as of v19.4.1: PBKDF2-HMAC-SHA256 with 200k rounds, file mode 0600, legacy hashes auto-upgraded on first successful login).
+   - **Unified auth gate (v19.4.1)**: after console login the server issues an HttpOnly session cookie, which together with `Authorization: Bearer <AIDUMEM_API_TOKEN>` forms one gate with two keys — either grants access. Previously the console password was a frontend-only marker with no effect on REST endpoints. See `probes.auth_gate_enabled` in `/health`.
    - `/health` exposes live `degraded_components` and memory high-watermark capacity warnings (>800 facts).
 
 ---
@@ -424,6 +426,66 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 - **Reranking**: Configurable (OpenAI Rerank API compatible)
 - **LLM**: Any OpenAI-compatible API
 - **MCP**: fastmcp stdio + HTTP dual-mode
+
+---
+
+## Testing & Quality
+
+```bash
+# Full regression suite
+pytest tests/
+# Compile check
+python -m compileall ducky api_server.py mcp_server.py
+```
+
+**Honest reporting of test scope (v19.4.1)**
+
+| Dimension | Status |
+|-----------|--------|
+| Total cases | **351** (measured via `pytest --collect-only`) |
+| Clean dev machine | 339 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
+| Complete environment | **351 all green** (with the Hermes source present, all 12 run and pass) |
+| Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
+| Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
+| Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
+
+> **Why report both 339 and 351**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. The 12-case gap is exactly the set of integration
+> tests that need the host Hermes source: without it pytest reports `skipped` (not failed); with it they all pass.
+> Always state the environment alongside a test count.
+
+**Why spell this out**: v19.4.0's README only said "full suite: 244 passed", which reads like end-to-end assurance.
+But 244 cases finishing in 0.88s clearly involve no real external dependency. More importantly, v19.4.0's
+idempotency test was green while only covering `list[dict]` payloads carrying explicit timestamps — production
+actually sends plain strings without timestamps, and a real bug shipped through that gap under a green light.
+
+Since v19.4.1 we enforce an **anti-false-green rule**: any test touching payload shape, credential shape, or
+query shape must cover *every* shape; performance and index assertions must verify self-evident fields such as
+`_recall_path` rather than merely checking "did we get a hit".
+
+---
+
+## Security Model (v19.4.1)
+
+**One gate, two keys.** Both are accepted; either one grants access:
+
+| Key | Who uses it | How |
+|-----|-------------|-----|
+| Session cookie | Browser console | `POST /login` with the console password; the server issues an HttpOnly, SameSite=Lax session cookie |
+| Bearer token | Scripts, MCP, CI | `Authorization: Bearer <AIDUMEM_API_TOKEN>` |
+
+The gate activates when **either** `AIDUMEM_API_TOKEN` is set **or** the console password is set explicitly
+(via env var, or by changing it through the console). A password auto-generated at first boot guards the console
+login only — it deliberately does **not** activate the REST gate, so existing loopback callers (Hermes plugin,
+MCP, cron) keep working across an upgrade. Check `probes.auth_gate_enabled` in `/health` to see the current state.
+
+**Tenant scoping is not a SaaS security boundary.** aiduMEI is a single-machine self-hosted engine; the tenant
+dimension separates different agents/identities within one deployment. Recall-side scoping covers the facts layer
+as of v19.4.1, and `AIDUMEM_STRICT_TENANT=1` switches to strict mode (no fallback for unlabeled historical rows).
+If you need to host mutually untrusted parties, isolate by deployment instance rather than relying on this layer.
+
+**Passwords** are stored as PBKDF2-HMAC-SHA256 (200k rounds) in `data/.ui_password_hash` with mode 0600;
+pre-v19.4.1 single-round SHA-256 hashes are upgraded automatically on first successful login.
 
 ---
 
