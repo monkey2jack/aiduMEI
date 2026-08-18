@@ -260,12 +260,46 @@ def test_short_password_rejected(env):
 
 @pytest.mark.parametrize(
     "path",
-    ["/health", "/api/health", "/docs", "/openapi.json", "/login/hint", "/api/login/hint"],
+    ["/health", "/api/health", "/login/hint", "/api/login/hint"],
 )
-def test_public_paths_never_require_credentials(env, path):
-    """健康检查/文档/登录页必须免凭据 —— 否则监控与登录本身都会被锁死"""
+def test_always_public_paths_never_require_credentials(env, path):
+    """健康检查与登录页必须**永久**免凭据
+
+    登录是拿到凭据的唯一入口，健康检查是监控探针的依赖 ——
+    锁死前者等于把自己关在门外，锁死后者会让服务「看起来挂了」。
+    """
     env.set_token("tok-secret")
     env.set_ui_password("verystrongpassword")
+    assert env.client().get(path).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/docs", "/openapi.json", "/redoc"])
+def test_doc_paths_are_protected_by_default(env, path, monkeypatch):
+    """🟡-B（用户审计）：门禁启用时 API 文档默认一并保护
+
+    这些路径会吐出全部端点清单（含参数与请求体结构），门禁开着却公开它们，
+    等于给未授权访问者一份现成的攻击面地图。
+    """
+    monkeypatch.delenv("AIDUMEM_PUBLIC_DOCS", raising=False)
+    env.set_token("tok-secret")
+    client = env.client()
+    assert client.get(path).status_code == 401, f"{path} 门禁开启时仍公开"
+    # 带凭据仍可正常访问（不影响正常排障）
+    assert client.get(path, headers={"Authorization": "Bearer tok-secret"}).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/docs", "/openapi.json"])
+def test_doc_paths_can_be_opened_explicitly(env, path, monkeypatch):
+    """需要公开文档的场景（本机开发 / 反代层另有保护）可显式放开"""
+    env.set_token("tok-secret")
+    monkeypatch.setenv("AIDUMEM_PUBLIC_DOCS", "1")
+    assert env.client().get(path).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/docs", "/openapi.json"])
+def test_doc_paths_open_when_gate_disabled(env, path, monkeypatch):
+    """门禁未启用时（本机零配置）文档行为完全不变"""
+    monkeypatch.delenv("AIDUMEM_PUBLIC_DOCS", raising=False)
     assert env.client().get(path).status_code == 200
 
 

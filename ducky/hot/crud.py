@@ -68,14 +68,28 @@ def register_crud_routes(app: FastAPI) -> None:
             dupes = {h: c for h, c in hash_counts.items() if c > 1}
             total_dupes = sum(c - 1 for c in dupes.values())
 
-            # --- 多模态记忆统计 (v18.3) ---
+            # --- 多模态记忆统计 (v18.3 · v19.4.1 补租户收窄) ---
+            #
+            # 🟡（v19.4.1 用户审计）：这两个计数原本是全库 COUNT(*)，不带租户条件。
+            #     其余字段都随 user_id 变化，唯独它们恒定 —— 于是陌生租户查
+            #     /stats 时会看到 total=0 但 vision_count=1136，从计数即可推断
+            #     本机记忆总规模。属于侧信道信息泄漏（量级泄漏，非内容泄漏）。
+            #     现按 tenant_clause 同一套可见性规则收窄，与 /facts 等路由一致。
             vision_count = 0
             obsidian_count = 0
             try:
+                from ducky.facts_recall import tenant_clause
                 from ducky.utils import get_facts_conn
                 conn = get_facts_conn()
-                vision_count = conn.execute("SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL").fetchone()[0]
-                obsidian_count = conn.execute("SELECT COUNT(*) FROM facts WHERE source = 'obsidian'").fetchone()[0]
+                t_clause, t_params = tenant_clause(user_id)
+                vision_count = conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL" + t_clause,
+                    t_params,
+                ).fetchone()[0]
+                obsidian_count = conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE source = 'obsidian'" + t_clause,
+                    t_params,
+                ).fetchone()[0]
                 conn.close()
             except Exception as _e:
                 logger.warning(f"统计多模态/obsidian数据异常: {_e}")
@@ -181,12 +195,29 @@ def register_crud_routes(app: FastAPI) -> None:
 
     # 📒 事件溯源账本（v19.4.0 Mímir 借鉴 B5）：任意记忆的完整变更史可查
     @app.get("/events/history")
-    def events_history(target_id: str = "", limit: int = 100):
-        """查某条记忆的完整变更史（谁、何时、做了什么、为什么）"""
+    def events_history(target_id: str = "", limit: int = 100,
+                       user_id: str = DEFAULT_USER_ID):
+        """查某条记忆的完整变更史（谁、何时、做了什么、为什么）
+
+        🟡-D（v19.4.1）：target_id 常常是自增整数，可被顺序枚举。
+            宽松档（单机自托管默认）保持原行为；严格档
+            （AIDUMEM_STRICT_TENANT=1）下校验该事实是否属本租户可见范围，
+            不可见即当作不存在 —— 否则别处都收窄了，这条路由还敞着。
+        """
         if not target_id or not target_id.strip():
             raise HTTPException(400, "target_id 不能为空")
         try:
             from ducky.event_ledger import get_history
+            from ducky.facts_recall import fact_visible_to_tenant
+            from ducky.utils import get_facts_conn
+
+            bare = target_id.strip()
+            if bare.startswith("fact:"):
+                bare = bare[5:]
+            if bare.isdigit():
+                uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
+                if not fact_visible_to_tenant(get_facts_conn(), int(bare), uid):
+                    return {"status": "ok", "results": []}
             return {"status": "ok", "results": get_history(target_id.strip(), limit=limit)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -258,12 +289,18 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(500, str(e))
 
     @app.get("/opinions")
-    def opinions_list(fact_id: int = 0):
-        """查某事实的信念清单"""
+    def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID):
+        """查某事实的信念清单（严格档下按租户可见性校验，见 🟡-D）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
         try:
+            from ducky.facts_recall import fact_visible_to_tenant
             from ducky.opinion import list_opinions
+            from ducky.utils import get_facts_conn
+
+            uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
+            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid):
+                return {"status": "ok", "results": []}
             return {"status": "ok", "results": list_opinions(fact_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -275,12 +312,18 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(500, str(e))
 
     @app.get("/opinions/aggregate")
-    def opinions_aggregate(fact_id: int = 0):
+    def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID):
         """聚合判定：≥2 个不同证据来源才聚合（单来源刷好评不聚合）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
         try:
+            from ducky.facts_recall import fact_visible_to_tenant
             from ducky.opinion import aggregate_opinion
+            from ducky.utils import get_facts_conn
+
+            uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
+            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid):
+                return {"status": "ok", "details": {}}
             return {"status": "ok", "details": aggregate_opinion(fact_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分

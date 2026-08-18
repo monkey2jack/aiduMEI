@@ -129,13 +129,42 @@ def _api_token() -> str:
     return os.environ.get("AIDUMEM_API_TOKEN", "").strip()
 
 
+# 交互式 API 文档（/docs /redoc /openapi.json）是否免凭据。
+#
+# 🟡（v19.4.1 用户审计）：门禁启用后这三个路径仍返回 200，等于把 135 个
+#     端点的完整清单（含参数与请求体结构）交给未授权访问者。对自托管
+#     记忆库而言，这是一份现成的攻击面地图。
+#     但它同时也是开发调试与接入排障的主要入口，直接锁死会明显劣化体验。
+#     取舍：**门禁启用时默认一并保护**，需要公开时显式设
+#     AIDUMEM_PUBLIC_DOCS=1（例如本机开发、或已在反代层另加保护）。
+#     门禁未启用时（本机零配置）行为完全不变。
+def _public_docs_enabled() -> bool:
+    return os.environ.get("AIDUMEM_PUBLIC_DOCS", "0").strip().lower() in {"1", "true", "yes"}
+
+
+_DOC_PATHS = frozenset({
+    "/docs", "/api/docs",
+    "/redoc", "/api/redoc",
+    "/openapi.json", "/api/openapi.json",
+})
+
+# 登录与健康检查必须永久免凭据：前者是拿到凭据的唯一入口，
+# 后者是监控探针的依赖，锁死会让服务「看起来挂了」。
+_ALWAYS_PUBLIC_PATHS = frozenset({
+    "/", "/ui",
+    "/login", "/api/login",
+    "/login/hint", "/api/login/hint",
+    "/logout", "/api/logout",
+    "/health", "/api/health",
+})
+
+
 def _is_public_path(path: str) -> bool:
-    """无需凭据即可访问的路径（登录、健康检查、静态 UI、文档）。"""
-    if path in ("/", "/ui", "/login", "/api/login", "/login/hint", "/api/login/hint",
-                "/logout", "/api/logout",
-                "/health", "/api/health", "/docs", "/api/docs", "/openapi.json",
-                "/api/openapi.json", "/redoc", "/api/redoc"):
+    """无需凭据即可访问的路径（登录、健康检查、静态 UI，以及可选的文档）。"""
+    if path in _ALWAYS_PUBLIC_PATHS:
         return True
+    if path in _DOC_PATHS:
+        return _public_docs_enabled()
     if path.startswith("/ui/"):
         return True
     return False

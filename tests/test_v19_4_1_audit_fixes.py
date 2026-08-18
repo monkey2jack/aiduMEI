@@ -986,3 +986,199 @@ def test_group_concat_distinct_dialect_guard():
         "SQLite 不支持 GROUP_CONCAT(DISTINCT x, sep)，会抛 "
         "'DISTINCT aggregates must have exactly one argument': " + ", ".join(offenders)
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 用户审计 🟡 项（v19.4.1 定稿轮）
+# ═══════════════════════════════════════════════════════════════════
+
+def test_yellow_b_docs_paths_follow_auth_gate():
+    """🟡-B：门禁启用时 /docs /redoc /openapi.json 默认一并保护
+
+    这三个路径会吐出全部端点清单（含参数与请求体结构）——门禁开着却公开它们，
+    等于给未授权访问者一份现成的攻击面地图。
+    但它们也是接入排障的主要入口，故留 AIDUMEM_PUBLIC_DOCS=1 显式放开。
+    """
+    import api_server
+
+    for path in ("/docs", "/api/docs", "/redoc", "/api/redoc",
+                 "/openapi.json", "/api/openapi.json"):
+        assert path in api_server._DOC_PATHS, f"{path} 未纳入文档路径集合"
+
+    # 登录与健康检查必须永久免凭据（否则拿不到凭据 / 监控误判服务挂了）
+    for path in ("/login", "/api/login", "/health", "/api/health", "/logout"):
+        assert path in api_server._ALWAYS_PUBLIC_PATHS
+
+    os.environ.pop("AIDUMEM_PUBLIC_DOCS", None)
+    assert api_server._public_docs_enabled() is False
+    assert api_server._is_public_path("/openapi.json") is False, "默认应受门禁保护"
+    assert api_server._is_public_path("/health") is True
+
+    os.environ["AIDUMEM_PUBLIC_DOCS"] = "1"
+    try:
+        assert api_server._public_docs_enabled() is True
+        assert api_server._is_public_path("/openapi.json") is True, "显式放开后应可访问"
+    finally:
+        os.environ.pop("AIDUMEM_PUBLIC_DOCS", None)
+
+
+def test_yellow_c_stats_counts_are_tenant_scoped():
+    """🟡-C：/stats 的 vision_count / obsidian_count 必须随租户收窄
+
+    原实现是全库 COUNT(*)，其余字段都随 user_id 变化、唯独它们恒定 ——
+    陌生租户查 /stats 会看到 total=0 但 vision_count=1136，
+    从计数即可推断本机记忆总规模（量级侧信道泄漏）。
+    """
+    import pathlib
+
+    crud = pathlib.Path(_REPO_ROOT, "ducky", "hot", "crud.py").read_text(encoding="utf-8")
+    # 守卫方式：查询字符串后必须紧跟 t_clause 拼接，而不是直接以引号收尾
+    for stmt in ("media_url IS NOT NULL", "source = 'obsidian'"):
+        for line in crud.splitlines():
+            if stmt in line and "SELECT COUNT(*)" in line:
+                assert "t_clause" in line, f"/stats 计数仍是全库查询: {line.strip()}"
+    assert "tenant_clause(user_id)" in crud, "/stats 未使用统一的租户可见性子句"
+
+    # 语义验证：同一套 tenant_clause 施加在这两个查询上，陌生租户应查不到别人的数据
+    from ducky.facts_recall import tenant_clause
+    from ducky.schema_bootstrap import ensure_core_schema
+
+    ensure_core_schema(force=True)
+    conn = utils.get_facts_conn()
+    conn.execute(
+        "INSERT INTO facts (category, fact_key, fact_value, source, agent_id, media_url, archived)"
+        " VALUES ('media', 'yc_img', 'v', 'yc_owner', 'yc_owner', 'http://x/y.png', 0)"
+    )
+    conn.commit()
+
+    def count_media(uid):
+        clause, params = tenant_clause(uid)
+        return conn.execute(
+            "SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL" + clause, params
+        ).fetchone()[0]
+
+    assert count_media("yc_owner") >= 1, "本租户应能看到自己的多模态计数"
+    assert count_media("yc_stranger") == 0, "陌生租户不应看到他人的多模态计数"
+
+
+def test_yellow_d_strict_mode_scopes_ledger_and_opinions():
+    """🟡-D：严格档下 /events/history 与 /opinions 必须按租户校验
+
+    这两条路由以自增整数 fact_id 为入口、可顺序枚举。单机自托管可接受，
+    但严格档意味着部署方明确要求隔离 —— 别处都收窄了，它们不能还敞着。
+    宽松档保持原行为，避免给单机用户添麻烦。
+    """
+    from ducky.facts_recall import fact_visible_to_tenant
+    from ducky.schema_bootstrap import ensure_core_schema
+
+    ensure_core_schema(force=True)
+    conn = utils.get_facts_conn()
+    cur = conn.execute(
+        "INSERT INTO facts (category, fact_key, fact_value, source, agent_id, archived)"
+        " VALUES ('secret', 'yd_key', 'owner 的秘密', 'yd_owner', 'yd_owner', 0)"
+    )
+    conn.commit()
+    fact_id = cur.lastrowid
+
+    # 宽松档（默认）：不额外收窄，行为与旧版一致
+    os.environ.pop("AIDUMEM_STRICT_TENANT", None)
+    assert fact_visible_to_tenant(conn, fact_id, "yd_stranger") is True
+    assert fact_visible_to_tenant(conn, fact_id, "yd_owner") is True
+
+    # 严格档：陌生租户不可见
+    os.environ["AIDUMEM_STRICT_TENANT"] = "1"
+    try:
+        assert fact_visible_to_tenant(conn, fact_id, "yd_owner") is True
+        assert fact_visible_to_tenant(conn, fact_id, "yd_stranger") is False
+        # 默认租户与空租户不受影响（向后兼容）
+        assert fact_visible_to_tenant(conn, fact_id, "") is True
+        assert fact_visible_to_tenant(conn, fact_id, utils.DEFAULT_USER_ID) is True
+    finally:
+        os.environ.pop("AIDUMEM_STRICT_TENANT", None)
+
+
+def test_yellow_d_routes_accept_user_id():
+    """源码守卫：三条枚举型路由必须接收 user_id 并做可见性校验"""
+    import pathlib
+
+    crud = pathlib.Path(_REPO_ROOT, "ducky", "hot", "crud.py").read_text(encoding="utf-8")
+    for sig in (
+        "def events_history(target_id: str = \"\", limit: int = 100,",
+        "def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID)",
+        "def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID)",
+    ):
+        assert sig in crud, f"路由签名未补 user_id: {sig}"
+    assert crud.count("fact_visible_to_tenant") >= 3, "三条路由都要做可见性校验"
+
+
+def test_yellow_a_readme_claims_are_consistent():
+    """🟡-A / 🔴：README 与 README_EN 不得再出现被本版推翻的宣称
+
+    「宣称即承诺铁律」的可执行化：这条断言就是那条纪律的守卫。
+    """
+    import pathlib
+    import re
+
+    for name in ("README.md", "README_EN.md"):
+        text = pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")
+
+        # 「租户硬隔离」是本版亲手推翻的宣称，正文里不得再出现
+        assert "租户硬隔离" not in text, f"{name} 仍宣称「租户硬隔离」"
+        assert not re.search(r"hard tenant isolation", text, re.I), (
+            f"{name} 仍宣称 hard tenant isolation"
+        )
+
+        # 必须明示单机自托管定位，避免读者过度理解租户维度
+        assert ("单机自托管" in text) or ("single-machine self-hosted" in text), (
+            f"{name} 未明示单机自托管定位"
+        )
+
+    # 测试数字：README 必须同时给出两个环境的数字并说明差异来源
+    readme = pathlib.Path(_REPO_ROOT, "README.md").read_text(encoding="utf-8")
+    assert "12 跳过" in readme, "README 未说明跳过项的成因"
+    assert "独立开发机" in readme and "完整环境" in readme, (
+        "README 未区分两个运行环境的测试数字"
+    )
+
+
+def test_readme_test_count_matches_reality():
+    """README 写的用例总数必须等于**实际收集到的**用例数
+
+    ⚠️ 这条断言的意义在于「自我校验」：用户审计发现 README 写 295、汇报写 328、
+        实测 340，三个版本互相矛盾 —— 因为它们都是人手抄进文档的，改了代码没同步。
+        硬编码期望值的守卫会跟着一起过期，所以这里改成**从 pytest 自身取真值**：
+        以后新增用例忘了更新 README，这条测试会立刻红灯。
+    """
+    import pathlib
+    import re
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q"],
+        cwd=str(_REPO_ROOT), capture_output=True, text=True,
+    )
+    m = re.search(r"(\d+)\s+tests?\s+collected", proc.stdout)
+    assert m, f"无法解析实际用例数:\n{proc.stdout[-500:]}"
+    actual_total = int(m.group(1))
+
+    readme = pathlib.Path(_REPO_ROOT, "README.md").read_text(encoding="utf-8")
+    row = re.search(r"\|\s*用例总数\s*\|\s*\*\*(\d+)\*\*", readme)
+    assert row, "README「测试与质量」表格缺少「用例总数」一行"
+    stated_total = int(row.group(1))
+
+    assert stated_total == actual_total, (
+        f"README 写用例总数 {stated_total}，实际收集到 {actual_total} —— "
+        "文档与代码脱节（宣称即承诺铁律）"
+    )
+
+    # 跳过项数量也要对得上：总数 - 独立开发机通过数 = 跳过数
+    passed_row = re.search(r"\|\s*独立开发机\s*\|\s*(\d+)\s*通过", readme)
+    assert passed_row, "README 缺少「独立开发机」一行"
+    stated_passed = int(passed_row.group(1))
+    skip_m = re.search(r"\*\*(\d+)\s*跳过\*\*", readme)
+    assert skip_m, "README 未标注跳过项数量"
+    assert stated_passed + int(skip_m.group(1)) == actual_total, (
+        f"README 数字自相矛盾：{stated_passed} 通过 + {skip_m.group(1)} 跳过 "
+        f"≠ 总数 {actual_total}"
+    )
