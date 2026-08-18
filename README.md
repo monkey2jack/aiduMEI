@@ -152,14 +152,15 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
    - **三层拦截**：第 1 层原始正则过滤（越狱/指令覆盖模式）、第 2 层去噪规范化（强力粉碎空格/标点变形绕过）、第 3 层重复行溢出防御。
    - **精准白名单**：内置合法运维与日常口语白名单，防止日常会话误拦截。
    - **上下文沙箱隔离**：召回记忆注入 System Prompt 前强制包裹 `[DATA: MEMORY CONTEXT ...]` 边界标记，向宿主模型显式声明为纯数据片段。
-2. **多租户隔离与精确匹配删除（P0）** (`ducky/hot/crud.py` & `ducky/wal_engine.py`)
+2. **租户归属校验与精确匹配删除（P0）** (`ducky/hot/crud.py` & `ducky/wal_engine.py`)
    - **严格租户归属校验**：`/delete` 与 `/update` 强制校验 `user_id`，禁止跨租户越权操作。
    - **精确匹配删除**：彻底废除 SQL `LIKE '%...%'` 模糊匹配，采用 `id=? OR fact_key=?` 精确匹配，杜绝误伤子串记录。
+   - **适用范围说明（勿过度理解）**：aiduMEI 定位是**单机自托管**记忆引擎，租户维度用于「同一部署内区分不同 agent / 身份」，**不等同于多租户 SaaS 的安全边界**。检索侧的租户可见性收窄自 v19.4.1 起覆盖 facts 层（`AIDUMEM_STRICT_TENANT` 可切严格档，见 `.env.example`）；若要承载互不信任的多方数据，请按部署实例隔离，而非依赖本层。
 3. **核弹级防爆门禁（P0）**
    - `/delete_all` 严禁空参数调用（直接抛 HTTP 400）。
    - 清空 `default` 租户全库必须显式传递 `confirm: true` 二次确认，防止运维误触清库。
 4. **多仓级联原子删除与应用级 WAL（P0）** (`ducky/wal_engine.py`)
-   - 单条删除与全量清空同步级联物理清理 **Qdrant 向量库、SQLite FTS5 全文索引、facts.db、salience.db、evolve_mem.db**，根绝孤儿与幽灵记忆。
+   - 单条删除与全量清空同步级联物理清理 **Qdrant 向量库、SQLite FTS5 全文索引、facts.db、salience.db、evolve_mem.db**，v19.4.1 起补齐 **原文保真层（`verbatim_turns` + `verbatim_fts_map`）**，根绝孤儿与幽灵记忆。
    - 引入带 `fsync` 的 `wal_journal.jsonl` 预写日志，服务启动自动运行 `reconcile_startup()` 扫描并自愈对账。
    - 递归精炼归档后自动从 FTS5 索引解挂并在向量库中软标记，防止已精炼旧记忆虚假召回。
 5. **统一五维打分体系与 0 N+1 查询（P1）** (`ducky/scoring.py`)
@@ -167,7 +168,8 @@ LLM / Embedding / Reranker 配置只读展示（api_key 自动脱敏）、思考
    - **消除 N+1 读查询**：`get_batch_memory_types` 采用单次 SQL 批量加载六型分类，大幅降低高并发下的数据库开销。
 6. **网络与凭据硬化及动态健康观测（P1）** (`ducky/degradation.py` & `api_server.py`)
    - 监听公网（`0.0.0.0`）且未配置 `AIDUMEM_API_TOKEN` 时拒绝启动，杜绝未授权公网裸奔。
-   - 废除弱口令，首次启动自动生成 16 位高强度随机密码并持久化 Salt+SHA256 哈希至 `data/.ui_password_hash`。
+   - 废除弱口令，首次启动自动生成高强度随机密码并持久化哈希至 `data/.ui_password_hash`（v19.4.1 起为 PBKDF2-HMAC-SHA256 200k 轮，文件权限 0600，旧哈希首次登录后自动升级）。
+   - **鉴权门禁贯通（v19.4.1）**：控制台登录后由服务端签发 HttpOnly session cookie，与 `Authorization: Bearer <AIDUMEM_API_TOKEN>` 构成同一道门禁的两把钥匙，任一有效即放行。此前 UI 口令仅为前端标记、对 REST 接口无约束力。当前门禁状态见 `/health` 的 `probes.auth_gate_enabled`。
    - `/health` 实时暴露 `degraded_components` 与事实库容量水位线预警（>800 条提示精炼）。
 
 ---
@@ -602,6 +604,8 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 - **向量存储**：Qdrant（通过 qdrant-client）
 - **结构化数据**：SQLite（facts.db、observations.db、scenes.db、fact_events.db）
 - **全文搜索**：SQLite FTS5 + trigram 分词器
+  - **中文切词策略（v19.4.1 P1-2 更正）**：trigram 分词器索引的是 3 字符窗口，因此中文查询按 **3-gram** 切词才能命中索引。v19.4.0 及之前切 2-gram，与索引失配——中文查询实际一直落在 `LIKE` 全表扫描上（20 万条原文实测稀有词 32.8 ms）。现已对齐，同量级降至 0.05 ms。
+  - **trigram 的固有边界**：不足 3 字的查询（如「祖母」）无法用 trigram 表达，由 `LIKE` 兜底。这是分词器定义决定的，不是缺陷；召回结果的 `_recall_path` 字段（`fts` / `like`）会如实标注本次真走的哪条路，降级不再静默。
 - **向量化**：可配置（兼容 OpenAI Embedding API）
 - **重排序**：可配置（兼容 OpenAI Rerank API · 多 provider 抽象：OpenAI-compatible / Jina / Cohere）
 - **大模型**：兼容任何 OpenAI 格式的 API
@@ -680,6 +684,30 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 
 ---
 
+## 测试与质量
+
+```bash
+# 全量回归
+pytest tests/
+# 编译检查
+python -m compileall ducky api_server.py mcp_server.py
+```
+
+**测试层级如实说明（v19.4.1 P3-3）**
+
+| 维度 | 现状 |
+|------|------|
+| 用例数 | 295 通过 · 12 跳过（跳过项需宿主 Hermes 源码在场） |
+| 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
+| 语句覆盖率 | 约 50%（`ducky/` + 入口，`coverage` 实测） |
+| 未覆盖 | 真实 mem0 / Qdrant 集成、真实 LLM 调用、并发压测 —— 这些依赖外部服务，由生产机的实机冒烟承担 |
+
+**为什么把这些写清楚**：v19.4.0 的 README 只写「全量测试 244 通过」，读者会理解为端到端保障。但 244 用例 0.88 秒跑完，显然不含任何真实外部依赖。更关键的是——v19.4.0 的幂等去重测试是绿的，却只覆盖了带显式时间戳的 `list[dict]` 载荷，而生产实际走的是无时间戳的纯字符串载荷，真 bug 就从这条缝里带着绿灯上线了。
+
+因此 v19.4.1 起执行**反假绿灯纪律**：涉及载荷形态、凭据形态、查询形态的测试一律多形态并测；性能与索引类断言必须校验 `_recall_path` 这类自证字段，而不是只看「有没有命中」。
+
+---
+
 ## 仓库结构
 
 ```
@@ -694,12 +722,14 @@ aiduMEI/
 │   ├── evolve_mem.py      #   检索自进化
 │   ├── routes_config.py   #   控制台 /config 路由
 │   └── ...
-├── frontend/              # aiduMEI 控制台（零依赖纯静态）
+├── frontend/              # aiduMEI 控制台（零构建纯静态）
 │   ├── index.html
 │   ├── css/style.css
 │   ├── js/                # api.js · panels.js · main.js
+│   ├── js/vendor/         # echarts（本地随包分发，不依赖外部 CDN）
 │   ├── *.png              # 六面板图标 + logo
 │   └── dev_server.py      # 本地开发代理（可选）
+├── tests/                 # 回归测试集（pytest）
 ├── tools/                 # 开发工具（截屏脚本等）
 ├── seed_demo.py           # 脱敏演示数据种子（虚构人物/公司）
 ├── seed_facts.py          # 知识树事实种子（6 域 28 条）
