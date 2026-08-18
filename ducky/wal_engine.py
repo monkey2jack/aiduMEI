@@ -148,6 +148,13 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
     3. facts.db（facts 表与 memory_types 表，严格校验归属与精确匹配）
     4. salience.db（salience 表与 crystals 表）
     5. evolve_mem.db（演化记录）
+    6. verbatim_turns + verbatim_fts_map（原文保真层）
+
+    🔴P0-4（v19.4.1）：第 6 项此前缺失 —— v19.4.0 新增原文层后，单条删除
+        只清了 1-5，逐字原文留在库里且仍能被 /search 召回。实测：写入一条
+        含身份证号的原文 → cascade_delete_memory → count_verbatim 仍为 1、
+        /search 照样命中。原文比蒸馏后的事实敏感得多，「删除」不覆盖它
+        等于删除权没有真正兑现，也与文档「绝不留孤儿」的承诺不符。
     """
     wal = WALEngine.get_instance()
     wal_id = wal.append(WALEntry(
@@ -164,10 +171,23 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         "facts": 0,
         "salience": 0,
         "evolve": 0,
+        "verbatim": 0,
         "tombstone_id": None,
     }
 
     try:
+        # 0a. 🔴P0-4：先把这条记忆的正文抓出来（用于定位原文层对应行）。
+        #     必须在物理删除之前做 —— 一旦 facts/FTS 行被删，就再也无从
+        #     反查该记忆的内容，原文层将永久成为孤儿。
+        _content_for_verbatim = ""
+        try:
+            from ducky.tombstone import _capture_facts_row, _capture_fts_content
+            _content_for_verbatim = _capture_fts_content(memory_id, user_id) or (
+                (_capture_facts_row(memory_id, user_id) or {}).get("fact_value", "")
+            )
+        except Exception as ce:
+            logger.debug("原文定位内容抓取跳过: %s", ce)
+
         # 0. 🪦 tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
         #    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。
         try:
@@ -267,6 +287,17 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
         except Exception as e:
             logger.debug("evolve_mem.db 清理跳过: %s", e)
 
+        # 6. 📼 原文保真层清理（🔴P0-4 v19.4.1）：删除权必须兑现到逐字原文。
+        #    以 content_hash 精确匹配（延续 v19.2.0 精确匹配铁律，杜绝 LIKE 误伤）。
+        try:
+            if _content_for_verbatim:
+                from ducky.verbatim_vault import delete_verbatim_by_content
+                res["verbatim"] = delete_verbatim_by_content(user_id, _content_for_verbatim)
+            else:
+                logger.debug("原文层清理跳过：未能定位该记忆正文 (%s)", memory_id)
+        except Exception as ve:
+            logger.debug("原文层清理跳过: %s", ve)
+
         wal.mark_status(wal_id, "committed")
         return {"status": "ok", "details": res}
     except Exception as exc:
@@ -276,7 +307,15 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
 
 
 def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
-    """级联清空指定用户在所有存储中的数据，绝不留孤儿。"""
+    """级联清空**指定租户**在所有存储中的数据，绝不留孤儿。
+
+    🔴P0-3（v19.4.1）：所有子仓的删除一律 `WHERE user_id=?` 精确匹配。
+        此前各仓都有 `if user_id == "default": DELETE FROM <table>`
+        的无 WHERE 分支 —— 清 default 会连带清空所有其他租户的数据。
+        `default` 是系统默认 user_id，误触概率极高。
+        现在删 default 只删 default；跨租户全清必须由调用方逐租户循环，
+        或走各模块的显式 purge 入口。
+    """
     if not user_id or not user_id.strip():
         raise ValueError("user_id 必须显式指定")
     if user_id == "default" and not confirm:
@@ -312,10 +351,10 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
         try:
             from ducky.text_fts import get_text_conn
             tconn = get_text_conn()
-            if user_id == "default":
-                c_fts = tconn.execute("DELETE FROM memories").rowcount
-            else:
-                c_fts = tconn.execute("DELETE FROM memories WHERE user_id=?", (user_id,)).rowcount
+            # 🔴P0-3（v19.4.1）：一律精确按 user_id 删除。此前 default 分支
+            # 走无 WHERE 全表删，会把其他租户数据一并灭掉 —— 而 default 正是
+            # 系统默认 user_id，属于高频误触路径。全库清空另走显式入口。
+            c_fts = tconn.execute("DELETE FROM memories WHERE user_id=?", (user_id,)).rowcount
             tconn.commit()
             tconn.close()
             res["fts_cleared"] = c_fts
@@ -325,24 +364,18 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
         # 3. facts.db
         try:
             fconn = get_facts_conn()
-            if user_id == "default":
-                c_facts = fconn.execute("DELETE FROM facts").rowcount
-                try:
-                    fconn.execute("DELETE FROM memory_types")
-                except Exception as e:
-                    logger.debug(f"cascade_delete_all: suppressed exception: {e}")
-            else:
-                try:
-                    fconn.execute(
-                        """DELETE FROM memory_types 
-                           WHERE memory_ref IN (SELECT CAST(id AS TEXT) FROM facts WHERE source=? OR agent_id=?)
-                              OR memory_ref IN (SELECT 'fact:' || CAST(id AS TEXT) FROM facts WHERE source=? OR agent_id=?)
-                              OR memory_ref IN (SELECT fact_key FROM facts WHERE (source=? OR agent_id=?) AND fact_key IS NOT NULL)""",
-                        (user_id, user_id, user_id, user_id, user_id, user_id),
-                    )
-                except Exception as e:
-                    logger.debug(f"cascade_delete_all: suppressed exception: {e}")
-                c_facts = fconn.execute("DELETE FROM facts WHERE source=? OR agent_id=?", (user_id, user_id)).rowcount
+            # 🔴P0-3（v19.4.1）：facts 侧同样取消 default 无 WHERE 全表删分支。
+            try:
+                fconn.execute(
+                    """DELETE FROM memory_types 
+                       WHERE memory_ref IN (SELECT CAST(id AS TEXT) FROM facts WHERE source=? OR agent_id=?)
+                          OR memory_ref IN (SELECT 'fact:' || CAST(id AS TEXT) FROM facts WHERE source=? OR agent_id=?)
+                          OR memory_ref IN (SELECT fact_key FROM facts WHERE (source=? OR agent_id=?) AND fact_key IS NOT NULL)""",
+                    (user_id, user_id, user_id, user_id, user_id, user_id),
+                )
+            except Exception as e:
+                logger.debug(f"cascade_delete_all: suppressed exception: {e}")
+            c_facts = fconn.execute("DELETE FROM facts WHERE source=? OR agent_id=?", (user_id, user_id)).rowcount
             fconn.commit()
             fconn.close()
             res["facts_deleted"] = c_facts
@@ -353,10 +386,8 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
         try:
             from ducky.salience.db import get_salience_conn
             sconn = get_salience_conn()
-            if user_id == "default":
-                c_sal = sconn.execute("DELETE FROM memory_salience").rowcount
-            else:
-                c_sal = sconn.execute("DELETE FROM memory_salience WHERE user_id=?", (user_id,)).rowcount
+            # 🔴P0-3：精确按租户，不再全表删
+            c_sal = sconn.execute("DELETE FROM memory_salience WHERE user_id=?", (user_id,)).rowcount
             sconn.commit()
             sconn.close()
             res["salience_deleted"] = c_sal
@@ -367,10 +398,8 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
         try:
             from ducky.evolve_mem import get_evolve_conn
             econn = get_evolve_conn()
-            if user_id == "default":
-                c_evo = econn.execute("DELETE FROM evolve_snapshots").rowcount
-            else:
-                c_evo = econn.execute("DELETE FROM evolve_snapshots WHERE user_id=?", (user_id,)).rowcount
+            # 🔴P0-3：精确按租户，不再全表删
+            c_evo = econn.execute("DELETE FROM evolve_snapshots WHERE user_id=?", (user_id,)).rowcount
             econn.commit()
             econn.close()
             res["evolve_deleted"] = c_evo
