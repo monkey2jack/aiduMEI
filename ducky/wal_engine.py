@@ -176,6 +176,28 @@ def cascade_delete_memory(memory_id: str, user_id: str = "default") -> Dict[str,
     }
 
     try:
+        # 0z. 🔴P0-4b（v19.4.1 实机冒烟）：memory_id 形如 "verbatim:<n>" 时，
+        #     这是 /search 返回原文证据时给出的句柄 —— 调用方手里只有它。
+        #     此类条目往往没有对应的 mem0 记忆，走下面的常规链一条也删不掉
+        #     （实机：verbatim=0、原文照旧可检索），成为「可检索但删不掉的孤儿」。
+        #     因此直接按 id 精确删除原文层并留 tombstone，然后结束。
+        if str(memory_id).lower().startswith("verbatim:"):
+            try:
+                from ducky.tombstone import snapshot_before_delete
+                res["tombstone_id"] = snapshot_before_delete(
+                    memory_id, user_id=user_id, reason="cascade_delete_verbatim", actor="wal_engine"
+                )
+            except Exception as te:
+                logger.debug("tombstone 快照跳过: %s", te)
+            try:
+                from ducky.verbatim_vault import delete_verbatim_by_id
+                res["verbatim"] = delete_verbatim_by_id(user_id, memory_id)
+            except Exception as ve:
+                logger.warning("原文层按 id 删除失败: %s", ve)
+            wal.mark_status(wal_id, "committed")
+            logger.info("🧹 原文条目删除完成 %s: %s", memory_id, res)
+            return {"status": "ok", "details": res}
+
         # 0a. 🔴P0-4：先把这条记忆的正文抓出来（用于定位原文层对应行）。
         #     必须在物理删除之前做 —— 一旦 facts/FTS 行被删，就再也无从
         #     反查该记忆的内容，原文层将永久成为孤儿。
