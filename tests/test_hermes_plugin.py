@@ -26,13 +26,51 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO / "integrations" / "hermes-plugin"
 
-# 宿主 Hermes 源码位置：环境变量优先，否则试几个常见路径。
-_HOST_CANDIDATES = [
-    os.environ.get("HERMES_SRC"),
-    "/hermes/hermes-agent",
-    str(Path.home() / "hermes-agent"),
-]
-HOST = next((p for p in _HOST_CANDIDATES if p and Path(p, "agent", "memory_provider.py").is_file()), None)
+# 宿主 Hermes 源码位置 —— 三态，且**显式永远压过隐式**（v19.4.2 审计整改轮）：
+#   ① 未设 HERMES_SRC              → 自动发现，依次试几个常见路径
+#   ② HERMES_SRC=none/no/off/0/false/空 → **强制无宿主**，一条回退路径都不试
+#   ③ HERMES_SRC=<路径>            → 只认这一条；无效就报错，**绝不静默回落**
+#
+# ★ 为什么 ② 必须存在：
+#   README 写着「无宿主：N passed, 12 skipped」，可在装了宿主的机器上
+#   （生产就摆着 /hermes/hermes-agent）这条复现命令跑出来是 0 skipped ——
+#   读者**无法把「通过」复现成「跳过」**。此前只做了单向（指路径让跳过跑起来），
+#   另一半是缺的。**双向可复现才叫可证伪**：一个你没法让它跳过的「跳过」，
+#   和一个你没法让它通过的「通过」，同样不可信。
+#
+# ★ 为什么 ③ 不许回落：
+#   原实现把环境变量和硬编码路径塞进同一个候选列表顺序匹配，于是
+#   `HERMES_SRC=/typo/path` 会**静默**落到 /hermes/hermes-agent ——
+#   用户以为在测自己指的宿主，实际测的是另一个，还是绿的。
+#   **隐式回退会悄悄推翻显式意图**，这和「目录级豁免」是同一类毛病：
+#   它随环境改变测试集合，却不发一言。
+_DISABLED = {"", "none", "no", "off", "0", "false"}
+_AUTO_CANDIDATES = ("/hermes/hermes-agent", str(Path.home() / "hermes-agent"))
+
+
+def _is_host(path):
+    """这条路径下是不是一棵能用的宿主源码树。"""
+    return bool(path) and Path(path, "agent", "memory_provider.py").is_file()
+
+
+def _resolve_host(env=None):
+    env = os.environ if env is None else env
+    raw = env.get("HERMES_SRC")
+    if raw is None:                                 # ① 未设 → 自动发现
+        return next((p for p in _AUTO_CANDIDATES if _is_host(p)), None)
+    if raw.strip().lower() in _DISABLED:            # ② 显式禁用 → 绝不回退
+        return None
+    if not _is_host(raw):                           # ③ 显式指定但无效 → 响
+        raise RuntimeError(
+            f"HERMES_SRC={raw!r} 下找不到 agent/memory_provider.py。"
+            "既然已显式指定宿主，就不会回退到自动发现的路径（那会让你以为"
+            "测的是这棵树，其实测的是另一棵）—— 请修正路径，或用 "
+            "HERMES_SRC=none 显式声明「本机不带宿主」。"
+        )
+    return raw
+
+
+HOST = _resolve_host()
 
 
 def _load():
@@ -48,7 +86,11 @@ def _load():
     return MemoryProvider, normalize_tool_schema, aidumem
 
 
-@unittest.skipIf(HOST is None, "宿主 Hermes 源码不在本机（设 HERMES_SRC 可指定）")
+# ⚠️ 解析逻辑（_resolve_host）自身的用例**刻意不放在本文件**，
+#    见 tests/test_v19_4_2_hermes_host_resolution.py 顶部的说明：
+#    本文件的前提是「整份都随宿主缺席而跳过」，掺进永不跳过的用例
+#    会让「本文件收集数 = 跳过数」这条归因失真。
+@unittest.skipIf(HOST is None, "宿主 Hermes 源码不在本机（HERMES_SRC=<路径> 指定，=none 强制关闭）")
 class TestProviderContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
