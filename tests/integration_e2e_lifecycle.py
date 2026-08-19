@@ -12,6 +12,9 @@ import urllib.request
 import urllib.parse
 from collections import defaultdict
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ducky.utils import api_auth_headers  # noqa: E402
+
 BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 TIMEOUT = 10
 TEST_CATEGORY = "测试_E2E"  # 隔离测试数据
@@ -20,28 +23,33 @@ FAIL = 0
 FAIL_DETAILS = []
 
 
-def get(path, **params):
-    qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+def _request(method, path, params=None, data=None, headers=None):
+    """三个调用形态收敛到这一个出口。
+
+    v19.4.2：收敛的直接动机是**凭据**。原先 get/post/post_json 各自拼 URL、
+    各自造 Request，其中 get() 甚至直接 urlopen(裸字符串)，根本没有放 header 的地方 ——
+    门禁一开就是静默 401。出口只有一个，凭据才谈得上「一定带上」。
+    """
+    qs = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
     url = f"{BASE}{path}?{qs}" if qs else f"{BASE}{path}"
-    return json.loads(urllib.request.urlopen(url, timeout=TIMEOUT).read())
+    merged = {**(headers or {}), **api_auth_headers()}
+    req = urllib.request.Request(url, data=data, method=method, headers=merged)
+    return json.loads(urllib.request.urlopen(req, timeout=TIMEOUT).read())
+
+
+def get(path, **params):
+    return _request('GET', path, params=params)
 
 
 def post(path, **params):
     """add_fact 等端点用 query string 方式（FastAPI 默认识别）"""
-    qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
-    url = f"{BASE}{path}?{qs}" if qs else f"{BASE}{path}"
-    req = urllib.request.Request(url, data=b'', method='POST')
-    return json.loads(urllib.request.urlopen(req, timeout=TIMEOUT).read())
+    return _request('POST', path, params=params, data=b'')
 
 
 def post_json(path, payload):
     """inject-context 等端点用 JSON body 方式"""
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"{BASE}{path}", data=data, method='POST',
-        headers={'Content-Type': 'application/json'},
-    )
-    return json.loads(urllib.request.urlopen(req, timeout=TIMEOUT).read())
+    return _request('POST', path, data=json.dumps(payload).encode(),
+                    headers={'Content-Type': 'application/json'})
 
 
 def cleanup():

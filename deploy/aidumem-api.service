@@ -19,6 +19,22 @@ Documentation=https://github.com/monkey2jack/aiduMEI
 After=network.target
 Wants=network.target
 
+# 失败可见性：连续失败 5 次（300 秒窗口内）后进入 failed 并停止重试。
+# 没有这两行时，systemd 用默认的 10s/5 —— 而下面 RestartSec=5 意味着
+# 10 秒窗口内最多也就 2 次，限流永远触发不了：进程崩一次重启一次，
+# 状态长期停在 activating（**不是** failed），按 failed 告警的监控一辈子等不到。
+# 同步单元（aidumem-sync.service）为此静默停摆过 8 天、重启 6000+ 次。
+#
+# ★ 必须写在 [Unit] 段。写进 [Service] 会被 systemd 直接忽略
+#   （255 实测：Unknown key name ... in section 'Service', ignoring），
+#   生效值仍是默认 10s —— 看着修了，其实没修。
+#   验收只认 `systemctl show aidumem-api -p StartLimitIntervalUSec`。
+#
+# 权衡：这会让 API 在连续崩溃后**停止**自动重启，需要人工介入。这是刻意的 ——
+# 一个 5 分钟内崩 5 次的服务，自动重启只会把故障拖成静默的长期不可用。
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=root
