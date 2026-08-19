@@ -20,7 +20,8 @@
 
 环境变量（全部可选，见仓库 .env.example）：
     AIDUMEM_URL         默认 http://127.0.0.1:8767
-    AIDUMEM_USER_ID     默认 default
+    AIDUMEM_USER_ID     记忆命名空间，可由 .env 兜底，默认 default
+    AIDUMEM_DEFAULT_USER_ID  AIDUMEM_USER_ID 缺省时的回落值（服务端同名键）
     AIDUMEM_DATA_DIR    备份用数据目录，默认 ~/aidumem
 """
 
@@ -48,6 +49,72 @@ _MAX_CONTEXT_CHARS = 4000
 
 
 # ---------------------------------------------------------------------------
+# 凭据读取（v19.4.2）
+# ---------------------------------------------------------------------------
+# ⚠️ 本文件是**装进宿主 Agent 的插件**，跑在宿主进程里，仓库代码不可 import，
+#    因此不能复用 ducky.utils.api_auth_headers，只能自带一份最小实现。
+#    但「兜底链」必须与仓库其它组件完全一致，否则又会出现
+#    「同一份 .env，这个组件读得到、那个读不到」的分裂状态。
+_ENV_TOKEN_KEY = "AIDUMEM_API_TOKEN"
+
+
+def _read_key_from_file(path: str, key_name: str) -> str:
+    """从 .env 读某个键。兼容 `export KEY=VALUE`、引号、CRLF 三种常见写法。"""
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if line.startswith("export "):
+                    line = line[len("export "):].strip()
+                key, sep, value = line.partition("=")
+                if sep and key.strip() == key_name:
+                    return value.strip().strip('"').strip("'")
+    except OSError:
+        return ""
+    return ""
+
+
+def _resolve_env_key(key_name: str, default: str = "") -> str:
+    """环境变量 → .env 兜底。
+
+    v19.4.1 只读环境变量就收工，而 Hermes gateway 拉起插件时的环境几乎是空的
+    —— 结果是「代码里明明写了带 Bearer」，实际每次请求都是空 token → 401。
+    带不带这段兜底，是「看起来修了」和「真的修了」的区别。
+
+    v19.4.2 把它从「只取 token」推广到任意键：**身份必须走同一条链**。
+    只让 token 兜底的话，空环境下插件会带着合法凭据打到 `default` 租户 ——
+    请求 200、结果为空，比 401 更难查，因为没有任何一处会报错。
+    """
+    val = os.environ.get(key_name, "").strip()
+    if val:
+        return val
+    home = os.environ.get("AIDUMEM_HOME", "")
+    for cand in (
+        os.environ.get("AIDUMEM_ENV_FILE", ""),
+        os.path.join(home, ".env") if home else "",
+        os.path.expanduser("~/.aidumem/.env"),
+        ".env",
+    ):
+        val = _read_key_from_file(cand, key_name)
+        if val:
+            return val
+    return default
+
+
+def _resolve_api_token() -> str:
+    return _resolve_env_key(_ENV_TOKEN_KEY)
+
+
+def _resolve_user_id() -> str:
+    """身份归口：AIDUMEM_USER_ID → AIDUMEM_DEFAULT_USER_ID → default，全链兜底。"""
+    return (_resolve_env_key("AIDUMEM_USER_ID")
+            or _resolve_env_key("AIDUMEM_DEFAULT_USER_ID")
+            or "default")
+
+
+# ---------------------------------------------------------------------------
 # HTTP 小客户端（只用标准库，避免给宿主装依赖）
 # ---------------------------------------------------------------------------
 
@@ -59,7 +126,14 @@ class _Client:
         # 后端一旦启用门禁（设了 AIDUMEM_API_TOKEN），插件不带凭据会全线 401，
         # 而记忆层失败是静默的（try_request 吞异常）—— 用户只会觉得
         # 「记忆突然不好用了」，排查成本极高。这里主动对齐。
-        self.api_token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+        # v19.4.2 追加 .env 兜底：宿主进程的环境不一定带得到这个变量。
+        self.api_token = _resolve_api_token()
+        if not self.api_token:
+            logger.info(
+                "aiduMEM 插件未读到 %s（环境变量与 .env 兜底链均为空）。"
+                "若后端已启用鉴权门禁，所有记忆调用都会 401 且不报错。",
+                _ENV_TOKEN_KEY,
+            )
 
     def request(
         self,
@@ -89,9 +163,24 @@ class _Client:
             return {"raw": raw}
 
     def try_request(self, method: str, path: str, **kwargs) -> Optional[Any]:
-        """失败返回 None —— 记忆层永远不该让对话崩掉。"""
+        """失败返回 None —— 记忆层永远不该让对话崩掉。
+
+        但「不崩掉」不等于「不吭声」：v19.4.2 起，鉴权失败单独升到 warning。
+        401 是配置问题（token 没传到），不是网络抖动，它不会自愈，
+        混在 debug 里等于永远没人知道 —— 记忆静默失效整整一天就是这么来的。
+        """
         try:
             return self.request(method, path, **kwargs)
+        except urlerror.HTTPError as exc:
+            if exc.code in (401, 403):
+                logger.warning(
+                    "aiduMEM 鉴权失败 HTTP %s（%s %s）：记忆功能已全线失效。"
+                    "请确认 %s 已注入宿主进程，或让 AIDUMEM_ENV_FILE 指向部署的 .env。",
+                    exc.code, method, path, _ENV_TOKEN_KEY,
+                )
+            else:
+                logger.debug("aiduMEM %s %s failed: HTTP %s", method, path, exc.code)
+            return None
         except (urlerror.URLError, OSError, ValueError) as exc:
             logger.debug("aiduMEM %s %s failed: %s", method, path, exc)
             return None
@@ -150,7 +239,7 @@ class AiduMemProvider(MemoryProvider):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         cfg = dict(config or {})
         url = cfg.get("url") or os.environ.get("AIDUMEM_URL") or DEFAULT_URL
-        user_id = cfg.get("user_id") or os.environ.get("AIDUMEM_USER_ID") or "default"
+        user_id = cfg.get("user_id") or _resolve_user_id()
         self._client = _Client(url, user_id)
         self._session_id = ""
         self._threads: List[threading.Thread] = []

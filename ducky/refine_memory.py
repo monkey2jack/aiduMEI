@@ -18,7 +18,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ducky.utils import get_facts_conn
+from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 from ducky.security.injection_guard import wrap_memory_context_sandbox
 
 logger = logging.getLogger("aiduMEM.refine_memory")
@@ -83,14 +83,33 @@ def ensure_refine_schema() -> None:
 
 
 def _load_candidates(conn, user_id: str, category: str, limit: int) -> list[dict]:
-    rows = conn.execute(
-        """
-        SELECT id, category, fact_key, fact_value FROM facts
-        WHERE archived=0 AND category=? AND (?='default' OR source=?)
-        ORDER BY updated_at DESC LIMIT ?
-        """,
-        (category, user_id, user_id, limit),
-    ).fetchall()
+    """取候选事实：默认身份 = 全库通配，具名租户 = 按 source 收窄。
+
+    v19.4.2：通配哨兵原先硬编码在 SQL 里（`?='default' OR source=?`）。
+    部署方一旦把默认身份配成别的名字（AIDUMEM_DEFAULT_USER_ID），通配
+    就再也不会被触发 —— refine 从「全库可见」悄悄退化成「只看
+    source=<那个名字>」，而返回值仍是一句合法的 skipped，不报错、不告警。
+    生产实测：候选从 1133 条缩到 130 条，靠 test_refine_routes 才露头。
+    改为字面量与 DEFAULT_USER_ID 都认：老部署逐字节不变，新部署恢复原意。
+    """
+    if user_id in ("default", DEFAULT_USER_ID):
+        rows = conn.execute(
+            """
+            SELECT id, category, fact_key, fact_value FROM facts
+            WHERE archived=0 AND category=?
+            ORDER BY updated_at DESC LIMIT ?
+            """,
+            (category, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, category, fact_key, fact_value FROM facts
+            WHERE archived=0 AND category=? AND source=?
+            ORDER BY updated_at DESC LIMIT ?
+            """,
+            (category, user_id, limit),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

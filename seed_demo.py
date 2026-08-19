@@ -10,6 +10,16 @@ import os
 import sys
 import requests
 
+# 仓库根补进 sys.path：本脚本常被从任意目录直接调用
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# v19.4.2：demo 也要能在「开了鉴权门禁」的部署上跑通。
+# 否则新用户照 README 敲第一条命令就是满屏 401——这是我们对外的第一印象。
+# 未设 token 时返回空 dict，本机零配置体验完全不变。
+from ducky.utils import api_auth_headers
+
 API = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 
 SEEDS = [
@@ -70,10 +80,14 @@ for text, user in SEEDS:
             "messages": text,
             "user_id": user,
             "async_mode": True,
-        }, timeout=10)
+        }, headers=api_auth_headers(), timeout=10)
         ok = resp.status_code == 200
         results.append({"user": user, "ok": ok})
-        print(f"[{'OK' if ok else 'ERR:' + str(resp.status_code)}] {user}: {text[:40]}")
+        if resp.status_code in (401, 403):
+            print(f"[ERR:{resp.status_code}] 鉴权门禁已开启但没拿到 token —— "
+                  f"请设 AIDUMEM_API_TOKEN 或把它写进仓库根 .env")
+        else:
+            print(f"[{'OK' if ok else 'ERR:' + str(resp.status_code)}] {user}: {text[:40]}")
     except Exception as e:
         results.append({"user": user, "ok": False})
         print(f"[ERR] {user}: {e}")
@@ -81,23 +95,24 @@ for text, user in SEEDS:
 ok_count = sum(1 for r in results if r["ok"])
 print(f"\n=== seeded {ok_count}/{len(results)} ===")
 if ok_count == 0:
-    print("No seeds succeeded — is aiduMEM running? Default: http://127.0.0.1:8767")
+    print("No seeds succeeded — is aiduMEI running? Default: http://127.0.0.1:8767")
+    print("If the auth gate is on, set AIDUMEM_API_TOKEN (or put it in the repo-root .env).")
     sys.exit(1)
 
 print("\n--- flushing coalesce ---")
 try:
-    requests.post(f"{API}/add/coalesce/flush", timeout=60)
+    requests.post(f"{API}/add/coalesce/flush", headers=api_auth_headers(), timeout=60)
     print("flush ok")
 except Exception as e:
     print(f"flush timed out (seeds still queued, LLM extraction runs in background): {e}")
 
 try:
-    r = requests.get(f"{API}/stats?user_id=default", timeout=10).json()
+    r = requests.get(f"{API}/stats?user_id=default", headers=api_auth_headers(), timeout=10).json()
     print(f"stats: {r.get('total_memories', '?')} memories")
 except Exception:
     print("stats: unavailable (server busy processing)")
 try:
-    r = requests.get(f"{API}/facts?limit=1", timeout=10).json()
+    r = requests.get(f"{API}/facts?limit=1", headers=api_auth_headers(), timeout=10).json()
     print(f"facts: {r.get('count', '?')}")
 except Exception:
     print("facts: unavailable")

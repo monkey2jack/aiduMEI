@@ -134,17 +134,21 @@ CONSOLIDATOR_LOCK = os.path.join(DATA_DIR, "consolidator.lock")
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def load_env_file(path: str | None = None, *, override: bool = False) -> int:
-    """把 .env 里的键值补进 os.environ。返回实际注入的条数。
+def _env_file_path(path: str | None = None) -> str:
+    return path or os.environ.get("AIDUMEM_ENV_FILE") or os.path.join(_REPO_ROOT, ".env")
 
-    · 只做最简解析（KEY=VALUE、# 注释、可选引号），不引入 dotenv 依赖；
-    · 默认 **不覆盖** 已存在的环境变量（显式传入的优先级最高）；
-    · 文件不存在或读失败一律静默返回 0，绝不影响调用方主流程。
+
+def parse_env_file(path: str | None = None) -> dict:
+    """解析 .env 为 dict，**不碰 os.environ**。文件不存在或读失败返回 {}。
+
+    全仓只有这一个 .env 解析器。凭据与身份都从它取值，是为了避免出现
+    「这个组件认得 export 前缀、那个不认」的分裂 —— 那种分裂的症状是
+    某一个组件静默读不到值，和「根本没配」长得一模一样。
     """
-    target = path or os.environ.get("AIDUMEM_ENV_FILE") or os.path.join(_REPO_ROOT, ".env")
+    target = _env_file_path(path)
     if not os.path.isfile(target):
-        return 0
-    injected = 0
+        return {}
+    parsed: dict = {}
     try:
         with open(target, encoding="utf-8") as fh:
             for raw in fh:
@@ -153,15 +157,41 @@ def load_env_file(path: str | None = None, *, override: bool = False) -> int:
                     continue
                 key, _, value = line.partition("=")
                 key = key.strip()
+                # v19.4.2：容忍 `export KEY=VALUE` 写法。很多部署的 .env 是给
+                # shell `source` 用的，带 export 前缀；不认它就会静默读不到
+                # token —— 症状与「没配 token」完全一样，极难排查。
+                if key.startswith("export ") or key.startswith("export\t"):
+                    key = key[len("export"):].strip()
                 value = value.strip().strip('"').strip("'")
-                if not key:
-                    continue
-                if override or key not in os.environ:
-                    os.environ[key] = value
-                    injected += 1
+                if key:
+                    parsed.setdefault(key, value)
     except Exception as exc:
-        logger.debug("load_env_file 跳过 (%s): %s", target, exc)
-        return 0
+        logger.debug("parse_env_file 跳过 (%s): %s", target, exc)
+        return {}
+    return parsed
+
+
+def env_or_env_file(key: str, default: str = "") -> str:
+    """取配置值：环境变量优先，其次 .env，最后 default。不产生副作用。"""
+    val = os.environ.get(key, "").strip()
+    if val:
+        return val
+    val = str(parse_env_file().get(key, "")).strip()
+    return val or default
+
+
+def load_env_file(path: str | None = None, *, override: bool = False) -> int:
+    """把 .env 里的键值补进 os.environ。返回实际注入的条数。
+
+    · 复用 `parse_env_file` 的解析（单一解析器）；
+    · 默认 **不覆盖** 已存在的环境变量（显式传入的优先级最高）；
+    · 文件不存在或读失败一律静默返回 0，绝不影响调用方主流程。
+    """
+    injected = 0
+    for key, value in parse_env_file(path).items():
+        if override or key not in os.environ:
+            os.environ[key] = value
+            injected += 1
     return injected
 
 
@@ -184,8 +214,17 @@ def api_auth_headers() -> dict:
 # 换成自己的标识，源码里不写任何真实人名或昵称。
 #   AIDUMEM_DEFAULT_USER_ID   单用户部署时的默认 user_id
 #   AIDUMEM_DEFAULT_AGENT_ID  本机主 Agent 的联邦标识
-DEFAULT_USER_ID  = os.environ.get("AIDUMEM_DEFAULT_USER_ID", "default")
-DEFAULT_AGENT_ID = os.environ.get("AIDUMEM_DEFAULT_AGENT_ID", "local")
+#
+# v19.4.2：身份和 token 读同一条链（环境变量 → .env）。
+# 在此之前身份只认环境变量，而 token 有 .env 兜底 —— 于是在环境近乎为空的
+# 进程里（cron、网关拉起的 hook、没配 EnvironmentFile 的 systemd 单元），
+# 请求会**带着合法凭据打到 `default` 租户**。这比 401 更坏：401 会报错，
+# 而租户错了是安静的，表现为「记忆明明存了就是搜不到」。
+#
+# 这两个常量必须在 import 期定好：它们被用作 128 处的函数默认参数，
+# 还被 schema_bootstrap 写进建表 DDL 的 DEFAULT 子句，晚绑定改不动。
+DEFAULT_USER_ID  = env_or_env_file("AIDUMEM_DEFAULT_USER_ID", "default")
+DEFAULT_AGENT_ID = env_or_env_file("AIDUMEM_DEFAULT_AGENT_ID", "local")
 
 # 线程本地连接缓存，每个线程+数据库路径只建一次连接
 import threading

@@ -1,0 +1,36 @@
+# aiduMEI 日志轮转模板（v19.4.2 新增）
+#
+# 安装：
+#   sudo cp deploy/logrotate/aidumem /etc/logrotate.d/aidumem
+#   sudo logrotate -d /etc/logrotate.d/aidumem     # 干跑，先看一眼再上
+#
+# 为什么需要：日志有两个写入者，都没有任何轮转机制——
+#   1) api_server.py 的 logging.FileHandler（常驻进程，O_APPEND 句柄一直握着）
+#   2) 若干 cron 任务的 `>>` 追加
+# 两者都只会让文件单调增长，直到某天把磁盘写满，
+# 而磁盘写满会连带 SQLite 写入失败，把「日志问题」升级成「数据问题」。
+#
+# 路径按你的部署根目录改（默认 /opt/aidumem）。
+
+/opt/aidumem/logs/*.log {
+    daily
+    rotate 14
+
+    # minsize 与 maxsize 是一对，缺一不可：
+    #   minsize 1M —— 到点了但文件还很小，就别转，免得攒一堆几 KB 的归档
+    #   maxsize 50M —— 没到点但已经涨爆了，立刻转，别等到明天
+    minsize 1M
+    maxsize 50M
+
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+
+    # copytruncate 是实测选出来的，不是抄的默认值：
+    # 写者持有 O_APPEND 句柄（可查 /proc/<pid>/fdinfo/<fd> 的 flags），
+    # 直接 mv 会让进程继续往「已被改名的旧文件」里写，新文件永远是空的。
+    # 用 copytruncate 就不需要为了转日志去重启任何服务。
+    copytruncate
+}

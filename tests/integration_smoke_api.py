@@ -31,6 +31,9 @@ import urllib.parse
 import urllib.request
 from typing import Tuple, Optional
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ducky.utils import api_auth_headers  # noqa: E402
+
 # --- 路径常量 ---------------------------------------------------------------
 API_BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 TIMEOUT = 10  # 秒
@@ -41,6 +44,23 @@ FAIL = 0
 RESULTS = []  # [(emoji, name, detail)]
 
 
+_AUTH_WARNED = False
+
+
+def _warn_auth_once(code: int) -> None:
+    """401/403 只提示一次，但必须提示。
+
+    「4 条冒烟全 FAIL」和「4 条冒烟全 401」在排查方向上是两件事：
+    前者查服务，后者查凭据。不说清楚就等着把时间花在错的那一头。
+    """
+    global _AUTH_WARNED
+    if _AUTH_WARNED:
+        return
+    _AUTH_WARNED = True
+    print(f"\n  ⚠️  auth_failed: 上游返回 {code} —— 服务端门禁已开，本脚本没取到有效 token。")
+    print("      检查 AIDUMEM_API_TOKEN，或 AIDUMEM_ENV_FILE / ~/.aidumem/.env 里的凭据。")
+
+
 def _http(method: str, path: str, body: Optional[dict] = None) -> Tuple[int, dict, int]:
     """
     简单的 HTTP 调用，返回 (status_code, json_body, elapsed_ms)
@@ -48,7 +68,10 @@ def _http(method: str, path: str, body: Optional[dict] = None) -> Tuple[int, dic
     """
     url = f"{API_BASE}{path}"
     data = None
-    headers = {"Accept": "application/json"}
+    # 门禁凭据走全仓同一条兜底链；未配 token 时是空 dict，本机零配置行为不变。
+    # v19.4.2 之前这里裸奔：门禁一开，冒烟 5 条里有 4 条 401，
+    # 而它打印的是「FAIL」而非「未授权」，很容易被读成「接口坏了」。
+    headers = {"Accept": "application/json", **api_auth_headers()}
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -66,6 +89,8 @@ def _http(method: str, path: str, body: Optional[dict] = None) -> Tuple[int, dic
         raw = f"<<请求失败: {e}>>"
         code = 0
     elapsed_ms = int((time.time() - t0) * 1000)
+    if code in (401, 403):
+        _warn_auth_once(code)
 
     # 尝试解析 JSON
     try:

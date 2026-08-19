@@ -143,7 +143,10 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "user_id 必须显式指定，拒绝空参数清库")
         user_id = _normalize_user_id(req.user_id)
         if user_id == DEFAULT_USER_ID and not getattr(req, "confirm", False):
-            raise HTTPException(400, "清空默认用户(default)全部记忆具有破坏性，必须传递 confirm: true 二次确认")
+            # v19.4.2：文案原先把默认身份写死成 "(default)"。部署方配了
+            # AIDUMEM_DEFAULT_USER_ID 之后，报错里说的租户和实际要清的
+            # 租户不是同一个，运维照着文案排查会走岔。改成回报真实身份。
+            raise HTTPException(400, f"清空默认用户({user_id})全部记忆具有破坏性，必须传递 confirm: true 二次确认")
 
         try:
             res = cascade_delete_all(user_id=user_id, confirm=getattr(req, "confirm", False))

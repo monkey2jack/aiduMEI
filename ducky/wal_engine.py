@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from ducky.utils import DATA_DIR, get_facts_conn
+from ducky.utils import DATA_DIR, DEFAULT_USER_ID, get_facts_conn
 
 logger = logging.getLogger("aiduMEM.wal")
 
@@ -343,8 +343,14 @@ def cascade_delete_all(user_id: str, confirm: bool = False) -> Dict[str, Any]:
     """
     if not user_id or not user_id.strip():
         raise ValueError("user_id 必须显式指定")
-    if user_id == "default" and not confirm:
-        raise ValueError("清空 default 用户全量记忆必须传递 confirm=True")
+    # v19.4.2：闸门原先只认字面量 "default"。这道闸的立意（见上方 docstring）
+    # 是「default 是系统默认 user_id，误触概率极高」—— 它保护的是**大家会
+    # 误触的那个租户**。部署方配了 AIDUMEM_DEFAULT_USER_ID 之后，误触面就
+    # 换了人，而闸门还守在旧名字上：保护罩和被保护对象错位。
+    # HTTP /delete_all 那层用的是 DEFAULT_USER_ID 常量、口径本来就对，
+    # 所以线上无暴露；这里补齐内层的直接调用路径，两个名字都守，只加不减。
+    if user_id in ("default", DEFAULT_USER_ID) and not confirm:
+        raise ValueError(f"清空默认用户({user_id})全量记忆必须传递 confirm=True")
     wal = WALEngine.get_instance()
     wal_id = wal.append(WALEntry(
         user_id=user_id,

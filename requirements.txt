@@ -36,3 +36,10 @@ pydantic_core==2.46.4
 httpx>=0.27
 # requests: 同步 HTTP 客户端（tests/test_smoke_api.py 用，零依赖）
 requests>=2.31
+
+# --- 同步守护进程 -----------------------------------------------------------
+# inotify_simple: mem0_sync.py --daemon 监听 MEMORY.md 变化。
+# 只有 Linux 有 inotify，marker 保证 macOS/Windows 上 pip install 不会失败。
+# v19.4.2 补：此前从未声明，导致按仓库部署 mem0-sync 必然 ImportError 崩溃循环
+# ——而 systemd 的 activating 状态还会把崩溃伪装成「正在启动」，静默 8 天。
+inotify_simple>=1.3.5; sys_platform == "linux"

@@ -16,8 +16,11 @@ aiduMEM Raw Drawer，防止 AI 遗忘已看过的代码。
   python3 claude-code-hook.py impact ./api_server.py
 
 环境变量：
-  AIDUMEM_URL      API 地址，默认 http://127.0.0.1:8767
-  AIDUMEM_USER_ID  用户命名空间，默认 default
+  AIDUMEM_URL        API 地址，默认 http://127.0.0.1:8767
+  AIDUMEM_API_TOKEN  API 鉴权 token（服务端开启门禁后必需）
+  AIDUMEM_ENV_FILE   .env 路径，用于兜底读取 token 与身份
+  AIDUMEM_USER_ID    用户命名空间，可由 .env 兜底，默认 default
+  AIDUMEM_DEFAULT_USER_ID  AIDUMEM_USER_ID 缺省时的回落值（服务端同名键）
 """
 from __future__ import annotations
 
@@ -31,23 +34,94 @@ import urllib.request
 from pathlib import Path
 
 AIDUMEM_URL = os.environ.get("AIDUMEM_URL", "http://127.0.0.1:8767").rstrip("/")
-AIDUMEM_USER_ID = os.environ.get("AIDUMEM_USER_ID", "default")
 TIMEOUT = int(os.environ.get("AIDUMEM_TIMEOUT", "10"))
+
+
+# ── 凭据与身份（v19.4.2 补齐）─────────────────────────────
+# 在仓库内运行时复用 ducky.utils（单一真相源，自带 .env 兜底）；
+# 本文件设计为可拷贝到 .claude/ 等编辑器配置目录独立运行，
+# 因此保留一份最小兜底实现，import 失败时不至于变回裸奔。
+#
+# 凭据和身份必须走**同一条链**。若只有 token 兜底、身份只认环境变量，
+# 那么编辑器以空环境拉起本 hook 时就是「凭据对、租户错」：
+# 写入成功、落进 default 分区，用户在自己分区里怎么查都查不到，
+# 而且全程没有任何报错。
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from ducky.utils import DEFAULT_USER_ID, api_auth_headers  # type: ignore
+
+    def _env_or_env_file(key: str, default: str = "") -> str:
+        from ducky.utils import env_or_env_file  # type: ignore
+        return env_or_env_file(key, default)
+except Exception:                                     # pragma: no cover - 拷出仓库的场景
+    def _read_env_file(path: str) -> dict:
+        """最小 .env 解析：兼容 `export KEY=VALUE`、引号、BOM、# 注释。"""
+        parsed: dict = {}
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip().lstrip("﻿")
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    if line.startswith("export "):
+                        line = line[len("export "):].strip()
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    if key:
+                        parsed.setdefault(key, value.strip().strip('"').strip("'"))
+        except OSError:
+            return {}
+        return parsed
+
+    def _env_or_env_file(key: str, default: str = "") -> str:   # type: ignore[misc]
+        val = os.environ.get(key, "").strip()
+        if val:
+            return val
+        home = os.environ.get("AIDUMEM_HOME", "")
+        for cand in (
+            os.environ.get("AIDUMEM_ENV_FILE", ""),
+            os.path.join(home, ".env") if home else "",
+            os.path.expanduser("~/.aidumem/.env"),
+            ".env",
+        ):
+            if not cand or not os.path.isfile(cand):
+                continue
+            val = str(_read_env_file(cand).get(key, "")).strip()
+            if val:
+                return val
+        return default
+
+    DEFAULT_USER_ID = _env_or_env_file("AIDUMEM_DEFAULT_USER_ID", "default")  # type: ignore[misc]
+
+    def api_auth_headers() -> dict:                   # type: ignore[misc]
+        token = _env_or_env_file("AIDUMEM_API_TOKEN")
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+# 身份与全局单一真源对齐（见 ducky/utils.py DEFAULT_USER_ID）。
+AIDUMEM_USER_ID = _env_or_env_file("AIDUMEM_USER_ID") or DEFAULT_USER_ID
+
+
+def _auth_hint(result: dict) -> dict:
+    """把 401/403 翻译成人话 —— 否则用户只看到 `HTTP 401` 三个字，无从下手。"""
+    if str(result.get("error", "")).startswith(("HTTP 401", "HTTP 403")):
+        result["hint"] = ("鉴权失败：请设置 AIDUMEM_API_TOKEN，"
+                          "或让 AIDUMEM_ENV_FILE 指向部署的 .env")
+    return result
 
 
 def _post(path: str, body: dict) -> dict:
     url = f"{AIDUMEM_URL}{path}"
     data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        url, data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    headers = {"Content-Type": "application/json"}
+    headers.update(api_auth_headers())
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        return {"error": f"HTTP {e.code}", "detail": e.read().decode(errors="replace")}
+        return _auth_hint({"error": f"HTTP {e.code}",
+                           "detail": e.read().decode(errors="replace")})
     except Exception as e:
         return {"error": str(e)}
 
@@ -57,10 +131,15 @@ def _get(path: str, params: dict | None = None) -> dict:
     if params:
         qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
         url = f"{url}?{qs}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    headers.update(api_auth_headers())
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return _auth_hint({"error": f"HTTP {e.code}",
+                           "detail": e.read().decode(errors="replace")})
     except Exception as e:
         return {"error": str(e)}
 
@@ -91,6 +170,8 @@ def cmd_store(args: argparse.Namespace) -> None:
     })
     if "error" in result:
         print(f"❌ 存储失败: {result['error']}", file=sys.stderr)
+        if result.get("hint"):
+            print(f"   {result['hint']}", file=sys.stderr)
         sys.exit(1)
     print(f"✅ 存入 Raw Drawer: id={result.get('id', '?')}")
 
@@ -104,6 +185,8 @@ def cmd_search(args: argparse.Namespace) -> None:
     })
     if "error" in result:
         print(f"❌ 搜索失败: {result['error']}", file=sys.stderr)
+        if result.get("hint"):
+            print(f"   {result['hint']}", file=sys.stderr)
         sys.exit(1)
     memories = result.get("results", [])
     print(f"🔍 找到 {len(memories)} 条记忆：\n")
@@ -118,6 +201,8 @@ def cmd_impact(args: argparse.Namespace) -> None:
     result = _post("/code/impact", {"file_path": args.file})
     if "error" in result:
         print(f"❌ 分析失败: {result['error']}", file=sys.stderr)
+        if result.get("hint"):
+            print(f"   {result['hint']}", file=sys.stderr)
         sys.exit(1)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

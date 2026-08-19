@@ -22,6 +22,18 @@ import hashlib, json, os, sys, time, logging, argparse
 from pathlib import Path
 from typing import Optional
 
+# systemd / cron 的 cwd 未必是仓库根，先把仓库根补进 sys.path 再 import ducky
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# 凭据与身份都走单一真相源（v19.4.2）：
+#   · api_auth_headers()  环境变量 → .env 兜底，与服务端读同一份文件
+#   · DEFAULT_USER_ID     记忆分区身份，源码里不写任何真实标识
+# v19.4.1 的事故就是本文件自成一套：裸调 API 无凭证 → 门禁开启后每次写入
+# 401，而失败只写日志、没人看，同步整整停摆 8 天。
+from ducky.utils import DEFAULT_USER_ID, api_auth_headers
+
 # ── 配置（全部可用环境变量覆盖）──
 MEMORY_MD = Path(os.path.expanduser(
     os.environ.get("AIDUMEM_HOST_MEMORY_MD", "~/.hermes/memories/MEMORY.md")))
@@ -29,7 +41,7 @@ AIDUMEM_URL = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip
 SYNC_STATE = Path(os.path.expanduser(
     os.environ.get("AIDUMEM_SYNC_STATE", "~/.hermes/memories/.sync_state.json")))
 DEBOUNCE_S = 0.2
-USER_ID = os.environ.get("AIDUMEM_DEFAULT_USER_ID", "default")
+USER_ID = DEFAULT_USER_ID
 LOG_FORMAT = "%(asctime)s [mem0_sync] %(message)s"
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt="%H:%M:%S")
@@ -98,10 +110,12 @@ def push_to_aidumem(text: str, category: str, source: str) -> bool:
     }, ensure_ascii=False).encode("utf-8")
     try:
         # 异步接单通常 <1s；仍给 15s 兜底，避免偶发慢启动误判失败
+        headers = {"Content-Type": "application/json"}
+        headers.update(api_auth_headers())
         req = urllib.request.Request(
             AIDUMEM_URL,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -121,7 +135,16 @@ def push_to_aidumem(text: str, category: str, source: str) -> bool:
             return False
     except urllib.error.HTTPError as e:
         body = e.read().decode()[:200]
-        logger.warning(f"  ❌ HTTP {e.code}: {body}")
+        if e.code in (401, 403):
+            # 鉴权失败必须响亮报错：这是「同步悄悄不干活」的头号成因，
+            # 降级成 warning 会淹没在日志里（v19.4.1 就是这么丢了 8 天增量）。
+            logger.error(
+                f"  ❌ HTTP {e.code} 鉴权失败：同步已停摆。"
+                f"请确认 AIDUMEM_API_TOKEN 已注入本进程"
+                f"（systemd 用 EnvironmentFile= 指向部署的 .env）| {body}"
+            )
+        else:
+            logger.warning(f"  ❌ HTTP {e.code}: {body}")
         return False
     except Exception as e:
         logger.warning(f"  ❌ 网络异常: {e}")
