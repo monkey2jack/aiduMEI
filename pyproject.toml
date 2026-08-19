@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "19.4.1"
+version = "19.4.2"
 description = "aiduMEI: self-hosted multi-tier AI wisdom engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
@@ -39,8 +39,12 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0.0"]
+# sync: mem0_sync.py 守护模式（inotify 监听 MEMORY.md）。仅 Linux 有 inotify。
+# v19.4.2 补：此前该依赖从未在任何清单里声明，照仓库部署 sync 必然崩溃循环。
+sync = ["inotify_simple>=1.3.5; sys_platform == 'linux'"]
 full = [
     "mcp>=1.0.0",
+    "inotify_simple>=1.3.5; sys_platform == 'linux'",
 ]
 
 [project.scripts]

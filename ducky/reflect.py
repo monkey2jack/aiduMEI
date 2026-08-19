@@ -124,6 +124,26 @@ def ensure_reflect_schema() -> None:
         conn.close()
 
 
+def _identity_ids(user_id: str) -> list[str]:
+    """默认身份的「可见身份集」。
+
+    v19.4.2：reflections 的读取是 `WHERE user_id=?` 精确匹配，没有通配分支。
+    部署方一旦把默认身份配成别的名字（AIDUMEM_DEFAULT_USER_ID），改名之前
+    以字面量 'default' 落库的历史洞察就**对服务彻底失明** —— 不报错、不告警，
+    只是查出来 0 条。生产实测：改名当天（2026-08-19）让 8-17 写下的 10 条真
+    反思一起消失，靠逐库清点 user_id 分布才捞回来。
+
+    只加不减：
+      - 老部署（默认身份就叫 default）→ 返回 ['default']，逐字节不变；
+      - 具名租户（alice）→ 返回 ['alice']，完全不受影响；
+      - 改名后的默认身份（dudu）→ 返回 ['dudu', 'default']，历史条目重新可见。
+    只放宽读取口径，**不迁移、不改写、不删除任何一行数据**。
+    """
+    if user_id == DEFAULT_USER_ID and user_id != "default":
+        return [user_id, "default"]
+    return [user_id]
+
+
 def _gather_recent_memories(memory, user_id: str, top_k: int) -> list[dict]:
     """收集最近记忆（mem0 全量最近的 top_k 条），编号 m1..mN。"""
     try:
@@ -369,6 +389,11 @@ def save_insights(insights: list[dict], user_id: str, source: str) -> int:
     added = 0
     try:
         from ducky.security.injection_guard import validate_and_sanitize_memory_content
+        # v19.4.2：去重查询也要按「可见身份集」来。读取放宽之后，若去重仍只认
+        # 精确身份，同一条洞察会在 dudu 名下再写一遍，然后两条一起被查出来 ——
+        # 放宽读取反而制造重复。写入（INSERT）仍落**真实身份**，只有查重放宽。
+        dup_ids = _identity_ids(user_id)
+        dup_ph = ",".join("?" * len(dup_ids))
         for ins in insights:
             raw_c = (ins.get("content") or "").strip()
             if not raw_c:
@@ -379,8 +404,8 @@ def save_insights(insights: list[dict], user_id: str, source: str) -> int:
                 continue
             content = sanitized_c
             dup = conn.execute(
-                "SELECT id FROM reflections WHERE user_id=? AND content=?",
-                (user_id, content),
+                "SELECT id FROM reflections WHERE user_id IN (%s) AND content=?" % dup_ph,
+                (*dup_ids, content),
             ).fetchone()
             if dup:
                 continue
@@ -467,8 +492,11 @@ def get_reflections(user_id: str = DEFAULT_USER_ID, limit: int = 20, insight_typ
     ensure_reflect_schema()
     conn = get_facts_conn()
     try:
-        sql = "SELECT * FROM reflections WHERE user_id=?"
-        params: list[Any] = [user_id]
+        # v19.4.2：按「可见身份集」查，让改名前落在字面量 'default' 的历史洞察
+        # 重新对默认身份可见（见 _identity_ids）。具名租户行为不变。
+        ids = _identity_ids(user_id)
+        sql = "SELECT * FROM reflections WHERE user_id IN (%s)" % ",".join("?" * len(ids))
+        params: list[Any] = list(ids)
         if insight_type:
             sql += " AND insight_type=?"
             params.append(insight_type)

@@ -47,7 +47,7 @@ const BRAND_COLORS = ['#1f4e79', '#525252', '#000000'];
    footer version display + version check
    --------------------------------------------------------------------------- */
 
-// Current deployed version — mapped from aiduMEM /health
+// Current deployed version — mapped from aiduMEI /health
 let currentVersion = '—';
 const GITHUB_REPO_API = 'https://api.github.com/repos/monkey2jack/aiduMEI/releases/latest';
 
