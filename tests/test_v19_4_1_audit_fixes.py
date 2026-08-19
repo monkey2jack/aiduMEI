@@ -1290,3 +1290,14 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 否则「12 跳过」还是一个读者无法证伪的数字。
     assert "HERMES_SRC=" in _read("README.md"), "README.md 未给出让跳过项跑起来的办法"
     assert "HERMES_SRC=" in _read("README_EN.md"), "README_EN.md 未给出让跳过项跑起来的办法"
+
+    # v19.4.2 审计整改轮：**反方向也必须能复现**。
+    # 上面那条只保证「跳过 → 通过」。但 /hermes/hermes-agent 是会被自动发现的，
+    # 装了宿主的机器（我们自己的生产机就是）上，README 第一条命令跑出来是
+    # 0 skipped —— 我们宣称的「12 跳过」在那台机器上**根本没法复现**。
+    # 双向可复现才叫可证伪，所以 `HERMES_SRC=none` 这一档必须写进文档。
+    for _fname in ("README.md", "README_EN.md"):
+        assert "HERMES_SRC=none" in _read(_fname), (
+            f"{_fname} 未给出在**已装宿主的机器上**强制跳过的办法 —— "
+            "「无宿主」那条复现命令在这类机器上跑出来是假的"
+        )
