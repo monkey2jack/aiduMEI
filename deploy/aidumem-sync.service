@@ -27,6 +27,20 @@ Wants=network.target
 #   悬空依赖（unit 已不存在）会让 `systemctl list-dependencies` 长期报
 #   not-found，把真正的问题淹没在噪声里。
 
+# 失败可见性：连续失败 5 次（300 秒窗口内）后进入 failed 并停止重试。
+# 这是刻意的——让崩溃循环**看得见**，而不是永远伪装成 activating。
+#
+# ★ 必须写在 [Unit] 而不是 [Service]（v19.4.2 补丁轮的实测教训）：
+#   v19.4.2 首版把这两行放在了 [Service] 段。systemd（255 实测）对此的处理是
+#       Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring.
+#   —— 只在 journal 里留一行，生效值仍是默认的 10s/5。而 RestartSec=10 意味着
+#   10 秒窗口内永远凑不满 5 次，限流永不触发，服务照旧永远停在 activating。
+#   于是「修好了」的这一版，行为与没修完全一致。
+#   验收方式只能是 `systemctl show <unit> -p StartLimitIntervalUSec`（看 systemd
+#   算出来的值），不能是 grep 单元文件——**配置写了不等于配置生效**。
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=root
@@ -43,12 +57,9 @@ Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/opt/aidumem/venv/bin/python3 /opt/aidumem/mem0_sync.py --daemon
 
-# 失败可见性：连续失败 5 次（300 秒窗口内）后进入 failed 状态并停止重试。
-# 这是刻意的——让崩溃循环**看得见**，而不是永远伪装成 activating。
+# StartLimit* 在 [Unit] 段，不在这里——原因见上方注释。
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 StandardOutput=append:/opt/aidumem/logs/mem0_sync.log
 StandardError=append:/opt/aidumem/logs/mem0_sync.log
