@@ -38,6 +38,12 @@ Wants=network.target
 #   于是「修好了」的这一版，行为与没修完全一致。
 #   验收方式只能是 `systemctl show <unit> -p StartLimitIntervalUSec`（看 systemd
 #   算出来的值），不能是 grep 单元文件——**配置写了不等于配置生效**。
+#
+# ★ 这里比 API 严得多（300/5 vs API 的 3600/30），是**刻意的**：
+#   sync 停了几小时没人会疼，所以它必须早点死给人看 —— 它的失败模式（漏装
+#   inotify_simple → 起来就 ImportError 退出）是**必然失败**，稳定地每 10 秒崩一次，
+#   50 秒就撞线进 failed，正合适。而 API 一停等于调用方当场失忆，
+#   得反过来对故障宽容。理由全文见 aidumem-api.service 里的对应注释。
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
