@@ -18,6 +18,9 @@ from collections import defaultdict
 
 import os
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ducky.utils import api_auth_headers  # noqa: E402
+
 BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 TIMEOUT = int(os.environ.get("AIDUMEM_PERF_TIMEOUT", "10"))
 BASE_DIR = os.environ.get("AIDUMEM_HOME") or os.path.dirname(
@@ -63,19 +66,26 @@ def _load_queries():
 QUERIES = _load_queries()
 
 
-def get(path, **params):
-    qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+def _request(method, path, params=None, data=None, headers=None):
+    """唯一出口 —— 凭据在这里统一挂上。
+
+    性能基线尤其经不起裸奔：401 的响应又小又快，跑出来的 P50/P95 会漂亮得反常，
+    「基线」于是变成了一串测量门禁拒绝速度的数字。
+    """
+    qs = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
     url = f"{BASE}{path}?{qs}" if qs else f"{BASE}{path}"
-    return json.loads(urllib.request.urlopen(url, timeout=TIMEOUT).read())
+    merged = {**(headers or {}), **api_auth_headers()}
+    req = urllib.request.Request(url, data=data, method=method, headers=merged)
+    return json.loads(urllib.request.urlopen(req, timeout=TIMEOUT).read())
+
+
+def get(path, **params):
+    return _request('GET', path, params=params)
 
 
 def post_json(path, payload):
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"{BASE}{path}", data=data, method='POST',
-        headers={'Content-Type': 'application/json'},
-    )
-    return json.loads(urllib.request.urlopen(req, timeout=TIMEOUT).read())
+    return _request('POST', path, data=json.dumps(payload).encode(),
+                    headers={'Content-Type': 'application/json'})
 
 
 def percentile(data, p):

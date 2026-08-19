@@ -448,17 +448,28 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **392** (measured via `pytest --collect-only`) |
-| Clean dev machine | 380 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
-| Complete environment | **383 all green** (with the Hermes source present, all 12 run and pass) |
+| Total cases | **399** (measured via `pytest --collect-only`) |
+| Clean dev machine | 387 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
+| Complete environment | **399 all green** (with the Hermes source present, all 12 run and pass; verified on production) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 380 and 392**: the same suite yields different numbers in different environments,
+> **Why report both 387 and 399**: the same suite yields different numbers in different environments,
 > and quoting only one of them misleads the reader. The 12-case gap is exactly the set of integration
 > tests that need the host Hermes source: without it pytest reports `skipped` (not failed); with it they all pass.
 > Always state the environment alongside a test count.
+>
+> **Those 12 are reproducible, not folklore** (added in v19.4.2): they all live in
+> `tests/test_hermes_plugin.py` and skip when the host's `agent/memory_provider.py` cannot be found.
+> Point at the host source and they run:
+>
+> ```bash
+> pytest tests/ -q -rs | tail -1               # no host: 387 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1   # with host: 399 passed
+> ```
+>
+> A "skip" you cannot turn back into a "pass" is just an unfalsifiable number.
 
 **Why spell this out**: v19.4.0's README only said "full suite: 244 passed", which reads like end-to-end assurance.
 But 244 cases finishing in 0.88s clearly involve no real external dependency. More importantly, v19.4.0's

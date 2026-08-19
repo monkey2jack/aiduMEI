@@ -60,6 +60,8 @@
 - **`deploy/aidumem-sync.service`**：补 `StartLimitIntervalSec` / `StartLimitBurst`。
   没有它，崩溃循环会一直停在 `activating` 状态而**永远不进 `failed`**，
   按 `failed` 告警的监控一辈子等不到那一刻。
+  ⚠️ 本条首版把两个键写进了 `[Service]` 段 —— systemd 直接忽略，等于没修。
+  修正见下方 🔵 审计整改轮。
 - **`deploy/logrotate/aidumem`**：用 `copytruncate` —— 单元是
   `StandardOutput=append:`，改名切割后进程仍写旧 inode，日志会凭空消失。
 - **`pyproject.toml` / `requirements.txt`**：补上同步守护进程的依赖声明
@@ -75,6 +77,56 @@
   各模块 docstring 里的 `aiduMEM` 一律不动** —— 它们是机器契约与历史内部名，
   生产侧日志采集与监控按其匹配（决策 D2）。环境变量前缀 `AIDUMEM_*` 同理保持不变。
 - 版本号五文件对齐 19.4.2，代号仍为 Athena · 雅典娜。
+
+### 🔵 审计整改轮（用户视角审计 + 自查追加，同日）
+
+> **本轮修的是「守卫自己的射程」。** v19.4.1 修的是「凭证没贯通」，v19.4.2 首版修的是
+> 「身份没贯通」—— 而用户视角审计打回来的三条，加上整改途中自查揪出的一条，
+> 指向的是同一件事：**这一版新写的守卫，射程仍然小于缺陷的分布**。
+
+- **`frontend/dev_server.py` 的双重逃逸**：它既按**目录**逃逸（守卫的 `_SKIP_DIRS` 里
+  写着 `frontend`），又按**信号**逃逸（用的是第 4 个上游变量名 `AIDUMEM_UPSTREAM`
+  与第 2 个端口 `8777`，扫描器的特征串一个都不匹配）。两层都得拆掉才看得见。
+  —— **目录级豁免是最容易积累盲区的写法**：豁免当初的理由（「这里没有可执行的调用方」）
+  会随着目录里长出东西而悄悄过期，而豁免本身不会跟着过期。现改为按文件名精确豁免，
+  并补齐凭据注入与 401/403 诊断分支。
+- **启动 banner 从 stdout `print()` 改为 stderr 单次写入 + `flush()`**。
+  `nohup` / 管道下 stdout 是块缓冲的，banner 会一直躺在缓冲区里，等到进程退出才刷出来
+  —— 而「auth 到底加载没加载」恰恰是要在**启动那一刻**看的。改走 stderr 后与请求日志同序。
+- **`dev_server` 四个 `do_*` 方法收敛为一个 `_handle_api()` 骨架**（重构，行为不变）。
+  原先前缀判断与读 body 各写四遍 —— 凭据这类「必须每条路径都生效」的东西，
+  最怕的就是这种复制粘贴：改一处要记得改四处。
+- **★ systemd `StartLimit*` 放错段**（本轮最严重；用户视角审计未发现，整改途中自查揪出）：
+  这两个键**只在 `[Unit]` 段被解析**，写进 `[Service]` 会被 systemd 静默忽略
+  （255 上实测：`Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring.`），
+  生效值仍是默认 `10s/5`。配合 `RestartSec=10`，限流窗口内永远凑不满次数 ——
+  也就是说上面 🟠 那条「已修复」的配置，**行为与完全没修一模一样**。
+  配置文件里白纸黑字写着、`grep` 查得到、review 看得过，却不生效：
+  **配置写了不等于配置生效**。唯一的验收方式是问 systemd 自己算出来的值
+  （`systemctl show <unit> -p StartLimitIntervalUSec`），而不是 grep 单元文件。
+- **`deploy/aidumem-api.service` 同补 `[Unit]` 段 `StartLimit*`**（此前完全没有）。
+  代价是连续崩溃后需人工介入 —— 这是刻意的：5 分钟崩 5 次的服务，
+  自动重启只会把故障拖成静默的长期不可用。
+- **新增守卫 `test_no_unit_template_puts_startlimit_in_service_section`**：**按段**扫描
+  `deploy/*.service`，任何 `StartLimit*` 落在 `[Service]` 立刻红灯，并带正面锚点
+  （`[Unit]` 段必须确有这两个键），防止守卫退化成永真。
+  原有的 `test_sync_unit_template_makes_crashloop_visible` 一并加固 —— 它此前只断言
+  「字符串在文件里」，所以对上面那个缺陷照样给了绿灯。
+- **README 测试数字守卫扩面**：原守卫只盯中文 README 的**表格**一行，于是首版改了表格
+  却漏掉同页正文，`README_EN.md` 整段没动（数字互相打架，其中一个甚至推导不出来）——
+  又一例「守卫的射程小于缺陷的分布」。现按 **12 处**逐一校验（中英 × 三行表格 +
+  正文提要 + 两个复现命令块），任一处漏改立刻红。
+- **「12 跳过」不再是手抄常数**：它必须等于 `tests/test_hermes_plugin.py` 实际收集到的
+  条数，宿主插件测试增减时 README 会跟着红 —— **自洽不等于属实**。两份 README 同时补上
+  `HERMES_SRC=...` 的复现命令：**跳过必须能被复现成通过，否则它只是一个没人能证伪的数字**。
+- **`tests/` 下三个运维脚本**（`integration_smoke_api.py` / `integration_e2e_lifecycle.py` /
+  `perf_baseline.py` —— 住在 `tests/` 但不是 pytest 用例）：补 `api_auth_headers()` 与
+  `sys.path`，并把各自重复的请求逻辑收敛为单个 `_request()`。
+- **新增守卫 `test_changelog_and_version_py_do_not_drift`**：本文件与 `ducky/version.py`
+  记的是同一件事，却由人手分别维护 —— 于是必然漂移。本版首版就漂了：CHANGELOG 17 条、
+  `version.py` 16 条，差的那条谁也没发现，因为**没有任何东西在看着这两份文件的关系**。
+  现锁条目数相等 + 编号连续 + `version.py` 点名的路径本文件必须也有（单向：允许
+  `version.py` 把一组文件概括成一句话，不允许它提到详细版根本没写的东西）。
 
 ---
 
