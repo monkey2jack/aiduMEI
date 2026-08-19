@@ -1,11 +1,11 @@
 /* =============================================================================
    aiduMEI — API adapter
    -----------------------------------------------------------------------------
-   Talks to aiduMEM through the /api/* alias layer served by the backend itself.
+   Talks to aiduMEI through the /api/* alias layer served by the backend itself.
    The /api prefix routes to the same flat endpoints the backend natively exposes;
    the control台 frontend and the API share a single origin, no CORS needed.
 
-   aiduMEM's payload shapes are not uniform — /recent nests results twice,
+   aiduMEI's payload shapes are not uniform — /recent nests results twice,
    /search nests once, /facts uses its own key, /knowledge/tree returns a bare
    object. Normalising happens here so panel code stays clean.
    ============================================================================= */
@@ -112,7 +112,7 @@ function readRecord(raw) {
   };
 }
 
-/* A fact row from the SQLite ledger — the richest record type aiduMEM has. */
+/* A fact row from the SQLite ledger — the richest record type aiduMEI has. */
 function readFact(raw) {
   return {
     id: raw.id,

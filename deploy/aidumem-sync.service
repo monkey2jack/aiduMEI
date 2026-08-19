@@ -1,0 +1,57 @@
+# aiduMEI MEMORY.md 同步守护 —— systemd 单元模板（v19.4.2 新增）
+#
+# 安装：
+#   sudo cp deploy/aidumem-sync.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aidumem-sync
+#
+# 前置依赖（**必装**，否则守护进程起不来）：
+#   /opt/aidumem/venv/bin/pip install -e ".[sync]"     # 装 inotify_simple
+#
+# ★ 为什么这个模板必须存在（v19.4.1 的教训）：
+#   在此之前仓库只发 API 的 unit，同步守护全靠各家手写。结果是：
+#   ① 漏装 inotify_simple → 进程起来就 ImportError 退出
+#   ② unit 只写 Restart=always 而没有 StartLimit* → systemd 一直重试，
+#      服务状态长期停在 `activating`（**不是** failed），
+#      `systemctl is-active` 看着像「正在启动」，监控永远不报警
+#   ③ 没有 EnvironmentFile → 鉴权门禁开启后每次 POST 都 401
+#   三者相乘 = 同步静默停摆 8 天、重启 6000+ 次，没有任何一处报警。
+#   下面每一行配置都是针对上述三条的正面回答。
+
+[Unit]
+Description=aiduMEI MEMORY.md Sync Daemon
+Documentation=https://github.com/monkey2jack/aiduMEI
+After=network.target
+Wants=network.target
+# ⚠ 不要在这里写 Wants=/Requires= 指向你自己的历史服务名。
+#   悬空依赖（unit 已不存在）会让 `systemctl list-dependencies` 长期报
+#   not-found，把真正的问题淹没在噪声里。
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/aidumem
+
+# 凭据来源：与 API 服务读同一份 .env（单一真相源）。
+# 少了这一行，鉴权门禁开启后同步会 401——而且只写日志，没人会发现。
+EnvironmentFile=-/opt/aidumem/.env
+Environment=PYTHONUNBUFFERED=1
+# 记忆归属身份。单用户部署可不设（默认 default）；
+# 多租户/自定义身份的部署必须显式设置，否则新记忆会落进 default 分区，
+# 而你的查询在自己的分区里——看着「记了」，就是搜不到。
+# Environment=AIDUMEM_DEFAULT_USER_ID=your_user_id
+
+ExecStart=/opt/aidumem/venv/bin/python3 /opt/aidumem/mem0_sync.py --daemon
+
+# 失败可见性：连续失败 5 次（300 秒窗口内）后进入 failed 状态并停止重试。
+# 这是刻意的——让崩溃循环**看得见**，而不是永远伪装成 activating。
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+StandardOutput=append:/opt/aidumem/logs/mem0_sync.log
+StandardError=append:/opt/aidumem/logs/mem0_sync.log
+
+[Install]
+WantedBy=multi-user.target

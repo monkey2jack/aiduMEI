@@ -22,7 +22,7 @@ from ducky.memory_salience import on_memory_accessed, on_memory_added
 
 logger = logging.getLogger("aiduMEM.runtime")
 
-from ducky.utils import BASE_DIR, LOG_DIR
+from ducky.utils import BASE_DIR, LOG_DIR, DEFAULT_USER_ID
 
 USAGE_FILE = os.path.join(LOG_DIR, "llm_usage.json")
 MEM0_CONFIG = os.path.join(BASE_DIR, "mem0_config_local.json")
@@ -398,20 +398,47 @@ def _resolve_api_keys(cfg: dict) -> dict:
     return cfg
 
 
+_legacy_map_announced = False
+
+
 def _normalize_user_id(user_id: str) -> str:
-    """规范化 user ID：历史版本使用过自定义名字，现统一映射到 default，保证与存量库兼容。
+    """规范化 user ID：历史版本使用过自定义名字，现统一并入**当前默认身份**，保证与存量库兼容。
 
     历史私有 user_id 不写进仓库：通过环境变量 AIDUMEM_LEGACY_USER_IDS
     （逗号分隔）由部署方按各自存量库配置，映射后老数据才能被新查询召回。
-    不再硬编码 admin/user 映射，避免未来真实用户被静默并进 default。
+    不再硬编码 admin/user 映射，避免未来真实用户被静默并进默认分区。
+
+    v19.4.2 之一：首次调用时自报一次映射状态。
+    脱敏把映射规则整个交给了环境变量，而「没配」和「配好了」在行为上
+    长得一模一样——都是安静地什么都不做。区别只在某天有人问
+    「我那批老记忆怎么搜不到了」。所以让它开口说一句。
+
+    v19.4.2 之二：映射目标由字面量 "default" 改为 DEFAULT_USER_ID。
+    原先无论部署方把默认身份配成什么，历史 id 一律被并进字面量 default——
+    于是「把老数据映射到我当前的身份」这件事根本做不到：配了
+    AIDUMEM_LEGACY_USER_IDS 反而让老 id 的查询被劫持到一个第三方分区，
+    比不配更糟。改后：默认身份未配置时 DEFAULT_USER_ID 就是 "default"，
+    行为与旧版逐字节一致；配置了才落到部署方自己的分区。
     """
+    global _legacy_map_announced
     if not user_id:
-        return "default"
+        return DEFAULT_USER_ID
     legacy = set()
     extra = os.getenv("AIDUMEM_LEGACY_USER_IDS", "")
     if extra:
         legacy = {x.strip().lower() for x in extra.split(",") if x.strip()}
-    return "default" if user_id.lower() in legacy else user_id
+    if not _legacy_map_announced:
+        _legacy_map_announced = True
+        if legacy:
+            logger.info(
+                "历史 user_id 映射已启用：%d 个 id 将并入 %s", len(legacy), DEFAULT_USER_ID
+            )
+        else:
+            logger.info(
+                "历史 user_id 映射未启用（AIDUMEM_LEGACY_USER_IDS 未设）。"
+                "若存量库里有旧分区的数据，它们不会被当前身份召回。"
+            )
+    return DEFAULT_USER_ID if user_id.lower() in legacy else user_id
 
 
 def get_memory():

@@ -66,7 +66,11 @@ logging.basicConfig(
 logger = logging.getLogger(f"aiduMEM-v{SERVICE_VERSION}")
 
 app = FastAPI(
-    title=f"aiduMEM API v{SERVICE_VERSION} — {CODENAME}",
+    # /docs 的封面标题，是 API 侧唯一的「品牌门面」。
+    # 注意只改这里的展示文案：logger 名、/health 的 service 字段、
+    # 各模块 docstring 里的 aiduMEM 都是机器契约或历史内部名，
+    # 生产侧的日志采集与监控按它们匹配，v19.4.2 一律不动（决策 D2）。
+    title=f"aiduMEI API v{SERVICE_VERSION} — {CODENAME}",
     version=f"{SERVICE_VERSION}-{CODENAME.lower()}",
 )
 
@@ -101,7 +105,7 @@ register_all_routes(app, get_memory, _get_db, _extract_entities)
 # aiduMEI 控制台前端以 /api/* 为调用根（API.base = '/api'）。
 # 这里挂一个子应用，复用同一套路由，让 /api/stats、/api/config 等
 # 直接命中扁平路由，无需改前端。
-_api_alias = FastAPI(title="aiduMEM /api alias")
+_api_alias = FastAPI(title="aiduMEI /api alias")
 register_all_routes(_api_alias, get_memory, _get_db, _extract_entities)
 app.mount("/api", _api_alias)
 
