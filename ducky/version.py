@@ -3,6 +3,62 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v19.4.2 (守卫扩面 · 集成件凭据贯通 · 2026-08-19)
+    核心主题: 守卫的射程必须覆盖缺陷的分布 · 带了头不等于带了钥匙
+    定性: **v19.4.1 的收口版**，不引入新功能。
+    背景: v19.4.1 上线后的生产复审（含 Hermes Agent 升级）发现，门禁本身修对了，
+    但「谁需要带钥匙」这份名单列漏了。v19.4.1 写了守卫测试防调用方漏带凭据，
+    而那条守卫只扫 scripts/ 一个目录 —— 缺陷却分布在仓库根、integrations/、
+    mcp_server.py 上，一个都没被扫到。
+    **守卫的射程小于缺陷的分布，比没有守卫更危险**：它提供「已经防住了」的错觉。
+    方法: 本版核心动作不是「再修几个文件」，而是用一条**元测试把守卫自己的射程焊死**
+    —— 断言守卫覆盖集合 ⊇ 全仓实际发起 HTTP 请求的文件集合。这条元测试首次运行
+    当场揪出两个未数到的入口点，扩面后二次运行又揪出一个。计划点名 5 个，实际 9 个。
+
+    —— 🔴 凭据贯通（门禁开启后会静默 401 的调用方）——
+    1. integrations/aidumem-inject.sh: 补 Bearer 与 .env 兜底链（AIDUMEM_ENV_FILE →
+       $AIDUMEM_HOME/.env → ~/.aidumem/.env → ./.env），401/403 单列诊断，
+       新增 --selftest（不可达返回 4，且永不阻断 LLM 调用），去掉写死的 /root 绝对路径。
+    2. mem0_sync.py / seed_demo.py / seed_facts.py: 统一改用 ducky.utils.api_auth_headers()，
+       并补 sys.path（cron 的 cwd 不是仓库根）。
+    3. mcp_server.py: 原自带 os.environ 快照，两个坑 —— 无 .env 兜底（门禁一开工具调用全 401）；
+       import 期固化成模块常量（运行期轮换凭据不生效）。现复用同一真相源。
+    4. integrations/cursor-hook/aidumem-on-save.sh（此前完全无凭据）: 补 AUTH_ARGS 与
+       401/403 提示；数组展开用 ${ARR[@]+"${ARR[@]}"} 兼容 bash 3.2 + set -u。
+    5. integrations/cursor-hook/claude-code-hook.py（此前完全无凭据）: 优先复用 ducky.utils，
+       被拷出仓库时回落内置同款兜底链；401/403 附排查提示。
+    6. integrations/hermes-plugin/aidumem/__init__.py: v19.4.1 已写 Authorization 头，
+       但 token 只从环境变量读 —— gateway 拉起插件时环境近乎为空，**代码里明明带了
+       Bearer，实际每次请求都是空 token**。补兜底链；401/403 从 debug 提到 warning。
+    7. ducky/utils.py: load_env_file() 兼容 `export KEY=VALUE`。部署的 .env 常给 shell
+       source 用自带 export 前缀 —— 此前 bash 侧认、Python 侧不认，同一份文件两种结果，
+       症状与「压根没配 token」一模一样，排查极易走偏。
+
+    —— 🛡️ 守卫扩面（本版真正主题）——
+    8. 扫描范围从 scripts/ 扩到 scripts/ + 仓库根 *.py + integrations/**（含子目录）。
+       api_server.py 显式排除 —— 它是门禁的实施者，不是通过门禁的人。
+    9. 新增 tests/test_v19_4_2_auth_coverage.py 元测试: 断言守卫覆盖集合 ⊇ 全仓 HTTP
+       调用方集合，改窄射程立刻红灯。
+    10. 独立集成件（integrations/ 下、会被拷进宿主配置目录、无法 import ducky）允许自带
+        凭据实现，但必须实现同一条兜底链 —— 只带 Authorization 头不算修好。
+
+    —— 🟠 静默失败可观测 ——
+    11. ducky/mem0_runtime.py: 历史 user_id 映射首次调用自报状态。脱敏把映射规则整个交给
+        环境变量，而「没配」与「配好了」行为上一模一样，区别只在某天有人问
+        「我那批老记忆怎么搜不到了」。
+    12. deploy/aidumem-sync.service: 补 StartLimitIntervalSec / StartLimitBurst。没有它，
+        崩溃循环一直停在 activating 而永不进 failed，按 failed 告警的监控等不到那一刻。
+    13. deploy/logrotate/aidumem: 用 copytruncate —— 单元是 StandardOutput=append:，
+        改名切割后进程仍写旧 inode，日志凭空消失。
+    14. pyproject.toml / requirements.txt: 补同步守护进程依赖声明（此前靠部署机恰好装过）。
+
+    —— 🟢 品牌与版本 ——
+    15. 前端品牌残留清理（标题 / description / alt / 字标 / 错误文案 / 图谱中心节点 / 注释）。
+        字标是标签拆分写法 aidu<b>MEI</b>，全局 sed 扫不到 —— v19.4.1 的改名正是从这里漏出去的。
+    16. /docs 的 FastAPI 标题改为 aiduMEI API。logger 名、/health 的 service 字段、
+        各模块 docstring 里的 aiduMEM 一律不动 —— 机器契约与历史内部名，生产监控按其匹配。
+        环境变量前缀 AIDUMEM_* 同理保持不变。
+
 v19.4.1 (审计补丁 · 鉴权贯通与租户闭环 · 2026-08-18)
     核心主题: 宣称即承诺 · 静默失败终结 · 删除权兑现 · 一道门禁两把钥匙
     定性: **审计补丁版**，不引入新功能。修的全是「文档说了但代码没做到」的裂缝。
@@ -150,7 +206,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "19.4.1"
+SERVICE_VERSION = "19.4.2"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 CODENAME = "Athena"
 CODENAME_ZH = "雅典娜"
@@ -161,6 +217,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("19.4.2", "Athena", "雅典娜", "守卫扩面 · 集成件凭据贯通 · 元测试锁死守卫射程 · 崩溃循环可见"),
     ("19.4.1", "Athena", "雅典娜", "审计补丁 · 鉴权贯通与租户闭环 · 静默失败终结 · 删除权兑现 · 宣称即承诺"),
     ("19.4.0", "Athena", "雅典娜", "明镜工程 Phase 1 · 原文保真层 · 生产审计修复 · 注入框架服务端自防御 · LLM 通道根治 · 治理账本无死角"),
     ("19.3.3", "Athena", "雅典娜", "审计回归修复 · 测试断言对齐 · 发布链接续"),

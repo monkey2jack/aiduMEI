@@ -1,7 +1,7 @@
 /* =============================================================================
    aiduMEI — panel renderers v2
    -----------------------------------------------------------------------------
-   Six panels, all bilingual (EN/CN), all talking to live aiduMEM.
+   Six panels, all bilingual (EN/CN), all talking to live aiduMEI.
    - PULSE:   health + storage layers + usage + probes
    - VAULT:   search + edit/delete/feedback + categories + recent facts + 遗忘记录(B3)
    - MAP:     knowledge-tree star map (hand-drawn SVG)
@@ -39,7 +39,7 @@ function failure(err) {
   const isBlocked = err && err.status === 403;
   let msg;
   if (isTunnel) {
-    msg = '连不上 aiduMEM / Cannot reach aiduMEM';
+    msg = '连不上 aiduMEI / Cannot reach aiduMEI';
   } else if (isBlocked) {
     msg = '接口不在白名单 / Blocked by allow-list: <code>' +
       esc((err.body && err.body.path) || '') + '</code>';
@@ -647,7 +647,7 @@ function drawEChartsStarMap(container, domains, entitiesPayload, scenesPayload, 
   // center node — big, bright, white
   nodes.push({
     id: 'core',
-    name: 'aiduMEM',
+    name: 'aiduMEI',
     symbolSize: 48,
     category: 0,
     itemStyle: { color: '#d0e8ff', shadowBlur: 30, shadowColor: 'rgba(92,179,255,0.6)' },

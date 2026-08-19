@@ -12,6 +12,14 @@ from urllib.parse import quote
 
 import requests
 
+# 仓库根补进 sys.path：本脚本常被从任意目录直接调用
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# v19.4.2：门禁开启的部署上 demo 也要跑得通（未设 token 时返回空 dict）
+from ducky.utils import api_auth_headers
+
 BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 
 FACTS = [
@@ -61,7 +69,9 @@ def add_fact(category: str, key: str, value: str):
     }
     qs = "&".join(f"{quote(k)}={quote(v)}" for k, v in params.items())
     try:
-        r = requests.post(f"{url}?{qs}", timeout=30)
+        r = requests.post(f"{url}?{qs}", headers=api_auth_headers(), timeout=30)
+        if r.status_code in (401, 403):
+            return r.status_code, "鉴权门禁已开启：请设 AIDUMEM_API_TOKEN 或写进仓库根 .env"
         return r.status_code, r.text[:80]
     except Exception as exc:
         return -1, str(exc)

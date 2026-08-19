@@ -362,22 +362,28 @@ def test_hermes_plugin_carries_api_token():
 # ═══════════════════════════════════════════════════════════════════
 
 def test_all_http_callers_carry_credentials():
-    """源码级守卫：凡走 HTTP 调本服务的运维脚本，都必须携带 Bearer token
+    """源码级守卫：凡走 HTTP 调本服务的脚本，都必须携带 Bearer token
 
-    这类脚本由 cron 驱动、失败只写日志。门禁开启后若不带凭据，
-    症状是「合并/健康检查悄悄不干活了」—— 没有报警、没人察觉，
-    直到有人去翻日志。因此把「带凭据」变成源码级不变量。
+    这类脚本由 cron / systemd / Hermes hook 驱动、失败只写日志（甚至不写）。
+    门禁开启后若不带凭据，症状是「合并/健康检查/同步/召回悄悄不干活了」——
+    没有报警、没人察觉，直到有人去翻日志。因此把「带凭据」变成源码级不变量。
+
+    v19.4.2 扩面：原实现只扫 `scripts/`，而真正的 HTTP 调用方还分布在
+    仓库根（mem0_sync.py、seed_*.py）和 integrations/（Hermes hook）。
+    守卫射程小于缺陷分布 = 假绿灯：v19.4.1 就是带着全绿测试发布了
+    「hook 每次 401、同步停摆 8 天」的版本。射程必须覆盖全部入口点。
     """
     import pathlib
     import re
 
     offenders = []
-    scripts_dir = pathlib.Path(_REPO_ROOT, "scripts")
 
-    for path in sorted(scripts_dir.glob("*.py")):
+    # 覆盖集合 = scripts/ + 仓库根（排除服务端自身），见 _iter_credential_consumers
+    for path in _iter_credential_consumers():
         text = path.read_text(encoding="utf-8")
-        # 只关心调用本服务（8767 / AIDUMEM_API_BASE）的脚本
-        if not re.search(r"8767|AIDUMEM_API_BASE", text):
+        if _is_standalone_integration(path):
+            if not _has_env_fallback_chain(text):
+                offenders.append(f"{path.name}: 独立集成件的凭据兜底链不完整")
             continue
         if "_auth_headers" not in text:
             offenders.append(f"{path.name}: 未定义 _auth_headers")
@@ -387,12 +393,15 @@ def test_all_http_callers_carry_credentials():
             if "_auth_headers" not in m.group("args") and "Authorization" not in m.group("args"):
                 offenders.append(f"{path.name}:{text[:m.start()].count(chr(10)) + 1} 调用未带凭据")
 
-    for path in sorted(scripts_dir.glob("*.sh")):
+    for path in _iter_credential_consumer_shells():
         text = path.read_text(encoding="utf-8")
-        if not re.search(r"AIDUMEM_API_BASE|8767", text):
+        if not re.search(r"AIDUMEM_API_BASE|AIDUMEM_URL|8767", text):
             continue
         if "curl" in text and "AUTH_ARGS" not in text:
             offenders.append(f"{path.name}: curl 未带 AUTH_ARGS")
+        # 走 python3 -c 发请求的 shell hook：必须构造 Authorization 头
+        if "urllib.request" in text and "Authorization" not in text:
+            offenders.append(f"{path.name}: urllib 调用未带 Authorization")
 
     assert not offenders, "门禁开启后这些调用方会静默 401: " + "; ".join(offenders)
 
@@ -473,6 +482,72 @@ def test_api_auth_headers_empty_when_no_token(tmp_path, monkeypatch):
     assert api_auth_headers() == {}
 
 
+def _iter_credential_consumers():
+    """全仓「以客户端身份调用本服务 REST 接口」的 Python 文件。
+
+    v19.4.2 扩面：`scripts/` + 仓库根 + `integrations/`（含子目录）。
+    排除 api_server.py —— 它是服务端本身（门禁的实施者，不是通过门禁的人），
+    只是因为源码里写了默认端口 8767 才被正则捞到。
+
+    ⚠️ 改这个函数 = 改守卫的射程。tests/test_v19_4_2_auth_coverage.py 里有一条
+    元测试会拿全仓实际的 HTTP 调用方来核对本函数的返回集合，缩小射程会立刻变红。
+    """
+    import pathlib
+    import re
+
+    files = (
+        sorted(pathlib.Path(_REPO_ROOT, "scripts").glob("*.py"))
+        + sorted(pathlib.Path(_REPO_ROOT).glob("*.py"))
+        + sorted(pathlib.Path(_REPO_ROOT, "integrations").rglob("*.py"))
+    )
+    out = []
+    for path in files:
+        if path.name == "api_server.py":      # 服务端，不是调用方
+            continue
+        if "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"8767|AIDUMEM_API_BASE|AIDUMEM_URL", text):
+            out.append(path)
+    return out
+
+
+def _is_standalone_integration(path) -> bool:
+    """判断是否为「会被拷出仓库独立运行」的集成件（integrations/ 下）。
+
+    这类文件跑在宿主 Agent / 编辑器进程里，仓库代码不在它的 sys.path 上，
+    所以不能要求它 import ducky —— 但凭据行为必须与仓库一致。
+    """
+    return "integrations" in path.parts
+
+
+def _has_env_fallback_chain(text: str) -> bool:
+    """独立集成件的凭据实现，必须覆盖与 ducky.utils 相同的兜底链。
+
+    只带 Authorization 头是不够的：v19.4.1 的 Hermes 插件正是「代码里写了
+    Bearer，但 token 从空环境里读出来是空字符串」—— 看着修了，实际全线 401。
+    因此这里同时要求「取值链」存在，而不只是「有那个头」。
+    """
+    if "Authorization" not in text:
+        return False
+    if "AIDUMEM_API_TOKEN" not in text:
+        return False
+    return "AIDUMEM_ENV_FILE" in text and ".aidumem/.env" in text
+
+
+def _iter_credential_consumer_shells():
+    """同上，shell 侧：`scripts/` + `integrations/`（含子目录，如 cursor-hook/）。"""
+    import pathlib
+    import re
+
+    files = (
+        sorted(pathlib.Path(_REPO_ROOT, "scripts").glob("*.sh"))
+        + sorted(pathlib.Path(_REPO_ROOT, "integrations").rglob("*.sh"))
+    )
+    return [p for p in files
+            if re.search(r"AIDUMEM_API_BASE|AIDUMEM_URL|8767", p.read_text(encoding="utf-8"))]
+
+
 def test_scripts_share_single_credential_source():
     """源码守卫：脚本不得各自实现凭据读取，必须复用 utils.api_auth_headers
 
@@ -483,9 +558,16 @@ def test_scripts_share_single_credential_source():
     import re
 
     offenders = []
-    for path in sorted(pathlib.Path(_REPO_ROOT, "scripts").glob("*.py")):
+    for path in _iter_credential_consumers():
         text = path.read_text(encoding="utf-8")
-        if not re.search(r"8767|AIDUMEM_API_BASE", text):
+        if _is_standalone_integration(path):
+            # integrations/ 下的文件会被拷进宿主 Agent / 编辑器配置独立运行，
+            # 那里 import 不到 ducky。强行要求复用会换来一个「装上就崩」的插件。
+            # 因此对它们放宽为：必须实现同一条 .env 兜底链（见 _has_env_fallback_chain）。
+            assert _has_env_fallback_chain(text), (
+                f"{path.name} 是独立集成件，允许自带凭据实现，"
+                f"但必须实现与 ducky.utils 相同的 .env 兜底链（环境变量 → AIDUMEM_ENV_FILE → ~/.aidumem/.env）"
+            )
             continue
         assert "api_auth_headers" in text, f"{path.name} 未复用统一凭据入口"
         # 不应再有本地定义
@@ -495,15 +577,17 @@ def test_scripts_share_single_credential_source():
 
 
 def test_scripts_add_repo_root_to_syspath():
-    """cron 的 cwd 不是仓库根：调本服务的脚本必须显式补 sys.path，否则 import ducky 直接失败"""
-    import pathlib
-    import re
-
+    """cron / systemd / MCP 的 cwd 都不是仓库根：调本服务的脚本必须显式补 sys.path，
+    否则 `import ducky` 直接 ImportError —— 而 systemd 下的表现是「进程起来就退」，
+    unit 若没有 StartLimit* 还会伪装成 activating，谁都看不见。
+    """
     offenders = []
-    for path in sorted(pathlib.Path(_REPO_ROOT, "scripts").glob("*.py")):
+    for path in _iter_credential_consumers():
+        if _is_standalone_integration(path):
+            continue      # 独立集成件不 import ducky，见 _is_standalone_integration
         text = path.read_text(encoding="utf-8")
         if "api_auth_headers" not in text:
             continue
         if "sys.path.insert" not in text:
-            offenders.append(path.name)
+            offenders.append(str(path.relative_to(_REPO_ROOT)))
     assert not offenders, "以下脚本缺 sys.path 修正，cron 下会 ImportError: " + ", ".join(offenders)

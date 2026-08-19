@@ -1,6 +1,80 @@
 # aiduMEI 版本演进史
 
-> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复，v19.3.3 审计回归修复与发布链接续，v19.4.0 明镜工程原文保真层 + Mímir 借鉴六项 + 生产审计修复版，v19.4.1 审计补丁鉴权贯通与租户闭环。
+> 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复，v19.3.3 审计回归修复与发布链接续，v19.4.0 明镜工程原文保真层 + Mímir 借鉴六项 + 生产审计修复版，v19.4.1 审计补丁鉴权贯通与租户闭环，v19.4.2 守卫扩面与集成件凭据贯通。
+
+---
+
+## v19.4.2 — 守卫扩面 · 集成件凭据贯通（2026-08-19）
+
+> **定性：v19.4.1 的收口版，不引入新功能。**
+> v19.4.1 上线后的生产复审（含 Hermes Agent 升级）发现：门禁本身修对了，
+> 但**「谁需要带钥匙」这份名单列漏了**。v19.4.1 写了一条守卫测试来防止调用方漏带凭据，
+> 而那条守卫只扫 `scripts/` 一个目录 —— 缺陷却分布在仓库根、`integrations/`、
+> `mcp_server.py` 上，一个都没被扫到。
+>
+> **守卫的射程小于缺陷的分布，比没有守卫更危险**：它提供了一种「已经防住了」的错觉。
+> 本版的核心动作因此不是「再修几个文件」，而是**用一条元测试把守卫自己的射程焊死**——
+> 断言守卫的覆盖集合 ⊇ 全仓实际发起 HTTP 请求的文件集合。
+> 这条元测试写完第一次跑，就当场揪出两个我自己没数到的入口点；扩面后第二次跑又揪出一个。
+> 计划里点名 5 个，实际找到 **9 个**。
+
+### 🔴 凭据贯通（门禁开启后会静默 401 的调用方）
+
+- **`integrations/aidumem-inject.sh`**（Hermes pre_llm_call hook）：补 Bearer 头与
+  `.env` 兜底链（`AIDUMEM_ENV_FILE` → `$AIDUMEM_HOME/.env` → `~/.aidumem/.env` → `./.env`），
+  401/403 单列诊断分支，新增 `--selftest`（不可达返回 4，且**永不阻断 LLM 调用**）。
+  去掉源码里写死的 `/root/...` 绝对路径。
+- **`mem0_sync.py` / `seed_demo.py` / `seed_facts.py`**：统一改用
+  `ducky.utils.api_auth_headers()`，并补 `sys.path`（cron 的 cwd 不是仓库根）。
+- **`mcp_server.py`**：原先自带一份 `os.environ.get("AIDUMEM_API_TOKEN")` 快照，
+  两个坑 —— ① 无 `.env` 兜底，门禁一开所有 MCP 工具调用直接 401；
+  ② 在 import 时把 token 固化成模块常量，进程运行期间轮换凭据不生效。
+  现复用同一个真相源。
+- **`integrations/cursor-hook/aidumem-on-save.sh`**（此前完全无凭据）：补 `AUTH_ARGS`
+  与 401/403 提示。数组展开写成 `${ARR[@]+"${ARR[@]}"}` 以兼容 bash 3.2 + `set -u`。
+- **`integrations/cursor-hook/claude-code-hook.py`**（此前完全无凭据）：优先复用
+  `ducky.utils`，被拷出仓库时回落到内置的同款兜底链；HTTP 401/403 附带排查提示。
+- **`integrations/hermes-plugin/aidumem/__init__.py`**：v19.4.1 已经写了
+  `Authorization` 头，但 token 只从环境变量读 —— 而 gateway 拉起插件时环境近乎是空的，
+  **代码里明明带了 Bearer，实际每次请求都是空 token**。补 `.env` 兜底链；
+  401/403 从 `debug` 提到 `warning`（记忆层失败是静默的，不出声就只剩「记忆突然不好用了」）。
+- **`ducky/utils.py`**：`load_env_file()` 兼容 `export KEY=VALUE` 写法。
+  部署的 `.env` 常给 shell `source` 用，自然带 `export` 前缀 —— 此前 bash 侧认、
+  Python 侧不认，同一份文件两种结果，症状与「压根没配 token」一模一样。
+
+### 🛡️ 守卫扩面（本版的真正主题）
+
+- **扫描范围**从 `scripts/` 扩到 `scripts/` + 仓库根 `*.py` + `integrations/**`（含子目录）。
+  `api_server.py` 显式排除 —— 它是门禁的**实施者**，不是通过门禁的人。
+- **新增 `tests/test_v19_4_2_auth_coverage.py` 元测试**：断言守卫的覆盖集合
+  ⊇ 全仓所有对本服务发 HTTP 请求的文件集合。改窄射程会立刻红灯。
+- **独立集成件**（`integrations/` 下、会被拷进宿主配置目录、无法 `import ducky`）
+  允许自带凭据实现，但**必须实现同一条兜底链**——只带 `Authorization` 头不算修好，
+  v19.4.1 的 Hermes 插件就是这么「看着修了」的。
+
+### 🟠 静默失败可观测
+
+- **`ducky/mem0_runtime.py`**：历史 user_id 映射（`AIDUMEM_LEGACY_USER_IDS`）
+  在首次调用时自报一次状态。脱敏把映射规则整个交给了环境变量，而「没配」和「配好了」
+  行为上长得一模一样 —— 都是安静地什么都不做，区别只在某天有人问「我那批老记忆怎么搜不到了」。
+- **`deploy/aidumem-sync.service`**：补 `StartLimitIntervalSec` / `StartLimitBurst`。
+  没有它，崩溃循环会一直停在 `activating` 状态而**永远不进 `failed`**，
+  按 `failed` 告警的监控一辈子等不到那一刻。
+- **`deploy/logrotate/aidumem`**：用 `copytruncate` —— 单元是
+  `StandardOutput=append:`，改名切割后进程仍写旧 inode，日志会凭空消失。
+- **`pyproject.toml` / `requirements.txt`**：补上同步守护进程的依赖声明
+  （此前靠部署机上恰好装过，换台干净机器即缺件）。
+
+### 🟢 品牌与版本
+
+- 前端品牌残留清理：`index.html` / `login.html` 的标题、`description`、`alt` 与字标，
+  `js/panels.js` 的错误文案与知识图谱中心节点，`js/api.js` / `js/main.js` 注释。
+  字标是**标签拆分写法**（`aidu<b>MEI</b>`），全局 sed 扫不到 —— v19.4.1 的改名就是从这里漏出去的，
+  现已在两处都留了注释提醒。
+- `/docs` 的 FastAPI 标题改为 `aiduMEI API`。**logger 名、`/health` 的 `service` 字段、
+  各模块 docstring 里的 `aiduMEM` 一律不动** —— 它们是机器契约与历史内部名，
+  生产侧日志采集与监控按其匹配（决策 D2）。环境变量前缀 `AIDUMEM_*` 同理保持不变。
+- 版本号五文件对齐 19.4.2，代号仍为 Athena · 雅典娜。
 
 ---
 

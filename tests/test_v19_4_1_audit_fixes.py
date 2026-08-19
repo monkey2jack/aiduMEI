@@ -269,7 +269,9 @@ def test_p02_tenant_clause_default_is_unscoped():
     """默认租户保持全库可见 —— 存量单机部署升级后行为零变化"""
     clause, params = tenant_clause(None)
     assert clause == "" and params == []
-    clause, params = tenant_clause("default")
+    # v19.4.2：断言「默认身份」而非字面量 "default"。全库可见的是部署方
+    # 配的那个身份（AIDUMEM_DEFAULT_USER_ID），未配置时它就是 "default"。
+    clause, params = tenant_clause(utils.DEFAULT_USER_ID)
     assert clause == "" and params == []
 
 

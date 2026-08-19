@@ -18,6 +18,7 @@ import inspect
 import json
 import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -177,11 +178,22 @@ class TestProviderContract(unittest.TestCase):
 
     def test_backup_paths_returns_existing_dir_only(self):
         p = self.Provider({})
-        os.environ["AIDUMEM_DATA_DIR"] = "/definitely/not/here"
-        try:
-            self.assertEqual(p.backup_paths(), [], "不存在的目录不该报进备份清单")
-        finally:
-            os.environ.pop("AIDUMEM_DATA_DIR", None)
+        # backup_paths 是一条回退链：显式目录 → ~/aidumem → ~/.aidumem。
+        # 要验「不存在的显式目录不进清单」，必须连 home 回退一起架空，
+        # 否则在真实部署机上（/root/.aidumem 确实存在）回退会命中，
+        # 挂掉的是机器状态而不是代码契约 —— 生产实测就是这么挂的。
+        with tempfile.TemporaryDirectory() as empty_home:
+            old_home = os.environ.get("HOME")
+            os.environ["HOME"] = empty_home
+            os.environ["AIDUMEM_DATA_DIR"] = "/definitely/not/here"
+            try:
+                self.assertEqual(p.backup_paths(), [], "不存在的目录不该报进备份清单")
+            finally:
+                os.environ.pop("AIDUMEM_DATA_DIR", None)
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
         os.environ["AIDUMEM_DATA_DIR"] = str(REPO)
         try:
             self.assertEqual(p.backup_paths(), [str(REPO)])

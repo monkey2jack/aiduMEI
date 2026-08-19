@@ -106,8 +106,12 @@ def test_normalize_user_id_no_hardcoded_legacy():
     assert mr._normalize_user_id("admin") == "admin"
     assert mr._normalize_user_id("user") == "user"
 
-    # 部署方显式声明历史映射后才映射
+    # 部署方显式声明历史映射后才映射，且映射目标是**当前默认身份**。
+    # v19.4.2：断言由字面量 "default" 改为 utils.DEFAULT_USER_ID —— 未配置
+    # AIDUMEM_DEFAULT_USER_ID 时两者相同（行为逐字节不变），配置了才落到
+    # 部署方自己的分区。写死字面量会让这条用例只在「默认身份恰好叫
+    # default」的机器上通过，真实部署机上必挂。
     os.environ["AIDUMEM_LEGACY_USER_IDS"] = "admin,user"
-    assert mr._normalize_user_id("admin") == "default"
-    assert mr._normalize_user_id("user") == "default"
+    assert mr._normalize_user_id("admin") == utils.DEFAULT_USER_ID
+    assert mr._normalize_user_id("user") == utils.DEFAULT_USER_ID
     os.environ.pop("AIDUMEM_LEGACY_USER_IDS", None)
