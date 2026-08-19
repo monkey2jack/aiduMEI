@@ -23,6 +23,7 @@ tests/test_v19_4_1_audit_fixes.py — v19.4.1 审计补丁版回归测试
   P2-4  router_usage 默认禁用
 """
 
+import functools
 import hashlib
 import os
 import sys
@@ -1154,6 +1155,34 @@ def test_yellow_a_readme_claims_are_consistent():
     )
 
 
+@functools.lru_cache(maxsize=1)
+def _collected_counts():
+    """从 pytest 自身取真值：(用例总数, 需宿主 Hermes 的用例数)。
+
+    v19.4.2 重构：原先只有一条测试要这个数字，直接内联跑 subprocess。
+    现在中英双份 README 都要校，跑两遍 collect-only 纯属浪费 —— 收敛到这里并缓存。
+    """
+    import re
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
+         "-p", "no:cacheprovider"],
+        cwd=str(_REPO_ROOT), capture_output=True, text=True,
+    )
+    m = re.search(r"(\d+)\s+tests?\s+collected", proc.stdout)
+    assert m, f"无法解析实际用例数:\n{proc.stdout[-500:]}"
+    total = int(m.group(1))
+
+    # 「12 跳过」不能是一个手抄的常数 —— 它必须等于 test_hermes_plugin.py
+    # 实际收集到的条数。宿主插件测试增减时，README 里的 12 会跟着红。
+    hermes = len([ln for ln in proc.stdout.splitlines()
+                  if ln.startswith("tests/test_hermes_plugin.py::")])
+    assert hermes > 0, "未收集到任何 test_hermes_plugin.py 用例，跳过项归因失效"
+    return total, hermes
+
+
 def test_readme_test_count_matches_reality():
     """README 写的用例总数必须等于**实际收集到的**用例数
 
@@ -1164,16 +1193,8 @@ def test_readme_test_count_matches_reality():
     """
     import pathlib
     import re
-    import subprocess
-    import sys
 
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q"],
-        cwd=str(_REPO_ROOT), capture_output=True, text=True,
-    )
-    m = re.search(r"(\d+)\s+tests?\s+collected", proc.stdout)
-    assert m, f"无法解析实际用例数:\n{proc.stdout[-500:]}"
-    actual_total = int(m.group(1))
+    actual_total, hermes_cases = _collected_counts()
 
     readme = pathlib.Path(_REPO_ROOT, "README.md").read_text(encoding="utf-8")
     row = re.search(r"\|\s*用例总数\s*\|\s*\*\*(\d+)\*\*", readme)
@@ -1191,7 +1212,81 @@ def test_readme_test_count_matches_reality():
     stated_passed = int(passed_row.group(1))
     skip_m = re.search(r"\*\*(\d+)\s*跳过\*\*", readme)
     assert skip_m, "README 未标注跳过项数量"
-    assert stated_passed + int(skip_m.group(1)) == actual_total, (
-        f"README 数字自相矛盾：{stated_passed} 通过 + {skip_m.group(1)} 跳过 "
+    stated_skipped = int(skip_m.group(1))
+    assert stated_passed + stated_skipped == actual_total, (
+        f"README 数字自相矛盾：{stated_passed} 通过 + {stated_skipped} 跳过 "
         f"≠ 总数 {actual_total}"
     )
+    # v19.4.2：跳过数必须与「宿主 Hermes 用例数」这个事实对上，
+    # 否则 12 只是一个碰巧自洽的常数 —— 自洽不等于属实。
+    assert stated_skipped == hermes_cases, (
+        f"README 说跳过 {stated_skipped} 条，但 test_hermes_plugin.py 实收 "
+        f"{hermes_cases} 条 —— 跳过项归因与事实脱节"
+    )
+
+
+def test_doc_numbers_are_consistent_across_both_readmes():
+    """中英双份 README + 表格外正文，所有测试数字必须同源同值（v19.4.2）
+
+    ⚠️ 用户视角审计打回的原样：v19.4.2 首版把 README.md 的**表格**改成了 396，
+        却漏掉同一页下方的正文（还写着 380 / 392），README_EN.md 更是整段没动
+        （392 / 380 / 383，其中 383 甚至推导不出来）。
+        守卫只盯着表格那一行，于是「绿灯」照给 —— 这正是「守卫的射程小于缺陷的
+        分布」的又一例：文档里的数字不止住在表格里。
+
+        所以本条把**每一处出现的数字**都拉进射程：两份 README 的三行表格 +
+        两段正文提要 + 两个复现命令块。任何一处漏改，这里立刻红。
+    """
+    import pathlib
+    import re
+
+    actual_total, hermes_cases = _collected_counts()
+    passed = actual_total - hermes_cases   # 纯净开发机（无宿主）应有的通过数
+
+    def _read(name):
+        return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")
+
+    # (文件, 描述, 正则, 期望值元组) —— 正则的每个捕获组按序与期望值比对
+    checks = [
+        ("README.md", "表格·用例总数",
+         r"\|\s*用例总数\s*\|\s*\*\*(\d+)\*\*", (actual_total,)),
+        ("README.md", "表格·独立开发机",
+         r"\|\s*独立开发机\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*",
+         (passed, hermes_cases)),
+        ("README.md", "表格·完整环境",
+         r"\|\s*完整环境\s*\|\s*\*\*(\d+)\s*全绿\*\*", (actual_total,)),
+        ("README.md", "正文·为什么要把 X 和 Y 都写出来",
+         r"为什么要把\s*(\d+)\s*和\s*(\d+)\s*都写出来", (passed, actual_total)),
+        ("README.md", "正文·复现命令（无宿主）",
+         r"无宿主：(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
+        ("README.md", "正文·复现命令（有宿主）",
+         r"有宿主：(\d+)\s*passed", (actual_total,)),
+
+        ("README_EN.md", "table·Total cases",
+         r"\|\s*Total cases\s*\|\s*\*\*(\d+)\*\*", (actual_total,)),
+        ("README_EN.md", "table·Clean dev machine",
+         r"\|\s*Clean dev machine\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*",
+         (passed, hermes_cases)),
+        ("README_EN.md", "table·Complete environment",
+         r"\|\s*Complete environment\s*\|\s*\*\*(\d+)\s*all green\*\*", (actual_total,)),
+        ("README_EN.md", "prose·Why report both X and Y",
+         r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, actual_total)),
+        ("README_EN.md", "prose·repro command (no host)",
+         r"no host:\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
+        ("README_EN.md", "prose·repro command (with host)",
+         r"with host:\s*(\d+)\s*passed", (actual_total,)),
+    ]
+
+    for fname, label, pattern, expected in checks:
+        m = re.search(pattern, _read(fname))
+        assert m, f"{fname} 找不到「{label}」—— 数字被删掉或改了措辞，守卫失去着力点"
+        got = tuple(int(g) for g in m.groups())
+        assert got == expected, (
+            f"{fname}「{label}」写的是 {got}，实测应为 {expected} —— "
+            "文档与代码脱节（宣称即承诺铁律）"
+        )
+
+    # 两份 README 必须都给出「跳过项可复现成通过」的办法，
+    # 否则「12 跳过」还是一个读者无法证伪的数字。
+    assert "HERMES_SRC=" in _read("README.md"), "README.md 未给出让跳过项跑起来的办法"
+    assert "HERMES_SRC=" in _read("README_EN.md"), "README_EN.md 未给出让跳过项跑起来的办法"

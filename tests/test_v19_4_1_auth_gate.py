@@ -395,7 +395,7 @@ def test_all_http_callers_carry_credentials():
 
     for path in _iter_credential_consumer_shells():
         text = path.read_text(encoding="utf-8")
-        if not re.search(r"AIDUMEM_API_BASE|AIDUMEM_URL|8767", text):
+        if not re.search(_TARGETS_THIS_SERVICE, text):
             continue
         if "curl" in text and "AUTH_ARGS" not in text:
             offenders.append(f"{path.name}: curl 未带 AUTH_ARGS")
@@ -482,10 +482,21 @@ def test_api_auth_headers_empty_when_no_token(tmp_path, monkeypatch):
     assert api_auth_headers() == {}
 
 
+# 「指向本服务」的信号集合 —— 守卫用它判断一个文件是不是调用方。
+#
+# ⚠️ 这个正则**就是守卫的射程**，漏一个变量名 = 漏掉一整类调用方。
+#    v19.4.2 首版只登记了 8767 / AIDUMEM_API_BASE / AIDUMEM_URL 三个信号，
+#    于是 frontend/dev_server.py 用第四个名字 AIDUMEM_UPSTREAM + 第二个端口 8777，
+#    从守卫眼皮底下整个溜了过去 —— 它是双重逃逸：既待在被跳过的目录里，
+#    用的又是没被登记的变量名。今后新增指向本服务的环境变量必须同时登记到这里。
+_TARGETS_THIS_SERVICE = r"8767|8777|AIDUMEM_API_BASE|AIDUMEM_URL|AIDUMEM_UPSTREAM"
+
+
 def _iter_credential_consumers():
     """全仓「以客户端身份调用本服务 REST 接口」的 Python 文件。
 
-    v19.4.2 扩面：`scripts/` + 仓库根 + `integrations/`（含子目录）。
+    v19.4.2 扩面：`scripts/` + 仓库根 + `integrations/` + `frontend/`（含子目录）
+    + `tests/` 下的运维件（integration_* / perf_* / smoke_*，非单元测试）。
     排除 api_server.py —— 它是服务端本身（门禁的实施者，不是通过门禁的人），
     只是因为源码里写了默认端口 8767 才被正则捞到。
 
@@ -499,6 +510,12 @@ def _iter_credential_consumers():
         sorted(pathlib.Path(_REPO_ROOT, "scripts").glob("*.py"))
         + sorted(pathlib.Path(_REPO_ROOT).glob("*.py"))
         + sorted(pathlib.Path(_REPO_ROOT, "integrations").rglob("*.py"))
+        + sorted(pathlib.Path(_REPO_ROOT, "frontend").rglob("*.py"))
+        # tests/ 下的运维件（integration_* / perf_*）打的是真实服务，不是 TestClient，
+        # 门禁一开同样 401。单元测试不在此列 —— 它们压根不经过门禁。
+        + sorted(pathlib.Path(_REPO_ROOT, "tests").glob("integration_*.py"))
+        + sorted(pathlib.Path(_REPO_ROOT, "tests").glob("perf_*.py"))
+        + sorted(pathlib.Path(_REPO_ROOT, "tests").glob("smoke_*.py"))
     )
     out = []
     for path in files:
@@ -507,7 +524,7 @@ def _iter_credential_consumers():
         if "__pycache__" in path.parts:
             continue
         text = path.read_text(encoding="utf-8")
-        if re.search(r"8767|AIDUMEM_API_BASE|AIDUMEM_URL", text):
+        if re.search(_TARGETS_THIS_SERVICE, text):
             out.append(path)
     return out
 
@@ -545,7 +562,7 @@ def _iter_credential_consumer_shells():
         + sorted(pathlib.Path(_REPO_ROOT, "integrations").rglob("*.sh"))
     )
     return [p for p in files
-            if re.search(r"AIDUMEM_API_BASE|AIDUMEM_URL|8767", p.read_text(encoding="utf-8"))]
+            if re.search(_TARGETS_THIS_SERVICE, p.read_text(encoding="utf-8"))]
 
 
 def test_scripts_share_single_credential_source():
