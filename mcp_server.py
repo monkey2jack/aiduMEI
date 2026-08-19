@@ -37,7 +37,7 @@ from typing import Any
 
 # ── 路径 bootstrap（先于 ducky import）──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ducky.utils import BASE_DIR, DATA_DIR, DEFAULT_USER_ID, LOG_DIR
+from ducky.utils import BASE_DIR, DATA_DIR, DEFAULT_USER_ID, LOG_DIR, api_auth_headers
 from ducky.tool_envelope import success, error, format_response
 # 🟡12：版本号统一从真相源导入，杜绝 mcp_server 自报 18.0.0 与 version.py 打架。
 from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
@@ -49,9 +49,6 @@ LAST_ID_FILE = os.environ.get(
     os.path.join(DATA_DIR, "auto_memory_last_id.txt"),
 )
 API_BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
-# 🟡P0-4：MCP 侧同步携带 API token。后端设置了 AIDUMEM_API_TOKEN 后，
-# 若 MCP 不读同一个变量带 Authorization，所有工具调用都会 401。
-_API_TOKEN = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -72,10 +69,17 @@ logger = logging.getLogger("aiduMEM-mcp")
 # ═══════════════════════════════════════════════════════
 
 def _api_headers(extra: dict | None = None) -> dict:
-    """构造带 API token 的请求头（配置了 token 时自动携带）。"""
+    """构造带 API token 的请求头（配置了 token 时自动携带）。
+
+    v19.4.2：改为复用 ducky.utils.api_auth_headers()（单一真相源）。
+    此前这里自带一份 `os.environ.get(...)` 快照，有两个坑：
+      ① 无 .env 兜底 —— MCP 由 Claude Desktop / Hermes 启动，环境往往
+         不含 AIDUMEM_API_TOKEN，门禁一开所有工具调用直接 401；
+      ② 在 import 时就把 token 固化成模块常量，进程运行期间轮换凭据不生效。
+    改用统一入口后，两个坑一起消失，且守卫测试能锁住它不再分叉。
+    """
     headers = {"Accept": "application/json"}
-    if _API_TOKEN:
-        headers["Authorization"] = f"Bearer {_API_TOKEN}"
+    headers.update(api_auth_headers())
     if extra:
         headers.update(extra)
     return headers
