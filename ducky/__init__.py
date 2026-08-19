@@ -1,7 +1,11 @@
 """
 ducky — aiduMEI 智慧引擎智能模块包
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v19.4.0 Athena (雅典娜) — Production Hardened AI Memory & Wisdom Engine
+Athena (雅典娜) — Production Hardened AI Memory & Wisdom Engine
+
+版本号不写在这里。这行原本硬编码着 "v19.4.0"，到 v19.4.2 已经落后两个版本
+—— 没人会想起来改一句注释。唯一真相源是 `ducky.version.SERVICE_VERSION`，
+版本一致性守卫也只认它。
 """
 
 from .layer1_selfcheck import (

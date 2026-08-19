@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>aiduMEM⚕爱嘟优忆思</title>
-<meta name="description" content="aiduMEI — aiduMEM 记忆引擎观测台" />
+<title>aiduMEI⚕爱嘟优忆思</title>
+<meta name="description" content="aiduMEI⚕爱嘟优忆思 — 智能体通用智慧引擎观测台" />
 <meta name="author" content="monkey²" />
 <meta name="theme-color" content="#1f4e79" />
 <link rel="icon" href="logo.png" />
@@ -189,8 +189,10 @@ if (!sessionStorage.getItem('aidumei_auth')) {
   <!-- bottom: logo + brand name, centered -->
   <footer class="site-foot">
     <div class="site-foot-brand">
-      <img class="brand-logo" src="logo.png" alt="aiduMEM" />
-      <span class="wordmark"><span class="lbl">aidu<b>MEM</b></span><i class="sep">⚕</i><span class="lbl">爱嘟</span>优忆思</span>
+      <img class="brand-logo" src="logo.png" alt="aiduMEI" />
+      <!-- 品牌字标是标签拆分写法（aidu + <b>MEI</b>），全局 sed 扫不到，
+           v19.4.1 的改名就是从这里漏出去的。改名时必须手工核对这一行。 -->
+      <span class="wordmark"><span class="lbl">aidu<b>MEI</b></span><i class="sep">⚕</i><span class="lbl">爱嘟</span>优忆思</span>
     </div>
   </footer>
 
