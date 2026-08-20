@@ -24,7 +24,10 @@ set -euo pipefail
 
 REPO_ROOT="${AIDUMEM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 DATA_DIR="${AIDUMEM_DATA_DIR:-${REPO_ROOT}/data}"
-BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-/root/aidumei_backups}"
+# 默认值刻意落在仓库内，不写死任何部署环境的绝对路径 ——
+# 默认值会被原样复制进文档和截图，是「部署信息泄露到公开面」的常见入口。
+# 真实部署一律用 AIDUMEM_BACKUP_ROOT 覆盖。
+BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-${REPO_ROOT}/backups}"
 
 if [[ -t 1 ]]; then
   GREEN='\033[0;32m'; RED='\033[0;31m'; RESET='\033[0m'

@@ -92,7 +92,7 @@ def test_rule_screen_secret_rejected():
     assert v == "reject" and r == "rule:secret"
     v, _ = rule_screen("general", "k", "我的密码: hunter2")
     assert v == "reject"
-    v, _ = rule_screen("general", "k", "token=ghp_abcdefghij1234567890")
+    v, _ = rule_screen("general", "k", "token=ghp_abcdefghij1234567890")  # release-scan:allow 合成夹具，非真实凭据
     assert v == "reject"
 
 
