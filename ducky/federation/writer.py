@@ -3,12 +3,12 @@ ducky.federation.writer — 联邦写入（去重 + 分层 + 归属）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 一条事实进来，依次经过四道关：
-    1. 归属   agent_id / profile / shared 落定「这是谁的记忆」
+    1. 归属   agent_id / profile / shared + (user_id, bank_id) 落定「这是谁的记忆」
     2. 分层   显式 tier 优先，否则从 category/key/value 推断
-    3. 去重   同 agent 同 category 内查相似度 → merge / update / insert
+    3. 去重   同 agent 同 (user, bank) 同 category 内查相似度 → merge / update / insert
     4. 落库   附 recorded_at + decay_at，procedural 层 decay_at 为 NULL
 
-不做的事：不删任何既有行、不跨 Agent 改别人的记忆。
+不做的事：不删任何既有行、不跨 Agent 改别人的记忆、不跨 bank 改别库的记忆。
 写入永远是加法或就地合并，这是可控性的底线。
 
 治理与账本（v19.4.0 · 生产审计 🟡-D）
@@ -31,6 +31,7 @@ from ducky.federation.dedup import (
     apply_merge,
     check_duplicate,
 )
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
 from ducky.federation.registry import heartbeat
 from ducky.federation.schema import DEFAULT_AGENT, DEFAULT_PROFILE
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
@@ -52,13 +53,20 @@ def write_fact(
     profile: str = DEFAULT_PROFILE,
     memory_tier: str | None = None,
     source: str = DEFAULT_USER_ID,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
     tags: str = "",
     shared: bool = True,
     dedup: bool = True,
     valid_from: str = "",
     valid_to: str = "",
 ) -> dict[str, Any]:
-    """写入一条联邦事实。返回含 action(insert/update/merge) 的结果。"""
+    """写入一条联邦事实。返回含 action(insert/update/merge) 的结果。
+
+    v20 P0-2：user_id/bank_id 是行的归属库（作用域），source 仍是「谁写的」
+    （行为归因），二者语义不同，不再互相顶替。不传作用域时落 default 库，
+    与 v19 行为逐字节一致。
+    """
     fact_key = (fact_key or "").strip()
     fact_value = (fact_value or "").strip()
     if not fact_key or not fact_value:
@@ -73,6 +81,7 @@ def write_fact(
     category = (category or "general").strip()
     agent_id = (agent_id or DEFAULT_AGENT).strip() or DEFAULT_AGENT
     profile = (profile or DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
+    scope = make_scope(user_id, bank_id)  # 规范化 + 非法字符拒绝
 
     resolved_tier = (
         tier_mod.normalize_tier(memory_tier)
@@ -86,7 +95,8 @@ def write_fact(
     conn = get_facts_conn()
     try:
         verdict = (
-            check_duplicate(fact_value, category=category, agent_id=agent_id, conn=conn)
+            check_duplicate(fact_value, category=category, agent_id=agent_id,
+                            user_id=scope.user_id, bank_id=scope.bank_id, conn=conn)
             if dedup
             else None
         )
@@ -101,7 +111,8 @@ def write_fact(
                 record_event(conn, actor=source or "federation", action="update",
                              target_id=f"fact:{verdict.fact_id}",
                              reason=f"federation merge: {category}/{verdict.fact_key}",
-                             after_hash=content_hash(fact_value))
+                             after_hash=content_hash(fact_value),
+                             user_id=scope.user_id, bank_id=scope.bank_id)
                 conn.commit()
             except Exception as le:
                 logger.debug("merge 账本记录跳过: %s", le)
@@ -131,7 +142,8 @@ def write_fact(
                 record_event(conn, actor=source or "federation", action="update",
                              target_id=f"fact:{verdict.fact_id}",
                              reason=f"federation update: {category}/{verdict.fact_key}",
-                             after_hash=content_hash(fact_value))
+                             after_hash=content_hash(fact_value),
+                             user_id=scope.user_id, bank_id=scope.bank_id)
             except Exception as le:
                 logger.debug("update 账本记录跳过: %s", le)
             conn.commit()
@@ -143,13 +155,16 @@ def write_fact(
             }
 
         # ── 新增 ──
+        # ON CONFLICT 目标必须与 idx_facts_unique 列集完全一致
+        # （见 federation/schema.py FACTS_UNIQUE_COLUMNS），否则报
+        # "no such conflict target"。
         cur = conn.execute(
             """INSERT INTO facts
                  (category, fact_key, fact_value, source, summary, overview,
                   agent_id, profile, memory_tier, recorded_at, decay_at, tags, shared,
-                  valid_from, valid_to)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(agent_id, category, fact_key) DO UPDATE SET
+                  valid_from, valid_to, user_id, bank_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(agent_id, user_id, bank_id, category, fact_key) DO UPDATE SET
                    fact_value=excluded.fact_value,
                    summary=excluded.summary,
                    overview=excluded.overview,
@@ -160,7 +175,8 @@ def write_fact(
                    updated_at=CURRENT_TIMESTAMP""",
             (category, fact_key, fact_value, source, _summary_of(fact_value), fact_value,
              agent_id, profile, resolved_tier, recorded_at, decay_at, tags,
-             1 if shared else 0, valid_from or None, valid_to or None),
+             1 if shared else 0, valid_from or None, valid_to or None,
+             scope.user_id, scope.bank_id),
         )
         fact_id = cur.lastrowid or 0
         # 📒 事件账本（v19.4.0 🟡-D）：与写入同事务留痕，同生共死
@@ -169,7 +185,8 @@ def write_fact(
             record_event(conn, actor=source or "federation", action="add",
                          target_id=f"fact:{fact_key}",
                          reason=f"federation insert: {category}",
-                         after_hash=content_hash(fact_value))
+                         after_hash=content_hash(fact_value),
+                         user_id=scope.user_id, bank_id=scope.bank_id)
         except Exception as le:
             logger.debug("insert 账本记录跳过: %s", le)
         # 🏛️ 治理管线（v19.4.0 🟡-D）：联邦 insert 是真实外部路径，

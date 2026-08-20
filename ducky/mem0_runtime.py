@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -90,14 +91,42 @@ def _track_embed_usage(total_tokens: int):
         _save_usage()
 
 
-def _track_rerank_usage(input_tokens: int = 0, total_tokens: int = 0):
-    """追踪 rerank API 用量"""
+def _track_rerank_tokens(input_tokens: int = 0, total_tokens: int = 0):
+    """记录 rerank 的 token 消耗（provider 响应带 usage 时调用；不计 calls）。
+
+    v20 拆分：此前 provider 各自 +1 calls，但只有响应里带 usage 字段才会
+    调用——Cohere 从来不带，导致 /usage 里 Cohere 一次都没"发生过"。
+    现在 calls/failures/latency 统一由 rerank() 本体记账（每次真实外呼
+    恰好一次），这里只加 token。
+    """
     today = _ensure_today()
     with _usage_lock:
-        d = _llm_usage[today].setdefault("rerank", {"calls": 0, "input_tokens": 0, "total_tokens": 0})
-        d["calls"] += 1
-        d["input_tokens"] += input_tokens
-        d["total_tokens"] += total_tokens
+        d = _llm_usage[today].setdefault(
+            "rerank",
+            {"calls": 0, "input_tokens": 0, "total_tokens": 0,
+             "failures": 0, "latency_ms_sum": 0.0, "providers": {}},
+        )
+        d["input_tokens"] = d.get("input_tokens", 0) + input_tokens
+        d["total_tokens"] = d.get("total_tokens", 0) + total_tokens
+        _save_usage()
+
+
+def _track_rerank_usage(provider: str = "", latency_ms: float = 0.0, failed: bool = False):
+    """每次真实 rerank 外呼记一笔：calls / failures / 耗时 / 按 provider 细分。"""
+    today = _ensure_today()
+    with _usage_lock:
+        d = _llm_usage[today].setdefault(
+            "rerank",
+            {"calls": 0, "input_tokens": 0, "total_tokens": 0,
+             "failures": 0, "latency_ms_sum": 0.0, "providers": {}},
+        )
+        d["calls"] = d.get("calls", 0) + 1
+        d["failures"] = d.get("failures", 0) + (1 if failed else 0)
+        d["latency_ms_sum"] = round(d.get("latency_ms_sum", 0.0) + latency_ms, 1)
+        prov = d.setdefault("providers", {}).setdefault(provider or "unknown", {"calls": 0, "failures": 0})
+        prov["calls"] += 1
+        if failed:
+            prov["failures"] += 1
         _save_usage()
 
 
@@ -122,6 +151,16 @@ _RERANK_CONFIG_CACHE: Optional[dict] = None
 # Return shape: a list of {index, relevance_score} sorted descending.
 # ---------------------------------------------------------------------------
 
+def _rerank_http_error(r) -> None:
+    """非 200 一律抛错（只带状态码，不带响应体——响应体可能回显凭据错误详情）。
+
+    v20 之前非 200 返回 []，401（key 失效）和「真没相关文档」在调用方
+    完全无法区分，key 过期后重排序静默消失、检索质量悄悄退化。
+    """
+    if r.status_code != 200:
+        raise RuntimeError(f"rerank HTTP {r.status_code}")
+
+
 def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
     """OpenAI-compatible rerank endpoint"""
     import requests as req
@@ -139,15 +178,14 @@ def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) ->
         },
         timeout=10,
     )
-    if r.status_code == 200:
-        results = r.json().get("results", [])
-        meta = r.json().get("meta", {})
-        tokens = meta.get("tokens", {})
-        if tokens:
-            _track_rerank_usage(input_tokens=tokens.get("input_tokens", 0),
-                                total_tokens=tokens.get("input_tokens", 0))
-        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
-    return []
+    _rerank_http_error(r)
+    results = r.json().get("results", [])
+    meta = r.json().get("meta", {})
+    tokens = meta.get("tokens", {})
+    if tokens:
+        _track_rerank_tokens(input_tokens=tokens.get("input_tokens", 0),
+                             total_tokens=tokens.get("input_tokens", 0))
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
 
 
 def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
@@ -168,14 +206,13 @@ def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dic
         },
         timeout=10,
     )
-    if r.status_code == 200:
-        results = r.json().get("results", [])
-        usage = r.json().get("usage", {})
-        if usage.get("total_tokens"):
-            _track_rerank_usage(input_tokens=usage["total_tokens"],
-                                total_tokens=usage["total_tokens"])
-        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
-    return []
+    _rerank_http_error(r)
+    results = r.json().get("results", [])
+    usage = r.json().get("usage", {})
+    if usage.get("total_tokens"):
+        _track_rerank_tokens(input_tokens=usage["total_tokens"],
+                             total_tokens=usage["total_tokens"])
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
 
 
 def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
@@ -196,10 +233,15 @@ def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[d
         },
         timeout=10,
     )
-    if r.status_code == 200:
-        results = r.json().get("results", [])
-        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
-    return []
+    _rerank_http_error(r)
+    data = r.json()
+    results = data.get("results", [])
+    # Cohere 按 search_units 计费而非 token；此前这条路径从不记账，
+    # /usage 里 Cohere 一次都"没发生过"。计入 token 栏并如实按单位记。
+    units = (data.get("meta") or {}).get("billed_units", {}).get("search_units", 0)
+    if units:
+        _track_rerank_tokens(input_tokens=0, total_tokens=int(units))
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
 
 
 def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
@@ -219,15 +261,14 @@ def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int
         },
         timeout=10,
     )
-    if r.status_code == 200:
-        data = r.json()
-        results = data.get("results", [])
-        usage = data.get("usage", {})
-        if usage and usage.get("total_tokens"):
-            _track_rerank_usage(input_tokens=usage["total_tokens"],
-                                total_tokens=usage["total_tokens"])
-        return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
-    return []
+    _rerank_http_error(r)
+    data = r.json()
+    results = data.get("results", [])
+    usage = data.get("usage", {})
+    if usage and usage.get("total_tokens"):
+        _track_rerank_tokens(input_tokens=usage["total_tokens"],
+                             total_tokens=usage["total_tokens"])
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
 
 
 RERANK_PROVIDERS = {
@@ -287,24 +328,75 @@ def _load_rerank_config() -> dict:
     return cfg
 
 
+# v20 P0-4：rerank 逐请求遥测。线程本地——FastAPI 同步端点每个请求跑在
+# 独立线程里，/search 链路（search → hybrid → scoring → rerank）全程同线程，
+# 请求开头 reset、结尾读取即可拿到本次请求的真实 rerank 结局；
+# 线程复用带来的跨请求残留由 reset_rerank_telemetry() 消除。
+_rerank_tls = threading.local()
+
+
+def reset_rerank_telemetry() -> None:
+    _rerank_tls.last = None
+
+
+def last_rerank_telemetry() -> Optional[dict]:
+    return getattr(_rerank_tls, "last", None)
+
+
+def rerank_config_status() -> dict:
+    """/health 用：只报「配没配、配的谁」，绝不吐 key/base_url 内容。"""
+    cfg = _load_rerank_config()
+    provider = str(cfg.get("provider", DEFAULT_RERANK_PROVIDER))
+    # 与 rerank() 的判定保持同一条规则：jina/cohere 端点写死官方 URL，
+    # 不需要 base_url。两处不一致会让 /health 报「未配置」而实际在跑。
+    needs_base_url = provider.lower() not in ("jina", "cohere")
+    configured = bool(cfg.get("api_key")) and (bool(cfg.get("base_url")) or not needs_base_url)
+    out = {"configured": configured}
+    if configured:
+        out["provider"] = cfg.get("provider", DEFAULT_RERANK_PROVIDER)
+        out["model"] = cfg.get("model", "")
+    return out
+
+
 def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     """
     调用配置好的 reranker 做重排序。返回 [{index, relevance_score}, ...] 按分数降序。
-    失败返回空列表，不阻断检索主链路。
+    失败返回空列表，不阻断检索主链路——但结局必须可观测：
+    「未配置 / 调用失败 / 真空结果」三态记入线程本地遥测与 /usage 账本，
+    绝不折叠成同一个静默的 []。
     支持: OpenAI-compatible / Jina / Cohere
     """
+    telem: dict = {"status": "not_configured", "provider": None, "latency_ms": 0.0}
+    _rerank_tls.last = telem
     if not documents:
+        telem["status"] = "skipped_empty_input"
         return []
     cfg = _load_rerank_config()
     api_key = cfg.get("api_key", "")
     base_url = cfg.get("base_url", "")
-    if not api_key or not base_url:
-        return []
     provider = cfg.get("provider", DEFAULT_RERANK_PROVIDER)
+    # Jina/Cohere 端点是写死的官方 URL，不需要 base_url；只有
+    # OpenAI-compatible 系需要。未配置判定按 provider 区分。
+    needs_base_url = provider.lower() not in ("jina", "cohere")
+    if not api_key or (needs_base_url and not base_url):
+        telem["status"] = "not_configured"
+        return []
     handler = RERANK_PROVIDERS.get(provider.lower(), _rerank_openai_compatible)
+    telem["provider"] = provider
+    telem["model"] = cfg.get("model", "")
+    t0 = time.time()
     try:
-        return handler(cfg, query, documents, top_n)
+        out = handler(cfg, query, documents, top_n)
+        telem["latency_ms"] = round((time.time() - t0) * 1000, 1)
+        telem["status"] = "ok" if out else "empty"
+        telem["returned"] = len(out)
+        _track_rerank_usage(provider=provider, latency_ms=telem["latency_ms"], failed=False)
+        return out
     except Exception as e:
+        telem["latency_ms"] = round((time.time() - t0) * 1000, 1)
+        telem["status"] = "error"
+        telem["error"] = str(e)[:200]
+        _track_rerank_usage(provider=provider, latency_ms=telem["latency_ms"], failed=True)
         logger.warning(f"rerank ({provider}) 调用失败: {e}")
         return []
 
@@ -474,10 +566,14 @@ def get_memory():
 
 def reset_memory_singleton() -> None:
     """/reload 用：清空模块级 + sys 级单例。"""
-    global m
+    global m, _RERANK_CONFIG_CACHE
     m = None
     if hasattr(sys, "_aidumem_singleton"):
         sys._aidumem_singleton = None
+    # /reload 的语义是「配置改了，重读」。rerank 配置与 mem0 配置同源
+    # （mem0_config.json），不清这份缓存的话，换了 rerank key/base_url
+    # 之后 /reload 表面成功，重排序却继续用旧凭据直到进程重启。
+    _RERANK_CONFIG_CACHE = None
 
 
 def is_mem_ready() -> bool:
@@ -525,15 +621,19 @@ def lazy_import_hybrid():
 # ═══════════════════════════════════════════════
 # §4  salience 辅助
 # ═══════════════════════════════════════════════
-def register_salience_for_add(add_result):
-    """mem0.add() 返回后注册显著性（非关键路径，失败只打 debug）"""
+def register_salience_for_add(add_result, user_id: str = "", bank_id: str = ""):
+    """mem0.add() 返回后注册显著性（非关键路径，失败只打 debug）
+
+    v20 P0-2：调用方把写入作用域一并传来，salience 行盖 (user_id, bank_id)
+    戳——conflict.py 分域配对靠它。不传 = default 域（v19 行为）。
+    """
     try:
         results = add_result if isinstance(add_result, list) else add_result.get("results", [])
         for r in results:
             mid = r.get("id") or r.get("memory_id", "")
             content = r.get("memory") or r.get("data") or ""
             if mid:
-                on_memory_added(mid, content=content)
+                on_memory_added(mid, content=content, user_id=user_id, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"salience register skip: {e}")
 

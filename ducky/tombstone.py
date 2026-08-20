@@ -40,6 +40,13 @@ import logging
 from datetime import datetime, timezone
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn, get_text_conn
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    ensure_bank_registered,
+    ensure_memory_banks_schema,
+    make_scope,
+    scoped_storage_key,
+)
 
 logger = logging.getLogger("aiduMEM.tombstone")
 
@@ -49,6 +56,7 @@ CREATE TABLE IF NOT EXISTS tombstones (
     target_id        TEXT NOT NULL,
     target_type      TEXT DEFAULT 'memory',
     user_id          TEXT NOT NULL,
+    bank_id          TEXT NOT NULL DEFAULT 'default',
     content_snapshot TEXT,
     facts_snapshot   TEXT,
     reason           TEXT DEFAULT '',
@@ -59,7 +67,7 @@ CREATE TABLE IF NOT EXISTS tombstones (
 """
 
 _TOMBSTONE_INDEXES = (
-    "CREATE INDEX IF NOT EXISTS idx_tombstone_user ON tombstones(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tombstone_user ON tombstones(user_id, bank_id)",
     "CREATE INDEX IF NOT EXISTS idx_tombstone_target ON tombstones(target_id)",
 )
 
@@ -72,7 +80,16 @@ def ensure_tombstone_schema() -> None:
     """幂等建表。对既有库是 no-op，任何异常只记日志不抛。"""
     try:
         conn = get_facts_conn()
+        ensure_memory_banks_schema(conn)
         conn.execute(_TOMBSTONES_DDL)
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tombstones)").fetchall()}
+            if "bank_id" not in cols:
+                conn.execute(
+                    "ALTER TABLE tombstones ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'"
+                )
+        except Exception as mexc:
+            logger.debug("tombstone bank_id 迁移跳过: %s", mexc)
         for stmt in _TOMBSTONE_INDEXES:
             try:
                 conn.execute(stmt)
@@ -83,33 +100,58 @@ def ensure_tombstone_schema() -> None:
         logger.warning("tombstones 建表跳过（服务继续）: %s", exc)
 
 
-def _capture_facts_row(memory_id: str, user_id: str) -> dict | None:
+def _capture_facts_row(
+    memory_id: str,
+    user_id: str,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> dict | None:
     """从 facts.db 抓该记忆的结构化行（全列），返回 dict；无则 None。"""
     try:
+        scope = make_scope(user_id, bank_id)
         conn = get_facts_conn()
+        ensure_memory_banks_schema(conn)
         exact_keys = (memory_id, f"fact:{memory_id}", f"raw:{memory_id}")
-        if user_id == "default":
-            row = conn.execute(
-                """SELECT * FROM facts
-                   WHERE id=? OR fact_key=? OR fact_key=? OR fact_key=?
-                   LIMIT 1""",
-                (memory_id, exact_keys[0], exact_keys[1], exact_keys[2]),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                """SELECT * FROM facts
-                   WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=?)
-                     AND (source=? OR agent_id=?)
-                   LIMIT 1""",
-                (memory_id, exact_keys[0], exact_keys[1], exact_keys[2], user_id, user_id),
-            ).fetchone()
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
+        except Exception:
+            cols = set()
+        owner_terms = ["user_id=?"] if "user_id" in cols else []
+        owner_params = [scope.user_id] if "user_id" in cols else []
+        if "source" in cols:
+            owner_terms.append("source=?")
+            owner_params.append(scope.user_id)
+        if "agent_id" in cols:
+            owner_terms.append("agent_id=?")
+            owner_params.append(scope.user_id)
+        scope_terms = []
+        scope_params = []
+        if "bank_id" in cols:
+            scope_terms.append("bank_id=?")
+            scope_params.append(scope.bank_id)
+        if owner_terms:
+            scope_terms.append("(" + " OR ".join(owner_terms) + ")")
+        key_clause = "(id=? OR fact_key=? OR fact_key=? OR fact_key=?)"
+        sql = "SELECT * FROM facts WHERE " + key_clause
+        if scope_terms:
+            sql += " AND " + " AND ".join(scope_terms)
+        sql += " LIMIT 1"
+        row = conn.execute(
+            sql,
+            [memory_id, exact_keys[0], exact_keys[1], exact_keys[2]]
+            + scope_params
+            + owner_params,
+        ).fetchone()
         return dict(row) if row else None
     except Exception as exc:
         logger.debug("tombstone facts 快照跳过: %s", exc)
         return None
 
 
-def _capture_verbatim_content(memory_id: str, user_id: str) -> str:
+def _capture_verbatim_content(
+    memory_id: str,
+    user_id: str,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> str:
     """P0-4b：memory_id 形如 "verbatim:<n>" 时，从原文层抓正文做快照。
 
     否则删除原文条目时 tombstone 抓不到任何内容，快照被跳过，
@@ -122,10 +164,11 @@ def _capture_verbatim_content(memory_id: str, user_id: str) -> str:
     if not ident.isdigit():
         return ""
     try:
+        scope = make_scope(user_id, bank_id)
         conn = get_facts_conn()
         row = conn.execute(
-            "SELECT content FROM verbatim_turns WHERE id=? AND user_id=? LIMIT 1",
-            (int(ident), user_id),
+            "SELECT content FROM verbatim_turns WHERE id=? AND user_id=? AND bank_id=? LIMIT 1",
+            (int(ident), scope.user_id, scope.bank_id),
         ).fetchone()
         return row["content"] if row else ""
     except Exception as exc:
@@ -133,20 +176,24 @@ def _capture_verbatim_content(memory_id: str, user_id: str) -> str:
         return ""
 
 
-def _capture_fts_content(memory_id: str, user_id: str) -> str:
+def _capture_fts_content(
+    memory_id: str,
+    user_id: str,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> str:
     """从 text_fts.db 抓该记忆的原文内容；无则空串。"""
     try:
+        scope = make_scope(user_id, bank_id)
         tconn = get_text_conn()
-        if user_id == "default":
-            row = tconn.execute(
-                "SELECT content FROM memories WHERE id=? OR id=? LIMIT 1",
-                (memory_id, f"fact:{memory_id}"),
-            ).fetchone()
-        else:
-            row = tconn.execute(
-                "SELECT content FROM memories WHERE (id=? OR id=?) AND (user_id=? OR user_id='default') LIMIT 1",
-                (memory_id, f"fact:{memory_id}", user_id),
-            ).fetchone()
+        # text_fts v20 stores a scoped internal id for named banks.  Query
+        # both the scoped and legacy forms, always with exact user/bank
+        # predicates; this also fixes the old default-user cross-bank leak.
+        scoped_id = scoped_storage_key(memory_id, scope)
+        row = tconn.execute(
+            "SELECT content FROM memories WHERE id IN (?, ?) "
+            "AND user_id=? AND bank_id=? LIMIT 1",
+            (scoped_id, f"fact:{scoped_id}", scope.user_id, scope.bank_id),
+        ).fetchone()
         return row["content"] if row else ""
     except Exception as exc:
         logger.debug("tombstone FTS 快照跳过: %s", exc)
@@ -158,6 +205,7 @@ def snapshot_before_delete(
     user_id: str = DEFAULT_USER_ID,
     reason: str = "",
     actor: str = "system",
+    bank_id: str = DEFAULT_BANK_ID,
 ) -> int | None:
     """删除前把一条记忆的全文 + 结构化行 + 理由快照进 tombstones 表。
 
@@ -167,10 +215,12 @@ def snapshot_before_delete(
     if not memory_id or not str(memory_id).strip():
         return None
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_tombstone_schema()
-        facts_row = _capture_facts_row(memory_id, user_id)
-        fts_content = _capture_fts_content(memory_id, user_id) or _capture_verbatim_content(
-            memory_id, user_id
+        ensure_bank_registered(scope)
+        facts_row = _capture_facts_row(memory_id, scope.user_id, scope.bank_id)
+        fts_content = _capture_fts_content(memory_id, scope.user_id, scope.bank_id) or _capture_verbatim_content(
+            memory_id, scope.user_id, scope.bank_id
         )
 
         # 至少抓到一样东西才值得留快照；两者皆空说明这条记忆本就不在结构化仓里
@@ -182,12 +232,13 @@ def snapshot_before_delete(
         conn = get_facts_conn()
         cur = conn.execute(
             """INSERT INTO tombstones
-               (target_id, target_type, user_id, content_snapshot, facts_snapshot,
+               (target_id, target_type, user_id, bank_id, content_snapshot, facts_snapshot,
                 reason, actor, tombstoned_at)
-               VALUES (?, 'memory', ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, 'memory', ?, ?, ?, ?, ?, ?, ?)""",
             (
                 memory_id,
-                user_id,
+                scope.user_id,
+                scope.bank_id,
                 content_snapshot,
                 json.dumps(facts_row, ensure_ascii=False, default=str) if facts_row else "",
                 reason or "",
@@ -200,19 +251,27 @@ def snapshot_before_delete(
             from ducky.event_ledger import content_hash, record_event
             record_event(conn, actor=actor or "system", action="tombstone",
                          target_id=memory_id, reason=reason or "",
-                         after_hash=content_hash(content_snapshot))
+                         after_hash=content_hash(content_snapshot),
+                         user_id=scope.user_id, bank_id=scope.bank_id)
         except Exception as le:
             logger.debug("ledger 记录跳过: %s", le)
         conn.commit()
         tid = cur.lastrowid
-        logger.info("🪦 tombstone 快照 #%s (target=%s user=%s reason=%r)", tid, memory_id, user_id, reason)
+        logger.info(
+            "🪦 tombstone 快照 #%s (target=%s user=%s bank=%s reason=%r)",
+            tid, memory_id, scope.user_id, scope.bank_id, reason,
+        )
         return tid
     except Exception as exc:
         logger.warning("tombstone 快照降级（删除继续）: %s", exc)
         return None
 
 
-def restore_tombstone(tombstone_id: int, user_id: str = DEFAULT_USER_ID) -> dict:
+def restore_tombstone(
+    tombstone_id: int,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> dict:
     """从 tombstones 快照恢复一条记忆：回插 facts + 重建 FTS 索引。
 
     返回 {restored, target_id, detail}。失败/无权限返回 restored=False。
@@ -223,18 +282,15 @@ def restore_tombstone(tombstone_id: int, user_id: str = DEFAULT_USER_ID) -> dict
         result["detail"] = "tombstone_id 为空"
         return result
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_tombstone_schema()
+        ensure_bank_registered(scope)
         conn = get_facts_conn()
-        if user_id == "default":
-            row = conn.execute(
-                "SELECT * FROM tombstones WHERE tombstone_id=? AND restored_at IS NULL",
-                (tombstone_id,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM tombstones WHERE tombstone_id=? AND user_id=? AND restored_at IS NULL",
-                (tombstone_id, user_id),
-            ).fetchone()
+        row = conn.execute(
+            "SELECT * FROM tombstones WHERE tombstone_id=? AND user_id=? "
+            "AND bank_id=? AND restored_at IS NULL",
+            (tombstone_id, scope.user_id, scope.bank_id),
+        ).fetchone()
         if not row:
             result["detail"] = "快照不存在、已恢复或无权限"
             return result
@@ -265,7 +321,12 @@ def restore_tombstone(tombstone_id: int, user_id: str = DEFAULT_USER_ID) -> dict
         if content:
             try:
                 from ducky.text_fts import _index_memory
-                _index_memory(target_id, content, user_id=user_id)
+                _index_memory(
+                    target_id,
+                    content,
+                    user_id=scope.user_id,
+                    bank_id=scope.bank_id,
+                )
                 restored_cols.append("fts")
             except Exception as ie:
                 logger.debug("tombstone FTS 重建跳过: %s", ie)
@@ -278,9 +339,10 @@ def restore_tombstone(tombstone_id: int, user_id: str = DEFAULT_USER_ID) -> dict
         # 📒 事件账本（B5）：与恢复同事务留痕
         try:
             from ducky.event_ledger import content_hash, record_event
-            record_event(conn, actor=user_id or "system", action="restore",
+            record_event(conn, actor=scope.user_id or "system", action="restore",
                          target_id=target_id, reason=f"tombstone#{tombstone_id}",
-                         after_hash=content_hash(content))
+                         after_hash=content_hash(content),
+                         user_id=scope.user_id, bank_id=scope.bank_id)
         except Exception as le:
             logger.debug("ledger 记录跳过: %s", le)
         conn.commit()
@@ -296,25 +358,25 @@ def restore_tombstone(tombstone_id: int, user_id: str = DEFAULT_USER_ID) -> dict
         return result
 
 
-def list_tombstones(user_id: str = DEFAULT_USER_ID, limit: int = 50) -> list:
+def list_tombstones(
+    user_id: str = DEFAULT_USER_ID,
+    limit: int = 50,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> list:
     """列某租户的遗忘记录（运维/验收用）。失败返回 []。"""
     if not user_id:
         return []
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_tombstone_schema()
         conn = get_facts_conn()
-        if user_id == "default":
-            rows = conn.execute(
-                "SELECT tombstone_id, target_id, content_snapshot, reason, actor, tombstoned_at, restored_at "
-                "FROM tombstones ORDER BY tombstone_id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT tombstone_id, target_id, content_snapshot, reason, actor, tombstoned_at, restored_at "
-                "FROM tombstones WHERE user_id=? ORDER BY tombstone_id DESC LIMIT ?",
-                (user_id, limit),
-            ).fetchall()
+        rows = conn.execute(
+            "SELECT tombstone_id, target_id, content_snapshot, reason, actor, "
+            "tombstoned_at, restored_at, user_id, bank_id "
+            "FROM tombstones WHERE user_id=? AND bank_id=? "
+            "ORDER BY tombstone_id DESC LIMIT ?",
+            (scope.user_id, scope.bank_id, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
         logger.debug("list_tombstones 降级返回空: %s", exc)

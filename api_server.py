@@ -70,8 +70,11 @@ app = FastAPI(
     # 注意只改这里的展示文案：logger 名、/health 的 service 字段、
     # 各模块 docstring 里的 aiduMEM 都是机器契约或历史内部名，
     # 生产侧的日志采集与监控按它们匹配，v19.4.2 一律不动（决策 D2）。
-    title=f"aiduMEI API v{SERVICE_VERSION} — {CODENAME}",
-    version=f"{SERVICE_VERSION}-{CODENAME.lower()}",
+    # v20 uses a two-part version and intentionally has no current codename.
+    # Keep the OpenAPI version machine-readable instead of coupling clients to
+    # a display label that changed every mythological generation.
+    title=f"aiduMEI API v{SERVICE_VERSION}",
+    version=SERVICE_VERSION,
 )
 
 # ── 前端 UI 托管（aiduMEM 自带面板）──────────────────────
@@ -412,7 +415,7 @@ def _start_background() -> None:
     logger.info(
         "✅ aiduMEM v%s %s 后台线程已启动 (%s 个)",
         SERVICE_VERSION,
-        CODENAME,
+        DISPLAY_NAME,
         len(_BACKGROUND_LOOPS),
     )
 

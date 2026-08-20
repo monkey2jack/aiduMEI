@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Any
 
+from ducky.bank_contract import DEFAULT_BANK_ID
 from ducky.speed.cache import cache_get, cache_key, cache_set
 from ducky.speed.config import load_speed_cfg, messages_to_text
 from ducky.speed.fastpath import try_fastpath_text
@@ -21,6 +22,7 @@ def run_add_pipeline(
     metadata: dict,
     *,
     force_sync: bool = False,
+    bank_id: str = DEFAULT_BANK_ID,
 ) -> dict:
     """
     高速写入主流程（供 layer1 / 异步 worker 调用）。
@@ -40,7 +42,10 @@ def run_add_pipeline(
     existing_id = None
     speed = load_speed_cfg()
     text = messages_to_text(messages_json)
-    metadata = dict(metadata or {})
+    # 🔴v20：与 layer1_add_wrapper 同理 —— metadata 是 bank_id 进入向量 payload
+    # 的唯一通道，在入口盖一次戳，下面 update/fastpath/llm 三条写入路径都继承。
+    from ducky.bank_contract import stamp_bank_metadata
+    metadata = stamp_bank_metadata(metadata, bank_id)
 
     # [P0 Gate] 终审注入防护：写入前全量执行清洗与越权拦截
     is_safe, sanitized_text, threat = validate_and_sanitize_memory_content(text)
@@ -53,7 +58,7 @@ def run_add_pipeline(
             messages_json[-1]["content"] = sanitized_text
 
     # 0) 抽取缓存（仅 infer 路径）
-    ck = cache_key(user_id, text, "infer")
+    ck = cache_key(user_id, text, "infer", bank_id=bank_id)
     cached = cache_get(ck) if text else None
     if cached is not None and not metadata.get("no_cache"):
         timing["cache_hit"] = 1
@@ -69,7 +74,7 @@ def run_add_pipeline(
 
     # 1) 去重
     t1 = time.time()
-    existing_id = dedup_check(memory, user_id, text) if text else None
+    existing_id = dedup_check(memory, user_id, text, bank_id=bank_id) if text else None
     timing["dedup"] = int((time.time() - t1) * 1000)
     if existing_id:
         try:
@@ -83,7 +88,7 @@ def run_add_pipeline(
     if not existing_id:
         # 2) 容量检查（合并默认异步，不堵热路径）
         t2 = time.time()
-        cap = check_capacity(memory, user_id)
+        cap = check_capacity(memory, user_id, bank_id=bank_id)
         timing["capacity"] = int((time.time() - t2) * 1000)
         details["capacity"] = cap
         if cap.get("needs_merge"):
@@ -91,7 +96,9 @@ def run_add_pipeline(
                 details["merge_scheduled"] = True
                 try:
                     threading.Thread(
-                        target=lambda: auto_merge_similar(memory, user_id),
+                        # bank_id 用默认参数绑死：这个 lambda 在别的线程里跑，
+                        # 靠闭包读外层变量会把「删哪个域」交给时序去决定。
+                        target=lambda b=bank_id: auto_merge_similar(memory, user_id, bank_id=b),
                         daemon=True,
                         name="aiduMEM-cap-merge",
                     ).start()
@@ -99,7 +106,7 @@ def run_add_pipeline(
                     logger.debug(f"async merge schedule skip: {e}")
             else:
                 t2b = time.time()
-                merge_result = auto_merge_similar(memory, user_id)
+                merge_result = auto_merge_similar(memory, user_id, bank_id=bank_id)
                 timing["merge"] = int((time.time() - t2b) * 1000)
                 details["merge"] = merge_result
                 if merge_result.get("merged_groups", 0) > 0:
@@ -123,7 +130,7 @@ def run_add_pipeline(
             details["fastpath_fact"] = fast_fact
             timing["llm_add"] = int((time.time() - t3) * 1000)
             timing["path"] = "fastpath"
-            register_salience_for_add(add_result)
+            register_salience_for_add(add_result, user_id=user_id, bank_id=bank_id)
         else:
             # 长文提示：通过 metadata 标记，不改 mem0 SDK
             if len(text) >= int(speed.get("long_text_chars", 2500)):
@@ -135,7 +142,7 @@ def run_add_pipeline(
             add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
             timing["llm_add"] = int((time.time() - t3) * 1000)
             timing["path"] = "llm"
-            register_salience_for_add(add_result)
+            register_salience_for_add(add_result, user_id=user_id, bank_id=bank_id)
 
     # 4) FTS
     t4 = time.time()
@@ -144,7 +151,7 @@ def run_add_pipeline(
 
         category = (metadata or {}).get("category", "")
         if action == "updated" and existing_id:
-            _index_memory(existing_id, text, user_id=user_id, category=category)
+            _index_memory(existing_id, text, user_id=user_id, category=category, bank_id=bank_id)
         elif add_result is not None:
             results = (
                 add_result
@@ -158,7 +165,7 @@ def run_add_pipeline(
                     mid = r.get("id") or r.get("memory_id")
                     content = r.get("memory") or r.get("data") or text
                     if mid and content:
-                        _index_memory(mid, content, user_id=user_id, category=category)
+                        _index_memory(mid, content, user_id=user_id, category=category, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"FTS 索引跳过: {e}")
     timing["fts"] = int((time.time() - t4) * 1000)

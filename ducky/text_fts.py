@@ -16,13 +16,102 @@ import time
 import sqlite3
 
 from ducky.utils import DEFAULT_USER_ID, get_text_conn
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope, raw_storage_key, scoped_storage_key
 
 logger = logging.getLogger("aiduMEM.text_fts")
 
 
+# v20 基表形态：主键必须是 (id, user_id, bank_id) 三元组。
+# 详见 _migrate_memories_pk 的说明。
+_MEMORIES_DDL = """
+    id TEXT NOT NULL,
+    content TEXT,
+    user_id TEXT,
+    bank_id TEXT NOT NULL DEFAULT 'default',
+    category TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, user_id, bank_id)
+"""
+
+
+def _migrate_memories_pk(conn: sqlite3.Connection) -> bool:
+    """把 v19 的 ``id TEXT PRIMARY KEY`` 重建成 ``(id, user_id, bank_id)``。
+
+    🔴v20 结构性缺陷（与 workspace 主键同一类）：v20 给 memories 加了
+    bank_id 列、把每条 SQL 都按 user_id/bank_id 过滤了，唯独主键还是**单列
+    id**。而 `scoped_storage_key` 对默认域刻意保留裸 key（为兼容 v19 存量），
+    于是默认域里两个租户的同一个 memory_id 会落到同一个主键上：
+
+        v19：``DELETE FROM memories WHERE id=?`` 不带租户条件 ——
+             bob 建索引会**静默删掉 alice 的那一行**（跨租户删除原语）。
+        v20：``DELETE ... AND user_id=? AND bank_id=?`` 匹配 0 行，
+             紧接着的 INSERT 撞主键 → ``UNIQUE constraint failed: memories.id``
+             直接抛到调用方（`_index_memory` 没有 try）。
+
+    一个静默毁数据、一个当场炸，都不对。根因是主键表达不了「同一个 id 在不同
+    (租户, 域) 下是不同的行」。`scoped_storage_key` 的注释写着「ownership
+    stays enforced by the user_id/bank_id columns」—— 那两列确实在过滤读，
+    但主键根本不看它们，所以那句话对写入路径不成立。
+
+    返回 True 表示确实重建过（rowid 全部变了，外挂 FTS 必须跟着重建）。
+    """
+    info = conn.execute("PRAGMA table_info(memories)").fetchall()
+    if not info:
+        return False
+    pk_cols = {str(r[1]) for r in info if r[5] > 0}
+    if pk_cols == {"id", "user_id", "bank_id"}:
+        return False
+
+    origin = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    logger.info("🔄 memories 主键迁移 %s → (id,user_id,bank_id)，存量 %d 条…", sorted(pk_cols), origin)
+    # 触发器绑在旧表上，先摘掉：搬运期间不该有任何 FTS 副作用。
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS mem_ai;
+        DROP TRIGGER IF EXISTS mem_ad;
+        DROP TRIGGER IF EXISTS mem_au;
+        DROP TABLE IF EXISTS memories_v20;
+    """)
+    conn.execute(f"CREATE TABLE memories_v20 ({_MEMORIES_DDL})")
+    # 旧主键（单列 id）比新主键更严，理论上一行都不会被 IGNORE 掉；
+    # 但「理论上」不是验收标准，下面按条数实测。
+    conn.execute(
+        "INSERT OR IGNORE INTO memories_v20 (id,content,user_id,bank_id,category,created_at) "
+        "SELECT id, content, user_id, "
+        "       COALESCE(NULLIF(TRIM(bank_id),''), 'default'), category, created_at "
+        "FROM memories"
+    )
+    moved = conn.execute("SELECT COUNT(*) FROM memories_v20").fetchone()[0]
+    if moved < origin:
+        # 宁可不迁移，也不能在用户的全文索引上留一个「少了几条但没人知道」的洞。
+        conn.rollback()
+        conn.execute("DROP TABLE IF EXISTS memories_v20")
+        conn.commit()
+        raise RuntimeError(f"memories 主键迁移会丢行：{origin} → {moved}，已回滚")
+    conn.execute("DROP TABLE memories")
+    conn.execute("ALTER TABLE memories_v20 RENAME TO memories")
+    conn.commit()
+    logger.info("✅ memories 主键迁移完成，%d 条全部搬运", moved)
+    return True
+
+
 def _ensure_trigram_fts(conn: sqlite3.Connection):
     """确保 FTS 使用 trigram 分词（中文可子串匹配）。旧 unicode61 表自动迁移重建。"""
-    need_rebuild = False
+    # ① 基表先就位。必须**早于** FTS 建表：memories_fts 是 content= 外挂模式，
+    #    靠 rowid 与 memories 对齐，而主键迁移会重排 rowid。
+    conn.execute(f"CREATE TABLE IF NOT EXISTS memories ({_MEMORIES_DDL})")
+    # 老库补 bank_id 列（ALTER 只能加到末尾，列序与新装不同；全部 SQL 都按列名
+    # 访问，故列序无关紧要，但不要在别处假设它）。
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+        if "bank_id" not in cols:
+            conn.execute("ALTER TABLE memories ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'")
+            conn.commit()
+    except Exception as exc:
+        logger.debug("memories bank_id migration skipped: %s", exc)
+    # ② 主键迁移。重建过就必须连带重建 FTS —— rowid 全变了，旧索引全部错位。
+    pk_migrated = _migrate_memories_pk(conn)
+
+    need_rebuild = pk_migrated
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'"
     ).fetchone()
@@ -43,10 +132,6 @@ def _ensure_trigram_fts(conn: sqlite3.Connection):
         """)
 
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY, content TEXT, user_id TEXT, category TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
             content,
             content=memories,
@@ -175,30 +260,33 @@ def _init_text_fts():
     threading.Thread(target=_delayed_backfill, daemon=True, name="aiduMEM-fts-backfill").start()
 
 
-def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category=""):
+def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category="", bank_id=DEFAULT_BANK_ID):
     if not memory_id or not content:
         return
+    scope = make_scope(user_id, bank_id)
+    storage_id = scoped_storage_key(memory_id, scope)
     conn = get_text_conn()
     # 先删再插，保证 content= 外挂 FTS 与 rowid 同步（避免 REPLACE 残留）
-    conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+    conn.execute("DELETE FROM memories WHERE id=? AND user_id=? AND bank_id=?", (storage_id, scope.user_id, scope.bank_id))
     conn.execute(
-        "INSERT INTO memories (id,content,user_id,category) VALUES (?,?,?,?)",
-        (memory_id, content, user_id, category or ""),
+        "INSERT INTO memories (id,content,user_id,bank_id,category) VALUES (?,?,?,?,?)",
+        (storage_id, content, scope.user_id, scope.bank_id, category or ""),
     )
     conn.commit()
     conn.close()
 
 
-def _unindex_memory(memory_id):
+def _unindex_memory(memory_id, user_id=DEFAULT_USER_ID, bank_id=DEFAULT_BANK_ID):
     if not memory_id:
         return
+    scope = make_scope(user_id, bank_id)
     conn = get_text_conn()
-    conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+    conn.execute("DELETE FROM memories WHERE id=? AND user_id=? AND bank_id=?", (scoped_storage_key(memory_id, scope), scope.user_id, scope.bank_id))
     conn.commit()
     conn.close()
 
 
-def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID) -> int:
+def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> int:
     """从 mem0 拉一批记忆灌入 FTS，供向量失败时兜底。"""
     try:
         # 优先 mem0_runtime，避免强依赖 api_server 组装层
@@ -220,7 +308,7 @@ def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID) -> int
             if not mid or not text:
                 continue
             meta = item.get("metadata") or {}
-            _index_memory(mid, text, user_id=item.get("user_id", user_id), category=meta.get("category", ""))
+            _index_memory(mid, text, user_id=item.get("user_id", user_id), category=meta.get("category", ""), bank_id=meta.get("bank_id", bank_id))
             n += 1
         logger.info(f"✅ FTS 回填完成: {n} 条")
         return n
@@ -229,25 +317,26 @@ def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID) -> int
         return 0
 
 
-def _like_search(terms, user_id, top_k, conn=None):
+def _like_search(terms, user_id, top_k, conn=None, bank_id=DEFAULT_BANK_ID):
     should_close = conn is None
     if should_close:
         conn = get_text_conn()
+    scope = make_scope(user_id, bank_id)
     if not terms:
         rows = conn.execute(
-            "SELECT id,content,category FROM memories WHERE user_id=? LIMIT ?",
-            (user_id, top_k),
+            "SELECT id,content,category,bank_id FROM memories WHERE user_id=? AND bank_id=? LIMIT ?",
+            (scope.user_id, scope.bank_id, top_k),
         ).fetchall()
     else:
         clauses = ["content LIKE ?" for _ in terms]
-        params = [f"%{t}%" for t in terms] + [user_id, top_k]
+        params = [f"%{t}%" for t in terms] + [scope.user_id, scope.bank_id, top_k]
         rows = conn.execute(
-            f"SELECT id,content,category FROM memories WHERE ({' OR '.join(clauses)}) AND user_id=? LIMIT ?",
+            f"SELECT id,content,category,bank_id FROM memories WHERE ({' OR '.join(clauses)}) AND user_id=? AND bank_id=? LIMIT ?",
             params,
         ).fetchall()
     if should_close:
         conn.close()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "id": raw_storage_key(r["id"], scope)} for r in rows]
 
 
 def calc_bm25_score(query: str, content: str) -> float:
@@ -263,8 +352,9 @@ def calc_bm25_score(query: str, content: str) -> float:
     return min(1.0, hit_count / len(terms))
 
 
-def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID) -> list:
+def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> list:
     """BM25/关键词检索。FTS 无 user_id 列，必须 JOIN memories 过滤。"""
+    scope = make_scope(user_id, bank_id)
     conn = get_text_conn()
     # 运行时也兜底确保 trigram（老进程/旧库）
     try:
@@ -299,13 +389,13 @@ def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USE
         try:
             rows = conn.execute(
                 """
-                SELECT m.id, m.content, m.category
+                SELECT m.id, m.content, m.category, m.bank_id
                 FROM memories_fts
                 JOIN memories m ON m.rowid = memories_fts.rowid
-                WHERE memories_fts MATCH ? AND m.user_id = ?
+                WHERE memories_fts MATCH ? AND m.user_id = ? AND m.bank_id = ?
                 LIMIT ?
                 """,
-                (match_expr, user_id, top_k),
+                (match_expr, scope.user_id, scope.bank_id, top_k),
             ).fetchall()
             fts_attempted = True
             if rows:
@@ -319,16 +409,16 @@ def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USE
 
     # FTS 已权威给出「零命中」时不再白扫 LIKE（见 fts_is_authoritative）
     if not rows and not (fts_attempted and fts_is_authoritative(q)):
-        rows = _like_search(terms or [q], user_id, top_k, conn)
+        rows = _like_search(terms or [q], scope.user_id, top_k, conn, scope.bank_id)
         recall_path = "like"
 
     conn.close()
     # P1-4 降级可观测：调用方（含测试）可自证这次召回真走的是索引还是全表扫。
-    return [dict(r, _recall_path=recall_path) for r in rows]
+    return [{**dict(r), "id": raw_storage_key(r["id"], scope), "_recall_path": recall_path} for r in rows]
 
 
 def _hybrid_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID,
-                   vector_weight: float = 0.7):
+                   vector_weight: float = 0.7, bank_id: str = DEFAULT_BANK_ID):
     """旧接口 → 委托给 aiduMEM-v7 混合召回（向后兼容）"""
     try:
         from ducky.hybrid_recall import hybrid_search
@@ -336,8 +426,8 @@ def _hybrid_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID,
             from ducky.mem0_runtime import get_memory
         except Exception:
             from api_server import get_memory
-        results = hybrid_search(get_memory(), query, user_id, top_k)
+        results = hybrid_search(get_memory(), query, user_id, top_k, bank_id=bank_id)
         return results
     except Exception as e:
         logger.debug(f"hybrid 委托失败，降级 BM25: {e}")
-        return _bm25_keyword_search(query, top_k, user_id)
+        return _bm25_keyword_search(query, top_k, user_id, bank_id)

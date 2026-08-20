@@ -12,6 +12,12 @@ Aion Memory 设计哲学：
 import json, logging, time
 from typing import Optional
 
+from .bank_contract import (
+    DEFAULT_BANK_ID,
+    stamp_bank_metadata,
+    vector_item_in_bank,
+    vector_scope_filters,
+)
 from .utils import get_facts_conn, jaccard_sim
 
 logger = logging.getLogger("aiduMEM.selfcheck")
@@ -23,11 +29,18 @@ DEDUP_THRESHOLD = 0.85        # 去重相似度阈值
 MERGE_MIN_GROUP = 3           # 合并最少同组条数
 
 
-def check_capacity(memory, user_id: str) -> dict:
-    """检查容量，返回 {total, pct, needs_merge}"""
+def check_capacity(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """检查容量，返回 {total, pct, needs_merge}
+
+    🔴v20：容量按**域**计量。此前跨域统计，导致一个域写满会去触发另一个域的
+    合并删除（见 ``auto_merge_similar``）。改成按域后，单域部署（全部记忆都在
+    default）的行为与 v19 逐字节一致，多域部署则各算各的。
+    """
     try:
-        all_mem = memory.get_all(filters={"user_id": user_id}, limit=10000)
+        all_mem = memory.get_all(filters=vector_scope_filters(user_id, bank_id), limit=10000)
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
+        results = [r for r in results if vector_item_in_bank(r, bank_id)] \
+            if isinstance(results, list) else results
         total = len(results) if isinstance(results, list) else 0
         pct = total / MAX_CAPACITY if MAX_CAPACITY > 0 else 0
         return {
@@ -41,13 +54,28 @@ def check_capacity(memory, user_id: str) -> dict:
         return {"total": 0, "max": MAX_CAPACITY, "pct": 0, "needs_merge": False}
 
 
-def dedup_check(memory, user_id: str, new_text: str) -> Optional[str]:
-    """检查是否已存在相似记忆，返回已有 memory_id 或 None"""
+def dedup_check(memory, user_id: str, new_text: str,
+                bank_id: str = DEFAULT_BANK_ID) -> Optional[str]:
+    """检查是否已存在相似记忆，返回已有 memory_id 或 None
+
+    🔴v20：此前只按 ``{"user_id": …}`` 过滤，**跨域命中**。调用方拿到别的域
+    的 memory_id 后会 ``memory.update(existing_id, text, metadata=…)`` ——
+    那条记忆的正文被改写、bank_id 被改盖成写入方的域：源域凭空少一条，目标
+    域多出一条本不属于它的记忆，两个域同时被破坏，且全程无异常无日志。
+
+    过滤沿用向量侧的两半契约：默认域不下推（否则 v19 存量点全被 must 语义
+    滤掉），命名域下推；两种情况都再做一次 Python 复筛。
+    """
     try:
-        results = memory.search(new_text, filters={"user_id": user_id}, limit=3)
+        filters = vector_scope_filters(user_id, bank_id)
+        results = memory.search(new_text, filters=filters, limit=3)
         if not results:
             return None
         results_list = results.get("results", results) if isinstance(results, dict) else results
+        if not isinstance(results_list, list):
+            return None
+        # 复筛掉别的域的候选，再取剩下里最相似的一条
+        results_list = [r for r in results_list if vector_item_in_bank(r, bank_id)]
         if not results_list:
             return None
         # mem0 search 返回的是按相似度排序的，第一条最相似
@@ -77,12 +105,23 @@ def _text_similarity(a: str, b: str) -> float:
     return len(ba & bb) / len(ba | bb)
 
 
-def auto_merge_similar(memory, user_id: str, max_groups: int = 5) -> dict:
-    """合并同类记忆：同 metadata.source 或 category 的 ≥3 条 → 保留最新"""
+def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
+                       bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """合并同类记忆：同 metadata.source 或 category 的 ≥3 条 → 保留最新
+
+    🔴v20：这个函数会 ``memory.delete()`` **真删**记忆。此前它按
+    ``{"user_id": …}`` 全域取数，只按 metadata.source 分组 —— 往 home 域写一条
+    触发容量合并，能把 work 域里同 source 的旧记忆永久删掉。域隔离在这里不是
+    可见性问题，是数据安全问题，所以取数和复筛都必须限定在写入方所在的域内。
+    """
     try:
-        all_mem = memory.get_all(filters={"user_id": user_id}, limit=10000)
+        all_mem = memory.get_all(filters=vector_scope_filters(user_id, bank_id), limit=10000)
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
-        if not isinstance(results, list) or len(results) < MERGE_MIN_GROUP:
+        if not isinstance(results, list):
+            return {"merged_groups": 0, "deleted": 0}
+        # 删除前的最后一道闸：把不属于本域的候选剔干净
+        results = [r for r in results if vector_item_in_bank(r, bank_id)]
+        if len(results) < MERGE_MIN_GROUP:
             return {"merged_groups": 0, "deleted": 0}
 
         # 按 metadata.source 分组
@@ -118,7 +157,7 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5) -> dict:
         return {"merged_groups": 0, "deleted": 0}
 
 
-def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> dict:
+def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank_id: str = "default") -> dict:
     """
     Layer 1 写入包装器：
     1. 去重检查
@@ -128,6 +167,12 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
     start = time.time()
     action = "new"
     details = {}
+
+    # 🔴v20：把域盖进 mem0 metadata —— 这是向量 payload 里唯一能承载 bank_id
+    # 的通道（mem0.add 只认 messages/user_id/metadata）。不盖这个戳，命名域的
+    # 向量与默认域的向量在 payload 上无法区分，向量侧的域隔离就等于不存在。
+    # 在函数口上盖一次，下面 update/add 三个出口全部继承。
+    metadata = stamp_bank_metadata(metadata, bank_id)
 
     # 提取文本用于去重
     text = ""
@@ -141,7 +186,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
     # Step 0: P0-2 记忆去重自编辑（LLM 语义级判重，先行；失败降级回 Jaccard）
     try:
         from ducky.self_edit import self_edit_on_add
-        self_edit_result = self_edit_on_add(memory, user_id, messages_json, metadata)
+        self_edit_result = self_edit_on_add(memory, user_id, messages_json, metadata, bank_id=bank_id)
         if self_edit_result:
             details["self_edit"] = self_edit_result
             action = self_edit_result["action"]
@@ -152,7 +197,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
                 memory,
                 memory_id=self_edit_result.get("memory_id", ""),
                 content=self_edit_result.get("merged_content", text),
-                user_id=user_id,
+                user_id=user_id, bank_id=bank_id,
             )
             elapsed_ms = int((time.time() - start) * 1000)
             details["ms"] = elapsed_ms
@@ -165,7 +210,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
         logger.debug(f"self-edit 跳过（降级）: {se}")
 
     # Step 1: 去重检查
-    existing_id = dedup_check(memory, user_id, text)
+    existing_id = dedup_check(memory, user_id, text, bank_id=bank_id)
     if existing_id:
         try:
             # Lethe v9.2.0: 触发演化追踪 (在更新前运行，便于捕获相似关系)
@@ -175,18 +220,18 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
             details["existing_id"] = existing_id
             logger.info(f"Layer1 去重更新: {existing_id[:16]}")
             # 🔴2：更新既有记忆后同步热度与 FTS，避免检索侧漏检/降权
-            _sync_indexes_after_update(memory, memory_id=existing_id, content=text, user_id=user_id)
+            _sync_indexes_after_update(memory, memory_id=existing_id, content=text, user_id=user_id, bank_id=bank_id)
         except Exception:
             # update 失败就走新增
             add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
-            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""))
+            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""), bank_id=bank_id)
             action = "new"
     else:
         # Step 2: 容量检查
-        cap = check_capacity(memory, user_id)
+        cap = check_capacity(memory, user_id, bank_id=bank_id)
         details["capacity"] = cap
         if cap["needs_merge"]:
-            merge_result = auto_merge_similar(memory, user_id)
+            merge_result = auto_merge_similar(memory, user_id, bank_id=bank_id)
             details["merge"] = merge_result
             action = "merged" if merge_result["merged_groups"] > 0 else "new"
 
@@ -201,7 +246,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
         # Step 3: 写入
         # 🔴2：主链写入路径必须登记 salience + FTS 索引，否则新记忆全文搜不到、热度不累计。
         add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
-        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""))
+        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""), bank_id=bank_id)
 
     elapsed_ms = int((time.time() - start) * 1000)
     details["ms"] = elapsed_ms
@@ -213,7 +258,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict) -> d
     }
 
 
-def _index_after_add(add_result, user_id: str, category: str = "") -> None:
+def _index_after_add(add_result, user_id: str, category: str = "", bank_id: str = "default") -> None:
     """🔴2：mem0.add() 成功后登记 salience + 写 FTS 索引。
 
     正常新增路径此前只调 memory.add()，既不注册显著性、也不写全文索引，
@@ -225,7 +270,7 @@ def _index_after_add(add_result, user_id: str, category: str = "") -> None:
         return
     try:
         from ducky.mem0_runtime import register_salience_for_add
-        register_salience_for_add(add_result)
+        register_salience_for_add(add_result, user_id=user_id, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"salience 登记跳过: {e}")
 
@@ -242,13 +287,13 @@ def _index_after_add(add_result, user_id: str, category: str = "") -> None:
             continue
         try:
             from ducky.text_fts import _index_memory
-            _index_memory(mid, content, user_id=user_id, category=category)
+            _index_memory(mid, content, user_id=user_id, category=category, bank_id=bank_id)
         except Exception as e:
             logger.debug(f"FTS index on add 跳过: {e}")
-        _classify_memory_type_on_add(mid, content)
+        _classify_memory_type_on_add(mid, content, user_id=user_id, bank_id=bank_id)
 
 
-def _classify_memory_type_on_add(memory_id: str, content: str) -> None:
+def _classify_memory_type_on_add(memory_id: str, content: str, *, user_id: str = "default", bank_id: str = "default") -> None:
     """🔴7：写时六型分类。默认关闭（规则分类），开 AIDUMEM_TYPE_CLASSIFY_ENABLED 后用 LLM。
 
     此前 classify_and_record 生产零调用、六型只能手动 backfill。这里接进主链，
@@ -258,12 +303,12 @@ def _classify_memory_type_on_add(memory_id: str, content: str) -> None:
         import os
         enabled = os.getenv("AIDUMEM_TYPE_CLASSIFY_ENABLED", "false").lower() in {"1", "true", "yes"}
         from ducky.memory_types import classify_and_record
-        classify_and_record(memory_id, content, use_llm=enabled)
+        classify_and_record(memory_id, content, use_llm=enabled, user_id=user_id, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"写时六型分类跳过: {e}")
 
 
-def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: str) -> None:
+def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: str, bank_id: str = "default") -> None:
     """self-edit 合并/冲突更新记忆后，补做热度登记与 FTS 索引刷新。
 
     与 /add 正常写入路径保持一致；任何一步失败都静默降级，不阻断
@@ -276,12 +321,13 @@ def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: st
         # 避免 register_salience_for_add 的 INSERT OR REPLACE 把 access_count
         # 清零、把高频访问的旧记忆降权。
         from ducky.salience.core import on_memory_added
-        on_memory_added(memory_id, content=content, preserve_heat=True)
+        on_memory_added(memory_id, content=content, preserve_heat=True,
+                        user_id=user_id, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"self-edit 热度登记跳过: {e}")
     try:
         from ducky.text_fts import _index_memory
-        _index_memory(memory_id, content, user_id=user_id, category="")
+        _index_memory(memory_id, content, user_id=user_id, category="", bank_id=bank_id)
     except Exception as e:
         logger.debug(f"self-edit FTS 索引刷新跳过: {e}")
 

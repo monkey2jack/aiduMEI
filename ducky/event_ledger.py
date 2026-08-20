@@ -50,7 +50,9 @@ CREATE TABLE IF NOT EXISTS memory_events (
     target_id   TEXT NOT NULL,
     reason      TEXT DEFAULT '',
     before_hash TEXT DEFAULT '',
-    after_hash  TEXT DEFAULT ''
+    after_hash  TEXT DEFAULT '',
+    user_id     TEXT DEFAULT '',
+    bank_id     TEXT DEFAULT ''
 )
 """
 
@@ -58,6 +60,22 @@ _LEDGER_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_ledger_target ON memory_events(target_id)",
     "CREATE INDEX IF NOT EXISTS idx_ledger_action ON memory_events(action)",
 )
+
+# v20 P0-2 迁移：老账本表补作用域列。存量事件 user_id/bank_id 为空串，
+# 查询侧把空串视作 default 域（v19 全库本就是单一默认域），零丢失。
+_LEDGER_SCOPE_MIGRATIONS = (
+    "ALTER TABLE memory_events ADD COLUMN user_id TEXT DEFAULT ''",
+    "ALTER TABLE memory_events ADD COLUMN bank_id TEXT DEFAULT ''",
+)
+
+
+def _ensure_scope_columns(conn) -> None:
+    """老表补作用域列（幂等，列已存在时 ALTER 报错被吞掉）。"""
+    for stmt in _LEDGER_SCOPE_MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except Exception:
+            pass
 
 # 合法 action 枚举（防拼写漂移，不在表内做 CHECK 约束以保持轻量）
 KNOWN_ACTIONS = frozenset({
@@ -75,6 +93,7 @@ def ensure_ledger_schema() -> None:
     try:
         conn = get_facts_conn()
         conn.execute(_LEDGER_DDL)
+        _ensure_scope_columns(conn)
         for stmt in _LEDGER_INDEXES:
             try:
                 conn.execute(stmt)
@@ -101,30 +120,44 @@ def record_event(
     reason: str = "",
     before_hash: str = "",
     after_hash: str = "",
+    user_id: str = "",
+    bank_id: str = "",
 ) -> int | None:
     """在**调用方事务内**记一条事件（只 INSERT，不 commit）。
 
     调用方负责随后 conn.commit()，让账本与事实变更同生共死。
     返回 event_id；失败返回 None（绝不抛异常阻断主链路）。
+
+    v20 P0-2：opt-in 作用域戳——调用方手里有 (user_id, bank_id) 就盖上，
+    get_history 才能分域查账；不传落空串，查询侧视作 default 域。
+    戳不做规范化校验（账本是留痕不是闸门，闸门在写事实的入口），
+    但具名域操作必须盖戳，否则它的账会漏进默认域的账本视图。
     """
     if not target_id:
         return None
+    params = (
+        _now_iso(),
+        actor or "system",
+        action or "unknown",
+        target_id,
+        reason or "",
+        before_hash or "",
+        after_hash or "",
+        str(user_id or ""),
+        str(bank_id or ""),
+    )
+    sql = """INSERT INTO memory_events
+             (timestamp, actor, action, target_id, reason, before_hash, after_hash,
+              user_id, bank_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""
     try:
         conn.execute(_LEDGER_DDL)  # 幂等兜底：调用方连接未必建过表
-        cur = conn.execute(
-            """INSERT INTO memory_events
-               (timestamp, actor, action, target_id, reason, before_hash, after_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                _now_iso(),
-                actor or "system",
-                action or "unknown",
-                target_id,
-                reason or "",
-                before_hash or "",
-                after_hash or "",
-            ),
-        )
+        try:
+            cur = conn.execute(sql, params)
+        except Exception:
+            # 老表还没有作用域列：就地迁移后重试，账一条都不能丢
+            _ensure_scope_columns(conn)
+            cur = conn.execute(sql, params)
         return cur.lastrowid
     except Exception as exc:
         logger.debug("ledger 记录跳过: %s", exc)
@@ -147,21 +180,54 @@ def _target_aliases(target_id: str) -> list[str]:
     return sorted(a for a in aliases if a)
 
 
-def get_history(target_id: str, limit: int = 100) -> list:
-    """查某条记忆的完整变更史（按时间正序，别名展开查全链）。失败返回 []。"""
+def get_history(target_id: str, limit: int = 100,
+                user_id: str = "", bank_id: str = "") -> list:
+    """查某条记忆的完整变更史（按时间正序，别名展开查全链）。失败返回 []。
+
+    v20 P0-2 opt-in 作用域（默认零改动）：
+    · 不传作用域 = v19 管理员级全库视图，原样保留
+    · 传了 bank_id：具名域只看盖了该戳的账；default 域把无戳存量
+      （空串）一并算进来——v19 的账本来就都是默认域的账
+    · 传了 user_id：改名默认身份与 'default' 折叠同域（口径同
+      legacy_helpers._fact_feedback_impl），空串存量归 default
+    · 非法作用域直接抛 BankScopeError——查账的人传错域是调用方 bug，
+      不能悄悄降级成全库视图（那正是要堵的泄漏）
+    """
     aliases = _target_aliases(target_id)
     if not aliases:
         return []
+
+    scope_sql, scope_params = "", []
+    if user_id or bank_id:
+        from ducky.bank_contract import normalize_bank_id, normalize_user_id
+        from ducky.utils import DEFAULT_USER_ID
+        if bank_id:
+            want_bid = normalize_bank_id(bank_id)
+            if want_bid == "default":
+                scope_sql += " AND bank_id IN ('', 'default')"
+            else:
+                scope_sql += " AND bank_id = ?"
+                scope_params.append(want_bid)
+        if user_id:
+            want_uid = normalize_user_id(user_id)
+            canon = "default" if want_uid == DEFAULT_USER_ID else want_uid
+            if canon == "default":
+                scope_sql += " AND user_id IN ('', 'default', ?)"
+                scope_params.append(DEFAULT_USER_ID)
+            else:
+                scope_sql += " AND user_id = ?"
+                scope_params.append(want_uid)
+
     try:
         ensure_ledger_schema()
         conn = get_facts_conn()
         placeholders = ",".join("?" for _ in aliases)
         rows = conn.execute(
             f"""SELECT event_id, timestamp, actor, action, target_id, reason,
-                       before_hash, after_hash
-                FROM memory_events WHERE target_id IN ({placeholders})
+                       before_hash, after_hash, user_id, bank_id
+                FROM memory_events WHERE target_id IN ({placeholders}){scope_sql}
                 ORDER BY event_id ASC LIMIT ?""",
-            (*aliases, limit),
+            (*aliases, *scope_params, limit),
         ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:

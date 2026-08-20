@@ -117,16 +117,27 @@ def _get_recent_facts(days: int = 7) -> list:
 
     rows = []
     try:
+        # v20 P0-2：带出作用域列，聚类/合并绝不跨 (user_id, bank_id)。
         rows = conn.execute("""
-            SELECT id, fact_key, fact_value, category, created_at 
-            FROM facts 
+            SELECT id, fact_key, fact_value, category, created_at, user_id, bank_id
+            FROM facts
             WHERE created_at >= ? AND (archived IS NULL OR archived = 0)
             ORDER BY fact_key
         """, (cutoff,)).fetchall()
     except Exception as e:
-        logger.error(f"Failed to query facts table: {e}")
-        conn.close()
-        return []
+        # 旧库还没有作用域列时全库本就是单一 default 域，退回 v19 查询
+        # 并统一盖 default 戳——不能因迁移未跑就让蒸馏整体哑掉。
+        try:
+            rows = conn.execute("""
+                SELECT id, fact_key, fact_value, category, created_at
+                FROM facts
+                WHERE created_at >= ? AND (archived IS NULL OR archived = 0)
+                ORDER BY fact_key
+            """, (cutoff,)).fetchall()
+        except Exception:
+            logger.error(f"Failed to query facts table: {e}")
+            conn.close()
+            return []
 
     facts = []
     for r in rows:
@@ -136,18 +147,27 @@ def _get_recent_facts(days: int = 7) -> list:
             "content": r["fact_value"] if "fact_value" in r.keys() else "",
             "category": r["category"] if "category" in r.keys() else "general",
             "created_at": r["created_at"] if "created_at" in r.keys() else "",
+            "user_id": (r["user_id"] if "user_id" in r.keys() else None) or "default",
+            "bank_id": (r["bank_id"] if "bank_id" in r.keys() else None) or "default",
         })
     conn.close()
     return facts
 
 
 def _cluster_by_prefix(facts: list) -> dict:
-    """按 fact_key 前缀聚类"""
+    """按 (user_id, bank_id, fact_key 前缀) 聚类。
+
+    v20 P0-2：聚类键必须含作用域——merge 的输家会被归档，
+    v19 只按前缀聚类时，乙库一条与甲库相似的事实会被当
+    「重复」跨库归档，属静默数据销毁。
+    """
     clusters = {}
     for f in facts:
         key = f.get("fact_key", "")
         prefix = key.split(":")[0].split("_")[0] if key else "other"
-        clusters.setdefault(prefix, []).append(f)
+        scope_key = (f.get("user_id") or "default",
+                     f.get("bank_id") or "default", prefix)
+        clusters.setdefault(scope_key, []).append(f)
     return clusters
 
 
@@ -159,7 +179,9 @@ def _simple_merge(clusters: dict) -> dict:
     now = datetime.now().isoformat()
 
     try:
-        for prefix, facts in clusters.items():
+        # 聚类键已是 (user_id, bank_id, prefix)，组内必然同域——
+        # 归档输家不可能跨 bank。
+        for (scope_uid, scope_bid, prefix), facts in clusters.items():
             stats["total_facts"] += len(facts)
             if len(facts) < 2:
                 continue
@@ -182,7 +204,7 @@ def _simple_merge(clusters: dict) -> dict:
                         "INSERT INTO autodream_log (action, source_ids, target_id, new_content, reason, created_at) "
                         "VALUES (?, ?, ?, ?, ?, ?)",
                         ("merge", json.dumps(merged_ids), best["id"], best["content"],
-                         f"合并 {len(merged_ids)} 条同类事实（前缀: {prefix}）", now)
+                         f"合并 {len(merged_ids)} 条同类事实（作用域: {scope_uid}/{scope_bid}, 前缀: {prefix}）", now)
                     )
                     stats["merged"] += len(merged_ids)
 

@@ -19,6 +19,7 @@ from typing import Optional
 from collections import OrderedDict
 
 from ducky.utils import quick_sim, DATA_DIR
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
 
 logger = logging.getLogger("aiduMEM.workspace")
 
@@ -63,6 +64,68 @@ def _ensure_db():
             PRIMARY KEY (user_id, memory_id)
         )
     """)
+    # v20 additive bank column.  Existing rows stay in default; no rebuild or
+    # deletion is performed, and the legacy primary key remains usable while
+    # the process rolls forward.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(workspace)").fetchall()}
+    if "bank_id" not in cols:
+        conn.execute("ALTER TABLE workspace ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'")
+
+    # 🔴v20：主键必须含 bank_id，否则域隔离在这张表上**结构性不可能**。
+    #
+    # 原主键是 (user_id, memory_id)，而 SQLite 无法用 ALTER 改主键 ——
+    # 加一列 bank_id 并不会让它进主键。于是 alice 的 work 域与 home 域
+    # 只要出现同一个 memory_id，第二次写入就会在 `ON CONFLICT(user_id,
+    # memory_id) DO UPDATE` 上命中并**覆盖**掉第一条。
+    #
+    # 工作区虽是缓存，但它的内容会被注入上下文：症状就是家庭域的记忆
+    # 出现在工作域的对话里 —— 恰恰是域隔离要防的那件事，且不报任何错。
+    #
+    # 因此在此做一次**逐行搬运**的重建（幂等：主键已含 bank_id 则跳过）。
+    info = conn.execute("PRAGMA table_info(workspace)").fetchall()
+    pk_cols = {row[1] for row in info if row[5] > 0}
+    if "bank_id" not in pk_cols:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_v20 (
+                user_id      TEXT NOT NULL,
+                bank_id      TEXT NOT NULL DEFAULT 'default',
+                memory_id    TEXT NOT NULL,
+                text         TEXT NOT NULL DEFAULT '',
+                score        REAL NOT NULL DEFAULT 0.0,
+                metadata     TEXT NOT NULL DEFAULT '{}',
+                created_at   TEXT NOT NULL DEFAULT '',
+                access_count INTEGER NOT NULL DEFAULT 1,
+                last_accessed REAL NOT NULL DEFAULT 0.0,
+                PRIMARY KEY (user_id, bank_id, memory_id)
+            )
+        """)
+        # 先搬后删：任何一步失败都回滚，绝不出现「删了没搬到」的中间态。
+        conn.execute("""
+            INSERT OR IGNORE INTO workspace_v20
+                (user_id, bank_id, memory_id, text, score, metadata,
+                 created_at, access_count, last_accessed)
+            SELECT user_id,
+                   COALESCE(NULLIF(TRIM(bank_id), ''), 'default'),
+                   memory_id, text, score, metadata,
+                   created_at, access_count, last_accessed
+            FROM workspace
+        """)
+        moved = conn.execute("SELECT COUNT(*) FROM workspace_v20").fetchone()[0]
+        origin = conn.execute("SELECT COUNT(*) FROM workspace").fetchone()[0]
+        if moved < origin:
+            # 不满足「一行不少」就整体放弃重建，宁可维持旧主键继续跑，
+            # 也不接受「重建成功」这四个字盖住一次悄悄的数据缩水。
+            conn.rollback()
+            conn.execute("DROP TABLE IF EXISTS workspace_v20")
+            conn.commit()
+            raise RuntimeError(
+                f"workspace 主键重建搬运不全: {origin} -> {moved}，已回滚"
+            )
+        conn.execute("DROP TABLE workspace")
+        conn.execute("ALTER TABLE workspace_v20 RENAME TO workspace")
+        conn.commit()
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ws_scope ON workspace(user_id, bank_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ws_user ON workspace(user_id)")
     conn.commit()
     conn.close()
@@ -80,14 +143,19 @@ def _get_db_conn():
     return conn
 
 
-def _db_upsert(user_id: str, memory_id: str, data: dict):
+def _scope_key(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> str:
+    scope = make_scope(user_id, bank_id)
+    return f"{scope.user_id}\x1f{scope.bank_id}"
+
+
+def _db_upsert(user_id: str, memory_id: str, data: dict, bank_id: str = DEFAULT_BANK_ID):
     """写入或更新一条工作区记忆到 SQLite"""
     try:
         conn = _get_db_conn()
         conn.execute("""
-            INSERT INTO workspace (user_id, memory_id, text, score, metadata, created_at, access_count, last_accessed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, memory_id) DO UPDATE SET
+            INSERT INTO workspace (user_id, bank_id, memory_id, text, score, metadata, created_at, access_count, last_accessed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, bank_id, memory_id) DO UPDATE SET
                 text = excluded.text,
                 score = excluded.score,
                 metadata = excluded.metadata,
@@ -95,7 +163,7 @@ def _db_upsert(user_id: str, memory_id: str, data: dict):
                 access_count = excluded.access_count,
                 last_accessed = excluded.last_accessed
         """, (
-            user_id, memory_id,
+            user_id, bank_id, memory_id,
             data.get("text", ""),
             data.get("score", 0.0),
             json.dumps(data.get("metadata", {}), ensure_ascii=False),
@@ -109,22 +177,22 @@ def _db_upsert(user_id: str, memory_id: str, data: dict):
         logger.warning(f"Workspace DB upsert 失败: {e}")
 
 
-def _db_delete(user_id: str, memory_id: str):
+def _db_delete(user_id: str, memory_id: str, bank_id: str = DEFAULT_BANK_ID):
     """从 SQLite 删除一条"""
     try:
         conn = _get_db_conn()
-        conn.execute("DELETE FROM workspace WHERE user_id = ? AND memory_id = ?", (user_id, memory_id))
+        conn.execute("DELETE FROM workspace WHERE user_id = ? AND bank_id = ? AND memory_id = ?", (user_id, bank_id, memory_id))
         conn.commit()
         conn.close()
     except Exception as e:
         logger.warning(f"Workspace DB delete 失败: {e}")
 
 
-def _db_delete_user(user_id: str):
+def _db_delete_user(user_id: str, bank_id: str = DEFAULT_BANK_ID):
     """清空某个用户的全部工作区"""
     try:
         conn = _get_db_conn()
-        conn.execute("DELETE FROM workspace WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM workspace WHERE user_id = ? AND bank_id = ?", (user_id, bank_id))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -141,7 +209,7 @@ def _db_load_all() -> dict[str, OrderedDict]:
         ).fetchall()
         conn.close()
         for row in rows:
-            uid = row["user_id"]
+            uid = _scope_key(row["user_id"], row["bank_id"] or DEFAULT_BANK_ID)
             mid = row["memory_id"]
             if uid not in result:
                 result[uid] = OrderedDict()
@@ -176,13 +244,15 @@ except Exception as e:
 
 # ── 公共 API ──
 
-def ws_lookup(user_id: str, query: str) -> Optional[list]:
+def ws_lookup(user_id: str, query: str, bank_id: str = DEFAULT_BANK_ID) -> Optional[list]:
     """
     在工作区内搜索匹配记忆。命中则返回结果列表，否则 None。
     简单匹配：query token 与 memory text 的 Jaccard。
     """
     with _ws_lock:
-        ws = _workspace.get(user_id)
+        scope = make_scope(user_id, bank_id)
+        scope_key = _scope_key(scope.user_id, scope.bank_id)
+        ws = _workspace.get(scope_key)
         if not ws:
             return None
 
@@ -216,16 +286,17 @@ def ws_lookup(user_id: str, query: str) -> Optional[list]:
                     ws[m["id"]]["access_count"] = ws[m["id"]].get("access_count", 0) + 1
                     ws[m["id"]]["last_accessed"] = now
                     # 异步同步到 SQLite
-                    _db_upsert(user_id, m["id"], ws[m["id"]])
+                    _db_upsert(scope.user_id, m["id"], ws[m["id"]], scope.bank_id)
         matches.sort(key=lambda x: x["score"], reverse=True)
-        logger.info(f"⚡ Workspace hit: {len(matches)} 条 (user={user_id})")
+        logger.info(f"⚡ Workspace hit: {len(matches)} 条 (user={scope.user_id}, bank={scope.bank_id})")
         return matches
 
     return None
 
 
 def ws_push(user_id: str, memory_id: str, text: str,
-            score: float = 0.0, metadata: dict = None, created_at: str = ""):
+            score: float = 0.0, metadata: dict = None, created_at: str = "",
+            bank_id: str = DEFAULT_BANK_ID):
     """
     向工作区推入一条新记忆（如新增或搜索命中时）。
     LRU 淘汰：超过 CAPACITY 时移除最久未访问的。
@@ -234,10 +305,12 @@ def ws_push(user_id: str, memory_id: str, text: str,
     now = time.time()
     evicted_key = None
     with _ws_lock:
-        if user_id not in _workspace:
-            _workspace[user_id] = OrderedDict()
+        scope = make_scope(user_id, bank_id)
+        scope_key = _scope_key(scope.user_id, scope.bank_id)
+        if scope_key not in _workspace:
+            _workspace[scope_key] = OrderedDict()
 
-        ws = _workspace[user_id]
+        ws = _workspace[scope_key]
 
         # 如果已存在，更新
         if memory_id in ws:
@@ -266,16 +339,16 @@ def ws_push(user_id: str, memory_id: str, text: str,
                 logger.debug(f"Workspace 淘汰: {evicted_key[:16]} (LRU)")
 
         # 持久化当前记忆
-        _db_upsert(user_id, memory_id, ws[memory_id])
+        _db_upsert(scope.user_id, memory_id, ws[memory_id], scope.bank_id)
 
     # 淘汰的也要从 SQLite 删
     if evicted_key:
-        _db_delete(user_id, evicted_key)
+        _db_delete(scope.user_id, evicted_key, scope.bank_id)
 
     _maybe_cleanup(now)
 
 
-def ws_feed_from_results(user_id: str, results: list):
+def ws_feed_from_results(user_id: str, results: list, bank_id: str = DEFAULT_BANK_ID):
     """从搜索结果批量喂入工作区（自动推入 top-10）"""
     for item in results[:10]:
         if not isinstance(item, dict):
@@ -292,14 +365,16 @@ def ws_feed_from_results(user_id: str, results: list):
             score=score,
             metadata=item.get("metadata"),
             created_at=item.get("created_at", ""),
+            bank_id=bank_id,
         )
 
 
-def ws_status(user_id: str) -> dict:
+def ws_status(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict:
     """查看工作区状态"""
     now = time.time()
     with _ws_lock:
-        ws = _workspace.get(user_id, OrderedDict())
+        scope = make_scope(user_id, bank_id)
+        ws = _workspace.get(_scope_key(scope.user_id, scope.bank_id), OrderedDict())
         items = []
         for mid, data in ws.items():
             items.append({
@@ -317,12 +392,13 @@ def ws_status(user_id: str) -> dict:
         }
 
 
-def ws_clear(user_id: str):
+def ws_clear(user_id: str, bank_id: str = DEFAULT_BANK_ID):
     """清空用户工作区（内存 + SQLite）"""
     with _ws_lock:
-        _workspace.pop(user_id, None)
-    _db_delete_user(user_id)
-    logger.info(f"Workspace 清空: user={user_id}")
+        scope = make_scope(user_id, bank_id)
+        _workspace.pop(_scope_key(scope.user_id, scope.bank_id), None)
+    _db_delete_user(scope.user_id, scope.bank_id)
+    logger.info(f"Workspace 清空: user={scope.user_id}, bank={scope.bank_id}")
 
 
 # ── 内部工具 ──
@@ -352,8 +428,17 @@ def _maybe_cleanup(now: float):
                 del _workspace[uid]
 
     # 同步删除 SQLite
+    # 🔴v20：这里的 uid 是 _scope_key() 拼出的**复合键**（user\x1fbank），
+    # 不是 user_id。v19 时 _workspace 直接按 user_id 索引，原样传给
+    # _db_delete 是对的；v20 给键加了域维度，这个调用点却没跟上 ——
+    # 于是 DELETE 变成 `user_id='alice\x1fwork' AND bank_id='default'`，
+    # 匹配 0 行，还一声不吭（rowcount 无人过问）。后果是冷记忆只从内存
+    # 淘汰、永远留在盘上，进程一重启 _db_load_all 又原样捞回来：清理形同
+    # 虚设，workspace.db 只涨不消。分隔符 \x1f 已被 _SCOPE_RE 排除在合法
+    # user/bank 之外，故此处按它拆分是安全的。
     for uid, mid in evicted_pairs:
-        _db_delete(uid, mid)
+        user_id, _, bank_id = uid.partition("\x1f")
+        _db_delete(user_id, mid, bank_id or DEFAULT_BANK_ID)
 
     if evicted:
         logger.info(f"Workspace 清理: {evicted} 条冷记忆")
