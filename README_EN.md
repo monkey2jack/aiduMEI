@@ -454,14 +454,14 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **421** (measured via `pytest --collect-only`) |
-| Clean dev machine | 409 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
-| Complete environment | **421 all green** (with the Hermes source present, all 12 run and pass; verified on production) |
+| Total cases | **423** (measured via `pytest --collect-only`) |
+| Clean dev machine | 411 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
+| Complete environment | **423 all green** (with the Hermes source present, all 12 run and pass; verified on production) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 409 and 421**: the same suite yields different numbers in different environments,
+> **Why report both 411 and 423**: the same suite yields different numbers in different environments,
 > and quoting only one of them misleads the reader. The 12-case gap is exactly the set of integration
 > tests that need the host Hermes source: without it pytest reports `skipped` (not failed); with it they all pass.
 > Always state the environment alongside a test count.
@@ -471,14 +471,14 @@ python -m compileall ducky api_server.py mcp_server.py
 > `HERMES_SRC` is a three-state switch, so **both directions reproduce**:
 >
 > ```bash
-> pytest tests/ -q -rs | tail -1                                 # no host: 409 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 421 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 409 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 411 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 423 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 411 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 421 passed, 0 skipped.
+> our own production box is exactly that), the first command above actually prints 423 passed, 0 skipped.
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >

@@ -709,14 +709,14 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **421**（`pytest --collect-only` 实测） |
-| 独立开发机 | 409 通过 · **12 跳过** —— 跳过项需宿主 Hermes 源码在场，纯净环境下无法执行 |
-| 完整环境 | **421 全绿**（Hermes 源码在场时 12 个跳过项全部执行并通过，生产实跑核验） |
+| 用例总数 | **423**（`pytest --collect-only` 实测） |
+| 独立开发机 | 411 通过 · **12 跳过** —— 跳过项需宿主 Hermes 源码在场，纯净环境下无法执行 |
+| 完整环境 | **423 全绿**（Hermes 源码在场时 12 个跳过项全部执行并通过，生产实跑核验） |
 | 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
 | 语句覆盖率 | 约 51%（`ducky/` + 入口，`coverage` 实测） |
 | 未覆盖 | 真实 mem0 / Qdrant 集成、真实 LLM 调用、并发压测 —— 这些依赖外部服务，由生产环境实机冒烟承担 |
 
-> **为什么要把 409 和 421 都写出来**：同一份测试集在不同环境下跑出不同数字，只报其中一个都会误导读者。
+> **为什么要把 411 和 423 都写出来**：同一份测试集在不同环境下跑出不同数字，只报其中一个都会误导读者。
 > 差值恰好是 12 个需要宿主 Hermes 源码的集成用例：没有它们时 pytest 报 `skipped`（不是失败），有它们时全部通过。
 > 引用测试数字时请连带说明运行环境 —— 这本身就是「宣称即承诺」纪律的一部分。
 >
@@ -724,13 +724,13 @@ python -m compileall ducky api_server.py mcp_server.py
 > 跳过条件是宿主 `agent/memory_provider.py` 找不到。`HERMES_SRC` 三态可控，**两个方向都能复现**：
 >
 > ```bash
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：409 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：421 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 409 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：411 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：423 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 411 passed, 12 skipped
 > ```
 >
 > 「跳过」必须能被复现成「通过」，**反过来也必须成立**。机器上恰好装着宿主时（`/hermes/hermes-agent`
-> 会被自动发现，我们自己的生产机就是这样），上面第一条命令跑出来其实是 421 passed、0 skipped ——
+> 会被自动发现，我们自己的生产机就是这样），上面第一条命令跑出来其实是 423 passed、0 skipped ——
 > 没有 `HERMES_SRC=none` 这一档，读者根本无法在自己机器上把我们宣称的「12 跳过」复现出来。
 > **双向可复现才叫可证伪**：一个你没法让它跳过的「跳过」，和一个你没法让它通过的「通过」，同样不可信。
 >
