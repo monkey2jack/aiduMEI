@@ -13,7 +13,7 @@
 #
 # 环境变量:
 #   AIDUMEM_DATA_DIR     要备份的数据目录（默认 <repo>/data）
-#   AIDUMEM_BACKUP_ROOT  备份根目录（默认 /root/aidumei_backups）
+#   AIDUMEM_BACKUP_ROOT  备份根目录（默认 <repo>/backups；真实部署必须覆盖）
 #
 # 铁律:
 #   - 备份只进持久目录，落在 /tmp 下一律拒绝（v19.4.0 审计 🔴-1 教训）
