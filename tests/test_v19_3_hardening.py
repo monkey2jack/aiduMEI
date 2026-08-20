@@ -41,10 +41,30 @@ def test_v19_3_version_alignment():
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # 格式必须合法（语义化版本），代号锁死 Athena（v19 世代唯一神格）
-    assert re.fullmatch(r"\d+\.\d+\.\d+", SERVICE_VERSION), f"版本号格式非法: {SERVICE_VERSION}"
-    assert SERVICE_VERSION.startswith("19."), "本测试属 v19 世代"
-    assert CODENAME == "Athena"
+    from ducky.version import LINEAGE
+
+    # 格式必须合法。v20.0 起版本号为两段式，故放宽为「两段或三段」——
+    # 并当场用负向对照钉住放宽的边界，防止它被继续放宽成永真式。
+    _VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?")
+    for _bad in ("20", "20.0.0.0", "v20.0", "20.0-beta"):  # release-scan:allow 版本格式负向夹具
+        assert not _VERSION_RE.fullmatch(_bad), (
+            f"版本号格式守卫被放宽到能接受 {_bad!r} —— 它已经不再拦任何东西"
+        )
+    assert _VERSION_RE.fullmatch(SERVICE_VERSION), f"版本号格式非法: {SERVICE_VERSION}"
+
+    # 代号原本写死为 "Athena"（v19 世代唯一神格）。v20 起当前运行时不再设代号，
+    # 写死的字面量会变成「每换一代就得手改测试」——与本文件反对的毛病同源。
+    # 改为**从谱系推导**：CODENAME 必须与 LINEAGE 首条记的代号逐字一致。
+    # 这比写死更严：写错代号、谱系漏记、两者不一致，三种情况都红。
+    assert LINEAGE[0][0] == SERVICE_VERSION, (
+        f"LINEAGE 首条 {LINEAGE[0][0]} ≠ 当前版本 {SERVICE_VERSION}，谱系漏记"
+    )
+    assert (CODENAME or "") == LINEAGE[0][1], (
+        f"CODENAME={CODENAME!r} 与谱系首条记的代号 {LINEAGE[0][1]!r} 不一致"
+    )
+    # 正面锚点：谱系里必须确实存在带代号的历史世代，否则上面那条在
+    # 「代号功能整个被删光」时会退化成永真。
+    assert any(row[1] for row in LINEAGE), "谱系里一个带代号的历史版本都没有，守卫已空转"
 
     # manifest.json 与 pyproject.toml 必须与真相源逐字一致
     with open(os.path.join(repo_root, "manifest.json"), encoding="utf-8") as f:
@@ -58,17 +78,12 @@ def test_v19_3_version_alignment():
         toml_text = f.read()
     assert f'version = "{SERVICE_VERSION}"' in toml_text, "pyproject.toml 版本号未对齐"
 
-    # LINEAGE 首条必须是当前版本（谱系不能漏记本次发布）
-    from ducky.version import LINEAGE
-
-    assert LINEAGE[0][0] == SERVICE_VERSION, (
-        f"LINEAGE 首条 {LINEAGE[0][0]} ≠ 当前版本 {SERVICE_VERSION}，谱系漏记"
-    )
+    # （LINEAGE 首条 == 当前版本 已在上方与代号一并校验）
 
     # CHANGELOG 首条条目必须是当前版本
     with open(os.path.join(repo_root, "CHANGELOG.md"), encoding="utf-8") as f:
         changelog = f.read()
-    first_entry = re.search(r"^## v(\d+\.\d+\.\d+)", changelog, re.M)
+    first_entry = re.search(r"^## v(\d+\.\d+(?:\.\d+)?)", changelog, re.M)
     assert first_entry, "CHANGELOG 未找到版本条目"
     assert first_entry.group(1) == SERVICE_VERSION, (
         f"CHANGELOG 首条 {first_entry.group(1)} ≠ 当前版本 {SERVICE_VERSION}"

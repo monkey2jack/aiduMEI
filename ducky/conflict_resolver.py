@@ -20,7 +20,14 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from ducky.utils import get_facts_conn
+from ducky.utils import DEFAULT_USER_ID, get_facts_conn
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    ensure_bank_registered,
+    ensure_memory_banks_schema,
+    legacy_fact_scope_predicate,
+    make_scope,
+)
 
 logger = logging.getLogger("aiduMEM.ConflictResolver")
 
@@ -36,6 +43,76 @@ MUTUAL_EXCLUSION_PATTERNS: list[tuple[str, str, str]] = [
     (r"(开关|状态|status|mode)", r"(开启|启用|open|enable)", r"(关闭|禁用|close|disable)"),
     (r"(开关|状态|status|mode)", r"(关闭|禁用|close|disable)", r"(开启|启用|open|enable)"),
 ]
+
+
+def _fact_scope_sql(conn: Any, scope) -> tuple[str, list[Any]]:
+    """Build a scope predicate against the columns actually present.
+
+    v20：语义与 :func:`ducky.bank_contract.legacy_fact_scope_predicate`
+    完全一致 —— 四列齐全时直接委托它，保证冲突消解与读路径用同一把尺子：
+
+    - 具名域一律严格 ``bank_id + user_id``，没有任何渠道回落；
+    - 默认域内，``source``/``agent_id`` 渠道标记只对「尚无主人」的行
+      （user_id 为 NULL/空白/占位 default）生效。初版把渠道标记与
+      ``user_id`` 平铺成 OR，等于渠道字段可以对**已有主人**的行发起
+      失效写（invalidate），是一条跨租户写口子。
+
+    列感知回退只服务于极老的维护/测试库（缺 source/agent_id 甚至
+    user_id）；两处调用点都先跑 ``ensure_memory_banks_schema``，生产路径
+    永远走契约谓词。没有 bank_id 列的表存不下具名域的行，此时对具名域
+    的消解应当一行都命不中（1=0），而不是退回全库。
+    """
+    try:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(facts)").fetchall()
+        }
+    except Exception:
+        columns = set()
+
+    if {"user_id", "bank_id", "source", "agent_id"} <= columns:
+        sql, params = legacy_fact_scope_predicate(scope)
+        return sql.removeprefix(" AND "), list(params)
+
+    channel_terms: list[str] = []
+    channel_params: list[Any] = []
+    if "source" in columns:
+        channel_terms.append("source=?")
+        channel_params.append(scope.user_id)
+    if "agent_id" in columns:
+        channel_terms.append("agent_id=?")
+        channel_params.append(scope.user_id)
+
+    if "user_id" not in columns:
+        # 无归属列的老库：只能靠渠道字段近似（v19 行为），什么列都没有
+        # 时放行 —— 那样的库里根本不存在多租户。
+        if channel_terms:
+            return "(" + " OR ".join(channel_terms) + ")", channel_params
+        return "1=1", []
+
+    if scope.bank_id != DEFAULT_BANK_ID and "bank_id" not in columns:
+        return "1=0", []
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    if "bank_id" in columns:
+        if scope.bank_id != DEFAULT_BANK_ID:
+            return "bank_id=? AND user_id=?", [scope.bank_id, scope.user_id]
+        clauses.append("bank_id=?")
+        params.append(scope.bank_id)
+
+    unclaimed = "(user_id IS NULL OR TRIM(user_id)='' OR user_id=?)"
+    if channel_terms:
+        clauses.append(
+            f"(user_id=? OR ({unclaimed} AND "
+            f"({' OR '.join(channel_terms)})))"
+        )
+        params += [scope.user_id, DEFAULT_USER_ID] + channel_params
+    else:
+        # 没有渠道列就没有回落证据：只认正规归属。
+        clauses.append("user_id=?")
+        params.append(scope.user_id)
+    return " AND ".join(clauses), params
 
 
 def load_custom_exclusion_patterns(patterns: list[tuple[str, str, str]]) -> None:
@@ -58,7 +135,11 @@ def load_custom_exclusion_patterns(patterns: list[tuple[str, str, str]]) -> None
 
 
 def resolve_fact_conflict(
-    category: str, fact_key: str, new_value: str, user_id: str = "default"
+    category: str,
+    fact_key: str,
+    new_value: str,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
 ) -> dict[str, Any]:
     """
     当写入/更新某个 (category, fact_key) 时：
@@ -67,26 +148,32 @@ def resolve_fact_conflict(
     3. 同时写入 fact_events 变更账本（可溯源）；
     4. 返回消解结果。
     """
+    scope = make_scope(user_id, bank_id)
     conn = get_facts_conn()
     now_str = datetime.now(timezone.utc).isoformat()
     invalidated_count = 0
     invalidated_ids: list[int] = []
     try:
+        # Ensure old facts/event tables have canonical scope columns before
+        # any read or write.  This is additive and safe to repeat per call.
+        ensure_memory_banks_schema(conn)
+        ensure_bank_registered(scope, conn)
         cursor = conn.cursor()
+        scope_sql, scope_params = _fact_scope_sql(conn, scope)
         # 仅查找有效状态下 key 相同但 value 不同的记录（利用索引 idx_facts_unique）
         rows = cursor.execute(
-            """
-            SELECT id, fact_value FROM facts
-            WHERE category = ? AND fact_key = ? AND (valid_to IS NULL OR valid_to > ?)
-            """,
-            (category, fact_key, now_str),
+            "SELECT id, fact_value FROM facts "
+            "WHERE category = ? AND fact_key = ? "
+            "AND (valid_to IS NULL OR valid_to > ?) AND " + scope_sql,
+            [category, fact_key, now_str] + scope_params,
         ).fetchall()
 
         for fid, old_val in rows:
             if old_val != new_value:
                 cursor.execute(
-                    "UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ?",
-                    (now_str, now_str, fid),
+                    "UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ? AND "
+                    + scope_sql,
+                    [now_str, now_str, fid] + scope_params,
                 )
                 invalidated_count += 1
                 invalidated_ids.append(fid)
@@ -97,7 +184,16 @@ def resolve_fact_conflict(
 
         # 写入变更账本（如果有消解动作）
         if invalidated_ids:
-            _append_conflict_event(cursor, category, fact_key, new_value, invalidated_ids, now_str)
+            _append_conflict_event(
+                cursor,
+                category,
+                fact_key,
+                new_value,
+                invalidated_ids,
+                now_str,
+                user_id=scope.user_id,
+                bank_id=scope.bank_id,
+            )
 
         conn.commit()
     except Exception as e:
@@ -105,10 +201,20 @@ def resolve_fact_conflict(
     finally:
         conn.close()
 
-    return {"invalidated": invalidated_count, "category": category, "fact_key": fact_key}
+    return {
+        "invalidated": invalidated_count,
+        "category": category,
+        "fact_key": fact_key,
+        "user_id": scope.user_id,
+        "bank_id": scope.bank_id,
+    }
 
 
-def scan_and_resolve_text_conflicts(new_text: str, user_id: str = "default") -> list[dict[str, Any]]:
+def scan_and_resolve_text_conflicts(
+    new_text: str,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> list[dict[str, Any]]:
     """
     针对输入的文本内容，检测是否触及显式互斥规则。
     若新文本匹配到新规则模式，则扫描 facts DB 中匹配旧规则的条目，
@@ -125,26 +231,30 @@ def scan_and_resolve_text_conflicts(new_text: str, user_id: str = "default") -> 
     if not triggered_patterns:
         return []  # 快速返回，不查 DB
 
+    scope = make_scope(user_id, bank_id)
     resolved_actions: list[dict[str, Any]] = []
     now_str = datetime.now(timezone.utc).isoformat()
     conn = get_facts_conn()
     try:
+        ensure_memory_banks_schema(conn)
+        ensure_bank_registered(scope, conn)
         cursor = conn.cursor()
+        scope_sql, scope_params = _fact_scope_sql(conn, scope)
         # 仅对命中的规则做针对性查询
         for attr_re, old_re, new_re in triggered_patterns:
             rows = cursor.execute(
-                """
-                SELECT id, fact_key, fact_value FROM facts
-                WHERE (valid_to IS NULL OR valid_to > ?)
-                  AND (fact_value REGEXP ? OR fact_key REGEXP ?)
-                """,
-                (now_str, old_re, old_re),
+                "SELECT id, fact_key, fact_value FROM facts "
+                "WHERE (valid_to IS NULL OR valid_to > ?) AND "
+                + scope_sql
+                + " AND (fact_value REGEXP ? OR fact_key REGEXP ?)",
+                [now_str] + scope_params + [old_re, old_re],
             ).fetchall()
             # SQLite 不原生支持 REGEXP，回退到 Python 过滤
             if not rows:
                 rows = cursor.execute(
-                    "SELECT id, fact_key, fact_value FROM facts WHERE (valid_to IS NULL OR valid_to > ?)",
-                    (now_str,),
+                    "SELECT id, fact_key, fact_value FROM facts "
+                    "WHERE (valid_to IS NULL OR valid_to > ?) AND " + scope_sql,
+                    [now_str] + scope_params,
                 ).fetchall()
                 rows = [
                     r for r in rows
@@ -154,13 +264,16 @@ def scan_and_resolve_text_conflicts(new_text: str, user_id: str = "default") -> 
 
             for fid, fkey, fval in rows:
                 cursor.execute(
-                    "UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ?",
-                    (now_str, now_str, fid),
+                    "UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ? AND "
+                    + scope_sql,
+                    [now_str, now_str, fid] + scope_params,
                 )
                 resolved_actions.append({
                     "fact_id": fid,
                     "fact_key": fkey,
                     "old_value": fval,
+                    "user_id": scope.user_id,
+                    "bank_id": scope.bank_id,
                     "reason": f"规则触发: {old_re} -> {new_re}",
                 })
                 logger.info(
@@ -173,6 +286,8 @@ def scan_and_resolve_text_conflicts(new_text: str, user_id: str = "default") -> 
                 cursor, "scan_resolve", new_text[:100],
                 f"{len(resolved_actions)} facts invalidated",
                 [a["fact_id"] for a in resolved_actions], now_str,
+                user_id=scope.user_id,
+                bank_id=scope.bank_id,
             )
         conn.commit()
     except Exception as e:
@@ -190,6 +305,9 @@ def _append_conflict_event(
     new_value: str,
     invalidated_ids: list[int],
     now_str: str,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
 ) -> None:
     """
     向 fact_events 变更账本追加一条冲突消解记录（借鉴 Mímir 事件账本设计）。
@@ -199,8 +317,8 @@ def _append_conflict_event(
         cursor.execute(
             """
             INSERT OR IGNORE INTO fact_events
-                (event_type, category, fact_key, new_value, affected_ids, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (event_type, category, fact_key, new_value, affected_ids, created_at, user_id, bank_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "conflict.resolved",
@@ -209,6 +327,8 @@ def _append_conflict_event(
                 new_value[:200],
                 str(invalidated_ids),
                 now_str,
+                user_id,
+                bank_id,
             ),
         )
     except Exception:

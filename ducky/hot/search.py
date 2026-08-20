@@ -13,6 +13,12 @@ from ducky.mem0_runtime import (
     lazy_import_funnel,
     lazy_import_hybrid,
 )
+from ducky.bank_contract import (
+    ensure_bank_registered,
+    make_scope,
+    vector_item_in_bank,
+    vector_scope_filters,
+)
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -124,14 +130,28 @@ def register_search_routes(app: FastAPI) -> None:
         """搜索记忆 — Workspace 优先 → 混合召回（Hybrid）→ Salience boost"""
         try:
             # 注意：/search 是显式搜索 API，不走 relevance gate（gate 用于对话上下文注入）
+            # v20 P0-4：每请求重置 rerank 遥测——线程复用时上一请求的残留
+            # 会被误读成本次的重排序结局。
+            from ducky.mem0_runtime import last_rerank_telemetry, reset_rerank_telemetry
+            reset_rerank_telemetry()
+            recall_path = "hybrid"
             mem = get_memory()
+            scope = make_scope(req.user_id, req.bank_id)
+            uid = _normalize_user_id(scope.user_id)
+            bank_id = scope.bank_id
+            ensure_bank_registered(make_scope(uid, bank_id))
 
             try:
                 from ducky.memory_workspace import ws_lookup, ws_feed_from_results
-                ws_hits = ws_lookup(req.user_id, req.query)
+                ws_hits = ws_lookup(uid, req.query, bank_id=bank_id)
                 if ws_hits:
                     boost_salience_for_results(ws_hits)
-                    return {"status": "ok", "results": ws_hits, "_workspace_hit": True}
+                    return {
+                        "status": "ok", "results": ws_hits,
+                        "_workspace_hit": True,
+                        "_recall_path": "workspace",
+                        "_rerank": {"status": "not_invoked"},
+                    }
             except ImportError:
                 pass
 
@@ -139,14 +159,18 @@ def register_search_routes(app: FastAPI) -> None:
             effective_limit = req.top_k if req.top_k and req.top_k > 0 else req.limit
             try:
                 results = lazy_import_hybrid()(
-                    mem, req.query, _normalize_user_id(req.user_id), effective_limit,
+                    mem, req.query, uid, effective_limit,
                     before=req.before, after=req.after,
+                    bank_id=bank_id,
                 )
                 logger.info(f"🔍 hybrid 召回: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
             except Exception as e:
+                recall_path = "mem0_degraded"
                 logger.debug(f"混合召回不可用，降级 mem0 搜索: {e}")
-                raw = mem.search(req.query, filters={"user_id": _normalize_user_id(req.user_id)}, top_k=max(effective_limit * 3, 20))
+                raw = mem.search(req.query, filters=vector_scope_filters(uid, bank_id), top_k=max(effective_limit * 3, 20))
                 results = raw.get("results", raw) if isinstance(raw, dict) else raw
+                # 🔴v20：默认域不下推 bank_id（下推=清空存量），命名域的点在这里剔除。
+                results = [it for it in (results or []) if vector_item_in_bank(it, bank_id)]
                 if req.before or req.after:
                     # 降级路径也必须兑现 P0-4 时间窗口，否则混合召回一挂
                     # before/after 就被静默丢弃，时间推理返回错误结果。
@@ -161,7 +185,7 @@ def register_search_routes(app: FastAPI) -> None:
             # 失败干净降级）。让召回的不只是蒸馏后的事实，还有说过的原话。
             try:
                 from ducky.verbatim_vault import verbatim_search, fuse_verbatim
-                v_hits = verbatim_search(req.query, _normalize_user_id(req.user_id), limit=effective_limit)
+                v_hits = verbatim_search(req.query, uid, limit=effective_limit, bank_id=bank_id)
                 if v_hits:
                     results = fuse_verbatim(results, v_hits, limit=effective_limit, query=req.query)
             except Exception as _ve:
@@ -169,11 +193,18 @@ def register_search_routes(app: FastAPI) -> None:
 
             try:
                 from ducky.memory_workspace import ws_feed_from_results
-                ws_feed_from_results(req.user_id, results)
+                ws_feed_from_results(uid, results, bank_id=bank_id)
             except ImportError:
                 pass
 
-            return {"status": "ok", "results": results}
+            # v20 P0-4：召回路径与 rerank 三态随响应返回——「降级裸搜」和
+            # 「重排序其实没生效」此前只活在服务端日志里，调用方无从察觉。
+            rerank_telem = last_rerank_telemetry() or {"status": "not_invoked"}
+            return {
+                "status": "ok", "results": results,
+                "_recall_path": recall_path,
+                "_rerank": rerank_telem,
+            }
         except Exception as e:
             logger.error(f"search 失败: {e}")
             return {"status": "error", "results": [], "detail": str(e)}
@@ -184,7 +215,8 @@ def register_search_routes(app: FastAPI) -> None:
         try:
             mem = get_memory()
             effective_limit = req.top_k if req.top_k and req.top_k > 0 else req.limit
-            result = lazy_import_funnel()(mem, req.query, req.user_id, effective_limit)
+            scope = make_scope(req.user_id, req.bank_id)
+            result = lazy_import_funnel()(mem, req.query, _normalize_user_id(scope.user_id), effective_limit, bank_id=scope.bank_id)
             # P0-4：与 /search 保持一致的时间窗口过滤。funnel 若返回
             # results 列表，这里做一次客户端过滤，不改变 trace 结构。
             if req.before or req.after:
@@ -226,4 +258,3 @@ def register_search_routes(app: FastAPI) -> None:
         except Exception as e:
             logger.error(f"gate 失败: {e}")
             return {"status": "error", "needs_memory": True, "reason": f"gate_error: {e}", "scope": None}
-

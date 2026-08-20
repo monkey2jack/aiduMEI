@@ -848,7 +848,11 @@ def test_salience_cleanup_uses_real_table():
     _ensure_db()
     conn = get_salience_conn()
     cols = {r[1] for r in conn.execute("PRAGMA table_info(salience)")}
-    assert "user_id" not in cols, "若真加了 user_id 列，请回头核对清理逻辑"
+    # v20 P0-2 把 (user_id, bank_id) 作用域列加进来了（conflict.py 分域配对用）。
+    # 当年的绊线在此触发，已按要求回头核对清理逻辑：delete_salience /
+    # prune_orphan_salience 都只按 memory_id（全局唯一 UUID）删，
+    # 不依赖也不过滤作用域列，租户维度由调用方传本租户 id 保证——逻辑仍然成立。
+    assert {"user_id", "bank_id"} <= cols, "v20 起 salience 表应有作用域列"
 
     now = time.time()
     conn.execute(
@@ -1051,7 +1055,12 @@ def test_yellow_c_stats_counts_are_tenant_scoped():
         for line in crud.splitlines():
             if stmt in line and "SELECT COUNT(*)" in line:
                 assert "t_clause" in line, f"/stats 计数仍是全库查询: {line.strip()}"
-    assert "tenant_clause(user_id)" in crud, "/stats 未使用统一的租户可见性子句"
+    assert "tenant_clause(" in crud, "/stats 未使用统一的租户可见性子句"
+    # v20：/stats 的计数还必须随 bank 收窄并传 conn（tenant_clause 只有
+    # 拿到连接才能感知 bank_id 列），否则默认租户会把具名域条数算进来
+    assert "bank_id=scope.bank_id" in crud and "conn=conn" in crud, (
+        "/stats 的 tenant_clause 调用缺 bank_id/conn —— 量级泄漏的 bank 版"
+    )
 
     # 语义验证：同一套 tenant_clause 施加在这两个查询上，陌生租户应查不到别人的数据
     from ducky.facts_recall import tenant_clause

@@ -13,6 +13,13 @@ from typing import Optional
 import requests
 
 from ducky.utils import BASE_DIR as _BASE_DIR
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    make_scope,
+    stamp_bank_metadata,
+    vector_item_in_bank,
+    vector_scope_filters,
+)
 
 logger = logging.getLogger("aiduMEM.graduation")
 
@@ -87,10 +94,14 @@ def _extract_category(memory: dict) -> str:
     return meta.get("category", meta.get("source", "general"))
 
 
-def scan_instincts(memory, user_id: str) -> list[dict]:
-    """扫描可毕业的记忆组"""
+def scan_instincts(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> list[dict]:
+    """扫描可毕业的记忆组（v20 P0-2：按 (user_id, bank_id) 圈定，毕业不跨库）"""
+    # 非法作用域在取数前就抛，不许静默降级成全库扫描
+    scope = make_scope(user_id, bank_id)
     try:
-        all_mem = memory.get_all(filters={"user_id": user_id}, limit=10000)
+        all_mem = memory.get_all(
+            filters=vector_scope_filters(scope.user_id, scope.bank_id), limit=10000
+        )
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
         if not isinstance(results, list):
             return []
@@ -99,6 +110,9 @@ def scan_instincts(memory, user_id: str) -> list[dict]:
         groups = {}
         for item in results:
             if not isinstance(item, dict):
+                continue
+            # 复筛：默认域不下推 bank_id，具名域的点不许漏进毕业候选
+            if not vector_item_in_bank(item, scope.bank_id):
                 continue
             cat = _extract_category(item)
             if cat not in groups:
@@ -120,17 +134,26 @@ def scan_instincts(memory, user_id: str) -> list[dict]:
         return []
 
 
-def graduate_to_skill(memory, user_id: str, group: dict) -> Optional[str]:
-    """将一组记忆蒸馏为 skill"""
+def graduate_to_skill(memory, user_id: str, group: dict,
+                      bank_id: str = DEFAULT_BANK_ID) -> Optional[str]:
+    """将一组记忆蒸馏为 skill（v20 P0-2：蒸馏与删除都锁死在本域内）"""
+    scope = make_scope(user_id, bank_id)
     try:
         # 获取完整记忆
-        all_mem = memory.get_all(filters={"user_id": user_id}, limit=10000)
+        all_mem = memory.get_all(
+            filters=vector_scope_filters(scope.user_id, scope.bank_id), limit=10000
+        )
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
         if not isinstance(results, list):
             return None
 
         cat = group["category"]
-        cat_memories = [it for it in results if _extract_category(it) == cat]
+        cat_memories = [
+            it for it in results
+            if isinstance(it, dict)
+            and vector_item_in_bank(it, scope.bank_id)
+            and _extract_category(it) == cat
+        ]
         if len(cat_memories) < MIN_GROUP_SIZE:
             return None
 
@@ -154,14 +177,14 @@ def graduate_to_skill(memory, user_id: str, group: dict) -> Optional[str]:
 
         # 写入新记忆
         messages = [{"role": "assistant", "content": distilled}]
-        metadata = {
+        metadata = stamp_bank_metadata({
             "level": "skill",
             "category": cat,
             "source": "instinct_graduation",
             "source_ids": source_ids,
             "graduated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        memory.add(messages, user_id=user_id, metadata=metadata)
+        }, scope.bank_id)
+        memory.add(messages, user_id=scope.user_id, metadata=metadata)
 
         # 删除原始记忆
         deleted = 0
@@ -179,16 +202,18 @@ def graduate_to_skill(memory, user_id: str, group: dict) -> Optional[str]:
         return None
 
 
-def auto_graduate(memory, user_id: str, min_group_size: int = MIN_GROUP_SIZE) -> dict:
-    """自动扫描并毕业所有符合条件的记忆组"""
-    groups = scan_instincts(memory, user_id)
+def auto_graduate(memory, user_id: str, min_group_size: int = MIN_GROUP_SIZE,
+                  bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """自动扫描并毕业所有符合条件的记忆组（v20 P0-2：整条链锁在本域）"""
+    scope = make_scope(user_id, bank_id)
+    groups = scan_instincts(memory, scope.user_id, scope.bank_id)
     graduated = []
     deleted_total = 0
 
     for group in groups:
         if group["count"] < min_group_size:
             continue
-        skill = graduate_to_skill(memory, user_id, group)
+        skill = graduate_to_skill(memory, scope.user_id, group, scope.bank_id)
         if skill:
             graduated.append({"category": group["category"], "preview": skill[:80]})
             deleted_total += group["count"]

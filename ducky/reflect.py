@@ -26,6 +26,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from ducky.bank_contract import normalize_bank_id, vector_item_in_bank
 from ducky.llm_client import call_llm
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 
@@ -116,6 +117,13 @@ def ensure_reflect_schema() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_reflections_type ON reflections(insight_type)"
         )
+        # v20 P0-2：洞察也是记忆，必须有 bank 作用域——否则甲库事实蒸出的
+        # 洞察会被注入乙库的对话。旧表就地补列，存量行归 default 域零丢失。
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(reflections)").fetchall()}
+        if "bank_id" not in cols:
+            conn.execute(
+                "ALTER TABLE reflections ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'"
+            )
         conn.commit()
         _checked = True
     except Exception as e:
@@ -144,7 +152,7 @@ def _identity_ids(user_id: str) -> list[str]:
     return [user_id]
 
 
-def _gather_recent_memories(memory, user_id: str, top_k: int) -> list[dict]:
+def _gather_recent_memories(memory, user_id: str, top_k: int, bank_id: str = "") -> list[dict]:
     """收集最近记忆（mem0 全量最近的 top_k 条），编号 m1..mN。"""
     try:
         from ducky.mem0_runtime import _normalize_user_id
@@ -171,6 +179,10 @@ def _gather_recent_memories(memory, user_id: str, top_k: int) -> list[dict]:
                 continue
             if str(item.get("user_id") or "") not in ("", user_id, "default"):
                 continue
+            # v20 P0-2：反思素材也要守 bank 边界——乙库记忆蒸出的洞察
+            # 会落到甲库并被注入甲库对话（复筛口径与 /search 一致）
+            if not vector_item_in_bank(item, bank_id):
+                continue
             content = (item.get("memory") or "").strip()
             if not content:
                 continue
@@ -188,7 +200,7 @@ def _gather_recent_memories(memory, user_id: str, top_k: int) -> list[dict]:
         return []
 
 
-def _gather_topic_memories(memory, user_id: str, topic: str, top_k: int) -> list[dict]:
+def _gather_topic_memories(memory, user_id: str, topic: str, top_k: int, bank_id: str = "") -> list[dict]:
     """围绕指定主题语义检索相关记忆（供 MCP mem_reflect 兼容）。"""
     try:
         from ducky.mem0_runtime import _normalize_user_id
@@ -207,6 +219,9 @@ def _gather_topic_memories(memory, user_id: str, topic: str, top_k: int) -> list
         for i, item in enumerate(results, start=1):
             if not isinstance(item, dict):
                 continue
+            # v20 P0-2：主题检索同样不许跨 bank 取材
+            if not vector_item_in_bank(item, bank_id):
+                continue
             content = (item.get("memory") or "").strip()
             if not content:
                 continue
@@ -224,15 +239,31 @@ def _gather_topic_memories(memory, user_id: str, topic: str, top_k: int) -> list
         return []
 
 
-def _gather_recent_facts(top_k: int) -> list[dict]:
-    """收集最近更新的结构化事实，编号 f1..fN。"""
+def _gather_recent_facts(top_k: int, user_id: str = "", bank_id: str = "") -> list[dict]:
+    """收集最近更新的结构化事实，编号 f1..fN。
+
+    v20 P0-2：按 (user_id, bank_id) 取材。v19 全库混取会把乙库事实蒸进
+    甲库的洞察——单租户全 default 部署下结果集逐字节不变（零改动），
+    多库部署下这正是要堵的泄漏口。旧库缺作用域列时退回 v19 查询
+    （全库本就是单一 default 域）。
+    """
     try:
         conn = get_facts_conn()
-        rows = conn.execute(
-            "SELECT id, category, fact_key, fact_value, updated_at FROM facts "
-            "WHERE archived=0 ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?",
-            (top_k,),
-        ).fetchall()
+        ids = _identity_ids(user_id or DEFAULT_USER_ID)
+        ph = ",".join("?" * len(ids))
+        try:
+            rows = conn.execute(
+                f"SELECT id, category, fact_key, fact_value, updated_at FROM facts "
+                f"WHERE archived=0 AND user_id IN ({ph}) AND bank_id=? "
+                f"ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?",
+                (*ids, normalize_bank_id(bank_id or "default"), top_k),
+            ).fetchall()
+        except Exception:
+            rows = conn.execute(
+                "SELECT id, category, fact_key, fact_value, updated_at FROM facts "
+                "WHERE archived=0 ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?",
+                (top_k,),
+            ).fetchall()
         conn.close()
         facts = []
         for i, row in enumerate(rows, start=1):
@@ -379,12 +410,15 @@ def _clamp_confidence(value: Any) -> float:
         return 0.5
 
 
-def save_insights(insights: list[dict], user_id: str, source: str) -> int:
+def save_insights(insights: list[dict], user_id: str, source: str, bank_id: str = "") -> int:
     """把洞察写入 reflections 表（按 content 哈希去重）。返回实际新增条数。"""
     if not insights:
         return 0
     ensure_reflect_schema()
     now = datetime.now(timezone.utc).isoformat()
+    # v20 P0-2：洞察落库必须盖 bank 戳，且去重也按域查——
+    # 甲乙两库允许各自持有一条内容相同的洞察，互不吞并。
+    scope_bank = normalize_bank_id(bank_id or "default")
     conn = get_facts_conn()
     added = 0
     try:
@@ -404,14 +438,14 @@ def save_insights(insights: list[dict], user_id: str, source: str) -> int:
                 continue
             content = sanitized_c
             dup = conn.execute(
-                "SELECT id FROM reflections WHERE user_id IN (%s) AND content=?" % dup_ph,
-                (*dup_ids, content),
+                "SELECT id FROM reflections WHERE user_id IN (%s) AND bank_id=? AND content=?" % dup_ph,
+                (*dup_ids, scope_bank, content),
             ).fetchone()
             if dup:
                 continue
             conn.execute(
-                "INSERT INTO reflections (user_id, insight_type, content, confidence, evidence, source, recorded_at) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO reflections (user_id, insight_type, content, confidence, evidence, source, recorded_at, bank_id) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (
                     user_id,
                     ins.get("type", "pattern"),
@@ -420,6 +454,7 @@ def save_insights(insights: list[dict], user_id: str, source: str) -> int:
                     json.dumps(ins.get("evidence") or [], ensure_ascii=False),
                     source,
                     now,
+                    scope_bank,
                 ),
             )
             added += 1
@@ -438,16 +473,21 @@ def run_reflect(
     source: str = "manual",
     save: bool = True,
     topic: str = "",
+    bank_id: str = "",
 ) -> dict:
     """
     执行一次反思：收集近期记忆 + 事实 → LLM 提炼 → 解析 → 落库。
 
     topic: 可选主题。提供时围绕该主题检索相关记忆（兼容 MCP mem_reflect
            的旧调用契约），否则收集最近记忆。
+    bank_id: v20 P0-2 作用域。素材收集与洞察落库全链路守同一 bank——
+             乙库记忆蒸出的洞察绝不落到甲库。不传 = default 域（v19 行为）。
     Returns:
         {"status": "ok", "insights": [...], "saved": int, "source": ..., "llm_used": bool}
     """
     ensure_reflect_schema()
+    # 非法 bank_id 让 BankScopeError 直接抛给调用方（路由层统一转 error dict）
+    bank = normalize_bank_id(bank_id or "default")
     mem = memory
     if mem is None:
         try:
@@ -457,10 +497,10 @@ def run_reflect(
             mem = None
 
     if topic and mem is not None:
-        memories = _gather_topic_memories(mem, user_id, topic, top_k)
+        memories = _gather_topic_memories(mem, user_id, topic, top_k, bank_id=bank)
     else:
-        memories = _gather_recent_memories(mem, user_id, top_k) if mem is not None else []
-    facts = _gather_recent_facts(max(10, top_k // 2))
+        memories = _gather_recent_memories(mem, user_id, top_k, bank_id=bank) if mem is not None else []
+    facts = _gather_recent_facts(max(10, top_k // 2), user_id=user_id, bank_id=bank)
 
     if not memories and not facts:
         return {"status": "ok", "insights": [], "saved": 0, "source": source, "llm_used": False}
@@ -472,7 +512,7 @@ def run_reflect(
         temperature=0.3,
     )
     insights = _parse_insights(raw)
-    saved = save_insights(insights, user_id, source) if (save and insights) else 0
+    saved = save_insights(insights, user_id, source, bank_id=bank) if (save and insights) else 0
 
     logger.info(
         "🧠 Reflect 完成: user=%s source=%s 提炼=%d 落库=%d",
@@ -487,8 +527,13 @@ def run_reflect(
     }
 
 
-def get_reflections(user_id: str = DEFAULT_USER_ID, limit: int = 20, insight_type: str = "") -> list[dict]:
-    """查询已落库的洞察（新的在前）。"""
+def get_reflections(
+    user_id: str = DEFAULT_USER_ID,
+    limit: int = 20,
+    insight_type: str = "",
+    bank_id: str = "",
+) -> list[dict]:
+    """查询已落库的洞察（新的在前）。bank_id 不传 = v19 全量视图（管理员口径）。"""
     ensure_reflect_schema()
     conn = get_facts_conn()
     try:
@@ -500,6 +545,10 @@ def get_reflections(user_id: str = DEFAULT_USER_ID, limit: int = 20, insight_typ
         if insight_type:
             sql += " AND insight_type=?"
             params.append(insight_type)
+        # v20 P0-2：opt-in 域过滤。注入链路必须传，否则乙库洞察进甲库对话
+        if bank_id:
+            sql += " AND bank_id=?"
+            params.append(normalize_bank_id(bank_id))
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(max(1, min(int(limit), 200)))
         rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
@@ -514,9 +563,9 @@ def get_reflections(user_id: str = DEFAULT_USER_ID, limit: int = 20, insight_typ
         conn.close()
 
 
-def inject_reflections(user_id: str = DEFAULT_USER_ID, limit: int = 5) -> str:
+def inject_reflections(user_id: str = DEFAULT_USER_ID, limit: int = 5, bank_id: str = "") -> str:
     """把最近洞察格式化为可注入上下文的文本（P0-3 验收：后续对话可引用）。"""
-    rows = get_reflections(user_id, limit=limit)
+    rows = get_reflections(user_id, limit=limit, bank_id=bank_id)
     if not rows:
         return ""
     lines = ["[Reflections · 近期反思洞察]"]
