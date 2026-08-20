@@ -34,7 +34,10 @@ data_backup/
 data_*/
 logs/
 chroma_data/
-backups/
+# 不带斜杠：`backups/` 只匹配真目录。真实部署常把它做成软链指向仓外的
+# 持久备份库（备份不该跟着仓库走），而软链不是目录 —— 规则当场失效，
+# 备份入口就这样露在 git status 里等着被误提交。
+backups
 .deps/
 exports/
 
