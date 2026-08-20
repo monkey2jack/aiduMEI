@@ -209,3 +209,41 @@ def test_seven_surfaces_are_all_declared():
     for key in ("工作区", "提交信息", "标签注释", "发布说明",
                 "发行包内容", "包索引渲染面", "对外可见归档"):
         assert any(key in s for s in rs.SURFACES), f"公开面清单缺了：{key}"
+
+
+def test_unknown_option_refuses_to_run(tmp_path, monkeypatch):
+    """拼错的选项不许换来一行绿色。
+
+    首版 main() 用 `[a for a in argv if not a.startswith("-")]` 挑目标：
+    `--name X` 的选项名被丢掉，值 X 却当成了扫描目录。X 通常并不存在，
+    scan_tree 扫出 0 个文件，报告照样打印「✅ 无硬敏感命中」——
+    一个手滑的参数就把整面公开面变成假绿。实战中已经踩到过一次。
+    """
+    # 词表刻意放在被扫目录之外：否则扫描器会读到词表文件自身，
+    # 对照组扫出的命中来自夹具而非被测对象。
+    wl = tmp_path / "wordlist" / "w.txt"
+    wl.parent.mkdir()
+    wl.write_text("某敏感词\n", encoding="utf-8")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "clean.txt").write_text("这里没有任何敏感内容\n", encoding="utf-8")
+    monkeypatch.setenv("AIDUMEI_SCAN_WORDLIST", str(wl))
+    assert rs.main(["--name", str(target)]) == 2
+    # 对照：去掉未知选项，同一个目录必须正常扫出 0（证明拒绝来自选项，不是目录本身）
+    assert rs.main([str(target)]) == 0
+
+
+def test_nonexistent_target_refuses_to_run(tmp_path, monkeypatch):
+    """扫不存在的路径得到的 0，和扫真干净目录得到的 0，在报告里长得一模一样。"""
+    wl = tmp_path / "wordlist" / "w.txt"
+    wl.parent.mkdir()
+    wl.write_text("某敏感词\n", encoding="utf-8")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "clean.txt").write_text("这里没有任何敏感内容\n", encoding="utf-8")
+    monkeypatch.setenv("AIDUMEI_SCAN_WORDLIST", str(wl))
+    assert rs.main([str(tmp_path / "根本没有这个目录")]) == 2
+    # 混合：一个真目录 + 一个假目录，也必须整轮拒绝，不许「扫到的那部分算数」
+    assert rs.main([str(target), str(tmp_path / "也没有")]) == 2
+    # 对照：只给真目录时必须放行，证明拒绝来自那个不存在的路径
+    assert rs.main([str(target)]) == 0

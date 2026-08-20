@@ -306,7 +306,21 @@ def format_report(name: str, found: dict[str, dict[str, int]],
     return "\n".join(lines), total
 
 
+KNOWN_FLAGS = ("--selftest",)
+
+
 def main(argv: list[str]) -> int:
+    # 未知选项一律拒绝，不做「悄悄忽略」。
+    # 原实现是 [a for a in argv if not a.startswith("-")]：`--name X` 的选项名被丢掉，
+    # 它的值 X 却被当成扫描目录 —— 而 X 是个不存在的路径，scan_tree 扫出 0 个文件，
+    # 报告照样打印「✅ 无硬敏感命中」。一个拼错的参数换来一行绿色，
+    # 正是本工具要消灭的那类静默失败。
+    unknown = [a for a in argv if a.startswith("-") and a not in KNOWN_FLAGS]
+    if unknown:
+        print(f"[拒绝运行] 未知选项：{' '.join(unknown)}；"
+              f"本工具只接受 {' '.join(KNOWN_FLAGS)} 与若干目录路径。", file=sys.stderr)
+        return 2
+
     targets = [a for a in argv if not a.startswith("-")]
     only_selftest = "--selftest" in argv
 
@@ -330,6 +344,14 @@ def main(argv: list[str]) -> int:
 
     if not targets:
         print("用法：release_scan.py <目录> [<目录> ...]", file=sys.stderr)
+        return 2
+
+    # 目标必须真实存在。扫一个不存在的路径得到的 0，
+    # 与扫一个真的干净的目录得到的 0，在报告里长得一模一样。
+    missing = [t for t in targets if not Path(t).exists()]
+    if missing:
+        print(f"[拒绝运行] 扫描目标不存在：{' '.join(missing)}；"
+              f"不存在的目标会报出与「真的干净」无法区分的 0。", file=sys.stderr)
         return 2
 
     grand = 0
