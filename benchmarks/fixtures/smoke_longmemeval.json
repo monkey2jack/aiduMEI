@@ -1,0 +1,52 @@
+[
+  {
+    "question_id": "smoke_lme_001",
+    "question_type": "single-session-user",
+    "question": "烟测用户最喜欢的编程语言是什么？",
+    "answer": "Python",
+    "question_date": "2023/05/20 (Sat) 10:00",
+    "haystack_dates": [
+      "2023/05/01 (Mon) 09:00",
+      "2023/05/10 (Wed) 14:30",
+      "2023/05/25 (Thu) 08:00"
+    ],
+    "haystack_session_ids": [
+      "smoke_s1",
+      "smoke_s2",
+      "smoke_s3_future"
+    ],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "我最喜欢的编程语言是 Python，因为生态好。"},
+        {"role": "assistant", "content": "明白了，Python 的生态确实很完善。"}
+      ],
+      [
+        {"role": "user", "content": "今天天气不错，我们聊聊别的。"},
+        {"role": "assistant", "content": "好的，想聊什么？"}
+      ],
+      [
+        {"role": "user", "content": "这条消息在提问日期之后，管线必须把它排除。"},
+        {"role": "assistant", "content": "收到。"}
+      ]
+    ],
+    "answer_session_ids": ["smoke_s1"]
+  },
+  {
+    "question_id": "smoke_lme_002_abs",
+    "question_type": "knowledge-update",
+    "question": "烟测用户养的猫叫什么名字？",
+    "answer": "无法回答：对话中从未提及养猫。",
+    "question_date": "2023/06/01 (Thu) 12:00",
+    "haystack_dates": [
+      "2023/05/05 (Fri) 11:00"
+    ],
+    "haystack_session_ids": ["smoke_s4"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "我周末一般去公园跑步。"},
+        {"role": "assistant", "content": "坚持锻炼很好。"}
+      ]
+    ],
+    "answer_session_ids": ["smoke_s4"]
+  }
+]

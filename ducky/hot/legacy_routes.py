@@ -19,6 +19,7 @@ from ducky.utils import (
     OBS_DB,
     SCENES_DB,
 )
+from ducky.bank_contract import BankScopeError, DEFAULT_BANK_ID, normalize_bank_id, normalize_user_id
 from ducky.facts_recall import _strict_tenant_enabled, tenant_clause
 from ducky.hot.legacy_helpers import (
     _get_facts_conn,
@@ -53,7 +54,7 @@ def register_legacy_routes(app):
     # ── 6.2  Facts CRUD ──
     @app.get("/facts")
     def list_facts(category: str = None, key: str = None, level: str = "L2",
-                   user_id: str = DEFAULT_USER_ID):
+                   user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         level_norm = (level or "L2").upper()
         if level_norm not in ("L0","L1","L2"): level_norm = "L2"
         conn = _get_facts_conn()
@@ -64,7 +65,10 @@ def register_legacy_routes(app):
         sql = "SELECT * FROM facts" + (" WHERE " + " AND ".join(where) if where else " WHERE 1=1")
         # 🔴P0-2（v19.4.1）：租户可见性收窄。默认租户保持全库可见（向后兼容），
         # 传具体 user_id 时只返回该租户可见的事实。
-        t_clause, t_params = tenant_clause(user_id)
+        # v20：传 conn 感知 bank_id 列——已迁移库上默认域不再看见具名域的行。
+        t_clause, t_params = tenant_clause(
+            user_id, bank_id=normalize_bank_id(bank_id), conn=conn
+        )
         sql += t_clause
         params.extend(t_params)
         sql += " ORDER BY category, fact_key"
@@ -84,7 +88,7 @@ def register_legacy_routes(app):
     def add_fact(category: str = "general", fact_key: str = "", fact_value: str = "",
                  source: str = DEFAULT_USER_ID, level: str = "",
                  valid_from: str = "", valid_to: str = "",
-                 agent_id: str = ""):
+                 agent_id: str = "", user_id: str = "", bank_id: str = ""):
         if not fact_key or not fact_value:
             return {"status":"error","detail":"fact_key 和 fact_value 不能为空"}
         from ducky.security.injection_guard import validate_and_sanitize_memory_content
@@ -118,14 +122,21 @@ def register_legacy_routes(app):
         if not effective_agent:
             _src = (source or "").strip()
             effective_agent = _src if (_src and _src != DEFAULT_USER_ID) else _PANTHEON_DEFAULT_AGENT
+        # v20 P0-2：行落进哪个 (user, bank) 库由显式参数决定，不传时落 default 库
+        # ——与 v19 行为一致（P0-2b 的 agent 隔离在五元组里依然逐字节生效）。
+        # ON CONFLICT 目标必须与 idx_facts_unique 列集完全一致
+        # （见 federation/schema.py FACTS_UNIQUE_COLUMNS），否则所有写入报
+        # "no such conflict target"。
+        scope_uid = normalize_user_id(user_id)
+        scope_bid = normalize_bank_id(bank_id)
         conn = _get_facts_conn()
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO facts (category, fact_key, fact_value, source, summary, overview, level,
                                valid_from, valid_to, agent_id, profile, memory_tier,
-                               recorded_at, decay_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(agent_id, category, fact_key) DO UPDATE SET
+                               recorded_at, decay_at, user_id, bank_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(agent_id, user_id, bank_id, category, fact_key) DO UPDATE SET
                 fact_value=excluded.fact_value, source=excluded.source,
                 summary=excluded.summary, overview=excluded.overview,
                 level=excluded.level, updated_at=CURRENT_TIMESTAMP,
@@ -136,13 +147,14 @@ def register_legacy_routes(app):
                 valid_to=COALESCE(excluded.valid_to, facts.valid_to)
         """, (category, fact_key, fact_value, source, summary, overview, resolved_level,
               vf, vt, effective_agent, _PANTHEON_DEFAULT_PROFILE, fed_tier,
-              recorded_at.isoformat(), decay_at))
+              recorded_at.isoformat(), decay_at, scope_uid, scope_bid))
         # 📒 事件账本（v19.4.0 Mímir 借鉴 B5）：与事实写入同事务留痕，同生共死
         try:
             from ducky.event_ledger import content_hash, record_event
             record_event(conn, actor=source or "tool", action="add",
                          target_id=f"fact:{fact_key}", reason=f"category={category}",
-                         after_hash=content_hash(fact_value))
+                         after_hash=content_hash(fact_value),
+                         user_id=scope_uid, bank_id=scope_bid)
         except Exception as le:
             logger.debug("ledger 记录跳过: %s", le)
         fid = cur.lastrowid or 0
@@ -173,10 +185,12 @@ def register_legacy_routes(app):
                 "auto_entities": auto_link}
 
     @app.get("/facts/categories")
-    def list_fact_categories(user_id: str = DEFAULT_USER_ID):
+    def list_fact_categories(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         conn = _get_facts_conn()
         # 🔴P0-2：类别计数也按租户收窄，否则可从类别分布反推他人数据规模
-        t_clause, t_params = tenant_clause(user_id)
+        t_clause, t_params = tenant_clause(
+            user_id, bank_id=normalize_bank_id(bank_id), conn=conn
+        )
         rows = conn.execute(
             "SELECT category, COUNT(*) AS cnt FROM facts WHERE 1=1" + t_clause
             + " GROUP BY category ORDER BY category",
@@ -188,10 +202,12 @@ def register_legacy_routes(app):
     # ── 6.3  实体 API ──
     @app.get("/facts/entities")
     def fact_entities(fact_id: int = None, entity: str = None, limit: int = 20,
-                      user_id: str = DEFAULT_USER_ID):
+                      user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         conn = _get_facts_conn()
         cur = conn.cursor()
-        t_clause, t_params = tenant_clause(user_id, alias="f")
+        t_clause, t_params = tenant_clause(
+            user_id, alias="f", bank_id=normalize_bank_id(bank_id), conn=conn
+        )
         if fact_id:
             # 🔴P0-2：先校验该 fact 是否属于本租户可见范围，再吐它的实体，
             # 否则可用他人 fact_id 探测其实体图谱。
@@ -225,10 +241,13 @@ def register_legacy_routes(app):
             return {"status":"error","detail":"需要 fact_id 或 entity 参数"}
 
     @app.get("/facts/related")
-    def fact_related(entity: str = "", limit: int = 10, user_id: str = DEFAULT_USER_ID):
+    def fact_related(entity: str = "", limit: int = 10, user_id: str = DEFAULT_USER_ID,
+                     bank_id: str = DEFAULT_BANK_ID):
         if not entity: return {"status":"error","detail":"需要 entity 参数"}
         conn = _get_facts_conn()
-        t_clause, t_params = tenant_clause(user_id, alias="f")
+        t_clause, t_params = tenant_clause(
+            user_id, alias="f", bank_id=normalize_bank_id(bank_id), conn=conn
+        )
         rows = conn.execute("""
             SELECT f.id, f.category, f.fact_key, f.fact_value, f.trust_score, f.updated_at,
                    (SELECT GROUP_CONCAT(DISTINCT e3.name) FROM fact_entities fe3
@@ -249,13 +268,16 @@ def register_legacy_routes(app):
         return {"status":"ok","entity":entity,"related":[dict(r) for r in rows],"count":len(rows)}
 
     @app.get("/facts/reason")
-    def fact_reason(entities: str = "", limit: int = 10, user_id: str = DEFAULT_USER_ID):
+    def fact_reason(entities: str = "", limit: int = 10, user_id: str = DEFAULT_USER_ID,
+                    bank_id: str = DEFAULT_BANK_ID):
         if not entities: return {"status":"error","detail":"需要 entities 参数（逗号分隔）"}
         e_list = [e.strip() for e in entities.split(",") if e.strip()]
         if len(e_list) < 2: return {"status":"error","detail":"需要至少 2 个实体"}
         conn = _get_facts_conn()
         placeholders = ",".join("?" * len(e_list))
-        t_clause, t_params = tenant_clause(user_id, alias="f")
+        t_clause, t_params = tenant_clause(
+            user_id, alias="f", bank_id=normalize_bank_id(bank_id), conn=conn
+        )
         rows = conn.execute(f"""
             SELECT f.id, f.category, f.fact_key, f.fact_value, f.trust_score, f.updated_at,
                    GROUP_CONCAT(DISTINCT e.name) as matched_entities,
@@ -351,8 +373,10 @@ def register_legacy_routes(app):
 
     # ── 6.5  Feedback ──
     @app.post("/facts/feedback")
-    def fact_feedback(fact_id: int, helpful: bool):
-        return _fact_feedback_impl(fact_id, helpful)
+    def fact_feedback(fact_id: int, helpful: bool,
+                      user_id: str = "", bank_id: str = ""):
+        # v20 P0-2：opt-in 作用域护栏——传了就校验事实归属，不传 = v19 管理员语义
+        return _fact_feedback_impl(fact_id, helpful, user_id=user_id, bank_id=bank_id)
 
     # ── 6.6  旧 v1 矛盾检测 ──
     @app.post("/prune/contradiction")
@@ -403,9 +427,11 @@ def register_legacy_routes(app):
         return {"status":"ok","tags":_load_tags()}
 
     @app.get("/facts/trust-stats")
-    def fact_trust_stats(user_id: str = DEFAULT_USER_ID):
+    def fact_trust_stats(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         conn = _get_facts_conn()
-        t_clause, t_params = tenant_clause(user_id)
+        t_clause, t_params = tenant_clause(
+            user_id, bank_id=normalize_bank_id(bank_id), conn=conn
+        )
         rows = conn.execute("""
             SELECT category,
                    COUNT(*) as cnt, AVG(trust_score) as avg_trust,
@@ -490,44 +516,59 @@ def register_legacy_routes(app):
 
     # ── §9  Scene 聚类 + Persona ──
     @app.post("/scene/cluster")
-    def cluster_scenes(category: str = None, dry_run: bool = True, min_similarity: float = 0.25):
-        return _cluster_scenes_impl(category, dry_run, min_similarity)
+    def cluster_scenes(category: str = None, dry_run: bool = True, min_similarity: float = 0.25,
+                       user_id: str = "", bank_id: str = ""):
+        # v20 P0-2：传作用域只聚该域；不传则各域独立聚类（绝不跨库混聚）
+        try:
+            return _cluster_scenes_impl(category, dry_run, min_similarity,
+                                        user_id=user_id, bank_id=bank_id)
+        except BankScopeError as e:
+            return {"status": "error", "detail": str(e)}
 
     @app.get("/scene")
-    def list_scenes(category: str = None, limit: int = 20):
+    def list_scenes(category: str = None, limit: int = 20,
+                    user_id: str = "", bank_id: str = ""):
         conn = _get_scenes_conn()
         _ensure_scenes_table(conn)  # 🔴6：保证表存在，避免开箱 500
-        if category:
-            rows = conn.execute(
-                "SELECT * FROM scenes WHERE category=? ORDER BY created_at DESC LIMIT ?",
-                (category, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM scenes ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+        # v20 P0-2：作用域过滤 opt-in；不传 = v19 管理员全量视图（存量零改动）
+        clauses, params = [], []
+        if category: clauses.append("category=?"); params.append(category)
+        if user_id:  clauses.append("user_id=?");  params.append(user_id)
+        if bank_id:  clauses.append("bank_id=?");  params.append(bank_id)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        rows = conn.execute(
+            f"SELECT * FROM scenes {where}ORDER BY created_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
         conn.close()
         return {"status":"ok","scenes":[dict(r) for r in rows]}
 
-    def _refresh_persona_inline(name: str = "user"):
+    def _refresh_persona_inline(name: str = "user", user_id: str = "", bank_id: str = ""):
+        # v20 P0-2：作用域过滤 opt-in；不传 = v19 管理员全量视图（存量零改动）
+        clauses, params = [], []
+        if user_id: clauses.append("user_id=?"); params.append(user_id)
+        if bank_id: clauses.append("bank_id=?"); params.append(bank_id)
+        scope_sql = (" AND " + " AND ".join(clauses)) if clauses else ""
         conn = _get_facts_conn()
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT fact_key, fact_value FROM facts
             WHERE archived=0 AND (category LIKE '%项目%' OR category LIKE '%AI%' OR fact_key LIKE '%user%')
+            {scope_sql}
             ORDER BY trust_score DESC LIMIT 100
-        """).fetchall()
+        """, params).fetchall()
         conn.close()
         return {"status":"ok","name":name,"facts_count":len(rows)}
 
     @app.get("/persona")
-    def get_persona(name: str = "user"):
-        return _refresh_persona_inline(name)
+    def get_persona(name: str = "user", user_id: str = "", bank_id: str = ""):
+        return _refresh_persona_inline(name, user_id=user_id, bank_id=bank_id)
 
     # 注：/persona/build 已让位给 v19.0 人格记忆基座（ducky.routes_persona）。
     # 旧「AI 自我人设刷新」逻辑保留为 /persona/refresh，避免路径冲突。
     @app.post("/persona/refresh")
-    def build_persona(name: str = Form("user")):
-        return _refresh_persona_inline(name)
+    def build_persona(name: str = Form("user"), user_id: str = Form(""),
+                      bank_id: str = Form("")):
+        return _refresh_persona_inline(name, user_id=user_id, bank_id=bank_id)
 
     # ── §10  Skill 发现 ──
     @app.post("/skill/discover")

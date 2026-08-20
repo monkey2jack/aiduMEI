@@ -14,6 +14,7 @@ from ducky.mem0_runtime import (
     lazy_import_layer1,
     register_salience_for_add,
 )
+from ducky.bank_contract import ensure_bank_registered, make_scope
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -30,7 +31,10 @@ def register_add_routes(app: FastAPI) -> None:
         """
         try:
             # 🔴P1-4: 统一规范化 user_id，杜绝脏租户与空租户写入
-            req.user_id = _normalize_user_id(req.user_id) if req.user_id else "default"
+            scope = make_scope(req.user_id, req.bank_id)
+            req.user_id = _normalize_user_id(scope.user_id) if scope.user_id else "default"
+            req.bank_id = scope.bank_id
+            ensure_bank_registered(make_scope(req.user_id, req.bank_id))
 
             from ducky.add_speed import (
                 coalesce_enqueue,
@@ -63,6 +67,10 @@ def register_add_routes(app: FastAPI) -> None:
                 async_flag = bool(extra.get("async") or extra.get("async_mode"))
             # metadata 里也可带 async
             md = dict(req.metadata or {})
+            # v20: bank scope is carried as explicit metadata for mem0/Qdrant
+            # payloads and for every downstream storage layer.  It is never
+            # inferred from a table name or a free-form user string.
+            md.setdefault("bank_id", req.bank_id)
 
             # P0-1 写入侧自动时间戳（与生产环境对齐）：
             # 调用方未显式传 recorded_at 时自动补 UTC ISO 时间，供
@@ -169,24 +177,24 @@ def register_add_routes(app: FastAPI) -> None:
             # 幂等去重 + 失败干净降级，绝不阻断主链路。
             try:
                 from ducky.verbatim_vault import store_verbatim
-                store_verbatim(req.user_id, messages_json, md)
+                store_verbatim(req.user_id, messages_json, md, bank_id=req.bank_id)
             except Exception as _ve:
                 logger.debug(f"📼 [VerbatimVault] 原文落库跳过: {_ve}")
 
             # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
             try:
                 from ducky.conflict_resolver import scan_and_resolve_text_conflicts
-                scan_and_resolve_text_conflicts(text_preview, user_id=req.user_id)
+                scan_and_resolve_text_conflicts(text_preview, user_id=req.user_id, bank_id=req.bank_id)
             except Exception as _ce:
                 logger.warning(f"🐙 [ConflictResolver] 隐式检测异常: {_ce}")
 
             def _run_pipeline(uid, msgs, meta):
                 try:
-                    return lazy_import_layer1()(mem, msgs, uid, meta)
+                    return lazy_import_layer1()(mem, msgs, uid, meta, bank_id=req.bank_id)
                 except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
                     logger.warning(f"Layer 1 自检异常，降级为直接写入: {e}")
                     add_result = mem.add(msgs, user_id=uid, metadata=meta)
-                    register_salience_for_add(add_result)
+                    register_salience_for_add(add_result, user_id=uid, bank_id=req.bank_id)
                     try:
                         from ducky.text_fts import _index_memory
                         results = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
@@ -197,7 +205,13 @@ def register_add_routes(app: FastAPI) -> None:
                                 mid = r.get("id") or r.get("memory_id")
                                 content = r.get("memory") or r.get("data") or ""
                                 if mid and content:
-                                    _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category", ""))
+                                    # 🔴v20：这条降级分支漏传 bank_id。上面 store_verbatim /
+                                    # scan_and_resolve_text_conflicts / layer1 都老实传了
+                                    # req.bank_id，唯独 layer1 抛异常后的兜底写入没传 ——
+                                    # 于是向量进了 work 域、FTS 行却落在 default 域，
+                                    # 之后 work 域的关键词召回永远查不到这条。且这是**降级
+                                    # 路径**：出问题的时候才走到，最不容易被发现。
+                                    _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category", ""), bank_id=req.bank_id)
                     except Exception as ie:
                         logger.debug(f"FTS index on add 跳过: {ie}")
                     return {"status": "ok", "action": "direct"}
@@ -432,4 +446,3 @@ def register_add_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             raise HTTPException(500, str(e))
-

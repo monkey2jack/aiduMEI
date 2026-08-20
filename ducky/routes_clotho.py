@@ -18,6 +18,8 @@ from ducky.core_memory import (
     inject_context as core_memory_context,
     put_block,
 )
+from ducky.utils import DEFAULT_USER_ID
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
 
 
 class CheckpointPayload(BaseModel):
@@ -29,27 +31,61 @@ def register_clotho_routes(app: FastAPI) -> None:
     """注册 CoreMemory、Checkpoint 与 AutoDream API。"""
 
     @app.get("/api/core-memory")
-    def api_core_memory_get():
-        return {"status": "ok", "blocks": get_all_blocks()}
+    def api_core_memory_get(
+        user_id: str = DEFAULT_USER_ID,
+        bank_id: str = DEFAULT_BANK_ID,
+    ):
+        scope = make_scope(user_id, bank_id)
+        return {
+            "status": "ok",
+            "user_id": scope.user_id,
+            "bank_id": scope.bank_id,
+            "blocks": get_all_blocks(scope.user_id, scope.bank_id),
+        }
 
     @app.get("/api/core-memory/{block_key}")
-    def api_core_memory_get_one(block_key: str):
-        block = get_block(block_key)
+    def api_core_memory_get_one(
+        block_key: str,
+        user_id: str = DEFAULT_USER_ID,
+        bank_id: str = DEFAULT_BANK_ID,
+    ):
+        scope = make_scope(user_id, bank_id)
+        block = get_block(block_key, scope.user_id, scope.bank_id)
         if not block:
             raise HTTPException(404, f"block_key 不存在: {block_key}")
         return {"status": "ok", "block": block}
 
     @app.put("/api/core-memory/{block_key}")
-    def api_core_memory_put(block_key: str, content: dict):
+    def api_core_memory_put(
+        block_key: str,
+        content: dict,
+        user_id: str = DEFAULT_USER_ID,
+        bank_id: str = DEFAULT_BANK_ID,
+    ):
         try:
-            result = put_block(block_key, content.get("content", ""))
+            scope = make_scope(user_id, bank_id)
+            result = put_block(
+                block_key,
+                content.get("content", ""),
+                scope.user_id,
+                scope.bank_id,
+            )
             return {"status": "ok", "result": result}
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/core-memory/inject")
-    def api_core_memory_inject():
-        return {"status": "ok", "context": core_memory_context()}
+    def api_core_memory_inject(
+        user_id: str = DEFAULT_USER_ID,
+        bank_id: str = DEFAULT_BANK_ID,
+    ):
+        scope = make_scope(user_id, bank_id)
+        return {
+            "status": "ok",
+            "user_id": scope.user_id,
+            "bank_id": scope.bank_id,
+            "context": core_memory_context(scope.user_id, scope.bank_id),
+        }
 
     @app.get("/api/checkpoint/latest")
     def api_checkpoint_latest():

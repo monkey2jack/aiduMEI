@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 from ducky.utils import DEFAULT_USER_ID
+from ducky.bank_contract import DEFAULT_BANK_ID
 
 # 上游 mem0 与 aiduMEM 的历史调用方混用了三种形态：
 #   1) 纯文本字符串        → "今天开会"
@@ -25,6 +26,7 @@ class AddRequest(BaseModel):
 
     messages: Messages = ""
     user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
     metadata: dict = Field(default_factory=dict)
     # true=先回执后台落库；默认 false 保持同步语义（兼容旧调用方）
     async_mode: bool = False
@@ -34,6 +36,7 @@ class SearchRequest(BaseModel):
 
     query: str
     user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
     limit: int = 5
     # MCP 等调用方传的是 top_k；显式接收，避免被 Pydantic 静默丢弃
     # 导致调用方指定数量永远不生效（P2-1 审计发现）。
@@ -44,6 +47,12 @@ class SearchRequest(BaseModel):
 
 
 class SearchResponse(BaseModel):
+    # v20 P0-4：必须 extra="allow"。此前严格模式下 FastAPI 按本模型过滤
+    # 响应，_workspace_hit 和错误路径的 detail 一直被静默剥掉——调用方
+    # 拿到 status:"error" 却看不到 detail。现放行 _recall_path/_rerank/
+    # detail 等可观测字段。
+    model_config = ConfigDict(extra="allow")
+
     status: str = "ok"
     results: list = Field(default_factory=list)
 
@@ -53,6 +62,7 @@ class DeleteRequest(BaseModel):
 
     memory_id: str
     user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
 
 
 class DeleteAllRequest(BaseModel):
@@ -60,6 +70,7 @@ class DeleteAllRequest(BaseModel):
 
     # 🔴P0-3: 必须显式指定 user_id，缺失拒绝执行
     user_id: str = ""
+    bank_id: str = DEFAULT_BANK_ID
     # 清空 default 租户必须显式传递 confirm=True
     confirm: bool = False
 
@@ -70,6 +81,7 @@ class TombstoneRestoreRequest(BaseModel):
 
     tombstone_id: int
     user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
 
 class GovernanceReviewRequest(BaseModel):
     """🏛️ 治理管线人审请求（v19.4.0 Mímir 借鉴 B1）"""
@@ -79,6 +91,7 @@ class GovernanceReviewRequest(BaseModel):
     decision: str  # approve | reject
     reason: str = ""
     user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
 
 class OpinionSetRequest(BaseModel):
     """🧭 信念层写入请求（v19.4.0 Mímir 借鉴 B6）"""
@@ -90,6 +103,7 @@ class OpinionSetRequest(BaseModel):
     evidence_ids: list = []
     source: str  # 证据来源标识（必填，聚合按来源去重）
     owner: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
 
 
 class UpdateRequest(BaseModel):
@@ -99,6 +113,7 @@ class UpdateRequest(BaseModel):
 
     memory_id: str
     user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
     content: str = ""
 
 
@@ -111,3 +126,4 @@ class InjectContextRequest(BaseModel):
     user_content: str = ""
     assistant_content: str = ""
     user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID

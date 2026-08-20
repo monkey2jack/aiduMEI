@@ -37,12 +37,21 @@ def _detect_lane(memory_content: str) -> str:
 
 def on_memory_added(memory_id: str, initial_salience: float = 0.5,
                      lane: Optional[str] = None, content: str = "",
-                     preserve_heat: bool = False):
+                     preserve_heat: bool = False,
+                     user_id: str = "", bank_id: str = ""):
     """新增记忆时注册 salience（v8.3.0 支持 Lane + 内容缓存）
 
     保留已有热度的合并路径：self-edit 合并已有记忆时传入 preserve_heat=True，
     不会把 access_count 清零（否则合并会悄悄抹掉检索热度信号）。
+
+    v20 P0-2：登记时盖 (user_id, bank_id) 戳，conflict.py 才能分域配对。
+    不传 = 'default' 域（与存量行回填口径一致）；preserve_heat 更新路径
+    只在调用方显式给出作用域时才刷新戳，否则保留行上原有归属。
     """
+    from ducky.bank_contract import normalize_bank_id, normalize_user_id
+    scope_user = normalize_user_id(user_id) if user_id else "default"
+    scope_bank = normalize_bank_id(bank_id) if bank_id else "default"
+
     if preserve_heat:
         conn = get_salience_conn()
         row = conn.execute(
@@ -52,10 +61,18 @@ def on_memory_added(memory_id: str, initial_salience: float = 0.5,
             # 已有热度：保留访问次数与显著性，仅刷新 content_preview/last_access
             now = time.time()
             resolved_lane = lane or DEFAULT_LANE
-            conn.execute(
-                "UPDATE salience SET last_access=?, content_preview=?, lane=? WHERE memory_id=?",
-                (now, content[:200] if content else "", resolved_lane, memory_id),
-            )
+            if user_id or bank_id:
+                conn.execute(
+                    "UPDATE salience SET last_access=?, content_preview=?, lane=?, "
+                    "user_id=?, bank_id=? WHERE memory_id=?",
+                    (now, content[:200] if content else "", resolved_lane,
+                     scope_user, scope_bank, memory_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE salience SET last_access=?, content_preview=?, lane=? WHERE memory_id=?",
+                    (now, content[:200] if content else "", resolved_lane, memory_id),
+                )
             conn.commit()
             conn.close()
             logger.debug(f"salience 合并登记（保留热度 access_count={row['access_count']}）: {memory_id[:16]}")
@@ -71,13 +88,13 @@ def on_memory_added(memory_id: str, initial_salience: float = 0.5,
     conn = get_salience_conn()
     conn.execute(
         "INSERT OR REPLACE INTO salience "
-        "(memory_id, salience, last_access, access_count, created_at, lane, content_preview) "
-        "VALUES (?, ?, ?, 0, ?, ?, ?)",
-        (memory_id, initial_salience, now, now, lane, content_preview)
+        "(memory_id, salience, last_access, access_count, created_at, lane, content_preview, user_id, bank_id) "
+        "VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)",
+        (memory_id, initial_salience, now, now, lane, content_preview, scope_user, scope_bank)
     )
     conn.commit()
     conn.close()
-    logger.debug(f"salience 注册: {memory_id[:16]} → {initial_salience} [{lane}]")
+    logger.debug(f"salience 注册: {memory_id[:16]} → {initial_salience} [{lane}] {scope_user}/{scope_bank}")
 
 
 def on_memory_accessed(memory_id: str):
