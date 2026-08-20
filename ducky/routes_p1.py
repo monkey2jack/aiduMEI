@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
 
 logger = logging.getLogger("aiduMEM.routes_p1")
 
@@ -24,6 +25,17 @@ class BackfillRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     limit: int = 2000
+    user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
+
+
+class TypeResetRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
+    # Destructive all-scope cleanup is deliberately not exposed by default.
+    all_scopes: bool = False
 
 
 class SkillGrowRequest(BaseModel):
@@ -54,15 +66,27 @@ def register_p1_routes(app: FastAPI) -> None:
     from ducky.memory_types import (
         VALID_TYPES,
         backfill_from_facts,
+        ensure_memory_types_schema,
         list_types,
         reset_all_types,
     )
 
     @app.get("/memory/types")
-    def memory_types():
+    def memory_types(
+        user_id: str = DEFAULT_USER_ID,
+        bank_id: str = DEFAULT_BANK_ID,
+    ):
         """六类记忆的类型统计。"""
         try:
-            return {"status": "ok", "types": list_types(), "valid_types": sorted(VALID_TYPES)}
+            ensure_memory_types_schema()
+            scope = make_scope(user_id, bank_id)
+            return {
+                "status": "ok",
+                "user_id": scope.user_id,
+                "bank_id": scope.bank_id,
+                "types": list_types(scope.user_id, scope.bank_id),
+                "valid_types": sorted(VALID_TYPES),
+            }
         except Exception as e:
             logger.error(f"/memory/types 失败: {e}")
             return {"status": "error", "detail": str(e)}
@@ -72,27 +96,41 @@ def register_p1_routes(app: FastAPI) -> None:
         memory_type: str = "FACTS",
         limit: int = 50,
         user_id: str = DEFAULT_USER_ID,
+        bank_id: str = DEFAULT_BANK_ID,
     ):
         """按类型列出已分类的事实（facts 视图；mem0 池在后续 Skill/精炼接入）。"""
         if memory_type not in VALID_TYPES:
             return {"status": "error", "detail": f"memory_type 必须是 {sorted(VALID_TYPES)}"}
         try:
+            ensure_memory_types_schema()
             conn = get_facts_conn()
+            scope = make_scope(user_id, bank_id)
             rows = conn.execute(
                 """
                 SELECT f.id, f.category, f.fact_key, f.fact_value, f.valid_from,
                        f.valid_to, f.recorded_at, mt.confidence AS type_confidence
                 FROM memory_types mt
-                JOIN facts f ON f.id = CAST(substr(mt.memory_ref, 6) AS INTEGER)
+                JOIN facts f ON f.id = CAST(substr(mt.memory_ref_raw, 6) AS INTEGER)
                 WHERE mt.memory_type = ? AND f.archived = 0
+                  AND mt.user_id = ? AND mt.bank_id = ?
+                  AND f.user_id = ? AND f.bank_id = ?
                 ORDER BY f.updated_at DESC LIMIT ?
                 """,
-                (memory_type, max(1, min(int(limit), 200))),
+                (
+                    memory_type,
+                    scope.user_id,
+                    scope.bank_id,
+                    scope.user_id,
+                    scope.bank_id,
+                    max(1, min(int(limit), 200)),
+                ),
             ).fetchall()
             conn.close()
             return {
                 "status": "ok",
                 "memory_type": memory_type,
+                "user_id": scope.user_id,
+                "bank_id": scope.bank_id,
                 "count": len(rows),
                 "facts": [dict(r) for r in rows],
             }
@@ -104,18 +142,32 @@ def register_p1_routes(app: FastAPI) -> None:
     def memory_types_backfill(req: BackfillRequest):
         """对存量 facts 做规则判型重建账本（不调用 LLM）。"""
         try:
-            result = backfill_from_facts(limit=req.limit)
-            return {"status": "ok", **result}
+            scope = make_scope(req.user_id, req.bank_id)
+            result = backfill_from_facts(
+                limit=req.limit, user_id=scope.user_id, bank_id=scope.bank_id
+            )
+            return {"status": "ok", "user_id": scope.user_id, "bank_id": scope.bank_id, **result}
         except Exception as e:
             logger.error(f"/memory/types/backfill 失败: {e}")
             return {"status": "error", "detail": str(e)}
 
     @app.post("/memory/types/reset")
-    def memory_types_reset():
-        """清空类型账本（用于重建或测试）。"""
+    def memory_types_reset(req: TypeResetRequest | None = None):
+        """清空指定 bank 类型账本（用于重建或测试）。"""
         try:
-            deleted = reset_all_types()
-            return {"status": "ok", "deleted": deleted}
+            req = req or TypeResetRequest()
+            scope = make_scope(req.user_id, req.bank_id)
+            deleted = reset_all_types(
+                scope.user_id,
+                scope.bank_id,
+                all_scopes=bool(req.all_scopes),
+            )
+            return {
+                "status": "ok",
+                "user_id": scope.user_id,
+                "bank_id": scope.bank_id,
+                "deleted": deleted,
+            }
         except Exception as e:
             logger.error(f"/memory/types/reset 失败: {e}")
             return {"status": "error", "detail": str(e)}

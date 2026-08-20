@@ -16,6 +16,7 @@ J-space 启发：概念写入全局广播区后，被所有子电路读取→形
 import time, logging
 from typing import Optional
 
+from ducky.bank_contract import DEFAULT_BANK_ID, vector_item_in_bank, vector_scope_filters
 from ducky.utils import quick_sim
 
 logger = logging.getLogger("aiduMEM.broadcast")
@@ -35,9 +36,14 @@ def broadcast_chain(
     branch: int = CHAIN_BRANCH,
     min_score: float = CHAIN_MIN_SCORE,
     total_max: int = CHAIN_TOTAL_MAX,
+    bank_id: str = DEFAULT_BANK_ID,
 ) -> dict:
     """
     从 seed_text 出发，逐层发现关联记忆，形成广播链。
+
+    v20 P0-2：广播链的每一跳都按 (user_id, bank_id) 收窄——链式传播是
+    最隐蔽的越库通道（seed 在本域，第二跳就可能摸进他库），所以复筛
+    (vector_item_in_bank) 放在候选进链之前，跳数再多也翻不出域墙。
 
     返回 {
         chain: [                     # 按层级排列
@@ -53,6 +59,8 @@ def broadcast_chain(
     }
     """
     t0 = time.time()
+    # 非法作用域在进链前炸出 BankScopeError（路由层包成 error dict）
+    scope_filters = vector_scope_filters(user_id, bank_id)
     chain = []
     seen_ids = set()
     current_seeds = [seed_text]
@@ -66,10 +74,12 @@ def broadcast_chain(
                 continue
 
             try:
-                raw = memory.search(seed, filters={"user_id": user_id}, limit=branch)
+                raw = memory.search(seed, filters=scope_filters, limit=branch)
                 candidates = raw.get("results", raw) if isinstance(raw, dict) else raw
                 if not isinstance(candidates, list):
                     candidates = []
+                # 默认域不下推 bank_id（存量向量无此字段），靠复筛隔离
+                candidates = [c for c in candidates if vector_item_in_bank(c, bank_id)]
             except Exception as e:
                 logger.warning(f"广播链搜索失败 (depth={depth}, seed={seed[:30]}): {e}")
                 continue
@@ -134,19 +144,24 @@ def broadcast_chain(
     }
 
 
-def broadcast_expand(memory, memory_id: str, user_id: str, limit: int = 5) -> list:
+def broadcast_expand(memory, memory_id: str, user_id: str, limit: int = 5,
+                     bank_id: str = DEFAULT_BANK_ID) -> list:
     """
     单次广播：从一条记忆出发，找回关联记忆。
 
     简化版——不走链，只做一次邻居搜索。
+    v20 P0-2：源记忆定位与邻居搜索都按 (user_id, bank_id) 收窄——
+    他库的 memory_id 在本域视角下就是「找不到」。
     """
     try:
-        # 先拿文本
-        all_mem = memory.get_all(filters={"user_id": user_id}, limit=10000)
+        scope_filters = vector_scope_filters(user_id, bank_id)
+        # 先拿文本（复筛保证他库同 id 的记忆定位不到）
+        all_mem = memory.get_all(filters=scope_filters, limit=10000)
         results_list = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
         source_text = ""
         for item in (results_list or []):
-            if isinstance(item, dict) and item.get("id") == memory_id:
+            if (isinstance(item, dict) and item.get("id") == memory_id
+                    and vector_item_in_bank(item, bank_id)):
                 source_text = item.get("memory", "")
                 break
 
@@ -154,10 +169,11 @@ def broadcast_expand(memory, memory_id: str, user_id: str, limit: int = 5) -> li
             logger.warning(f"广播展开：找不到记忆 {memory_id[:16]}")
             return []
 
-        raw = memory.search(source_text, filters={"user_id": user_id}, limit=limit + 1)
+        raw = memory.search(source_text, filters=scope_filters, limit=limit + 1)
         candidates = raw.get("results", raw) if isinstance(raw, dict) else raw
         if not isinstance(candidates, list):
             return []
+        candidates = [c for c in candidates if vector_item_in_bank(c, bank_id)]
 
         # 排除自身
         return [item for item in candidates if item.get("id") != memory_id][:limit]

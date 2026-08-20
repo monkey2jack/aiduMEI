@@ -85,6 +85,8 @@ def route_recall(
     federated: bool | None = None,
     rerank: bool = False,
     tier_filter: str | None = None,
+    user_id: str = "",
+    bank_id: str = "",
 ) -> dict[str, Any]:
     """门控 + 检索一体入口：这是上层唯一需要调用的函数。"""
     decision = decide(query, agent_id=agent_id, federated=federated)
@@ -97,6 +99,9 @@ def route_recall(
         federated=decision.federated,
         rerank=rerank,
         tier_filter=tier_filter,
+        # v20 P0-2：opt-in 作用域直通检索梯子，不传 = v19 全库语义
+        user_id=user_id,
+        bank_id=bank_id,
     )
     result["route"] = decision.to_dict()
     return result

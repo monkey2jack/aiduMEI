@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ducky.utils import DEFAULT_AGENT_ID, DEFAULT_USER_ID, get_facts_conn
+from ducky.bank_contract import DEFAULT_BANK_ID, ensure_memory_banks_schema, make_scope
 
 logger = logging.getLogger("aiduMEM.facts_recall")
 
@@ -52,7 +53,7 @@ def _strict_tenant_enabled() -> bool:
     return os.environ.get("AIDUMEM_STRICT_TENANT", "0").strip().lower() in {"1", "true", "yes"}
 
 
-def fact_visible_to_tenant(conn, fact_id, user_id: str | None) -> bool:
+def fact_visible_to_tenant(conn, fact_id, user_id: str | None, bank_id: str = DEFAULT_BANK_ID) -> bool:
     """该 fact_id 是否在指定租户的可见范围内（严格档下用于路由级校验）。
 
     🟡-D（v19.4.1 用户审计）：`/events/history` 与 `/opinions` 以自增整数
@@ -71,7 +72,7 @@ def fact_visible_to_tenant(conn, fact_id, user_id: str | None) -> bool:
     if not uid or uid == DEFAULT_USER_ID:
         return True
     try:
-        clause, params = tenant_clause(uid)
+        clause, params = tenant_clause(uid, bank_id=bank_id, conn=conn)
         row = conn.execute(
             "SELECT 1 FROM facts WHERE id=?" + clause, [fact_id] + params
         ).fetchone()
@@ -81,16 +82,94 @@ def fact_visible_to_tenant(conn, fact_id, user_id: str | None) -> bool:
         return True
 
 
-def tenant_clause(user_id: str | None, *, alias: str = "") -> tuple[str, list[str]]:
+def _facts_has_bank_column(conn) -> bool:
+    """facts 表是否已完成 bank 迁移（有 bank_id 列）。
+
+    判不出来一律按「没有」处理：没有 bank_id 列的库不可能存下具名域的行，
+    退回 v19 形状不存在泄漏面；反之误判「有」会让旧库直接 SQL 报错。
+    """
+    try:
+        return "bank_id" in {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(facts)").fetchall()
+        }
+    except Exception:
+        return False
+
+
+def tenant_clause(
+    user_id: str | None,
+    *,
+    alias: str = "",
+    bank_id: str = DEFAULT_BANK_ID,
+    conn=None,
+) -> tuple[str, list[str]]:
     """构造租户可见性 SQL 片段。返回 (sql_fragment, params)。
 
-    sql_fragment 为空字符串表示「全库可见」（宽松档默认租户）。
+    sql_fragment 为空字符串表示「全库可见」（宽松档默认租户，且仅限
+    **未迁移**的 v19 库 —— 那样的库里只有默认域，全库可见没有泄漏面）。
     alias 用于带表别名的场景，如 alias='f' → 'f.agent_id'。
+
+    v20：传入 ``conn`` 且 facts 表已带 bank_id 列时，启用域收窄语义：
+
+    - 默认租户不再是空片段，而是 ``bank_id='default'`` —— v19 写的
+      「全库可见」成立的前提是全库只有一个域；bank 出现后，空片段会把
+      具名域的行也端给默认租户，等于隔离不存在。
+    - 具名域一律严格 ``user_id + bank_id``，没有渠道字段回落 ——
+      具名域是 v20 原生概念，不存在需要兼容的旧行。
+    - 具名租户在默认域内：正规归属只认 ``user_id``；``source``/``agent_id``
+      渠道标记只对「尚无主人」的行（NULL/空白/占位 default）生效，
+      与 :func:`ducky.bank_contract.legacy_fact_scope_predicate` 同一语义。
+
+    不传 conn（或列缺失）时保持 v19 原形，v19.4.1 的形状测试原样有效。
     """
     uid = (user_id or "").strip()
-    if not uid or uid == DEFAULT_USER_ID:
-        return "", []
+    bank = str(bank_id or DEFAULT_BANK_ID).strip() or DEFAULT_BANK_ID
     prefix = f"{alias}." if alias else ""
+    migrated = _facts_has_bank_column(conn) if conn is not None else False
+
+    if migrated:
+        if (not uid or uid == DEFAULT_USER_ID) and bank == DEFAULT_BANK_ID:
+            return f" AND {prefix}bank_id=?", [bank]
+        owner = uid or DEFAULT_USER_ID
+        if bank != DEFAULT_BANK_ID:
+            return (
+                f" AND {prefix}bank_id=? AND {prefix}user_id=?",
+                [bank, owner],
+            )
+        unclaimed = (
+            f"({prefix}user_id IS NULL OR TRIM({prefix}user_id)='' "
+            f"OR {prefix}user_id=?)"
+        )
+        if _strict_tenant_enabled():
+            channel = f"({prefix}source=? OR {prefix}agent_id=?)"
+            params = [bank, owner, DEFAULT_USER_ID, owner, owner]
+        else:
+            # 宽松档保留 v19 的共享兜底：未标记归属的历史/共享数据
+            # （agent_id=DEFAULT_AGENT_ID）对域内所有租户可见。
+            channel = (
+                f"({prefix}source=? OR {prefix}agent_id=? OR {prefix}agent_id=?)"
+            )
+            params = [bank, owner, DEFAULT_USER_ID, owner, owner, DEFAULT_AGENT_ID]
+        return (
+            f" AND {prefix}bank_id=? AND ({prefix}user_id=? "
+            f"OR ({unclaimed} AND {channel}))",
+            params,
+        )
+
+    # —— 未迁移库：v19 原形，一个字符都不动 ——
+    if (not uid or uid == DEFAULT_USER_ID) and bank == DEFAULT_BANK_ID:
+        return "", []
+    if bank != DEFAULT_BANK_ID:
+        if _strict_tenant_enabled():
+            return (
+                f" AND {prefix}bank_id=? AND ({prefix}user_id=? OR {prefix}source=? OR {prefix}agent_id=?)",
+                [bank, uid or DEFAULT_USER_ID, uid or DEFAULT_USER_ID, uid or DEFAULT_USER_ID],
+            )
+        return (
+            f" AND {prefix}bank_id=? AND ({prefix}user_id=? OR {prefix}source=? OR {prefix}agent_id=? OR {prefix}user_id IS NULL)",
+            [bank, uid or DEFAULT_USER_ID, uid or DEFAULT_USER_ID, uid or DEFAULT_USER_ID],
+        )
     if _strict_tenant_enabled():
         return (
             f" AND ({prefix}agent_id=? OR {prefix}source=?)",
@@ -160,6 +239,7 @@ def search_facts(
     before: str = "",
     after: str = "",
     user_id: str | None = None,
+    bank_id: str = DEFAULT_BANK_ID,
 ) -> dict[str, Any]:
     """检索 facts.db，返回稳定的分层结构与五阶段轨迹。
 
@@ -186,8 +266,12 @@ def search_facts(
 
     conn = get_facts_conn()
     try:
+        # Additive migration before any scoped query; old production/test
+        # schemas remain readable and no rows are rewritten to another bank.
+        ensure_memory_banks_schema(conn)
+        scope = make_scope(user_id, bank_id)
         # 类别候选同样按租户收窄：否则 A 能从类别列表反推出 B 有哪些类目
-        cat_clause, cat_params = tenant_clause(user_id)
+        cat_clause, cat_params = tenant_clause(scope.user_id, bank_id=scope.bank_id, conn=conn)
         category_rows = conn.execute(
             "SELECT DISTINCT category FROM facts WHERE archived=0"
             + cat_clause
@@ -208,7 +292,7 @@ def search_facts(
         params: list[Any] = [effective_trust, needle, like, like, like]
         # P0-2 租户可见性：在 WHERE 里收窄，而不是取回后过滤 —— 后者会让
         # LIMIT 先被别人的数据吃掉，导致本租户结果被静默截断。
-        t_clause, t_params = tenant_clause(user_id)
+        t_clause, t_params = tenant_clause(scope.user_id, bank_id=scope.bank_id, conn=conn)
         sql += t_clause
         params.extend(t_params)
         if category:
@@ -257,8 +341,8 @@ def search_facts(
                 f"""UPDATE facts
                     SET retrieval_count=retrieval_count+1,
                         last_accessed_at=CURRENT_TIMESTAMP
-                    WHERE id IN ({placeholders})""",
-                ids,
+                    WHERE id IN ({placeholders})""" + (" AND bank_id=? AND user_id=?" if scope.bank_id != DEFAULT_BANK_ID or scope.user_id != DEFAULT_USER_ID else ""),
+                ids + ([scope.bank_id, scope.user_id] if scope.bank_id != DEFAULT_BANK_ID or scope.user_id != DEFAULT_USER_ID else []),
             )
             conn.commit()
 
@@ -270,7 +354,7 @@ def search_facts(
             {"step": "time_filter", "before": before_bound, "after": after_bound},
             {"step": "retrieve", "scanned": len(rows), "hits": len(facts)},
             {"step": "trust_filter", "min_trust": effective_trust, "kept": len(facts)},
-            {"step": "tenant_scope", "user_id": (user_id or DEFAULT_USER_ID),
+            {"step": "tenant_scope", "user_id": scope.user_id, "bank_id": scope.bank_id,
              "scoped": bool(t_clause), "strict": _strict_tenant_enabled()},
             {"step": "return", "count": len(facts), "elapsed_ms": total_ms},
         ]
@@ -306,6 +390,7 @@ def inject_context(
     level: str = "L0",
     max_tokens: int = 1000,
     user_id: str | None = None,
+    bank_id: str = DEFAULT_BANK_ID,
 ) -> dict[str, Any]:
     """按 token 预算拼接事实上下文，出口套 B4 注入框架。
 
@@ -314,7 +399,7 @@ def inject_context(
     不再依赖 shell hook 是否包装。raw_context 保留未包装原文供调试/对比，
     total_tokens 按 raw 计，预算语义与 v19.4.0 一致。
     """
-    result = search_facts(query, top_k=k, level=level, user_id=user_id)
+    result = search_facts(query, top_k=k, level=level, user_id=user_id, bank_id=bank_id)
     budget_chars = max(0, int(max_tokens)) * 4
     lines: list[str] = []
     for fact in result["facts"]:

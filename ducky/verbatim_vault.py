@@ -44,6 +44,12 @@ import logging
 from datetime import datetime, timezone
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn, get_text_conn
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    ensure_bank_registered,
+    ensure_memory_banks_schema,
+    make_scope,
+)
 
 logger = logging.getLogger("aiduMEM.verbatim")
 
@@ -61,6 +67,7 @@ _VERBATIM_TURNS_DDL = """
 CREATE TABLE IF NOT EXISTS verbatim_turns (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id      TEXT NOT NULL,
+    bank_id      TEXT NOT NULL DEFAULT 'default',
     session_id   TEXT DEFAULT '',
     role         TEXT DEFAULT 'user',
     content      TEXT NOT NULL,
@@ -76,7 +83,7 @@ CREATE TABLE IF NOT EXISTS verbatim_turns (
 """
 
 _VERBATIM_INDEXES = (
-    "CREATE INDEX        IF NOT EXISTS idx_verbatim_user ON verbatim_turns(user_id)",
+    "CREATE INDEX        IF NOT EXISTS idx_verbatim_user ON verbatim_turns(user_id, bank_id)",
     # 🟠P1-1（v19.4.1）：幂等键从 (user_id, content_hash, recorded_at) 改为
     #     (user_id, content_hash, session_id)。
     #
@@ -92,7 +99,7 @@ _VERBATIM_INDEXES = (
     #     现在幂等键只含稳定因子（租户 + 内容哈希 + 会话），与载荷形态无关。
     #     跨会话的真实重复表述仍保留独立行（session_id 不同）。
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_verbatim_dedup_v2 "
-    "ON verbatim_turns(user_id, content_hash, session_id)",
+    "ON verbatim_turns(user_id, bank_id, content_hash, session_id)",
 )
 
 # 老库上可能已存在按旧键写入的重复行，导致新唯一索引建不起来。
@@ -105,7 +112,8 @@ _VERBATIM_FTS_DDL = """
 CREATE TABLE IF NOT EXISTS verbatim_fts_map (
     turn_id INTEGER PRIMARY KEY,
     content TEXT,
-    user_id TEXT
+    user_id TEXT,
+    bank_id TEXT NOT NULL DEFAULT 'default'
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS verbatim_fts USING fts5(
     content,
@@ -139,6 +147,10 @@ def ensure_verbatim_schema() -> None:
     """
     try:
         fconn = get_facts_conn()
+        # Keep the shared registry in the same facts database.  This is
+        # additive and also makes direct module use (outside API bootstrap)
+        # safe.
+        ensure_memory_banks_schema(fconn)
         fconn.execute(_VERBATIM_TURNS_DDL)
 
         # P1-1 迁移：老库（v19.4.0 建的表）缺 occurrences / last_seen_at，补列。
@@ -149,6 +161,7 @@ def ensure_verbatim_schema() -> None:
             for col, ddl in (
                 ("occurrences", "INTEGER DEFAULT 1"),
                 ("last_seen_at", "TEXT"),
+                ("bank_id", "TEXT NOT NULL DEFAULT 'default'"),
             ):
                 if col not in existing_cols:
                     fconn.execute(f"ALTER TABLE verbatim_turns ADD COLUMN {col} {ddl}")
@@ -170,6 +183,19 @@ def ensure_verbatim_schema() -> None:
     try:
         tconn = get_text_conn()
         tconn.executescript(_VERBATIM_FTS_DDL)
+        # Existing FTS map tables need an additive bank column.  SQLite's
+        # virtual table remains content-only; filtering is done on this map.
+        try:
+            map_cols = {
+                r[1]
+                for r in tconn.execute("PRAGMA table_info(verbatim_fts_map)").fetchall()
+            }
+            if "bank_id" not in map_cols:
+                tconn.execute(
+                    "ALTER TABLE verbatim_fts_map ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'"
+                )
+        except Exception as mexc:
+            logger.debug("verbatim FTS bank_id 迁移跳过: %s", mexc)
         tconn.commit()
     except Exception as exc:
         logger.warning("verbatim_fts 建表跳过（服务继续）: %s", exc)
@@ -226,7 +252,13 @@ def _normalize_ts(ts) -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) -> dict:
+def store_verbatim(
+    user_id: str,
+    messages_json,
+    metadata: dict | None = None,
+    *,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> dict:
     """把一次 /add 的原文逐条落库。返回 {stored, skipped}。
 
     调用方（/add）在注入防御通过后调用本函数；本函数绝不抛异常阻断主链路。
@@ -235,8 +267,15 @@ def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) ->
     if not user_id:
         return result
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_verbatim_schema()
         md = metadata or {}
+        # Metadata is retained for old callers that only pass a dict.  An
+        # explicit function argument wins; if it is omitted, a metadata bank
+        # is accepted as a convenience for integration adapters.
+        if bank_id == DEFAULT_BANK_ID and md.get("bank_id"):
+            scope = make_scope(user_id, md.get("bank_id"))
+        ensure_bank_registered(scope)
         session_id = str(md.get("session_id") or md.get("conversation_id") or "")
         fconn = get_facts_conn()
         tconn = get_text_conn()
@@ -253,9 +292,9 @@ def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) ->
             try:
                 existing = fconn.execute(
                     """SELECT id, occurrences FROM verbatim_turns
-                       WHERE user_id=? AND content_hash=? AND session_id=?
+                       WHERE user_id=? AND bank_id=? AND content_hash=? AND session_id=?
                        LIMIT 1""",
-                    (user_id, chash, session_id),
+                    (scope.user_id, scope.bank_id, chash, session_id),
                 ).fetchone()
 
                 if existing is not None:
@@ -275,10 +314,19 @@ def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) ->
 
                 cur = fconn.execute(
                     """INSERT INTO verbatim_turns
-                       (user_id, session_id, role, content, content_hash,
+                       (user_id, bank_id, session_id, role, content, content_hash,
                         recorded_at, occurrences, last_seen_at)
-                       VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
-                    (user_id, session_id, role, content, chash, recorded_at, recorded_at),
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                    (
+                        scope.user_id,
+                        scope.bank_id,
+                        session_id,
+                        role,
+                        content,
+                        chash,
+                        recorded_at,
+                        recorded_at,
+                    ),
                 )
                 fconn.commit()
                 if cur.rowcount and cur.rowcount > 0:
@@ -286,8 +334,9 @@ def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) ->
                     # 同步灌 FTS 映射表（触发器自动维护 trigram 索引）
                     try:
                         tconn.execute(
-                            "INSERT OR REPLACE INTO verbatim_fts_map (turn_id, content, user_id) VALUES (?, ?, ?)",
-                            (turn_id, content, user_id),
+                            "INSERT OR REPLACE INTO verbatim_fts_map "
+                            "(turn_id, content, user_id, bank_id) VALUES (?, ?, ?, ?)",
+                            (turn_id, content, scope.user_id, scope.bank_id),
                         )
                         tconn.commit()
                     except Exception as fe:
@@ -300,7 +349,10 @@ def store_verbatim(user_id: str, messages_json, metadata: dict | None = None) ->
                 result["skipped"] += 1
 
         if result["stored"]:
-            logger.info("📼 Verbatim Vault 落库 %d 条原文 (user=%s)", result["stored"], user_id)
+            logger.info(
+                "📼 Verbatim Vault 落库 %d 条原文 (user=%s, bank=%s)",
+                result["stored"], scope.user_id, scope.bank_id,
+            )
     except Exception as exc:
         logger.warning("Verbatim Vault 写入降级（主链路不受影响）: %s", exc)
     return result
@@ -354,7 +406,13 @@ def _gate_terms(text: str) -> list:
     return out[:32]
 
 
-def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10) -> list:
+def verbatim_search(
+    query: str,
+    user_id: str = DEFAULT_USER_ID,
+    limit: int = 10,
+    *,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> list:
     """对原文层做 trigram FTS 检索，返回按 BM25 排序的原文条目。
 
     返回形如 [{id, memory, user_id, role, session_id, recorded_at, _verbatim: True}]，
@@ -366,6 +424,7 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
     if not query or not user_id:
         return []
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_verbatim_schema()
         tconn = get_text_conn()
         terms = _fts_terms(query)
@@ -384,14 +443,14 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
             try:
                 rows = tconn.execute(
                     """
-                    SELECT m.turn_id, m.content, m.user_id, bm25(verbatim_fts) AS rank
+                    SELECT m.turn_id, m.content, m.user_id, m.bank_id, bm25(verbatim_fts) AS rank
                     FROM verbatim_fts
                     JOIN verbatim_fts_map m ON m.turn_id = verbatim_fts.rowid
-                    WHERE verbatim_fts MATCH ? AND m.user_id = ?
+                    WHERE verbatim_fts MATCH ? AND m.user_id = ? AND m.bank_id = ?
                     ORDER BY rank
                     LIMIT ?
                     """,
-                    (match_expr, user_id, max(limit * 2, limit)),
+                    (match_expr, scope.user_id, scope.bank_id, max(limit * 2, limit)),
                 ).fetchall()
                 fts_attempted = True
                 if rows:
@@ -407,11 +466,11 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
             # LIKE 兜底（与 text_fts._like_search 同语义）
             like_terms = terms or [query.strip()]
             clauses = ["content LIKE ?" for _ in like_terms]
-            params = [f"%{t}%" for t in like_terms] + [user_id, max(limit * 2, limit)]
+            params = [f"%{t}%" for t in like_terms] + [scope.user_id, scope.bank_id, max(limit * 2, limit)]
             try:
                 rows = tconn.execute(
-                    f"SELECT turn_id, content, user_id, 0 AS rank FROM verbatim_fts_map "
-                    f"WHERE ({' OR '.join(clauses)}) AND user_id=? LIMIT ?",
+                    f"SELECT turn_id, content, user_id, bank_id, 0 AS rank FROM verbatim_fts_map "
+                    f"WHERE ({' OR '.join(clauses)}) AND user_id=? AND bank_id=? LIMIT ?",
                     params,
                 ).fetchall()
                 recall_path = "like"
@@ -429,8 +488,9 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
             fconn = get_facts_conn()
             placeholders = ",".join("?" for _ in turn_ids)
             meta_rows = fconn.execute(
-                f"SELECT id, role, session_id, recorded_at FROM verbatim_turns WHERE id IN ({placeholders})",
-                turn_ids,
+                f"SELECT id, role, session_id, recorded_at, user_id, bank_id "
+                f"FROM verbatim_turns WHERE id IN ({placeholders}) AND user_id=? AND bank_id=?",
+                turn_ids + [scope.user_id, scope.bank_id],
             ).fetchall()
             # sqlite3.Row 无 .get，统一转 dict 再回填
             meta_map = {mr["id"]: dict(mr) for mr in meta_rows}
@@ -446,6 +506,7 @@ def verbatim_search(query: str, user_id: str = DEFAULT_USER_ID, limit: int = 10)
                 "memory": r["content"],
                 "content": r["content"],
                 "user_id": r["user_id"],
+                "bank_id": r["bank_id"],
                 "role": meta.get("role", "user"),
                 "session_id": meta.get("session_id", ""),
                 "recorded_at": meta.get("recorded_at"),
@@ -537,14 +598,23 @@ def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: st
 # 级联删除 — wal_engine 调用
 # ─────────────────────────────────────────────────────────────
 
-def _delete_turn_ids(fconn, ids: list) -> int:
-    """按 turn_id 精确删除原文行 + FTS 映射。返回删除条数。"""
+def _delete_turn_ids(fconn, ids: list, scope=None) -> int:
+    """按 turn_id 精确删除原文行 + FTS 映射。返回删除条数。
+
+    When a scope is supplied, the DELETE repeats the user/bank predicate even
+    though ids were selected under that predicate.  This closes a TOCTOU
+    window and keeps the helper safe for future callers that receive ids from
+    an untrusted request.
+    """
     if not ids:
         return 0
     placeholders = ",".join("?" for _ in ids)
-    deleted = fconn.execute(
-        f"DELETE FROM verbatim_turns WHERE id IN ({placeholders})", ids
-    ).rowcount or 0
+    sql = f"DELETE FROM verbatim_turns WHERE id IN ({placeholders})"
+    params = list(ids)
+    if scope is not None:
+        sql += " AND user_id=? AND bank_id=?"
+        params.extend([scope.user_id, scope.bank_id])
+    deleted = fconn.execute(sql, params).rowcount or 0
     fconn.commit()
     try:
         tconn = get_text_conn()
@@ -557,7 +627,10 @@ def _delete_turn_ids(fconn, ids: list) -> int:
     return deleted
 
 
-def cascade_delete_verbatim(user_id: str) -> int:
+def cascade_delete_verbatim(
+    user_id: str,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> int:
     """删除**指定租户**的全部原文（facts.db + text_fts.db 双侧）。返回删除条数。
 
     🔴P0-3（v19.4.1）：此前 `user_id == "default"` 走的是无 WHERE 的
@@ -573,16 +646,18 @@ def cascade_delete_verbatim(user_id: str) -> int:
         return 0
     deleted = 0
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_verbatim_schema()
         fconn = get_facts_conn()
         try:
             ids = [r["id"] for r in fconn.execute(
-                "SELECT id FROM verbatim_turns WHERE user_id=?", (user_id,)
+                "SELECT id FROM verbatim_turns WHERE user_id=? AND bank_id=?",
+                (scope.user_id, scope.bank_id),
             ).fetchall()]
         except Exception as qe:
             logger.debug("verbatim turn_id 查询跳过: %s", qe)
             ids = []
-        deleted = _delete_turn_ids(fconn, ids)
+        deleted = _delete_turn_ids(fconn, ids, scope)
     except Exception as exc:
         logger.warning("cascade_delete_verbatim 降级: %s", exc)
     return deleted
@@ -615,7 +690,11 @@ def purge_all_verbatim(confirm: bool = False) -> int:
     return deleted
 
 
-def delete_verbatim_by_id(user_id: str, verbatim_id) -> int:
+def delete_verbatim_by_id(
+    user_id: str,
+    verbatim_id,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> int:
     """按原文条目 id 精确删除（支持 "verbatim:44" 或裸 44）。
 
     🔴P0-4b（v19.4.1 实机冒烟发现，P0-4 只修了一半）：
@@ -640,14 +719,21 @@ def delete_verbatim_by_id(user_id: str, verbatim_id) -> int:
         return 0
     deleted = 0
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_verbatim_schema()
         fconn = get_facts_conn()
         # 必须带 user_id：杜绝拿别人的 verbatim id 越权删除
         ids = [r["id"] for r in fconn.execute(
             "SELECT id FROM verbatim_turns WHERE id=? AND user_id=?",
-            (int(raw), user_id),
+            (int(raw), scope.user_id),
         ).fetchall()]
-        deleted = _delete_turn_ids(fconn, ids)
+        # The selection above is kept compatible with old schemas; repeat the
+        # bank predicate in a second exact query before deleting.
+        ids = [r["id"] for r in fconn.execute(
+            "SELECT id FROM verbatim_turns WHERE id=? AND user_id=? AND bank_id=?",
+            (int(raw), scope.user_id, scope.bank_id),
+        ).fetchall()]
+        deleted = _delete_turn_ids(fconn, ids, scope)
         if deleted:
             logger.info("📼 原文层按 id 删除 %d 条 (user=%s, id=%s)", deleted, user_id, raw)
     except Exception as exc:
@@ -655,7 +741,11 @@ def delete_verbatim_by_id(user_id: str, verbatim_id) -> int:
     return deleted
 
 
-def delete_verbatim_by_content(user_id: str, content: str) -> int:
+def delete_verbatim_by_content(
+    user_id: str,
+    content: str,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> int:
     """按内容精确删除某租户的原文（P0-4 单条删除级联用）。
 
     以 content_hash 精确匹配，避免 LIKE 模糊误伤（延续 v19.2.0 精确匹配铁律）。
@@ -664,14 +754,19 @@ def delete_verbatim_by_content(user_id: str, content: str) -> int:
         return 0
     deleted = 0
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_verbatim_schema()
         fconn = get_facts_conn()
         chash = _content_hash(str(content).strip())
         ids = [r["id"] for r in fconn.execute(
             "SELECT id FROM verbatim_turns WHERE user_id=? AND content_hash=?",
-            (user_id, chash),
+            (scope.user_id, chash),
         ).fetchall()]
-        deleted = _delete_turn_ids(fconn, ids)
+        ids = [r["id"] for r in fconn.execute(
+            "SELECT id FROM verbatim_turns WHERE user_id=? AND bank_id=? AND content_hash=?",
+            (scope.user_id, scope.bank_id, chash),
+        ).fetchall()]
+        deleted = _delete_turn_ids(fconn, ids, scope)
         if deleted:
             logger.info("📼 原文层级联删除 %d 条 (user=%s)", deleted, user_id)
     except Exception as exc:
@@ -679,15 +774,20 @@ def delete_verbatim_by_content(user_id: str, content: str) -> int:
     return deleted
 
 
-def count_verbatim(user_id: str) -> int:
+def count_verbatim(
+    user_id: str,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> int:
     """统计某租户原文条数（运维/验收用）。失败返回 0。"""
     if not user_id:
         return 0
     try:
+        scope = make_scope(user_id, bank_id)
         ensure_verbatim_schema()
         fconn = get_facts_conn()
         row = fconn.execute(
-            "SELECT COUNT(*) AS n FROM verbatim_turns WHERE user_id=?", (user_id,)
+            "SELECT COUNT(*) AS n FROM verbatim_turns WHERE user_id=? AND bank_id=?",
+            (scope.user_id, scope.bank_id),
         ).fetchone()
         return int(row["n"]) if row else 0
     except Exception:

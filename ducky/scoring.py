@@ -226,6 +226,16 @@ def score_and_rank_candidates(
     except Exception as e:
         logger.debug("Rerank 降级: %s", e)
 
+    # v20 P0-4：rerank_applied 此前是丢在地上的局部变量，响应里永远看不到
+    # 重排序到底生效没有。回写进线程本地遥测，由 /search 带回响应。
+    try:
+        from ducky.mem0_runtime import last_rerank_telemetry
+        _telem = last_rerank_telemetry()
+        if isinstance(_telem, dict):
+            _telem["applied"] = rerank_applied
+    except Exception:
+        pass
+
     # 4. 排序与截断
     scored.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
     final = scored[:limit]

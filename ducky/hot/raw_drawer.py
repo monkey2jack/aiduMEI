@@ -15,6 +15,7 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from ducky.bank_contract import DEFAULT_BANK_ID
 from ducky.utils import DEFAULT_USER_ID
 from ducky.security.injection_guard import validate_and_sanitize_memory_content
 
@@ -24,6 +25,9 @@ logger = logging.getLogger("aiduMEM.raw_drawer")
 class RawDrawerRequest(BaseModel):
     content: str
     user_id: str = DEFAULT_USER_ID
+    # 🔴v20：原味抽屉此前完全不知道「域」的存在 —— /add/raw 写入的原文
+    # 恒落默认域，任何命名域都无法用它存原文。补齐后与 /add 同一套契约。
+    bank_id: str = DEFAULT_BANK_ID
     metadata: dict = Field(default_factory=dict)
     source: str = "raw_drawer"
     dedup: bool = True
@@ -50,9 +54,14 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
             try:
                 from ducky.text_fts import get_text_conn
                 conn = get_text_conn()
+                # 🔴v20：这条去重查询原本**不带任何租户/域条件** —— 只要内容哈希
+                # 撞上，就把别人的那条当成「已存在」，直接把**其他租户的
+                # memory_id** 回给调用方，同时静默丢弃本次写入。既是跨租户信息
+                # 泄露，也是一次无声的数据丢失（用户以为存进去了）。
+                # 去重必须发生在域内。
                 existing = conn.execute(
-                    "SELECT id FROM memories WHERE id LIKE ? LIMIT 1",
-                    (f"raw-{content_hash}%",)
+                    "SELECT id FROM memories WHERE id LIKE ? AND user_id=? AND bank_id=? LIMIT 1",
+                    (f"raw-{content_hash}%", req.user_id, req.bank_id)
                 ).fetchone()
                 conn.close()
                 if existing:
@@ -76,7 +85,8 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
             _index_memory(
                 memory_id, content,
                 user_id=req.user_id,
-                category=category
+                category=category,
+                bank_id=req.bank_id,
             )
             fts_ok = True
         except Exception as e:
@@ -87,7 +97,10 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         try:
             from ducky.mem0_runtime import get_memory
             mem = get_memory()
-            md = dict(req.metadata or {})
+            # 🔴v20：原文向量也要盖域戳，否则命名域存的原文在向量侧与默认域
+            # 混在一起，只有 FTS 那一半是隔离的。
+            from ducky.bank_contract import stamp_bank_metadata
+            md = stamp_bank_metadata(req.metadata, req.bank_id)
             md["memory_tier"] = "verbatim"
             md["source"] = req.source
             md["content_hash"] = content_hash

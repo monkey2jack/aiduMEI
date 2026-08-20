@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "19.5.0"
+version = "20.0"
 description = "aiduMEI: self-hosted multi-tier AI wisdom engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
@@ -55,7 +55,12 @@ aidumei-mcp = "mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ducky*"]
+include = ["ducky*", "benchmarks*"]
+
+# 评测管线随包发布（CHANGELOG 宣称 v20.0 新增 benchmarks/，宣称即承诺）；
+# smoke fixture 与协议文档是管线可复现性的一部分，必须进 wheel。
+[tool.setuptools.package-data]
+benchmarks = ["fixtures/*.json", "*.md"]
 
 # 显式声明根目录顶层单文件模块，setuptools 才能把它打进 wheel 根目录，
 # 否则 pip install 之后 import api_server 会 ModuleNotFoundError，

@@ -822,7 +822,7 @@ def evolve_report() -> str:
 # ═══════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=f"aiduMEM MCP Server v{SERVICE_VERSION} {CODENAME}")
+    parser = argparse.ArgumentParser(description=f"aiduMEI MCP Server v{SERVICE_VERSION}")
     parser.add_argument("--sse", action="store_true", help="以 SSE HTTP 模式启动（默认 stdio）")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--host", type=str, default="127.0.0.1")
@@ -830,7 +830,7 @@ if __name__ == "__main__":
 
     # 启动后台自动记忆线程
     threading.Thread(target=auto_memory_loop, daemon=True, name="auto-memory").start()
-    logger.info(f"🧠 aiduMEM MCP Server v{SERVICE_VERSION}-{CODENAME.lower()} 启动（API_BASE={API_BASE}）")
+    logger.info(f"🧠 aiduMEI MCP Server v{SERVICE_VERSION} 启动（API_BASE={API_BASE}）")
 
     if args.sse:
         logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")

@@ -34,6 +34,14 @@ class FeedbackRequest(BaseModel):
         default=None,
         description="signal=correction 时，填入修正后的正确内容"
     )
+    user_id: str = Field(
+        default="",
+        description="v20 opt-in 作用域：不传保持 v19 管理员语义；传了则校验记忆归属"
+    )
+    bank_id: str = Field(
+        default="",
+        description="v20 opt-in 作用域：与 user_id 搭配，越库反馈直接拒"
+    )
 
 
 def register_evolve_routes(app: FastAPI) -> None:
@@ -63,6 +71,8 @@ def register_evolve_routes(app: FastAPI) -> None:
                 signal=req.signal,
                 query=req.query,
                 correction_text=req.correction_text,
+                user_id=req.user_id,
+                bank_id=req.bank_id,
             )
             return {"status": "ok", **result}
         except Exception as e:

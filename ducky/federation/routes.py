@@ -27,6 +27,7 @@ from ducky.federation import broadcast as broadcast_mod
 from ducky.federation import registry as registry_mod
 from ducky.federation import tier as tier_mod
 from ducky.federation.router import route_recall
+from ducky.bank_contract import DEFAULT_BANK_ID
 from ducky.federation.schema import DEFAULT_AGENT, DEFAULT_PROFILE, ensure_federation_schema
 from ducky.federation.writer import write_fact
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
@@ -91,7 +92,11 @@ def register_federation_routes(app: FastAPI) -> None:
         federated: bool | None = None,
         rerank: bool = False,
         tier: str | None = None,
+        user_id: str = "",
+        bank_id: str = "",
     ):
+        # v20 P0-2：opt-in 作用域——传了就四级梯子全收窄，不传 = v19 全库。
+        # 非法作用域由 _safe 包成结构化 error（联邦层约定不抛 500）。
         return _safe(
             route_recall,
             query,
@@ -102,6 +107,8 @@ def register_federation_routes(app: FastAPI) -> None:
             federated=federated,
             rerank=rerank,
             tier_filter=tier,
+            user_id=user_id,
+            bank_id=bank_id,
         )
 
     # ── 写入 ──────────────────────────────────────
@@ -114,6 +121,8 @@ def register_federation_routes(app: FastAPI) -> None:
         profile: str = DEFAULT_PROFILE,
         memory_tier: str = "",
         source: str = DEFAULT_USER_ID,
+        user_id: str = DEFAULT_USER_ID,
+        bank_id: str = DEFAULT_BANK_ID,
         tags: str = "",
         shared: bool = True,
         dedup: bool = True,
@@ -129,6 +138,8 @@ def register_federation_routes(app: FastAPI) -> None:
             profile=profile,
             memory_tier=memory_tier or None,
             source=source,
+            user_id=user_id,
+            bank_id=bank_id,
             tags=tags,
             shared=shared,
             dedup=dedup,

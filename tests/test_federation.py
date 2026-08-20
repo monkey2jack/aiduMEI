@@ -49,9 +49,11 @@ CREATE TABLE facts (
     valid_from TEXT,
     valid_to TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(agent_id, category, fact_key)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+-- v20：唯一约束不再写成行内 UNIQUE（行内约束删不掉、也升不了级），
+-- 与生产一致交由 rebuild_facts_unique_index 建成
+-- (agent_id, user_id, bank_id, category, fact_key) 五列唯一索引。
 CREATE TABLE fact_entities (
     entity_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT, entity_type TEXT

@@ -64,3 +64,6 @@ Thumbs.db
 .local/
 
 uv.lock
+
+# 评测运行留证（本地产物，随每次运行变化，不进仓库；manifest 除外——它是承诺）
+benchmarks/runs/

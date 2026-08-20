@@ -112,11 +112,10 @@ CREATE TABLE IF NOT EXISTS fact_events (
 _INDEXES = (
     "CREATE INDEX        IF NOT EXISTS idx_facts_category ON facts(category)",
     "CREATE INDEX        IF NOT EXISTS idx_facts_key      ON facts(fact_key)",
-    # 🔴3：唯一约束按 agent 隔离，避免联邦跨 Agent 同 (category,fact_key) 静默互覆盖。
-    # 全新库直接建成三列版；存量库由 federation.schema._rebuild_agent_scoped_unique_index 升级。
-    # 注：facts 表在 federation 迁移前可能尚无 agent_id 列，此处 CREATE 若失败会被下方 try 吞掉，
-    # 由联邦迁移阶段（agent_id 就位后）重建，最终一致。
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_unique   ON facts(agent_id, category, fact_key)",
+    # 🔴3→v20 P0-2：idx_facts_unique（agent+bank 双隔离唯一索引）不在此建。
+    # 它依赖 agent_id 与 user_id/bank_id 列，必须等 ensure_memory_banks_schema
+    # 之后由 federation.schema.rebuild_facts_unique_index 统一建/升级，
+    # 见 ensure_core_schema 内的调用。
     "CREATE INDEX        IF NOT EXISTS idx_entities_name  ON entities(name)",
     "CREATE INDEX        IF NOT EXISTS idx_fevents_type   ON fact_events(event_type)",
     "CREATE INDEX        IF NOT EXISTS idx_fevents_cat    ON fact_events(category)",
@@ -196,6 +195,32 @@ def ensure_core_schema(force: bool = False) -> dict:
                     conn.execute(stmt)
                 except Exception as exc:  # 老库上可能已有同名非唯一索引
                     logger.debug("索引跳过 (%s): %s", stmt.split()[-1], exc)
+
+            # v20.0 additive memory-bank contract.  Keep this after the core
+            # tables exist so the helper can add canonical user_id/bank_id
+            # columns to both facts and the event ledger.  The helper is
+            # deliberately non-destructive and idempotent; a legacy database
+            # can therefore be opened by an older worker while migration is
+            # being rolled out without a DROP/rebuild step.
+            try:
+                from ducky.bank_contract import ensure_memory_banks_schema
+
+                ensure_memory_banks_schema(conn)
+            except Exception as exc:
+                # Schema bootstrap historically degrades rather than blocking
+                # service startup.  Preserve that contract, while making the
+                # missing bank migration visible in logs/health diagnostics.
+                logger.error("memory-bank schema migration failed: %s", exc)
+
+            # facts 唯一索引（upsert 冲突目标）在 bank 列就位后统一建/升级。
+            # 函数内导入：federation.schema 只依赖 ducky.utils，无循环导入。
+            try:
+                from ducky.federation.schema import rebuild_facts_unique_index
+
+                rebuild_facts_unique_index(conn)
+            except Exception as exc:
+                # 同样降级不阻断启动；联邦迁移阶段会再尝试一次重建。
+                logger.error("facts 唯一索引建立失败（联邦迁移阶段将重试）: %s", exc)
 
             # 执行 schema 版本增量迁移补丁
             apply_migrations(conn)

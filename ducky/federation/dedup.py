@@ -9,8 +9,9 @@ ducky.federation.dedup — 写入时自动去重
     0.70 ≤ sim  → UPDATE  更新：视为同一事实的新版本，覆盖旧值
     sim < 0.70  → INSERT  新增
 
-只在「同 agent + 同 category」范围内比对：
-不同 Agent 的相似认知各自保留，这是联邦语义的一部分。
+只在「同 agent + 同 (user, bank) + 同 category」范围内比对：
+不同 Agent 的相似认知各自保留，这是联邦语义的一部分；
+不同 bank 的相似内容也各自保留（v20 P0-2），去重绝不跨库合并。
 """
 from __future__ import annotations
 
@@ -18,9 +19,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    normalize_bank_id,
+    normalize_user_id,
+)
 from ducky.federation import sqlbits
 from ducky.federation.schema import DEFAULT_AGENT
-from ducky.utils import get_facts_conn, jaccard_sim
+from ducky.utils import DEFAULT_USER_ID, get_facts_conn, jaccard_sim
 
 logger = logging.getLogger("aiduMEM.Federation.Dedup")
 
@@ -72,12 +78,23 @@ def check_duplicate(
     *,
     category: str = "general",
     agent_id: str = DEFAULT_AGENT,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
     conn=None,
 ) -> DedupVerdict:
-    """在同 agent + 同 category 内查找最相似的既有事实并给出三态判定。"""
+    """在同 agent + 同 (user, bank) + 同 category 内查找最相似的既有事实并给出三态判定。
+
+    v20 P0-2：扫描按 bank 作用域收口。此前不带 bank 条件时，B 库写入会命中
+    A 库的相似行 → verdict 携带 A 库的 fact_id → 上游 UPDATE/MERGE 直接改写
+    A 库数据。降级路径（扫描异常→INSERT）保持不变：最坏是同库重复一行，
+    绝不跨库污染。
+    """
     needle = (fact_value or "").strip()
     if not needle:
         return DedupVerdict(ACTION_INSERT, 0.0)
+
+    uid = normalize_user_id(user_id)
+    bid = normalize_bank_id(bank_id)
 
     own_conn = conn is None
     conn = conn or get_facts_conn()
@@ -86,8 +103,9 @@ def check_duplicate(
         rows = conn.execute(
             f"""SELECT id, fact_key, fact_value FROM facts
                 WHERE archived=0 AND category=? AND {agent_frag}
+                  AND user_id=? AND bank_id=?
                 ORDER BY updated_at DESC LIMIT ?""",
-            (category, *agent_params, SCAN_LIMIT),
+            (category, *agent_params, uid, bid, SCAN_LIMIT),
         ).fetchall()
     except Exception as exc:
         logger.debug("去重扫描失败，降级为直接新增: %s", exc)

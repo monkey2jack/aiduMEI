@@ -248,7 +248,11 @@ async function renderPulse(body) {
           (health.health_status === 'ok' ? '正常 OK' : esc(health.health_status || '—')) +
           '</div><div class="u">' + (degraded ? degraded + ' 项降级 / degraded' : '没有降级项 / no degradation') + '</div></div>' +
         '<div class="tile"><div class="k">版本 Version</div><div class="v" style="font-size:19px">' +
-          esc(health.version || '—') + '</div><div class="u">代号 ' + esc(health.codename || '—') + '</div></div>' +
+          esc(health.version || '—') + '</div><div class="u">' +
+          // v20 起当前运行时不再设神话代号。此处刻意**不**回落成「代号 —」：
+          // 那会把「本版没有代号」渲染成「代号取不到」，是两件不同的事。
+          (health.codename ? '代号 ' + esc(health.codename) : '智慧引擎 / wisdom engine') +
+          '</div></div>' +
         '<div class="tile"><div class="k">核心模块 Modules</div><div class="v">' + modOn +
           '<small>/ ' + modAll + '</small></div><div class="u">全部在线 / all online</div></div>' +
         '<div class="tile"><div class="k">知识域 Domains</div><div class="v">' + kTree.domains +

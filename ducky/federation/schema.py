@@ -79,46 +79,66 @@ def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in rows}
 
 
-def _rebuild_agent_scoped_unique_index(conn: sqlite3.Connection) -> None:
-    """🔴3：把 facts 全局唯一索引 (category,fact_key) 升级为按 agent 隔离。
+# writer.py 的 ON CONFLICT 目标与 hot/legacy_routes.py /facts/add 的 upsert
+# 都必须与本索引列集完全一致——三处任何一处单独改动，upsert 立即报
+# "no such conflict target"，所有事实写入崩溃。改一处必须同步改三处。
+FACTS_UNIQUE_COLUMNS = "agent_id, user_id, bank_id, category, fact_key"
 
-    幂等：已是新索引则跳过。存量库里同一 (category,fact_key) 的 agent_id 已被
-    上游回填为同一 DEFAULT_AGENT，故 (agent_id,category,fact_key) 仍唯一，重建不会
-    因重复行失败。若历史上真有跨 agent 撞 key 的脏数据导致建唯一索引失败，则降级为
-    普通索引并记 warning，避免阻断启动。
+
+def rebuild_facts_unique_index(conn: sqlite3.Connection) -> None:
+    """🔴3→v20 P0-2：facts 唯一索引升级为 agent + bank 双隔离。
+
+    v19 版是 (agent_id, category, fact_key)：两个 bank 无法各自持有同一
+    (agent, category, fact_key)——writer 的 upsert 会覆盖另一 bank 的行，
+    降级去重的 DELETE 更会跨 bank 消灭数据。v20 加宽为
+    (agent_id, user_id, bank_id, category, fact_key)。
+
+    迁移安全性：加宽唯一索引只放松约束——在旧三元组上唯一的行，在
+    五元组上必然仍唯一，故 v19→v20 重建不会因重复行失败。
+    幂等：索引 SQL 已含 bank_id 则跳过。
     """
     idx = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_facts_unique'"
     ).fetchone()
-    if idx and idx[0] and "agent_id" in idx[0]:
-        return  # 已是 agent 隔离版
+    if idx and idx[0] and "agent_id" in idx[0] and "bank_id" in idx[0]:
+        return  # 已是 agent+bank 双隔离版
+
+    # 索引依赖 bank 作用域列。核心 bootstrap 正常时列已就位；这里幂等地
+    # 再保证一次，防联邦迁移在核心建表失败后于残缺库上建索引直接报错。
+    from ducky.bank_contract import ensure_memory_banks_schema
+    ensure_memory_banks_schema(conn)
+
     try:
         conn.execute("DROP INDEX IF EXISTS idx_facts_unique")
         conn.execute(
-            "CREATE UNIQUE INDEX idx_facts_unique ON facts(agent_id, category, fact_key)"
+            f"CREATE UNIQUE INDEX idx_facts_unique ON facts({FACTS_UNIQUE_COLUMNS})"
         )
-        logger.info("🔒 facts 唯一索引已升级为 (agent_id, category, fact_key)")
-    except sqlite3.OperationalError as exc:
-        # 🔴3 自审：绝不能降级为“普通索引”。writer 的 ON CONFLICT(agent_id,category,fact_key)
-        # 需要一个 UNIQUE 约束作为冲突目标；若这里建成非唯一索引，upsert 会报
+        logger.info("🔒 facts 唯一索引已升级为 (%s)", FACTS_UNIQUE_COLUMNS)
+    except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+        # 撞 key 的重复行让 CREATE UNIQUE INDEX 报的是 IntegrityError
+        # （"UNIQUE constraint failed"），不是 OperationalError——只接后者
+        # 的话降级去重是死代码，升级撞脏数据直接崩（本文件回归测试实测抓获）。
+        # 🔴3 自审：绝不能降级为“普通索引”。writer 的 ON CONFLICT 需要一个
+        # UNIQUE 约束作为冲突目标；若这里建成非唯一索引，upsert 会报
         # “no such conflict target”导致所有联邦写入失败——比原 bug 更糟。
-        # 正确做法：先合并跨 agent 撞 key 的脏数据（保留每组最新一行），再重建唯一索引。
-        logger.warning("唯一索引升级遇冲突，尝试清理跨 agent 撞 key 脏数据后重建: %s", exc)
+        # 撞 key 只可能来自 pre-🔴3 时代的历史脏数据；清理只在同
+        # (agent, user, bank) 域内保留每组最新一行，绝不跨 bank 删行。
+        logger.warning("唯一索引升级遇冲突，尝试清理同域撞 key 脏数据后重建: %s", exc)
         try:
             conn.execute(
-                """
+                f"""
                 DELETE FROM facts
                 WHERE id NOT IN (
-                    SELECT MAX(id) FROM facts GROUP BY agent_id, category, fact_key
+                    SELECT MAX(id) FROM facts GROUP BY {FACTS_UNIQUE_COLUMNS}
                 )
                 """
             )
             conn.execute("DROP INDEX IF EXISTS idx_facts_unique")
             conn.execute(
-                "CREATE UNIQUE INDEX idx_facts_unique ON facts(agent_id, category, fact_key)"
+                f"CREATE UNIQUE INDEX idx_facts_unique ON facts({FACTS_UNIQUE_COLUMNS})"
             )
             logger.info("🔒 清理脏数据后，facts 唯一索引重建成功")
-        except sqlite3.OperationalError as exc2:
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc2:
             # 仍失败：宁可让联邦迁移整体报错、由运维介入，也不能留一个
             # 会让所有 upsert 崩溃的非唯一索引。抛出交由上层记录。
             raise RuntimeError(
@@ -179,11 +199,11 @@ def ensure_federation_schema(force: bool = False) -> dict:
             for stmt in _INDEXES:
                 conn.execute(stmt)
 
-            # 🔴3 修复：唯一约束升级为按 agent 隔离 (agent_id, category, fact_key)。
-            # 旧索引 (category, fact_key) 全局唯一会让 Agent B 写同 key 时静默覆盖
-            # Agent A 的记忆（且仍记 A 名下）。此处在 agent_id 回填完成后重建，
-            # 存量库同 (cat,key) 因 agent_id 一致仍唯一，迁移安全。
-            _rebuild_agent_scoped_unique_index(conn)
+            # 🔴3→v20 P0-2：唯一约束升级为 agent + bank 双隔离
+            # (agent_id, user_id, bank_id, category, fact_key)。旧三元组索引会让
+            # 另一 bank 写同 key 时静默覆盖本 bank 的行。此处在 agent_id 回填
+            # 完成后重建；加宽只放松约束，存量行必然仍唯一，迁移安全。
+            rebuild_facts_unique_index(conn)
 
             for name, ddl in (("agents", _AGENTS_DDL), ("federation_broadcast", _BROADCAST_DDL)):
                 before = conn.execute(

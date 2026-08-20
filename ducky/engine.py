@@ -81,6 +81,7 @@ class RecallEngine:
         before: Optional[str] = None,
         after: Optional[str] = None,
         memory_type: Optional[str] = None,
+        bank_id: str = "default",
     ) -> List[dict]:
         """检索主逻辑。"""
         t0 = time.time()
@@ -89,13 +90,18 @@ class RecallEngine:
         # 1. 向量初步候选召回（多取候选供加权和时效过滤）
         cand_limit = max(limit * 3, 30)
         try:
-            raw_res = mem.search(query, filters={"user_id": user_id}, limit=cand_limit)
+            # 🔴v20：默认域**不能**把 bank_id 下推给 mem0 —— 存量向量 payload 里
+            # 没这个字段，Qdrant 的 must 语义会把它们整批滤掉，且不报错只返回空。
+            # 下推只用于命名域，默认域靠下面的 Python 复筛保证隔离。
+            from ducky.bank_contract import vector_item_in_bank, vector_scope_filters
+            raw_res = mem.search(query, filters=vector_scope_filters(user_id, bank_id), limit=cand_limit)
             if isinstance(raw_res, dict):
                 candidates = raw_res.get("results", []) or []
             elif isinstance(raw_res, list):
                 candidates = raw_res
             else:
                 candidates = []
+            candidates = [c for c in candidates if vector_item_in_bank(c, bank_id)]
         except Exception as e:
             logger.warning("向量召回异常降级: %s", e)
             candidates = []

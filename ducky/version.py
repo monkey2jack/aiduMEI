@@ -3,6 +3,33 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命线 · 2026-08-20)
+    核心主题: 把 aiduMEI 从单一隐式记忆池升级为可审计、可复现、可回退的智慧引擎。
+    定性: **架构版**。版本号只使用两段式 `20.0`；当前运行时不再依赖神话代号，
+    v19 的 Athena 仅作为历史谱系保留。
+    1. ducky/bank_contract.py 与 ducky/schema_bootstrap.py 新增显式 user_id + bank_id 契约，
+       采用 additive migration，默认 bank 保持存量兼容，禁止以用户输入拼接表名或 SQL。
+    2. facts、memory_types、CoreMemory 与冲突消解路径补齐 bank scope，写/查/删/恢复/统计
+       使用精确作用域；跨 bank 的结果、覆盖和删除必须被拒绝并可观测。
+    3. benchmarks/ 固定 LongMemEval/LoCoMo 数据、模型、judge、prompt、seed、哈希和 JSONL
+       协议，适配器执行真实 HTTP 契约；oracle 只作检索上限诊断，不进入 headline。
+    4. ducky/vector_backend.py 提供 Qdrant 默认适配器与 sqlite-vec 可选 POC，先影子比对与回退演练，
+       不把不可逆换库与数据域迁移绑定；影子迁移与五重平价校验落地为 scripts/vector_shadow_poc.py
+       （源库只读白名单锁死、.lock 拒开工、检查点续跑），实测与决策记录进
+       docs/ADR-001-vector-backend-contract-and-poc.md，开关模板进 .env.example；
+       组件故障进入 degraded/trace，不能伪装成空结果。
+    5. /health、/metrics、/search trace 与后台任务补齐 bank/backend/降级证据，配置 reload
+       会清理 rerank 缓存并重新报告实际 provider、错误和耗时。
+    6. 本地沙箱、小仓 dogfooding、数据集合快照和发布卫生门禁形成 v20.0 G0-G8 验收链；
+       未完成评测与数据生命线证明前，不宣称分数、不切默认后端、不推大仓或发版。
+    7. 全库读路径泄漏清剿: governance/autodream/scenes/reflect/salience/opinions/obsidian/
+       broadcast/session/联邦 recall/persistence/v8 五脉/事件账本/evolve 反馈/毕业链/persona
+       逐条补齐作用域，统一「命名域下推+复筛、默认域保持 v19 形状但复筛」；
+       非法作用域取数前即抛，错误消息不泄露存在性。
+    8. 六处管理员聚合面（联邦 registry/broadcast/tiers、salience 指标与审计、evolve 全表
+       演化周期）逐一核对后刻意保留全库统计: 只输出内容无关的计数，属运维视角而非
+       用户数据视角。此为有意决策，记录在案。
+
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」
     定性: **纪律版**。不改任何运行时行为，改的是「什么情况下才允许发布」。
@@ -343,17 +370,21 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "19.5.0"
+SERVICE_VERSION = "20.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
-CODENAME = "Athena"
-CODENAME_ZH = "雅典娜"
-DISPLAY_NAME = f"aiduMEI {FULL_VERSION} · {CODENAME_ZH}"
+# v20 deliberately has no current mythological codename.  Keep the symbols as
+# ``None`` for old integrations that import them, but all public/runtime
+# contracts use the two-part version and DISPLAY_NAME instead.
+CODENAME = None
+CODENAME_ZH = None
+DISPLAY_NAME = f"aiduMEI {FULL_VERSION}"
 
 # 架构定位
 ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Layer Injection Defense, Multi-Store Consistency & Unified Scoring"
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.0", "", "", "全量记忆域隔离 · 可复现评测 · 后端契约与数据生命线"),
     ("19.5.0", "Athena", "雅典娜", "脱敏闸门 · 七面扫描器焊入发布链 · 空词表拒绝运行 · 负向对照可证伪"),
     ("19.4.3", "Athena", "雅典娜", "发布卫生 · 发行包也是公开面 · 与 v19.4.2 行为等价"),
     ("19.4.2", "Athena", "雅典娜", "守卫扩面 · 集成件凭据贯通 · 元测试锁死守卫射程 · 崩溃循环可见"),

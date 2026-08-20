@@ -18,8 +18,18 @@ def _norm_for_cache(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
-def cache_key(user_id: str, text: str, mode: str = "infer") -> str:
-    raw = f"{user_id}|{mode}|{_norm_for_cache(text)}"
+def cache_key(user_id: str, text: str, mode: str = "infer", bank_id: Any = None) -> str:
+    """抽取缓存键。
+
+    🔴v20：``bank_id`` 必须进键。此前键只有 (user_id, mode, text) —— 同一个人
+    把同一句话写进两个域时，第二次会**命中第一次的缓存并直接返回**：
+      · 那条记忆一个字都没写进第二个域，接口却回 ``status: ok``；
+      · 返回体里带的还是**另一个域**的 memory_id，属于跨域信息泄漏。
+    两者都不抛异常、不留日志。
+    """
+    from ducky.bank_contract import normalize_bank_id
+
+    raw = f"{user_id}|{normalize_bank_id(bank_id)}|{mode}|{_norm_for_cache(text)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

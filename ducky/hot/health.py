@@ -17,7 +17,7 @@ _version_info = {
 }
 
 
-def set_version_info(version: str, codename: str, codename_zh: str = "雅典娜"):
+def set_version_info(version: str, codename: str | None = None, codename_zh: str | None = None):
     """api_server 启动时调用，注入版本信息到 health 端点"""
     _version_info["service_version"] = version
     _version_info["codename"] = codename
@@ -90,6 +90,60 @@ def register_health_routes(app: FastAPI) -> None:
             "port_service": True,
             "injection_guard_ok": True,
         }
+
+        # v20 scope/backend contract: expose the actual default bank and
+        # vector backend capability without making health depend on optional
+        # sqlite-vec or a running Qdrant server.  A failed optional probe is a
+        # named degradation, never an unexplained empty search result.
+        try:
+            from ducky.bank_contract import DEFAULT_BANK_ID, ensure_memory_banks_schema
+            from ducky.utils import get_facts_conn
+            _bank_conn = get_facts_conn()
+            try:
+                _bank_state = ensure_memory_banks_schema(_bank_conn)
+            finally:
+                # get_facts_conn 返回线程复用代理，close() 是 no-op；
+                # 这里保持与本文件其余探针一致的 close 习惯即可，无泄漏。
+                _bank_conn.close()
+            probes["default_bank_id"] = DEFAULT_BANK_ID
+            probes["memory_banks_ok"] = _bank_state.get("status") == "ok"
+            if probes["memory_banks_ok"] is False:
+                probes["memory_banks_error"] = _bank_state.get("detail", "schema migration failed")
+        except Exception as _bank_exc:
+            probes["memory_banks_ok"] = False
+            probes["memory_banks_error"] = str(_bank_exc)[:120]
+
+        try:
+            from ducky.vector_backend import backend_health
+            _backend = backend_health()
+            probes["vector_backend"] = _backend.get("backend")
+            probes["vector_backend_ok"] = bool(_backend.get("ok"))
+            probes["vector_backend_degraded"] = list(_backend.get("degraded") or [])
+            # ok=False 有两种：真故障，和「单例还没起、根本没探」。
+            # 必须让运维一眼分得开，否则冷启动的常态会被当成事故，
+            # 几次假警报之后这一栏就没人看了。
+            probes["vector_backend_probed"] = bool(_backend.get("probed"))
+            if _backend.get("error"):
+                probes["vector_backend_error"] = str(_backend["error"])[:120]
+            elif _backend.get("detail"):
+                probes["vector_backend_detail"] = str(_backend["detail"])[:120]
+        except Exception as _backend_exc:
+            probes["vector_backend"] = "qdrant"
+            probes["vector_backend_ok"] = False
+            probes["vector_backend_error"] = str(_backend_exc)[:120]
+
+        # rerank 配置探针（v20 P0-4）：只报「配没配、配的谁」，不做真实外呼
+        # （health 不该烧付费 API），调用期三态（ok/error/empty）在 /search
+        # 响应的 _rerank 字段与 /usage 账本里。
+        try:
+            from ducky.mem0_runtime import rerank_config_status
+            _rr = rerank_config_status()
+            probes["rerank_configured"] = bool(_rr.get("configured"))
+            if _rr.get("configured"):
+                probes["rerank_provider"] = _rr.get("provider")
+        except Exception as e:
+            probes["rerank_configured"] = False
+            probes["rerank_error"] = str(e)[:120]
 
         # WAL 探针
         try:

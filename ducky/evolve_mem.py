@@ -188,11 +188,62 @@ def log_search_quality(
 FeedbackSignal = Literal["useful", "useless", "correction"]
 
 
+def _guard_feedback_scope(memory_id: str, user_id: str, bank_id: str) -> tuple[str, str] | None:
+    """v20 P0-2：反馈的 opt-in 域守卫（口径同 hot/legacy_helpers._fact_feedback_impl）。
+
+    不传作用域 = v19 管理员语义，零改动放行（返回 None）。
+    传了作用域：先规范化（非法直接抛 BankScopeError，路由层转 error dict），
+    再对照 salience 行上的归属戳做 canon 比较（uid 折叠 DEFAULT_USER_ID↔'default'，
+    老库无作用域列/空串归 default 域）。不符即拒——反馈会动 salience，
+    是跨库改写他库权重的通道，必须堵。行不存在时放行并返回规范化后的
+    作用域，由调用方预插带戳行（UUID 空间下探测无意义，真正的威胁
+    ——挪动他库 salience——已被不符即拒挡住，这是文档化的残余取舍）。
+    """
+    if not (user_id or "").strip() and not (bank_id or "").strip():
+        return None
+    from ducky.bank_contract import BankScopeError, normalize_bank_id, normalize_user_id
+    from ducky.utils import DEFAULT_USER_ID
+    want_uid = normalize_user_id(user_id or DEFAULT_USER_ID)
+    want_bid = normalize_bank_id(bank_id or "")
+    canon_want_uid = "default" if want_uid == DEFAULT_USER_ID else want_uid
+    try:
+        sal_conn = get_salience_conn()
+        row = sal_conn.execute(
+            "SELECT * FROM salience WHERE memory_id=?", (memory_id,)
+        ).fetchone()
+        cols = {r[1] for r in sal_conn.execute("PRAGMA table_info(salience)").fetchall()}
+        sal_conn.close()
+    except Exception as exc:
+        # 老库连 salience 表都没有：整库视为 default 域（口径同 legacy_helpers）
+        logger.debug(f"feedback 域守卫降级 default 域: {exc}")
+        if canon_want_uid != "default" or want_bid != "default":
+            raise BankScopeError("记忆不在该库或不存在") from exc
+        return (want_uid, want_bid)
+    if "user_id" not in cols or "bank_id" not in cols:
+        # v19 表无作用域列：整表归 default 域，具名域声称一律拒
+        # （行缺失也一样——没有列就盖不了戳，放行只会错盖成 default）
+        if canon_want_uid != "default" or want_bid != "default":
+            raise BankScopeError("记忆不在该库或不存在")
+        return (want_uid, want_bid)
+    if row is None:
+        return (want_uid, want_bid)
+    keys = row.keys() if hasattr(row, "keys") else []
+    row_uid = str((row["user_id"] if "user_id" in keys else "") or "default")
+    row_bid = str((row["bank_id"] if "bank_id" in keys else "") or "default")
+    canon_row_uid = "default" if row_uid == DEFAULT_USER_ID else row_uid
+    if canon_row_uid != canon_want_uid or row_bid != want_bid:
+        # 域不符与不存在同文案，不泄露他库记忆的存在性
+        raise BankScopeError("记忆不在该库或不存在")
+    return (want_uid, want_bid)
+
+
 def record_feedback(
     memory_id: str,
     signal: FeedbackSignal,
     query: str = "",
     correction_text: str | None = None,
+    user_id: str = "",
+    bank_id: str = "",
 ) -> dict:
     """
     记录用户对某条记忆的反馈，并立即更新 salience。
@@ -202,11 +253,30 @@ def record_feedback(
         signal:           'useful' | 'useless' | 'correction'
         query:            触发这条记忆的搜索词（可选，用于关联分析）
         correction_text:  若 signal='correction'，填入修正后的正确内容
+        user_id/bank_id:  v20 opt-in 作用域。不传 = v19 管理员语义零改动；
+                          传了则校验记忆归属，越库反馈直接拒（BankScopeError）
 
     Returns:
         {"ok": True, "salience_delta": ±x, "new_salience": y}
     """
+    scope = _guard_feedback_scope(memory_id, user_id, bank_id)
     ensure_evolve_schema()
+    if scope is not None:
+        # 行不存在时先预插带戳行，否则 _apply_salience_delta 的无戳
+        # INSERT 会让这条记忆被列默认值错盖成 default 域
+        try:
+            sal_conn = get_salience_conn()
+            now = time.time()
+            sal_conn.execute(
+                "INSERT OR IGNORE INTO salience"
+                "(memory_id, salience, last_access, access_count, created_at, user_id, bank_id)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (memory_id, 0.5, now, 0, now, scope[0], scope[1]),
+            )
+            sal_conn.commit()
+            sal_conn.close()
+        except Exception as exc:
+            logger.debug(f"feedback 预插带戳 salience 行跳过: {exc}")
     conn = _get_evolve_conn()
     conn.execute(
         "INSERT INTO evolve_feedback(memory_id, query, signal, correction_text, ts) VALUES(?,?,?,?,?)",

@@ -15,6 +15,8 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from ducky.conflict_resolver import resolve_fact_conflict, scan_and_resolve_text_conflicts
+from ducky.utils import DEFAULT_USER_ID
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
 from ducky.tree_memory import add_tree_node, get_subtree
 from ducky.skill_crystallizer import (
     detect_and_crystallize_patterns,
@@ -32,6 +34,8 @@ class ConflictCheckRequest(BaseModel):
     fact_key: str = ""
     fact_value: str = ""
     text: str = ""
+    user_id: str = DEFAULT_USER_ID
+    bank_id: str = DEFAULT_BANK_ID
 
 
 class TreeNodeRequest(BaseModel):
@@ -45,14 +49,27 @@ def register_octopus_routes(app: FastAPI) -> None:
     def conflict_resolve_endpoint(req: ConflictCheckRequest):
         """显式触发冲突检测与消解"""
         try:
+            scope = make_scope(req.user_id, req.bank_id)
             res_fact = None
             if req.fact_key and req.fact_value:
-                res_fact = resolve_fact_conflict(req.category, req.fact_key, req.fact_value)
+                res_fact = resolve_fact_conflict(
+                    req.category,
+                    req.fact_key,
+                    req.fact_value,
+                    user_id=scope.user_id,
+                    bank_id=scope.bank_id,
+                )
             res_text = []
             if req.text:
-                res_text = scan_and_resolve_text_conflicts(req.text)
+                res_text = scan_and_resolve_text_conflicts(
+                    req.text,
+                    user_id=scope.user_id,
+                    bank_id=scope.bank_id,
+                )
             return {
                 "status": "ok",
+                "user_id": scope.user_id,
+                "bank_id": scope.bank_id,
                 "fact_override": res_fact,
                 "text_conflicts_invalidated": res_text,
             }

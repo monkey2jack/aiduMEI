@@ -15,6 +15,13 @@ from ducky.api_models import (
     UpdateRequest,
 )
 from ducky.utils import DEFAULT_USER_ID
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    ensure_bank_registered,
+    make_scope,
+    vector_item_in_bank,
+    vector_scope_filters,
+)
 from ducky.mem0_runtime import (
     _normalize_user_id,
     get_llm_usage,
@@ -28,10 +35,19 @@ logger = logging.getLogger("aiduMEM.hot")
 
 def register_crud_routes(app: FastAPI) -> None:
     @app.get("/recent")
-    def recent(user_id: str = DEFAULT_USER_ID, limit: int = 10):
+    def recent(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 10):
         try:
+            scope = make_scope(user_id, bank_id)
             mem = get_memory()
-            results = mem.get_all(filters={"user_id": user_id}, limit=limit)
+            # 🔴v20：过滤下推 + Python 复筛，缺一不可。直接把 bank_id 塞进
+            # filters 会把**所有**存量向量滤掉（payload 里没这个字段）。
+            raw = mem.get_all(
+                filters=vector_scope_filters(_normalize_user_id(scope.user_id), scope.bank_id),
+                limit=limit,
+            )
+            items = raw.get("results", []) if isinstance(raw, dict) else (raw or [])
+            kept = [it for it in items if vector_item_in_bank(it, scope.bank_id)]
+            results = {**raw, "results": kept} if isinstance(raw, dict) else kept
             return {"status": "ok", "results": results}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -43,11 +59,16 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(500, str(e))
 
     @app.get("/stats")
-    def stats(user_id: str = DEFAULT_USER_ID):
+    def stats(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         try:
+            scope = make_scope(user_id, bank_id)
             mem = get_memory()
-            all_mem = mem.get_all(filters={"user_id": user_id}, limit=10000)
+            user_id = _normalize_user_id(scope.user_id)
+            all_mem = mem.get_all(filters=vector_scope_filters(user_id, scope.bank_id), limit=10000)
             results = all_mem.get("results", []) if isinstance(all_mem, dict) else (all_mem or [])
+            # 同上：默认域没下推 bank_id，命名域的点得在这儿剔掉，否则 /stats
+            # 会把别的域的条数算进默认域。
+            results = [it for it in results if vector_item_in_bank(it, scope.bank_id)]
 
             total = len(results)
             hash_counts: dict = {}
@@ -56,9 +77,9 @@ def register_crud_routes(app: FastAPI) -> None:
 
             for item in results:
                 h = item.get("hash", "")
-                uid = item.get("user_id", user_id)
+                item_uid = item.get("user_id", user_id)
                 mem_text = item.get("memory", "")
-                user_counts[uid] = user_counts.get(uid, 0) + 1
+                user_counts[item_uid] = user_counts.get(item_uid, 0) + 1
                 if h:
                     hash_counts[h] = hash_counts.get(h, 0) + 1
                 if mem_text and mem_text.startswith("["):
@@ -81,7 +102,12 @@ def register_crud_routes(app: FastAPI) -> None:
                 from ducky.facts_recall import tenant_clause
                 from ducky.utils import get_facts_conn
                 conn = get_facts_conn()
-                t_clause, t_params = tenant_clause(user_id)
+                # v20：传 conn 让 tenant_clause 感知 bank_id 列——已迁移库里
+                # 计数也要按 (user_id, bank_id) 收窄，否则默认租户的 /stats
+                # 会把具名域的多模态条数算进来（量级泄漏的 bank 版）。
+                t_clause, t_params = tenant_clause(
+                    user_id, bank_id=scope.bank_id, conn=conn
+                )
                 vision_count = conn.execute(
                     "SELECT COUNT(*) FROM facts WHERE media_url IS NOT NULL" + t_clause,
                     t_params,
@@ -100,6 +126,7 @@ def register_crud_routes(app: FastAPI) -> None:
                 "total_memories": total,
                 "duplicate_count": total_dupes,
                 "user_id": user_id,
+                "bank_id": scope.bank_id,
                 "user_distribution": user_counts,
                 "unique_hashes": len(hash_counts),
                 "duplicate_hashes": len(dupes),
@@ -124,8 +151,9 @@ def register_crud_routes(app: FastAPI) -> None:
         if not req.memory_id or not req.memory_id.strip():
             raise HTTPException(400, "memory_id 不能为空")
         try:
-            user_id = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
-            res = cascade_delete_memory(req.memory_id, user_id=user_id)
+            scope = make_scope(req.user_id, req.bank_id)
+            user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
+            res = cascade_delete_memory(req.memory_id, user_id=user_id, bank_id=scope.bank_id)
             return {"status": "ok", "details": res.get("details", {})}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -141,7 +169,8 @@ def register_crud_routes(app: FastAPI) -> None:
         # 🔴P0-3: 强制显式指定 user_id，清空 default 全库必须二次确认 confirm=True
         if not req.user_id or not req.user_id.strip():
             raise HTTPException(400, "user_id 必须显式指定，拒绝空参数清库")
-        user_id = _normalize_user_id(req.user_id)
+        scope = make_scope(req.user_id, req.bank_id)
+        user_id = _normalize_user_id(scope.user_id)
         if user_id == DEFAULT_USER_ID and not getattr(req, "confirm", False):
             # v19.4.2：文案原先把默认身份写死成 "(default)"。部署方配了
             # AIDUMEM_DEFAULT_USER_ID 之后，报错里说的租户和实际要清的
@@ -149,7 +178,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, f"清空默认用户({user_id})全部记忆具有破坏性，必须传递 confirm: true 二次确认")
 
         try:
-            res = cascade_delete_all(user_id=user_id, confirm=getattr(req, "confirm", False))
+            res = cascade_delete_all(user_id=user_id, bank_id=scope.bank_id, confirm=getattr(req, "confirm", False))
             return {"status": "ok", "details": res.get("details", {})}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -162,12 +191,13 @@ def register_crud_routes(app: FastAPI) -> None:
 
     # 🪦 tombstone 遗忘层（v19.4.0 Mímir 借鉴 B3）：遗忘不是删除，留痕可恢复
     @app.get("/tombstones")
-    def tombstones(user_id: str = DEFAULT_USER_ID, limit: int = 50):
+    def tombstones(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 50):
         """列某租户的遗忘记录（全文与撤回理由可查）"""
         try:
             from ducky.tombstone import list_tombstones
-            uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
-            return {"status": "ok", "results": list_tombstones(uid, limit=limit)}
+            scope = make_scope(user_id, bank_id)
+            uid = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
+            return {"status": "ok", "user_id": uid, "bank_id": scope.bank_id, "results": list_tombstones(uid, limit=limit, bank_id=scope.bank_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
@@ -184,8 +214,9 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "tombstone_id 不能为空")
         try:
             from ducky.tombstone import restore_tombstone
-            uid = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
-            res = restore_tombstone(req.tombstone_id, user_id=uid)
+            scope = make_scope(req.user_id, req.bank_id)
+            uid = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
+            res = restore_tombstone(req.tombstone_id, user_id=uid, bank_id=scope.bank_id)
             return {"status": "ok" if res.get("restored") else "noop", "details": res}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -233,11 +264,14 @@ def register_crud_routes(app: FastAPI) -> None:
 
     # 🏛️ 治理管线（v19.4.0 Mímir 借鉴 B1）：候选队列 + 人审入口
     @app.get("/governance/candidates")
-    def governance_candidates(status: str = "", user_id: str = "", limit: int = 50):
-        """候选事实队列（可按状态过滤：pending/evaluated/approved/rejected/committed）"""
+    def governance_candidates(status: str = "", user_id: str = "", limit: int = 50,
+                              bank_id: str = "", scope_user_id: str = ""):
+        """候选事实队列（可按状态过滤：pending/evaluated/approved/rejected/committed；
+        v20：bank_id / scope_user_id 可选作用域过滤，不传保持全量视图）"""
         try:
             from ducky.governance import list_candidates
-            return {"status": "ok", "results": list_candidates(status, user_id, limit)}
+            return {"status": "ok", "results": list_candidates(
+                status, user_id, limit, bank_id=bank_id, scope_user_id=scope_user_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
@@ -256,8 +290,13 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "decision 必须是 approve 或 reject")
         try:
             from ducky.governance import review_candidate
+            # v20 P0-2：只有调用方显式声明了 bank_id 才启用越库裁决守卫——
+            # 模型字段有 DEFAULT_BANK_ID 缺省值，无脑透传会把「没传 bank 的
+            # 管理员全权裁决」误判成「default 库越权」，v19 存量调用全断。
+            explicit_bank = req.bank_id if "bank_id" in req.model_fields_set else ""
             res = review_candidate(req.candidate_id, req.decision,
-                                   reason=req.reason, user_id=req.user_id)
+                                   reason=req.reason, user_id=req.user_id,
+                                   bank_id=explicit_bank)
             return {"status": "ok", "details": res}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -349,13 +388,14 @@ def register_crud_routes(app: FastAPI) -> None:
                 extra = getattr(req, "model_extra", None) or {}
                 content = extra.get("data", "")
             
-            user_id = _normalize_user_id(req.user_id) if req.user_id else DEFAULT_USER_ID
-            mem.update(req.memory_id, data=content)
+            scope = make_scope(req.user_id, req.bank_id)
+            user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
+            mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id})
             
             # 同步更新 FTS
             try:
                 from ducky.text_fts import _index_memory
-                _index_memory(req.memory_id, content, user_id=user_id)
+                _index_memory(req.memory_id, content, user_id=user_id, bank_id=scope.bank_id)
             except Exception as fe:
                 logger.debug(f"FTS index on update 跳过: {fe}")
 
@@ -365,13 +405,13 @@ def register_crud_routes(app: FastAPI) -> None:
                 fconn = get_facts_conn()
                 if user_id == DEFAULT_USER_ID:
                     fconn.execute(
-                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE id=? OR fact_key=?",
-                        (content, req.memory_id, req.memory_id),
+                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE (id=? OR fact_key=?) AND user_id=? AND bank_id=?",
+                        (content, req.memory_id, req.memory_id, user_id, scope.bank_id),
                     )
                 else:
                     fconn.execute(
-                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE (id=? OR fact_key=?) AND (source=? OR agent_id=?)",
-                        (content, req.memory_id, req.memory_id, user_id, user_id),
+                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE (id=? OR fact_key=?) AND user_id=? AND bank_id=?",
+                        (content, req.memory_id, req.memory_id, user_id, scope.bank_id),
                     )
                 fconn.commit()
                 fconn.close()
@@ -425,6 +465,7 @@ def register_crud_routes(app: FastAPI) -> None:
             level=req.level,
             max_tokens=req.max_tokens,
             user_id=req.user_id,
+            bank_id=req.bank_id,
         )
 
     @app.post("/facts/inject-context")

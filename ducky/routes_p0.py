@@ -32,6 +32,8 @@ class ReflectRequest(BaseModel):
     save: bool = True
     # 兼容 MCP mem_reflect 旧调用方：显式 topic 时围绕该主题检索反思。
     topic: str = ""
+    # v20 P0-2：反思作用域。不传 = default 域（v19 行为零改动）。
+    bank_id: str = ""
 
 
 class RollbackRequest(BaseModel):
@@ -59,30 +61,41 @@ def register_p0_routes(app: FastAPI) -> None:
                 source=req.source,
                 save=req.save,
                 topic=req.topic,
+                bank_id=req.bank_id,
             )
         except Exception as e:
             logger.error(f"/reflect 失败: {e}")
             return {"status": "error", "detail": str(e), "insights": []}
 
     @app.get("/reflect/list")
-    def reflect_list(user_id: str = DEFAULT_USER_ID, limit: int = 20, insight_type: str = ""):
-        """查询已落库的反思洞察。"""
+    def reflect_list(
+        user_id: str = DEFAULT_USER_ID,
+        limit: int = 20,
+        insight_type: str = "",
+        bank_id: str = "",
+    ):
+        """查询已落库的反思洞察。bank_id 不传 = 全量视图（v19 口径）。"""
         from ducky.reflect import get_reflections
 
         try:
-            rows = get_reflections(user_id=user_id, limit=limit, insight_type=insight_type)
+            rows = get_reflections(
+                user_id=user_id, limit=limit, insight_type=insight_type, bank_id=bank_id
+            )
             return {"status": "ok", "insights": rows, "count": len(rows)}
         except Exception as e:
             logger.error(f"/reflect/list 失败: {e}")
             return {"status": "error", "detail": str(e), "insights": []}
 
     @app.get("/reflect/context")
-    def reflect_context(user_id: str = DEFAULT_USER_ID, limit: int = 5):
+    def reflect_context(user_id: str = DEFAULT_USER_ID, limit: int = 5, bank_id: str = ""):
         """把最近洞察格式化为可注入上下文（供 Hermes 下一轮对话引用）。"""
         from ducky.reflect import inject_reflections
 
         try:
-            return {"status": "ok", "context": inject_reflections(user_id=user_id, limit=limit)}
+            return {
+                "status": "ok",
+                "context": inject_reflections(user_id=user_id, limit=limit, bank_id=bank_id),
+            }
         except Exception as e:
             logger.error(f"/reflect/context 失败: {e}")
             return {"status": "error", "detail": str(e), "context": ""}

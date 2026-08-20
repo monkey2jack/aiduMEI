@@ -27,7 +27,7 @@ IGNITION_BOOST = 1.5
 
 
 def funnel_search(memory, query: str, user_id: str, limit: int = 10,
-                  enable_ignition: bool = True) -> dict:
+                  enable_ignition: bool = True, bank_id: str = "default") -> dict:
     """
     搜索记忆 + Recall Funnel trace + Ignition。
 
@@ -42,7 +42,10 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     # Stage 1: 候选池 — 扩大搜索
     t0 = time.time()
     try:
-        candidates_raw = memory.search(query, filters={"user_id": user_id}, limit=limit * MAX_CANDIDATE_MULT)
+        # 🔴v20：默认域不下推 bank_id（存量向量 payload 无此字段，下推即清零），
+        # 命名域下推；两种情况都在拿到候选后按域复筛。
+        from ducky.bank_contract import vector_item_in_bank, vector_scope_filters
+        candidates_raw = memory.search(query, filters=vector_scope_filters(user_id, bank_id), limit=limit * MAX_CANDIDATE_MULT)
         # mem.search 在 BM25/混合召回内部失败时可能返回 None，必须安全降级。
         if candidates_raw is None:
             logger.warning("候选池: mem.search 返回 None，降级到 hybrid_search")
@@ -55,6 +58,7 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
         candidates = candidates_raw.get("results", candidates_raw) if isinstance(candidates_raw, dict) else candidates_raw
         if not isinstance(candidates, list):
             candidates = []
+        candidates = [c for c in candidates if vector_item_in_bank(c, bank_id)]
     except Exception as e:
         logger.warning(f"候选池搜索失败: {e}")
         candidates = []

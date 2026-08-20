@@ -56,6 +56,8 @@ def _sql_search(
     category: str | None,
     limit: int,
     shared_only: bool = False,
+    scope_frag: str = "",
+    scope_params: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     like = f"%{needle}%"
     where = ["archived=0"]
@@ -81,8 +83,12 @@ def _sql_search(
         params.extend(frag_params)
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    # v20 P0-2：租户作用域片段（tenant_clause 产出，形如 " AND bank_id=? ..."），
+    # 与 agent/profile/shared 谓词 AND 复合——梯子哪一级都翻不出域墙
+    scope_frag = scope_frag or ""
+    params.extend(scope_params or [])
     sql = f"""
-        SELECT * FROM facts WHERE {' AND '.join(where)}
+        SELECT * FROM facts WHERE {' AND '.join(where)}{scope_frag}
         ORDER BY
           CASE
             WHEN valid_to   IS NOT NULL AND valid_to   < ? THEN 2
@@ -149,12 +155,19 @@ def federated_recall(
     federated: bool = True,
     rerank: bool = False,
     tier_filter: str | None = None,
+    user_id: str = "",
+    bank_id: str = "",
 ) -> dict[str, Any]:
     """
     联邦检索主入口。返回 {status, level, results, ladder, elapsed_ms}。
 
     federated=False 时最多走到 L2（纯本 Agent 热通道），
     这是日常陪伴的默认路径：一次 SQL，不触碰联邦。
+
+    v20 P0-2（opt-in 作用域）：传了 user_id/bank_id 任一，四级梯子
+    （L1 热通道到 L4 全局兜底）全部按 tenant_clause 收窄——「全局」
+    只在本域内全局，绝不翻域墙。不传 = v19 管理员全库语义零改动。
+    非法作用域在进梯子前抛 BankScopeError，绝不静默降级成全库扫描。
     """
     started = time.perf_counter()
     needle = (query or "").strip()
@@ -163,12 +176,29 @@ def federated_recall(
     ladder: list[dict[str, Any]] = []
     reached = "L1"
 
+    scope_uid, scope_bid = "", ""
+    if user_id or bank_id:
+        from ducky.bank_contract import normalize_bank_id, normalize_user_id
+        # 校验放在 try 外：非法域必须炸出去，不许落成 degraded 空手而归
+        scope_uid = normalize_user_id(user_id) if user_id else ""
+        scope_bid = normalize_bank_id(bank_id or "default")
+
     conn = get_facts_conn()
+    scope_frag: str = ""
+    scope_params: list[Any] = []
+    if user_id or bank_id:
+        from ducky.facts_recall import tenant_clause
+        scope_frag, scope_params = tenant_clause(
+            scope_uid, bank_id=scope_bid, conn=conn
+        )
+        ladder.append({"level": "scope",
+                       "scope": f"tenant:{scope_uid or 'default'}/{scope_bid}"})
     try:
         # ── L1 热通道：本 Agent ───────────────────────
         rows = _sql_search(
             conn, needle, agent_ids=[agent_id], profile=None,
             category=category, limit=top_k * 3,
+            scope_frag=scope_frag, scope_params=scope_params,
         )
         ladder.append({"level": "L1", "scope": f"agent:{agent_id}", "hits": len(rows)})
 
@@ -184,6 +214,7 @@ def federated_recall(
             fed_rows = _sql_search(
                 conn, needle, agent_ids=None, profile=target_profile,
                 category=category, limit=top_k * 3, shared_only=True,
+                scope_frag=scope_frag, scope_params=scope_params,
             )
             rows = _apply_tier_weight(_dedup_by_id(rows + fed_rows))
             reached = "L3"
@@ -194,6 +225,7 @@ def federated_recall(
             global_rows = _sql_search(
                 conn, needle, agent_ids=None, profile=None,
                 category=category, limit=top_k * 3, shared_only=True,
+                scope_frag=scope_frag, scope_params=scope_params,
             )
             rows = _apply_tier_weight(_dedup_by_id(rows + global_rows))
             reached = "L4"

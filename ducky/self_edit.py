@@ -22,7 +22,19 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    stamp_bank_metadata,
+    vector_item_in_bank,
+    vector_scope_filters,
+)
 from ducky.llm_client import call_llm
+# 🔴v19.2 遗留缺陷（v20 修）：下面 _detect_relation 里的注入防护调用了
+# validate_and_sanitize_memory_content，但这个符号**从来没被导入过** ——
+# 每次 LLM 判定 duplicate/conflict 都抛 NameError，被 self_edit_on_add 的
+# `except Exception` 收进一条 logger.debug。既让合并功能整条失效，也让这道
+# 「LLM 回写前的注入清洗」自 v19.2.0 起从未真正执行过一次。
+from ducky.security.injection_guard import validate_and_sanitize_memory_content
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 
 logger = logging.getLogger("aiduMEM.self_edit")
@@ -101,17 +113,22 @@ def _extract_text(messages_json: Any) -> str:
     return str(messages_json)
 
 
-def _search_candidates(memory, user_id: str, new_text: str, limit: int = 3) -> list[dict]:
+def _search_candidates(memory, user_id: str, new_text: str, limit: int = 3,
+                       bank_id: str = DEFAULT_BANK_ID) -> list[dict]:
     try:
         # mem0 2.0.x search 的关键字是 top_k（不是 limit），传 limit 会被
         # **kwargs 静默吞掉导致候选数恒为默认值。先试 top_k，旧版回退 limit。
+        # 🔴v20：去重候选必须限定在同一个域内 —— 否则 work 域写入会跟 home 域的
+        # 旧记忆判定为「重复」，把两个域的内容合并成一条。
+        filters = vector_scope_filters(user_id, bank_id)
         try:
-            raw = memory.search(new_text, filters={"user_id": user_id}, top_k=limit)
+            raw = memory.search(new_text, filters=filters, top_k=limit)
         except TypeError:
-            raw = memory.search(new_text, filters={"user_id": user_id}, limit=limit)
+            raw = memory.search(new_text, filters=filters, limit=limit)
         results = raw.get("results", raw) if isinstance(raw, dict) else raw
         if not isinstance(results, list):
             return []
+        results = [r for r in results if vector_item_in_bank(r, bank_id)]
         return [
             {
                 "memory_id": r.get("id", ""),
@@ -148,9 +165,10 @@ def _parse_decision(raw: str) -> Optional[dict]:
     return None
 
 
-def _detect_relation(memory, user_id: str, new_text: str) -> Optional[dict]:
+def _detect_relation(memory, user_id: str, new_text: str,
+                     bank_id: str = DEFAULT_BANK_ID) -> Optional[dict]:
     """返回 {decision, memory_id, merged_content, confidence, reason} 或 None（判定为全新）。"""
-    candidates = _search_candidates(memory, user_id, new_text)
+    candidates = _search_candidates(memory, user_id, new_text, bank_id=bank_id)
     if not candidates:
         return None
 
@@ -261,11 +279,18 @@ def _log_edit(memory_id: str, user_id: str, action: str, old_content: str,
         conn.close()
 
 
-def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict) -> Optional[dict]:
+def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
+                     bank_id: str = DEFAULT_BANK_ID) -> Optional[dict]:
     """
     写入前自编辑入口。返回 None 表示「无需合并，按正常流程新增」；
     否则返回 {action, memory_id, merged_content, edit_id, confidence}。
     LLM 不可用 / 判定全新 / 任何异常 → 一律 None（回退 Layer1 原流程）。
+
+    🔴v20：``bank_id`` 此前**没有**这个形参，而 layer1_selfcheck.py:151 一直是
+    ``self_edit_on_add(..., bank_id=bank_id)`` 这么调的 —— 每次 /add 都稳定抛
+    ``TypeError: unexpected keyword argument 'bank_id'``，又被调用方的
+    ``except Exception`` 收进一条 ``logger.debug``。结果是 P0-2 的 LLM 语义级
+    去重在 v20 里**从未执行过一次**，日志上却什么都看不出来。
     """
     if not SELF_EDIT_ENABLED or memory is None:
         return None
@@ -275,7 +300,7 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict) -
         return None
 
     try:
-        relation = _detect_relation(memory, user_id, new_text)
+        relation = _detect_relation(memory, user_id, new_text, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"self-edit 检测异常（降级）: {e}")
         return None
@@ -289,7 +314,9 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict) -
     # 合并更新时剥离 recorded_at：add.py 为「新增」路径统一 stamp 的
     # 当前时间戳不能覆盖旧记忆的原始时间，否则 before/after 时间推理
     # 会把一条老记忆误判成「刚刚产生」。
-    merge_metadata = dict(metadata or {})
+    # 🔴v20：合并回写也要盖域戳 —— memory.update 会重写整个 payload，
+    # 不盖就把一条命名域记忆的 bank_id 字段抹掉，它当场退回默认域。
+    merge_metadata = stamp_bank_metadata(metadata, bank_id)
     merge_metadata.pop("recorded_at", None)
 
     try:
@@ -360,6 +387,9 @@ def rollback_edit(edit_id: int, memory=None) -> dict:
         logger.debug(f"回滚 FTS 同步跳过: {e}")
     try:
         from ducky.salience.core import on_memory_added
+        # 🔴v20 故意不传作用域：memory_edits 只存 user_id 没有 bank_id，
+        # 而 preserve_heat 的作用域刷新是「传任一就两列全盖」——只传 user
+        # 会把命名库的 bank 戳重置回 'default'。不传 = 保留行上原有归属。
         on_memory_added(memory_id, content=old_content, preserve_heat=True)
     except Exception as e:
         logger.debug(f"回滚 salience 同步跳过: {e}")

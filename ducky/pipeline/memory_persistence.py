@@ -19,6 +19,12 @@ import time, uuid, threading, logging
 from typing import Optional
 from collections import OrderedDict
 
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    normalize_bank_id,
+    vector_item_in_bank,
+    vector_scope_filters,
+)
 from ducky.utils import quick_sim
 
 logger = logging.getLogger("aiduMEM.persistence")
@@ -36,9 +42,15 @@ _last_session_cleanup = 0
 
 # ── 公共 API ──
 
-def session_start(user_id: str) -> dict:
-    """创建新搜索 Session。返回 {session_id, user_id, created, ttl}"""
+def session_start(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """创建新搜索 Session。返回 {session_id, user_id, bank_id, created, ttl}
+
+    v20 P0-2：作用域在 session_start 一次定死、随会话走——
+    之后的每次 session_search 都继承它，中途换不了库。
+    """
     now = time.time()
+    # 非法作用域在建会话前炸出 BankScopeError（路由层包成 error dict）
+    bank_id = normalize_bank_id(bank_id)
     sid = f"ses_{uuid.uuid4().hex[:12]}"
 
     with _sessions_lock:
@@ -53,6 +65,7 @@ def session_start(user_id: str) -> dict:
 
         _sessions[sid] = {
             "user_id": user_id,
+            "bank_id": bank_id,
             "created": now,
             "last_active": now,
             "history": [],
@@ -60,10 +73,11 @@ def session_start(user_id: str) -> dict:
             "context_text": "",
         }
 
-    logger.info(f"Session 创建: {sid} (user={user_id})")
+    logger.info(f"Session 创建: {sid} (user={user_id}, bank={bank_id})")
     return {
         "session_id": sid,
         "user_id": user_id,
+        "bank_id": bank_id,
         "created": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)),
         "ttl": SESSION_TTL,
     }
@@ -88,17 +102,22 @@ def session_search(
     result_ids = []
     results = []
 
+    # v20 P0-2：作用域随会话走——两条搜索路径共用同一套下推 + 复筛
+    sess_bank = sess.get("bank_id", DEFAULT_BANK_ID)
+    scope_filters = vector_scope_filters(sess["user_id"], sess_bank)
+
     # ── Step 1: 历史记忆命中 ──
     if use_context and sess["history"]:
         history_text = " ".join(h["query"] for h in sess["history"][-5:])
         try:
             raw = memory.search(
                 f"{query} {history_text[:200]}",
-                filters={"user_id": sess["user_id"]},
+                filters=scope_filters,
                 limit=limit * 2,
             )
             candidates = raw.get("results", raw) if isinstance(raw, dict) else raw
             results = list(candidates) if isinstance(candidates, list) else []
+            results = [r for r in results if vector_item_in_bank(r, sess_bank)]
             result_ids = [r.get("id", "") for r in results[:limit]]
         except Exception as e:
             logger.warning(f"Session search 失败: {e}")
@@ -107,9 +126,10 @@ def session_search(
     # ── Step 2: 如果上下文搜索无果，fallback 到纯 query ──
     if not results:
         try:
-            raw = memory.search(query, filters={"user_id": sess["user_id"]}, limit=limit)
+            raw = memory.search(query, filters=scope_filters, limit=limit)
             candidates = raw.get("results", raw) if isinstance(raw, dict) else raw
             results = list(candidates) if isinstance(candidates, list) else []
+            results = [r for r in results if vector_item_in_bank(r, sess_bank)]
         except Exception as e:
             logger.warning(f"Session fallback search 失败: {e}")
 
@@ -179,6 +199,7 @@ def session_report(session_id: str) -> dict:
             "status": "ok",
             "session_id": session_id,
             "user_id": sess["user_id"],
+            "bank_id": sess.get("bank_id", DEFAULT_BANK_ID),
             "created": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(sess["created"])),
             "age_seconds": int(time.time() - sess["created"]),
             "history_count": len(sess["history"]),
@@ -198,6 +219,8 @@ def session_end(session_id: str) -> dict:
             "status": "ok",
             "session_id": session_id,
             "user_id": removed.get("user_id", ""),
+            # v20 P0-2：把会话的作用域交还上层，session_end 反思按域反思
+            "bank_id": removed.get("bank_id", DEFAULT_BANK_ID),
         }
     return {"status": "error", "detail": "Session 不存在"}
 
