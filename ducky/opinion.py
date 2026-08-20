@@ -68,6 +68,15 @@ def ensure_opinion_schema() -> None:
     try:
         conn = get_facts_conn()
         conn.execute(_OPINIONS_DDL)
+        # v20 P0-2 迁移：信念行盖作用域戳（从所属 facts 行继承），
+        # 分库级联删除/审计/统计才有抓手。存量行归 default 域，零丢失。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(opinions)").fetchall()]
+        if "user_id" not in cols:
+            conn.execute("ALTER TABLE opinions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'")
+            logger.info("✅ opinions 表已添加 user_id 列")
+        if "bank_id" not in cols:
+            conn.execute("ALTER TABLE opinions ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'")
+            logger.info("✅ opinions 表已添加 bank_id 列")
         for stmt in _OPINION_INDEXES:
             try:
                 conn.execute(stmt)
@@ -76,6 +85,24 @@ def ensure_opinion_schema() -> None:
         conn.commit()
     except Exception as exc:
         logger.warning("opinions 建表跳过（服务继续）: %s", exc)
+
+
+def _fact_scope(conn, fact_id: int) -> tuple[str, str]:
+    """从所属 facts 行取 (user_id, bank_id)。
+
+    信念的归属跟着事实走（fact_id 全局唯一，一条事实只属于一个库），
+    调用方无权也无需另报作用域。老库 facts 没有作用域列、或事实行
+    不存在时落 default/default——与存量回填口径一致。
+    """
+    try:
+        row = conn.execute(
+            "SELECT user_id, bank_id FROM facts WHERE id=?", (fact_id,)
+        ).fetchone()
+        if row:
+            return (str(row[0] or "default"), str(row[1] or "default"))
+    except Exception as exc:
+        logger.debug("facts 作用域查询回退 default: %s", exc)
+    return ("default", "default")
 
 
 def set_opinion(fact_id: int, stance: str, confidence: float = 0.5,
@@ -103,15 +130,21 @@ def set_opinion(fact_id: int, stance: str, confidence: float = 0.5,
         ensure_opinion_schema()
         conn = get_facts_conn()
         now = _now_iso()
+        # v20 P0-2：同事务内从 facts 行继承作用域戳（事实换不了库，
+        # upsert 时也一并刷新，纠正历史上错盖的戳）
+        scope_user, scope_bank = _fact_scope(conn, fact_id)
         cur = conn.execute(
             """INSERT INTO opinions (fact_id, stance, confidence, evidence_ids,
-                                     source, owner, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                     source, owner, created_at, updated_at,
+                                     user_id, bank_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(fact_id, source) DO UPDATE SET
                    stance=excluded.stance, confidence=excluded.confidence,
                    evidence_ids=excluded.evidence_ids, owner=excluded.owner,
-                   updated_at=excluded.updated_at""",
-            (fact_id, stance, confidence, ev_json, source, owner, now, now),
+                   updated_at=excluded.updated_at,
+                   user_id=excluded.user_id, bank_id=excluded.bank_id""",
+            (fact_id, stance, confidence, ev_json, source, owner, now, now,
+             scope_user, scope_bank),
         )
         oid = cur.lastrowid
         # 📒 事件账本（B5）：信念写入留痕，同事务
@@ -119,7 +152,8 @@ def set_opinion(fact_id: int, stance: str, confidence: float = 0.5,
             from ducky.event_ledger import record_event
             record_event(conn, actor=owner or "system", action="opinion_set",
                          target_id=f"fact:{fact_id}",
-                         reason=f"stance={stance} source={source} confidence={confidence:.2f}")
+                         reason=f"stance={stance} source={source} confidence={confidence:.2f}",
+                         user_id=scope_user, bank_id=scope_bank)
         except Exception as le:
             logger.debug("ledger 记录跳过: %s", le)
         conn.commit()

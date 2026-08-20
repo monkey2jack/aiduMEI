@@ -26,7 +26,15 @@ import logging
 import re
 from typing import Any, Optional
 
-from ducky.utils import get_facts_conn
+from ducky.utils import DEFAULT_USER_ID, get_facts_conn
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    ensure_bank_registered,
+    ensure_memory_banks_schema,
+    make_scope,
+    scoped_storage_key,
+    raw_storage_key,
+)
 
 logger = logging.getLogger("aiduMEM.memory_types")
 
@@ -52,13 +60,20 @@ def ensure_memory_types_schema() -> None:
         return
     conn = get_facts_conn()
     try:
+        # The bank registry/columns are additive and shared by all storage
+        # layers.  Calling it here also makes standalone imports (without the
+        # API server's schema bootstrap) safe in tests and maintenance jobs.
+        ensure_memory_banks_schema(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_types (
                 memory_ref   TEXT PRIMARY KEY,  -- mem0 id 或 facts 表名:rowid
                 memory_type  TEXT NOT NULL DEFAULT 'FACTS',
                 source       TEXT DEFAULT 'rule',
                 confidence   REAL DEFAULT 0.5,
-                updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_id      TEXT NOT NULL DEFAULT 'default',
+                bank_id      TEXT NOT NULL DEFAULT 'default',
+                memory_ref_raw TEXT
             )
         """)
         conn.execute(
@@ -75,12 +90,62 @@ def ensure_memory_types_schema() -> None:
         except Exception:
             # ref_alt 已存在或 ALTER 不被支持时忽略，查询侧会回退单 ref。
             pass
+        # v20.0 scope columns are additive so old memory_types.db/facts.db
+        # snapshots remain readable.  Do not rebuild the table: preserving
+        # the legacy memory_ref primary key is what keeps existing joins and
+        # exports stable.  Named banks use a deterministic scoped storage key
+        # (see _storage_ref below), while memory_ref_raw retains the public id.
+        for column, ddl in (
+            ("user_id", "TEXT NOT NULL DEFAULT 'default'"),
+            ("bank_id", "TEXT NOT NULL DEFAULT 'default'"),
+            ("memory_ref_raw", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE memory_types ADD COLUMN {column} {ddl}")
+            except Exception:
+                pass
+        try:
+            conn.execute(
+                "UPDATE memory_types SET memory_ref_raw=memory_ref "
+                "WHERE memory_ref_raw IS NULL OR memory_ref_raw=''"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_types_scope_ref "
+                "ON memory_types(user_id, bank_id, memory_ref_raw)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_types_scope "
+                "ON memory_types(user_id, bank_id, memory_type)"
+            )
+        except Exception as exc:
+            logger.debug("memory_types scope index/backfill skipped: %s", exc)
         conn.commit()
         _checked = True
     except Exception as e:
         logger.warning(f"memory_types 表初始化失败（服务继续）: {e}")
     finally:
         conn.close()
+
+
+def _scope(user_id: str | None = None, bank_id: str | None = None):
+    """Create/validate a scope and lazily register its bank."""
+    scope = make_scope(
+        DEFAULT_USER_ID if user_id is None else user_id,
+        DEFAULT_BANK_ID if bank_id is None else bank_id,
+    )
+    # Registration is intentionally best-effort here; schema initialisation
+    # itself remains the source of truth and a read-only deployment should be
+    # able to query existing rows without inventing a bank record.
+    try:
+        ensure_bank_registered(scope)
+    except Exception as exc:
+        logger.debug("memory_types bank registration skipped: %s", exc)
+    return scope
+
+
+def _storage_ref(memory_ref: str, scope) -> str:
+    """Return a collision-free DB PK while preserving default legacy ids."""
+    return scoped_storage_key(memory_ref, scope)
 
 
 # ── 确定性规则分类（无 LLM 兜底）────────────────────────────────────────
@@ -154,9 +219,27 @@ def _llm_classify(text: str) -> Optional[str]:
     return None
 
 
-def classify_and_record(memory_ref: str, text: str, *, use_llm: bool = False) -> dict:
-    """判型并写入账本。返回 {memory_type, source, confidence}。"""
+def classify_and_record(
+    memory_ref: str,
+    text: str,
+    *,
+    use_llm: bool = False,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> dict:
+    """判型并写入账本。
+
+    ``user_id``/``bank_id`` are keyword-only to preserve every v19 caller.
+    The public ``memory_ref`` remains unchanged in the return value, while a
+    deterministic scoped key is used internally for named banks so identical
+    ids can safely coexist.
+    """
     ensure_memory_types_schema()
+    scope = _scope(user_id, bank_id)
+    raw_ref = str(memory_ref or "").strip()
+    if not raw_ref:
+        raise ValueError("memory_ref 不能为空")
+    storage_ref = _storage_ref(raw_ref, scope)
 
     confidence = 0.5
     source = "rule"
@@ -172,16 +255,20 @@ def classify_and_record(memory_ref: str, text: str, *, use_llm: bool = False) ->
     conn = get_facts_conn()
     try:
         alt = None
-        if memory_ref.startswith("fact:"):
-            alt = memory_ref[5:]
+        if raw_ref.startswith("fact:"):
+            alt = raw_ref[5:]
         conn.execute(
-            "INSERT INTO memory_types (memory_ref, ref_alt, memory_type, source, confidence, updated_at) "
-            "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP) "
+            "INSERT INTO memory_types "
+            "(memory_ref, ref_alt, memory_type, source, confidence, updated_at, user_id, bank_id, memory_ref_raw) "
+            "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?) "
             "ON CONFLICT(memory_ref) DO UPDATE SET "
             "ref_alt=COALESCE(excluded.ref_alt, memory_types.ref_alt), "
             "memory_type=excluded.memory_type, source=excluded.source, "
-            "confidence=excluded.confidence, updated_at=CURRENT_TIMESTAMP",
-            (memory_ref, alt, memory_type, source, confidence),
+            "confidence=excluded.confidence, updated_at=CURRENT_TIMESTAMP, "
+            "user_id=excluded.user_id, bank_id=excluded.bank_id, "
+            "memory_ref_raw=excluded.memory_ref_raw",
+            (storage_ref, alt, memory_type, source, confidence,
+             scope.user_id, scope.bank_id, raw_ref),
         )
         conn.commit()
     except Exception as e:
@@ -189,16 +276,29 @@ def classify_and_record(memory_ref: str, text: str, *, use_llm: bool = False) ->
     finally:
         conn.close()
 
-    return {"memory_type": memory_type, "source": source, "confidence": confidence}
+    return {
+        "memory_type": memory_type,
+        "source": source,
+        "confidence": confidence,
+        "user_id": scope.user_id,
+        "bank_id": scope.bank_id,
+        "memory_ref": raw_ref,
+    }
 
 
-def get_batch_memory_types(memory_refs: list[str]) -> dict[str, str]:
+def get_batch_memory_types(
+    memory_refs: list[str],
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> dict[str, str]:
     """批量查询多条记忆的类型（0 N+1 数据库往返）。
     未记录的默认返回 FACTS。
     """
     if not memory_refs:
         return {}
     ensure_memory_types_schema()
+    scope = _scope(user_id, bank_id)
     conn = get_facts_conn()
     unique_refs = list(set(str(r) for r in memory_refs if r))
     if not unique_refs:
@@ -206,19 +306,26 @@ def get_batch_memory_types(memory_refs: list[str]) -> dict[str, str]:
     result: dict[str, str] = {r: "FACTS" for r in unique_refs}
     try:
         placeholders = ",".join("?" for _ in unique_refs)
+        storage_refs = [_storage_ref(ref, scope) for ref in unique_refs]
         query = f"""
-            SELECT memory_ref, ref_alt, memory_type 
-            FROM memory_types 
-            WHERE memory_ref IN ({placeholders}) 
-               OR (ref_alt IS NOT NULL AND ref_alt IN ({placeholders}))
+            SELECT memory_ref, memory_ref_raw, ref_alt, memory_type
+            FROM memory_types
+            WHERE user_id=? AND bank_id=? AND
+              (memory_ref IN ({placeholders})
+               OR memory_ref_raw IN ({placeholders})
+               OR (ref_alt IS NOT NULL AND ref_alt IN ({placeholders})))
         """
-        rows = conn.execute(query, unique_refs + unique_refs).fetchall()
+        rows = conn.execute(
+            query,
+            [scope.user_id, scope.bank_id] + storage_refs + unique_refs + unique_refs,
+        ).fetchall()
         for r in rows:
             mtype = r["memory_type"]
             mref = r["memory_ref"]
+            raw = r["memory_ref_raw"] or raw_storage_key(mref, scope)
             ralt = r["ref_alt"]
             if mref:
-                result[mref] = mtype
+                result[raw] = mtype
             if ralt:
                 result[ralt] = mtype
         return result
@@ -228,33 +335,50 @@ def get_batch_memory_types(memory_refs: list[str]) -> dict[str, str]:
     finally:
         conn.close()
 
-def get_memory_type(memory_ref: str) -> str:
+def get_memory_type(
+    memory_ref: str,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> str:
     """查询某条记忆的类型；未记录返回 FACTS（老数据默认事实）。
 
     P2-4：支持双 ref 命中——主链 UUID 与 backfill 的 fact:{id} 任一
     匹配都返回同一分类，避免同一条记忆出现两条对不上的账本记录。
     """
     ensure_memory_types_schema()
+    scope = _scope(user_id, bank_id)
+    raw_ref = str(memory_ref or "").strip()
+    if not raw_ref:
+        return "FACTS"
+    storage_ref = _storage_ref(raw_ref, scope)
     conn = get_facts_conn()
     try:
         row = conn.execute(
             "SELECT memory_type FROM memory_types "
-            "WHERE memory_ref=? OR (ref_alt IS NOT NULL AND ref_alt=?)",
-            (memory_ref, memory_ref),
+            "WHERE user_id=? AND bank_id=? AND "
+            "(memory_ref=? OR memory_ref_raw=? OR (ref_alt IS NOT NULL AND ref_alt=?))",
+            (scope.user_id, scope.bank_id, storage_ref, raw_ref, raw_ref),
         ).fetchone()
         return row["memory_type"] if row else "FACTS"
     finally:
         conn.close()
 
 
-def list_types(user_id: str = "default") -> list[dict]:
-    """按类型统计已分类记忆数量（供控制台/审计）。"""
+def list_types(
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> list[dict]:
+    """按指定 bank 统计已分类记忆数量（供控制台/审计）。"""
     ensure_memory_types_schema()
+    scope = _scope(user_id, bank_id)
     conn = get_facts_conn()
     try:
         rows = conn.execute(
             "SELECT memory_type, COUNT(*) AS cnt, ROUND(AVG(confidence),3) AS avg_conf "
-            "FROM memory_types GROUP BY memory_type ORDER BY cnt DESC"
+            "FROM memory_types WHERE user_id=? AND bank_id=? "
+            "GROUP BY memory_type ORDER BY cnt DESC",
+            (scope.user_id, scope.bank_id),
         ).fetchall()
         return [
             {
@@ -269,44 +393,76 @@ def list_types(user_id: str = "default") -> list[dict]:
         conn.close()
 
 
-def reset_all_types() -> int:
-    """清空类型账本（重建用）。返回删除条数。"""
+def reset_all_types(
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+    *,
+    all_scopes: bool = False,
+) -> int:
+    """清空指定 bank 的类型账本（重建用）。
+
+    ``all_scopes`` is an explicit escape hatch for offline maintenance only;
+    the HTTP route never enables it.  This prevents a v19-style unscoped
+    ``DELETE FROM memory_types`` from erasing another bank.
+    """
     ensure_memory_types_schema()
+    scope = _scope(user_id, bank_id)
     conn = get_facts_conn()
     try:
-        cur = conn.execute("DELETE FROM memory_types")
+        if all_scopes:
+            cur = conn.execute("DELETE FROM memory_types")
+        else:
+            cur = conn.execute(
+                "DELETE FROM memory_types WHERE user_id=? AND bank_id=?",
+                (scope.user_id, scope.bank_id),
+            )
         conn.commit()
         return int(cur.rowcount or 0)
     finally:
         conn.close()
 
 
-def backfill_from_facts(limit: int = 2000) -> dict:
+def backfill_from_facts(
+    limit: int = 2000,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+) -> dict:
     """从 facts.db 现有数据重建类型账本（存量数据 P1-1 迁移）。
 
     规则：memory_ref = "fact:{id}"，用 fact_key + fact_value 判型。
     返回 {scanned, classified}。
     """
     ensure_memory_types_schema()
+    scope = _scope(user_id, bank_id)
     conn = get_facts_conn()
     classified = 0
     scanned = 0
     try:
+        # ``ensure_memory_banks_schema`` adds these columns to old facts
+        # tables.  Exact equality is intentional: a bank must never be a
+        # substring/LIKE filter, and the LIMIT must apply after isolation.
         rows = conn.execute(
-            "SELECT id, fact_key, fact_value FROM facts WHERE archived=0 ORDER BY id LIMIT ?",
-            (max(1, min(int(limit), 5000)),),
+            "SELECT id, fact_key, fact_value FROM facts "
+            "WHERE archived=0 AND user_id=? AND bank_id=? "
+            "ORDER BY id LIMIT ?",
+            (scope.user_id, scope.bank_id, max(1, min(int(limit), 5000))),
         ).fetchall()
         scanned = len(rows)
         for r in rows:
             ref = f"fact:{r['id']}"
             mem_type = classify_text(f"{r['fact_key']} {r['fact_value']}")
+            storage_ref = _storage_ref(ref, scope)
             conn.execute(
-                "INSERT INTO memory_types (memory_ref, memory_type, source, confidence, updated_at) "
-                "VALUES (?,?,?,?,CURRENT_TIMESTAMP) "
+                "INSERT INTO memory_types "
+                "(memory_ref, memory_type, source, confidence, updated_at, user_id, bank_id, memory_ref_raw) "
+                "VALUES (?,?,?,?,CURRENT_TIMESTAMP,?,?,?) "
                 "ON CONFLICT(memory_ref) DO UPDATE SET "
                 "memory_type=excluded.memory_type, source='backfill', confidence=0.5, "
-                "updated_at=CURRENT_TIMESTAMP",
-                (ref, mem_type, "backfill", 0.5),
+                "updated_at=CURRENT_TIMESTAMP, user_id=excluded.user_id, "
+                "bank_id=excluded.bank_id, memory_ref_raw=excluded.memory_ref_raw",
+                (storage_ref, mem_type, "backfill", 0.5,
+                 scope.user_id, scope.bank_id, ref),
             )
             classified += 1
         conn.commit()

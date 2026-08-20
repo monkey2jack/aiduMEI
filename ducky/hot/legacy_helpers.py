@@ -121,11 +121,29 @@ def _extract_entities(text: str) -> list[str]:
         for m in pat.finditer(text):          _add(m.group(0))
     return candidates
 
-def _extract_key_facts(category: str, limit: int = 100) -> list:
+def _extract_key_facts(category: str, limit: int = 100,
+                       user_id: str = "", bank_id: str = "") -> list:
+    """v20 P0-2：传了作用域就只取该 (user_id, bank_id) 域内事实；
+    不传保持 v19 全库行为（存量调用零改动）。旧库缺作用域列时退回全库查询。"""
     conn = _get_facts_conn()
-    rows = conn.execute("SELECT * FROM facts WHERE archived=0 AND category=? ORDER BY updated_at DESC LIMIT ?",
-                       (category, limit)).fetchall()
-    conn.close()
+    try:
+        if user_id or bank_id:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM facts WHERE archived=0 AND category=? "
+                    "AND user_id=? AND bank_id=? ORDER BY updated_at DESC LIMIT ?",
+                    (category, user_id or "default", bank_id or "default", limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = conn.execute(
+                    "SELECT * FROM facts WHERE archived=0 AND category=? ORDER BY updated_at DESC LIMIT ?",
+                    (category, limit)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM facts WHERE archived=0 AND category=? ORDER BY updated_at DESC LIMIT ?",
+                (category, limit)).fetchall()
+    finally:
+        conn.close()
     return [dict(r) for r in rows]
 
 def _auto_extract_and_link(fact_id: int, text: str, conn=None) -> list[str]:
@@ -172,15 +190,52 @@ def _vault_refine(category, fact_key, fact_value, level):
     return {"status": "noop"}
 
 # ── 6.5  Feedback ──
-def _fact_feedback_impl(fact_id: int, helpful: bool):
+def _fact_feedback_impl(fact_id: int, helpful: bool,
+                        user_id: str = "", bank_id: str = ""):
+    """v20 P0-2 opt-in 作用域护栏（默认零改动）：
+
+    fact_id 是全局唯一主键，v19 语义里 feedback 是管理员级全库操作，
+    不传作用域时原样保留。传了任一作用域参数，就必须先证明这条事实
+    属于该域，防止甲库调用方枚举 id 去动乙库事实的信任分。
+    域不符与不存在同码同文案（404），不泄露他库 fact 的存在性。
+    """
     try:
         conn = _get_facts_conn()
         cur = conn.cursor()
-        cur.execute("SELECT category,trust_score FROM facts WHERE id=?", (fact_id,))
-        row = cur.fetchone()
+        try:
+            cur.execute("SELECT category,trust_score,user_id,bank_id FROM facts WHERE id=?",
+                        (fact_id,))
+            row = cur.fetchone()
+            row_scope = (str(row["user_id"] or "default"),
+                         str(row["bank_id"] or "default")) if row else None
+        except sqlite3.OperationalError:
+            # 老库还没迁出作用域列：整表视作 default 域（与存量回填口径一致）
+            cur.execute("SELECT category,trust_score FROM facts WHERE id=?", (fact_id,))
+            row = cur.fetchone()
+            row_scope = ("default", "default") if row else None
         if not row:
             conn.close()
             raise HTTPException(404, f"fact_id={fact_id} 不存在")
+        if user_id or bank_id:
+            from ducky.bank_contract import (
+                BankScopeError, normalize_bank_id, normalize_user_id,
+            )
+            try:
+                want_uid = normalize_user_id(user_id) if user_id else ""
+                want_bid = normalize_bank_id(bank_id) if bank_id else ""
+            except BankScopeError as be:
+                conn.close()
+                raise HTTPException(400, f"非法作用域: {be}")
+
+            # 改名默认身份（如 dudu）与字面量 'default' 折叠同域
+            # （v19.4.2 教训，口径同 salience.conflict._canon_uid）
+            def _canon(uid: str) -> str:
+                return "default" if uid == DEFAULT_USER_ID else uid
+
+            if ((want_uid and _canon(want_uid) != _canon(row_scope[0]))
+                    or (want_bid and want_bid != row_scope[1])):
+                conn.close()
+                raise HTTPException(404, f"fact_id={fact_id} 不存在")
         if row["category"] in _L0_CATEGORIES:
             conn.close()
             return {"status":"ok","message":"铁律类不受feedback影响","noop":True}
@@ -369,63 +424,98 @@ def _ensure_observations_table(conn):
             logger.debug("observations 索引跳过: %s", exc)
     conn.commit()
 
+# v20 P0-2：scenes 带作用域列；唯一约束按 (user_id, bank_id, member_keys)
+# 分域去重——两个 bank 各自持有同一 member_keys 的场景互不吞噬。
+_SCENES_DDL_V20 = """
+CREATE TABLE IF NOT EXISTS scenes (
+    scene_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    category    TEXT DEFAULT '',
+    summary     TEXT DEFAULT '',
+    member_keys TEXT DEFAULT '',
+    member_count INTEGER DEFAULT 0,
+    user_id     TEXT NOT NULL DEFAULT 'default',
+    bank_id     TEXT NOT NULL DEFAULT 'default',
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, bank_id, member_keys)
+)
+"""
+
+
 def _ensure_scenes_table(conn):
     """🔴6：scenes 表此前从未建，导致 /scene 开箱 500。此处幂等建表。
 
-    member_keys 加 UNIQUE：后台聚类每 12h 跑一次，配合下方 INSERT OR IGNORE
-    防止同一场景重复累积、表无限膨胀（自审 A ⚠️）。
+    v20 P0-2：旧表（member_keys 行内 UNIQUE 删不掉 / 无作用域列）重建迁移。
+    scenes 是聚类衍生数据、每 12h 重算，本可整表重建；但为守住
+    「default 库存量零丢失」，旧行拷入新表并统一归 default 域。
     """
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS scenes (
-            scene_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-            category    TEXT DEFAULT '',
-            summary     TEXT DEFAULT '',
-            member_keys TEXT DEFAULT '' UNIQUE,
-            member_count INTEGER DEFAULT 0,
-            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    # 迁移：早期版本建过无 UNIQUE 的 scenes 表；scenes 是聚类衍生数据，可安全重建。
+    conn.execute(_SCENES_DDL_V20)
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='scenes'"
     ).fetchone()
-    if row and row[0] and "UNIQUE" not in row[0]:
-        conn.executescript("""
-            DROP TABLE IF EXISTS scenes;
-            CREATE TABLE scenes (
-                scene_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                category    TEXT DEFAULT '',
-                summary     TEXT DEFAULT '',
-                member_keys TEXT DEFAULT '' UNIQUE,
-                member_count INTEGER DEFAULT 0,
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+    if row and row[0] and "bank_id" not in row[0]:
+        # 覆盖两种旧形状：pre-🔴6 无 UNIQUE 表（重复行由 OR IGNORE 收敛）
+        # 与 v19 行内 UNIQUE(member_keys) 表（全局唯一会让乙库场景被甲库吞掉）。
+        conn.executescript(f"""
+            ALTER TABLE scenes RENAME TO scenes_v19_migrating;
+            {_SCENES_DDL_V20};
+            INSERT OR IGNORE INTO scenes
+                (category, summary, member_keys, member_count, user_id, bank_id, created_at)
+                SELECT category, summary, member_keys, member_count,
+                       'default', 'default', created_at
+                FROM scenes_v19_migrating;
+            DROP TABLE scenes_v19_migrating;
         """)
     conn.commit()
 
 
-def _cluster_scenes_impl(category: str = None, dry_run: bool = True, min_similarity: float = 0.25):
+def _cluster_scenes_impl(category: str = None, dry_run: bool = True, min_similarity: float = 0.25,
+                         user_id: str = "", bank_id: str = ""):
+    """v20 P0-2：场景聚类永远按 (user_id, bank_id) 分域跑。
+
+    v19 是全库混跑：乙库一条与甲库相似的事实会被卷进同一场景，
+    scene.summary 直接把甲库的 fact_value 泄给乙库读者。
+    传作用域只聚该域；不传则枚举全部作用域各自独立聚类
+    （12h 后台任务由此覆盖所有 bank 而不跨库）。
+    """
     conn = _get_facts_conn()  # 🔧 修：categories 来自 facts 表，非 scenes
-    categories = [category] if category else [r[0] for r in conn.execute(
-        "SELECT DISTINCT category FROM facts WHERE archived=0 ORDER BY category").fetchall()]
+    if user_id or bank_id:
+        from ducky.bank_contract import normalize_bank_id, normalize_user_id
+        scopes = [(normalize_user_id(user_id or "default"),
+                   normalize_bank_id(bank_id or "default"))]
+    else:
+        try:
+            scopes = [((r[0] or "default"), (r[1] or "default")) for r in conn.execute(
+                "SELECT DISTINCT user_id, bank_id FROM facts WHERE archived=0").fetchall()]
+        except sqlite3.OperationalError:
+            scopes = [("", "")]  # 旧库无作用域列：单一全库域，行为与 v19 一致
     clustered = 0
     scenes_out = []
-    for cat in categories:
-        facts = _extract_key_facts(cat)
-        if len(facts) < 2: continue
-        for i in range(len(facts)):
-            best_score, best_match = 0, None
-            for j in range(i):
-                sim = _compute_similarity(facts[i].get("fact_value",""), facts[j].get("fact_value",""))
-                if sim > best_score: best_score, best_match = sim, facts[j]
-            if best_score >= min_similarity:
-                clustered += 1
-                if best_match is not None:
-                    scenes_out.append({
-                        "category": cat,
-                        "summary": (facts[i].get("fact_value","") or "")[:120],
-                        "member_keys": f"{facts[i].get('fact_key','')}|{best_match.get('fact_key','')}",
-                    })
+    for scope_uid, scope_bid in scopes:
+        try:
+            categories = [category] if category else [r[0] for r in conn.execute(
+                "SELECT DISTINCT category FROM facts WHERE archived=0 AND user_id=? AND bank_id=? ORDER BY category",
+                (scope_uid, scope_bid)).fetchall()]
+        except sqlite3.OperationalError:
+            categories = [category] if category else [r[0] for r in conn.execute(
+                "SELECT DISTINCT category FROM facts WHERE archived=0 ORDER BY category").fetchall()]
+        for cat in categories:
+            facts = _extract_key_facts(cat, user_id=scope_uid, bank_id=scope_bid)
+            if len(facts) < 2: continue
+            for i in range(len(facts)):
+                best_score, best_match = 0, None
+                for j in range(i):
+                    sim = _compute_similarity(facts[i].get("fact_value",""), facts[j].get("fact_value",""))
+                    if sim > best_score: best_score, best_match = sim, facts[j]
+                if best_score >= min_similarity:
+                    clustered += 1
+                    if best_match is not None:
+                        scenes_out.append({
+                            "category": cat,
+                            "summary": (facts[i].get("fact_value","") or "")[:120],
+                            "member_keys": f"{facts[i].get('fact_key','')}|{best_match.get('fact_key','')}",
+                            "user_id": scope_uid or "default",
+                            "bank_id": scope_bid or "default",
+                        })
     conn.close()
     # 🔴6：非 dry-run 时把聚类结果落库（此前只算 clustered 计数、从不写库）
     if not dry_run and scenes_out:
@@ -434,8 +524,9 @@ def _cluster_scenes_impl(category: str = None, dry_run: bool = True, min_similar
             _ensure_scenes_table(sconn)
             for s in scenes_out:
                 sconn.execute(
-                    "INSERT OR IGNORE INTO scenes (category, summary, member_keys, member_count) VALUES (?,?,?,2)",
-                    (s["category"], s["summary"], s["member_keys"]),
+                    "INSERT OR IGNORE INTO scenes (category, summary, member_keys, member_count, user_id, bank_id) "
+                    "VALUES (?,?,?,2,?,?)",
+                    (s["category"], s["summary"], s["member_keys"], s["user_id"], s["bank_id"]),
                 )
             sconn.commit()
         finally:

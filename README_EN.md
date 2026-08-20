@@ -23,6 +23,8 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
+> **v20.0 · Full memory-bank isolation · Reproducible evaluation · Backend contract & data lifeline.** An architecture release. From this version on, version numbers return to two segments and the runtime carries no mythological codename — the gods stay in the pantheon as history. Before v20, the whole memory pipeline effectively had **one implicit memory pool**: "whose memory is this, and which domain does it belong to" was expressed part-time by channel markers like `source`/`agent_id`. But **a channel is not ownership** — the moment two unrelated memory domains collide on the same key, the later write silently overwrites the earlier one, **neither side errors**, and the earlier record is simply gone. So the theme of v20 is not "add a bank field" but turning scope from a **convention** into a **contract**: the new `ducky/bank_contract.py` establishes a two-dimensional `(user_id, bank_id)` scope, and every path — write, query, delete, restore, statistics, feedback, background tasks, the event ledger, the Instinct→Skill graduation chain, the persona profile — must state explicitly which scope it operates in; an invalid scope raises **before any data is fetched**, never silently degrading into a whole-store scan. The read side follows one uniform shape: **named banks push the filter down and re-screen; the default bank keeps the v19 filter shape but re-screens out named-bank items** (legacy vectors carry no bank field — not pushing down in the default bank exists precisely for them). The migration is additive throughout: **not one row of existing data is modified or deleted**; legacy data lands in the `default` bank with key shapes identical to v19. The same release adds `benchmarks/`, freezing evaluation into a **reproducible protocol** (datasets, judge, seed, and file hashes all locked and evidenced; the adapter speaks the real HTTP contract instead of in-process shortcuts; the oracle serves only as a retrieval-ceiling diagnostic and never enters the headline), and `ducky/vector_backend.py`, turning the vector backend from hardcoded into a **contract** (Qdrant remains the default; sqlite-vec is only a revertible shadow POC — **an irreversible backend switch and a data-domain migration are never bound to the same release**); `/health`, `/metrics`, and `/search` traces now carry bank / backend / degradation evidence, and component failures go into degraded / trace — **never disguised as empty results**: "nothing found" and "the search broke" look identical, a failure mode this project has paid tuition for repeatedly.
+
 > **v19.5.0 · Athena — The Redaction Gate: turning an iron rule into a program that cannot be bypassed.** A discipline release: no runtime behaviour changes, what changes is **the condition under which publishing is allowed at all**. Two consecutive releases tripped over the same thing — the redaction was done, but whether it was done *completely* rested on human memory and diligence. An iron rule written in prose gets missed, and **when it is missed, nothing turns red**. Worse, this class of tool fails *silently*: leave one word out of the list and the scan still runs, the report is still all green, and a dirty distribution reaches a public index — discovered only afterwards. It does not error, it does not crash; it quietly issues a certificate that says "this has been checked." **A broken scanner and a clean project produce exactly the same output: zero.** So the real question this release answers is not "can it find the dirty thing" but **"when the scanner breaks, does it fail honestly?"** The new `scripts/release_scan.py` covers seven public surfaces (newly including **the package index's rendered page** — prose rendered from metadata, **visible without downloading anything**), under three hard constraints: **the wordlist lives outside the repository, always** (the list contains precisely the things being hidden; committing it would manufacture a leak in the name of preventing one); **an empty wordlist refuses to run rather than passing** (exit code 2 — it will not emit the zero that is indistinguishable from genuinely clean); and **the negative control is welded into the code** — before every real scan it verifies itself three ways on built-in synthetic samples (the dirty sample must fire, the clean sample must not, and a waiver must not bleed past its own line), and any mismatch voids the entire run. The accompanying `tests/test_release_hygiene.py` puts 18 guards on the gate itself; the central one breaks the scan logic into three classic failure modes — **blind** (reports nothing), **manic** (reports everything), **sieve** (a waiver leaks across the whole file) — and requires the self-check to catch every one, because **a self-check that always passes is identical to having none**. The waiver exit is deliberately narrow: **it applies only to the line the hit is on** — no file-level and certainly no directory-level exemptions — and waived hits still appear in the report item by item. They disappear from the **failure count**, never from **view**.
 
 > **v19.4.3 · Athena — Release Hygiene: a distribution is a public surface too.** An equivalent release to v19.4.2 with **zero behavioural change**: the executable logic is identical, and the only differences are comments, docstrings, and the version string itself — upgrading requires no adaptation whatsoever. There is exactly one reason this release exists: v19.4.2's source comments and docstrings still carried descriptive text about the internal deployment environment, and **a version number already published to a package index can never be overwritten or edited**. Among the surfaces visible to the outside world, commit messages can be rewritten, tags can be re-cut, release notes can be edited — **only an uploaded distribution cannot**. The ordering is therefore not advice but a constraint: **the scan must happen before the upload.** This release writes that gate into the process: the distribution must be unpacked and scanned for real, and the scanner itself must first be proven to fire on a **known-dirty object** (a negative control) before its "0 hits" counts for anything — **a scanner that has never reported a single hit offers a zero that is not evidence.**
@@ -53,10 +55,11 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ## Pantheon of Gods
 
-> Each major version of aiduMEI is named after a Greek deity — the god's domain reflects the architecture.
+> Major versions of aiduMEI were named after Greek deities — the god's domain reflects the architecture. From v20.0 on, versions return to plain two-segment numbers with no codename; the gods remain here as history.
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
+| **v20.0** | — (no codename) | Memory-bank isolation · Scope as contract | **A `(user_id, bank_id)` two-dimensional scope contract across write / query / delete / restore / stats / feedback / ledger / graduation · invalid scope rejected before any fetch · additive migration with zero change to existing data · `benchmarks/` reproducible evaluation protocol · `vector_backend` contract with shadow POC · observability carries bank / backend / degradation evidence** |
 | **v19.5.0** | **Athena** | Goddess of Wisdom · The Redaction Gate | **A seven-surface scanner welded into the release chain (index-rendered page added) · the wordlist never enters the repo · an empty wordlist refuses to run rather than passing · the negative control is welded in, so the self-check is itself falsifiable · waivers bind to one line and stay in the report** |
 | **v19.4.3** | **Athena** | Goddess of Wisdom · Release Hygiene | **Behaviourally identical to v19.4.2 (comments and version string only) · unpacking and scanning the distribution becomes a mandatory pre-upload gate · a scanner counts only after a negative control** |
 | **v19.4.2** | **Athena** | Goddess of Wisdom · Guard Coverage & Credential Wiring | **Meta-test welds the guard's range · 8 credential entry points on one source of truth · `.env` fallback chain through standalone integrations · crashloops become visible · rotation stops losing logs · wordmark residue cleared · configuration written ≠ configuration in effect (`StartLimit*` section) · reproducible both ways is what makes it falsifiable (`HERMES_SRC` three-state)** |
@@ -155,7 +158,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│        🦉 aiduMEI v19.5.0 · Athena · AI Wisdom Engine │
+│        🦉 aiduMEI v20.0 · AI Wisdom Engine            │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
@@ -454,14 +457,14 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **423** (measured via `pytest --collect-only`) |
-| Clean dev machine | 411 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
-| Complete environment | **423 all green** (with the Hermes source present, all 12 run and pass; verified on production) |
+| Total cases | **653** (measured via `pytest --collect-only`) |
+| Clean dev machine | 641 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
+| Complete environment | **653 all green** (with the Hermes source present, all 12 run and pass; verified on production) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 411 and 423**: the same suite yields different numbers in different environments,
+> **Why report both 641 and 653**: the same suite yields different numbers in different environments,
 > and quoting only one of them misleads the reader. The 12-case gap is exactly the set of integration
 > tests that need the host Hermes source: without it pytest reports `skipped` (not failed); with it they all pass.
 > Always state the environment alongside a test count.
@@ -471,9 +474,9 @@ python -m compileall ducky api_server.py mcp_server.py
 > `HERMES_SRC` is a three-state switch, so **both directions reproduce**:
 >
 > ```bash
-> pytest tests/ -q -rs | tail -1                                 # no host: 411 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 423 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 411 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 641 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 653 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 641 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
@@ -578,5 +581,5 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 ---
 
 <p align="center">
-  <sub>AI Wisdom Engine · Athena | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
+  <sub>AI Wisdom Engine | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
 </p>

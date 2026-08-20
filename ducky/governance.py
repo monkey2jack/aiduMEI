@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS candidate_facts (
     category        TEXT DEFAULT 'general',
     fact_value      TEXT NOT NULL,
     user_id         TEXT NOT NULL,
+    scope_user_id   TEXT NOT NULL DEFAULT 'default',
+    bank_id         TEXT NOT NULL DEFAULT 'default',
     status          TEXT NOT NULL DEFAULT 'pending',
     rule_verdict    TEXT DEFAULT '',
     eval_verdict    TEXT DEFAULT '',
@@ -85,9 +87,19 @@ CREATE TABLE IF NOT EXISTS candidate_facts (
 )
 """
 
+# v20 P0-2：候选队列补 bank 作用域。
+# user_id 是「归属」（谁写入的，v19.4.0 起如此），不是作用域——
+# 语义不同，不能复用；作用域另立 scope_user_id + bank_id 两列，
+# 值从被治理的 facts 行上取（治理跟着事实走，调用方零改动）。
+_CANDIDATE_SCOPE_COLUMNS: dict[str, str] = {
+    "scope_user_id": "TEXT NOT NULL DEFAULT 'default'",
+    "bank_id":       "TEXT NOT NULL DEFAULT 'default'",
+}
+
 _CANDIDATE_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_candidate_status ON candidate_facts(status)",
     "CREATE INDEX IF NOT EXISTS idx_candidate_user ON candidate_facts(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_candidate_scope ON candidate_facts(bank_id, status)",
 )
 
 # ── 确定性规则（零 LLM 成本，同步毫秒级）─────────────────────────────
@@ -116,10 +128,21 @@ def _now_iso() -> str:
 
 
 def ensure_governance_schema() -> None:
-    """幂等建表。对既有库是 no-op，异常只记日志不抛。"""
+    """幂等建表 + v20 作用域列迁移。对既有库是 no-op，异常只记日志不抛。"""
     try:
         conn = get_facts_conn()
         conn.execute(_CANDIDATE_DDL)
+        # v19 存量表没有作用域列，ALTER 补齐；DEFAULT 'default' 让历史候选
+        # 全部归入 default 库——与 facts 表作用域列的回填口径一致。
+        present = {r[1] for r in conn.execute("PRAGMA table_info(candidate_facts)")}
+        for column, ddl in _CANDIDATE_SCOPE_COLUMNS.items():
+            if column in present:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE candidate_facts ADD COLUMN {column} {ddl}")
+            except Exception as exc:
+                if "duplicate column" not in str(exc).lower():
+                    logger.warning("candidate 作用域列 %s 迁移失败: %s", column, exc)
         for stmt in _CANDIDATE_INDEXES:
             try:
                 conn.execute(stmt)
@@ -302,19 +325,36 @@ def _tombstone_rejected(conn, fact_key: str, category: str, fact_value: str,
 
 
 def _ledger(conn, actor: str, action: str, target_id: str, reason: str,
-            after_hash: str = "") -> None:
-    """事件账本留痕（B5），失败只记日志不阻断治理。"""
+            after_hash: str = "", scope_user: str = "", scope_bank: str = "") -> None:
+    """事件账本留痕（B5），失败只记日志不阻断治理。
+
+    v20 P0-2：作用域戳随手盖上（候选行自带归属库），分域查账才查得到。
+    """
     try:
         from ducky.event_ledger import record_event
         record_event(conn, actor=actor, action=action, target_id=target_id,
-                     reason=reason, after_hash=after_hash)
+                     reason=reason, after_hash=after_hash,
+                     user_id=scope_user, bank_id=scope_bank)
     except Exception as exc:
         logger.debug("ledger 记录跳过: %s", exc)
 
 
+def _row_scope(row) -> tuple[str, str]:
+    """从 candidate_facts 行取 (scope_user_id, bank_id)；老库无列返回空串
+    （查询侧空串归 default 域，口径同 event_ledger）。"""
+    try:
+        keys = row.keys()
+        uid = row["scope_user_id"] if "scope_user_id" in keys else ""
+        bid = row["bank_id"] if "bank_id" in keys else ""
+        return str(uid or ""), str(bid or "")
+    except Exception:
+        return "", ""
+
+
 def _apply_reject(conn, candidate_id: int, fact_id: int, fact_key: str,
                   category: str, fact_value: str, user_id: str,
-                  reason: str, actor: str) -> None:
+                  reason: str, actor: str,
+                  scope_user: str = "", scope_bank: str = "") -> None:
     """驳回：事实归档（召回不再返回）+ tombstone 留痕 + 候选标记 + 账本。"""
     if fact_id:
         conn.execute("UPDATE facts SET archived=1, archived_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -326,11 +366,13 @@ def _apply_reject(conn, candidate_id: int, fact_id: int, fact_key: str,
     )
     from ducky.event_ledger import content_hash
     _ledger(conn, actor, "reject", f"fact:{fact_key}", reason,
-            after_hash=content_hash(fact_value))
+            after_hash=content_hash(fact_value),
+            scope_user=scope_user, scope_bank=scope_bank)
 
 
 def _apply_approve(conn, candidate_id: int, fact_id: int, fact_key: str,
-                   user_id: str, reason: str, actor: str) -> None:
+                   user_id: str, reason: str, actor: str,
+                   scope_user: str = "", scope_bank: str = "") -> None:
     """批准：trust_score 恢复正常权重 + 候选 committed + 账本。"""
     if fact_id:
         conn.execute("UPDATE facts SET trust_score=? WHERE id=?", (APPROVED_TRUST, fact_id))
@@ -338,7 +380,8 @@ def _apply_approve(conn, candidate_id: int, fact_id: int, fact_key: str,
         "UPDATE candidate_facts SET status='committed', review_reason=?, decided_at=? WHERE candidate_id=?",
         (reason, _now_iso(), candidate_id),
     )
-    _ledger(conn, actor, "approve", f"fact:{fact_key}", reason)
+    _ledger(conn, actor, "approve", f"fact:{fact_key}", reason,
+            scope_user=scope_user, scope_bank=scope_bank)
 
 
 def _set_provisional(conn, fact_id: int) -> None:
@@ -361,19 +404,35 @@ def govern_fact_write(conn, fact_id: int, category: str, fact_key: str,
     try:
         ensure_governance_schema()
         verdict, reason = rule_screen(category, fact_key, fact_value)
+        # v20 P0-2：作用域从被治理的 facts 行上取（同事务内），候选跟着
+        # 事实归库。取不到（旧库无列/行未落）→ 落 default 库，治理不因
+        # 作用域缺失而断。user_id 参数保持「归属」语义不动。
+        scope_uid, scope_bid = "default", "default"
+        if fact_id:
+            try:
+                srow = conn.execute(
+                    "SELECT user_id, bank_id FROM facts WHERE id=?", (fact_id,)
+                ).fetchone()
+                if srow:
+                    scope_uid = srow[0] or scope_uid
+                    scope_bid = srow[1] or scope_bid
+            except Exception as exc:
+                logger.debug("候选作用域回读失败，落 default 库: %s", exc)
         cur = conn.execute(
             """INSERT INTO candidate_facts
-               (fact_id, fact_key, category, fact_value, user_id, status,
-                rule_verdict, created_at)
-               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
-            (fact_id, fact_key, category, fact_value, user_id, verdict, _now_iso()),
+               (fact_id, fact_key, category, fact_value, user_id,
+                scope_user_id, bank_id, status, rule_verdict, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+            (fact_id, fact_key, category, fact_value, user_id,
+             scope_uid, scope_bid, verdict, _now_iso()),
         )
         cid = cur.lastrowid
         result["candidate_id"] = cid
 
         if verdict == "reject":
             _apply_reject(conn, cid, fact_id, fact_key, category, fact_value,
-                          user_id, reason, actor="rule")
+                          user_id, reason, actor="rule",
+                          scope_user=scope_uid, scope_bank=scope_bid)
             result.update(route="rule_rejected", reason=reason)
         elif verdict == "human_review":
             _set_provisional(conn, fact_id)
@@ -435,10 +494,12 @@ def evaluate_candidate(candidate_id: int, evaluator=None) -> dict:
             "UPDATE candidate_facts SET eval_verdict=?, eval_confidence=?, eval_reason=? WHERE candidate_id=?",
             (ev["verdict"], ev["confidence"], ev["reason"], candidate_id),
         )
+        row_uid, row_bid = _row_scope(row)
         if ev["verdict"] == "reject":
             _apply_reject(conn, candidate_id, row["fact_id"], row["fact_key"],
                           row["category"], row["fact_value"], row["user_id"],
-                          ev["reason"] or "evaluator_reject", actor="evaluator")
+                          ev["reason"] or "evaluator_reject", actor="evaluator",
+                          scope_user=row_uid, scope_bank=row_bid)
             result.update(status="rejected", route="rejected")
         elif ev["verdict"] == "approve":
             # 快线宁窄勿宽：置信度≥0.9 且偏好类白名单才自动批准
@@ -446,7 +507,8 @@ def evaluate_candidate(candidate_id: int, evaluator=None) -> dict:
                     (row["category"] or "").strip().lower() in FAST_TRACK_CATEGORIES:
                 _apply_approve(conn, candidate_id, row["fact_id"], row["fact_key"],
                                row["user_id"], ev["reason"] or "fast_track",
-                               actor="fast_track")
+                               actor="fast_track",
+                               scope_user=row_uid, scope_bank=row_bid)
                 result.update(status="committed", route="fast_track")
             else:
                 conn.execute(
@@ -467,10 +529,13 @@ def evaluate_candidate(candidate_id: int, evaluator=None) -> dict:
 
 
 def review_candidate(candidate_id: int, decision: str, reason: str = "",
-                     user_id: str = DEFAULT_USER_ID) -> dict:
+                     user_id: str = DEFAULT_USER_ID, bank_id: str = "") -> dict:
     """人审裁决（/governance/review）。decision ∈ approve | reject。
 
     只受理 pending / evaluated 状态的候选；已裁决的幂等返回现状。
+    v20 P0-2：bank_id 传了就是作用域声明——与候选归属库不符时拒绝裁决、
+    候选分毫不动（防 A 库的审核凭 candidate_id 归档 B 库的事实）；
+    不传保持 v19 管理员全权语义，存量调用零改动。
     """
     result = {"candidate_id": candidate_id, "status": "", "detail": ""}
     decision = (decision or "").strip().lower()
@@ -486,17 +551,31 @@ def review_candidate(candidate_id: int, decision: str, reason: str = "",
         if not row:
             result["detail"] = "候选不存在"
             return result
+        if bank_id:
+            try:
+                from ducky.bank_contract import normalize_bank_id
+                want = normalize_bank_id(bank_id)
+            except Exception:
+                result["detail"] = "非法 bank_id"
+                return result
+            have = (row["bank_id"] if "bank_id" in row.keys() else "") or "default"
+            if have != want:
+                result["detail"] = "候选属于其他记忆库，越库裁决被拒"
+                return result
         if row["status"] not in ("pending", "evaluated"):
             result.update(status=row["status"], detail="已裁决，幂等返回")
             return result
+        row_uid, row_bid = _row_scope(row)
         if decision == "approve":
             _apply_approve(conn, candidate_id, row["fact_id"], row["fact_key"],
-                           user_id, reason or "human_approve", actor=user_id or "human")
+                           user_id, reason or "human_approve", actor=user_id or "human",
+                           scope_user=row_uid, scope_bank=row_bid)
             result.update(status="committed", detail="人审批准")
         else:
             _apply_reject(conn, candidate_id, row["fact_id"], row["fact_key"],
                           row["category"], row["fact_value"], row["user_id"],
-                          reason or "human_reject", actor=user_id or "human")
+                          reason or "human_reject", actor=user_id or "human",
+                          scope_user=row_uid, scope_bank=row_bid)
             result.update(status="rejected", detail="人审驳回")
         conn.commit()
         return result
@@ -508,8 +587,13 @@ def review_candidate(candidate_id: int, decision: str, reason: str = "",
         conn.close()
 
 
-def list_candidates(status: str = "", user_id: str = "", limit: int = 50) -> list:
-    """候选队列查询（运维/前端面板/验收用）。失败返回 []。"""
+def list_candidates(status: str = "", user_id: str = "", limit: int = 50,
+                    bank_id: str = "", scope_user_id: str = "") -> list:
+    """候选队列查询（运维/前端面板/验收用）。失败返回 []。
+
+    v20 P0-2：bank_id / scope_user_id 是可选作用域过滤——传了只看本库
+    候选，不传保持 v19 管理员全量视图。user_id 仍按「归属」过滤，语义不同。
+    """
     try:
         ensure_governance_schema()
         conn = get_facts_conn()
@@ -521,6 +605,12 @@ def list_candidates(status: str = "", user_id: str = "", limit: int = 50) -> lis
         if user_id:
             clauses.append("user_id=?")
             params.append(user_id)
+        if bank_id:
+            clauses.append("bank_id=?")
+            params.append(bank_id)
+        if scope_user_id:
+            clauses.append("scope_user_id=?")
+            params.append(scope_user_id)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY candidate_id DESC LIMIT ?"

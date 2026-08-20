@@ -62,10 +62,12 @@ CREATE TABLE IF NOT EXISTS facts (
     recorded_at TIMESTAMP,
     decay_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(agent_id, category, fact_key)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
+# v20：唯一约束不再写成行内 UNIQUE（行内约束删不掉、也升不了级），
+# 由下方 fixture 里的联邦迁移建成生产同款五列唯一索引，
+# 顺带补齐 user_id/bank_id 列——write_fact 的 INSERT 现在需要它们。
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +79,8 @@ def _setup_test_env():
     conn.commit()
     conn.close()
     ensure_ledger_schema()
+    from ducky.federation.schema import ensure_federation_schema
+    ensure_federation_schema(force=True)
     yield
 
 
