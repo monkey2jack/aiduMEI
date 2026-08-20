@@ -34,6 +34,8 @@ class ObsidianSyncRequest(BaseModel):
     content: str
     tags: list[str] = []
     metadata: dict = {}
+    # v20 P0-2：同步目标记忆库。不传 = default 域（v19 行为零改动）
+    bank_id: str = ""
 
 def extract_wikilinks(content: str) -> list[str]:
     """提取 Markdown 中的 [[页面名]] 或 [[页面名|别名]] 双链语法"""
@@ -75,6 +77,13 @@ def register_obsidian_routes(app: FastAPI) -> None:
             meta["category"] = "obsidian_vault"
             meta["obsidian_tags"] = req.tags
             meta["wikilinks"] = wikilinks
+            # v20 P0-2：metadata 是 bank_id 进向量 payload 的唯一通道，
+            # 不盖戳这条笔记在向量侧就永远属于默认域
+            from ducky.bank_contract import BankScopeError, stamp_bank_metadata
+            try:
+                meta = stamp_bank_metadata(meta, req.bank_id or "default")
+            except BankScopeError as be:
+                raise HTTPException(400, f"非法 bank_id: {be}")
 
             # 3. 落库（user_id 从请求 metadata 读取，缺省 default，保持通用）
             user_id = req.metadata.get("user_id", "default")

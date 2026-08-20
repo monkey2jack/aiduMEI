@@ -22,6 +22,12 @@ if [[ -n "${AIDUMEM_API_TOKEN:-}" ]]; then
 fi
 
 TESTS_DIR="${REPO_ROOT}/tests"
+# v20：统一用仓库自己的解释器（.venv 由 uv 创建，没有 pip；系统 python3
+# 看不见仓库依赖）。找不到 .venv 时退化到 python3 并明示。
+VENV_PY="${REPO_ROOT}/.venv/bin/python"
+if [[ ! -x "${VENV_PY}" ]]; then
+  VENV_PY="python3"
+fi
 
 # --- 统计 --------------------------------------------------------------------
 PASS=0
@@ -113,7 +119,7 @@ step "步骤 3/4 — facts 召回率测试"
 RECALL_TEST="${TESTS_DIR}/test_facts_recall.py"
 if [[ -f "${RECALL_TEST}" ]]; then
   echo "  🧪 ${RECALL_TEST}"
-  if python3 "${RECALL_TEST}" 2>&1 | tail -20; then
+  if "${VENV_PY}" "${RECALL_TEST}" 2>&1 | tail -20; then
     ok "test_facts_recall.py 跑完"
   else
     bad "test_facts_recall.py 失败"
@@ -157,9 +163,12 @@ else
     echo "  📦 maps 中 mem0 (mem0ai) 引用: ${HITS_MEM0AI} (site-packages: ${SP_HITS_MEM0AI})"
     echo "  📦 maps 中 qdrant 引用: ${HITS_QDRANT}"
     echo "  📦 maps 中 pydantic 引用: ${HITS_PYDANTIC}"
-    # 验证升级后的版本号（用 venv 的 pip show，不是系统的）
-    EXPECTED_MEM0AI="2.0.5"
-    INSTALLED_MEM0AI=$(${REPO_ROOT}/venv/bin/pip show mem0ai 2>/dev/null | awk '/^Version:/{print $2}' | head -1 || echo "unknown")
+    # 验证升级后的版本号。期望值从 pyproject.toml 的实锁读取，不再写死
+    # 常数（v19 时代写死 2.0.5，升级到 2.0.18 后这里一直在误报 WARN）；
+    # 实际值用 venv 解释器查 importlib.metadata（uv 建的 .venv 没有 pip）。
+    EXPECTED_MEM0AI=$(grep -oE 'mem0ai==[0-9.]+' "${REPO_ROOT}/pyproject.toml" | head -1 | cut -d= -f3)
+    EXPECTED_MEM0AI="${EXPECTED_MEM0AI:-unknown}"
+    INSTALLED_MEM0AI=$("${VENV_PY}" -c "import importlib.metadata as m; print(m.version('mem0ai'))" 2>/dev/null || echo "unknown")
     if [[ "${INSTALLED_MEM0AI}" == "${EXPECTED_MEM0AI}" ]]; then
       ok "mem0ai 版本对齐: ${INSTALLED_MEM0AI}"
     elif [[ "${SP_HITS_MEM0AI}" -gt 0 || "${HITS_MEM0AI}" -gt 0 ]]; then

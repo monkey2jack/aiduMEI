@@ -1,0 +1,39 @@
+[
+  {
+    "sample_id": "smoke_locomo_001",
+    "conversation": {
+      "speaker_a": "小甲",
+      "speaker_b": "小乙",
+      "session_1_date_time": "1:56 pm on 8 May, 2023",
+      "session_1": [
+        {"speaker": "小甲", "dia_id": "D1:1", "text": "我上周开始学吉他了，每天练半小时。"},
+        {"speaker": "小乙", "dia_id": "D1:2", "text": "太好了！我去年也想学，后来选了钢琴。"}
+      ],
+      "session_2_date_time": "10:20 am on 15 June, 2023",
+      "session_2": [
+        {"speaker": "小甲", "dia_id": "D2:1", "text": "吉他练了一个月，现在能弹完整首曲子了。"},
+        {"speaker": "小乙", "dia_id": "D2:2", "text": "进步真快，下次弹给我听听。"}
+      ]
+    },
+    "qa": [
+      {
+        "question": "小甲在学什么乐器？",
+        "answer": "吉他",
+        "category": 4,
+        "evidence": ["D1:1"]
+      },
+      {
+        "question": "小甲从开始学琴到能弹完整首曲子花了多久？",
+        "answer": "大约一个月",
+        "category": 2,
+        "evidence": ["D1:1", "D2:1"]
+      },
+      {
+        "question": "小乙养的狗叫什么名字？",
+        "adversarial_answer": "对话中没有提到小乙养狗。",
+        "category": 5,
+        "evidence": []
+      }
+    ]
+  }
+]

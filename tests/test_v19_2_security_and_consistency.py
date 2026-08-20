@@ -407,7 +407,19 @@ def test_version_truth():
     """
     import re
 
-    assert re.fullmatch(r"\d+\.\d+\.\d+", SERVICE_VERSION), f"版本号格式非法: {SERVICE_VERSION}"
+    # v20.0：版本号改为两段式，本条从「必须三段」放宽为「两段或三段」。
+    # 放宽格式不等于放宽守卫 —— 下面的负向对照钉住放宽的边界，
+    # 若有人日后把它改成 `.*` 之类的永真式，这三条会当场红。
+    _VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?")
+    for _bad in ("20", "20.0.0.0", "v20.0", "20.0-beta", "20.0 Athena"):  # release-scan:allow 版本格式负向夹具
+        assert not _VERSION_RE.fullmatch(_bad), (
+            f"版本号格式守卫被放宽到能接受 {_bad!r} —— 它已经不再拦任何东西"
+        )
+    assert _VERSION_RE.fullmatch("19.5.0") and _VERSION_RE.fullmatch("20.0"), (
+        "版本号格式守卫必须同时接受历史三段式与 v20 起的两段式"
+    )
+
+    assert _VERSION_RE.fullmatch(SERVICE_VERSION), f"版本号格式非法: {SERVICE_VERSION}"
 
     with open(os.path.join(_REPO_ROOT, "manifest.json"), "r", encoding="utf-8") as f:
         manifest = json.load(f)
