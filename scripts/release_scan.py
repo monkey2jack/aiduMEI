@@ -339,7 +339,8 @@ def main(argv: list[str]) -> int:
     unknown = [a for a in argv if a.startswith("-") and a not in KNOWN_FLAGS]
     if unknown:
         print(f"[拒绝运行] 未知选项：{' '.join(unknown)}；"
-              f"本工具只接受 {' '.join(KNOWN_FLAGS)} 与若干目录路径。", file=sys.stderr)
+              f"本工具只接受 {' '.join(KNOWN_FLAGS)} 与若干路径（目录或文件均可）。",
+              file=sys.stderr)
         return 2
 
     targets = [a for a in argv if not a.startswith("-")]
@@ -364,7 +365,12 @@ def main(argv: list[str]) -> int:
         return 0
 
     if not targets:
-        print("用法：release_scan.py <目录> [<目录> ...]", file=sys.stderr)
+        # 用法串必须把「单文件也行」说出来。92463fd 给 scan_tree 补上了单文件
+        # 支持（见其 docstring），却漏改这两行提示，于是工具的能力只写在源码里。
+        # 实战代价当场就付了：v20.0 品牌面本该直接把变更的文件喂进来扫，
+        # 却因为提示写着「目录」而绕道先摆进临时目录 —— 多一道搬运，
+        # 就多一份「扫的到底是不是那批文件」的疑问。
+        print("用法：release_scan.py <目录或文件> [<目录或文件> ...]", file=sys.stderr)
         return 2
 
     # 目标必须真实存在。扫一个不存在的路径得到的 0，
