@@ -390,6 +390,13 @@ def register_crud_routes(app: FastAPI) -> None:
             
             scope = make_scope(req.user_id, req.bank_id)
             user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
+            # /update 会把 bank_id 盖进向量 metadata 并按该域重建 FTS 索引，
+            # 也就是说它能把一条记忆搬进一个从没被注册过的域。写路径里只有
+            # 这一处漏了注册（add / tombstone / core_memory / conflict_resolver
+            # 都调了），结果是数据落在某域、memory_banks 里却查不到这个域 ——
+            # 域存在与否取决于当初是从哪个端点进来的，注册表从此不可信。
+            # INSERT OR IGNORE，幂等，对已注册域是 no-op。
+            ensure_bank_registered(scope)
             mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id})
             
             # 同步更新 FTS

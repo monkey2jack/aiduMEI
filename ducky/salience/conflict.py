@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 
+from ducky.bank_contract import is_legacy_schema_error
 from ducky.utils import DEFAULT_USER_ID, get_salience_conn
 
 logger = logging.getLogger("aiduMEM.salience")
@@ -42,7 +44,16 @@ def detect_conflicts() -> list[dict]:
             "SELECT memory_id, lane, content_preview, user_id, bank_id "
             "FROM salience WHERE content_preview != ''"
         ).fetchall()
-    except Exception:
+    except sqlite3.Error as exc:
+        # 这个降级出口把每一行的作用域**改写**成 ("default","default")。
+        # 老库缺作用域列时它是对的（全库本就是单一 default 域）；但原来用
+        # except Exception 去接，任何一次查询故障都会让具名域的行被贴上
+        # default 标签，于是甲库的「要」重新能跟乙库的「不要」配对，
+        # resolve_conflict_salience 再把两库的显著性一起腰斩 —— 正是这段
+        # 注释声称已经堵掉的那条跨库写污染。先验明病因。
+        if not is_legacy_schema_error(exc):
+            raise
+        logger.warning("salience 表无作用域列，冲突检测退回 v19 全库口径：%s", exc)
         rows = [
             (mid, lane, content, "default", "default")
             for mid, lane, content in conn.execute(

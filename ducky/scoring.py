@@ -233,8 +233,11 @@ def score_and_rank_candidates(
         _telem = last_rerank_telemetry()
         if isinstance(_telem, dict):
             _telem["applied"] = rerank_applied
-    except Exception:
-        pass
+    except Exception as exc:
+        # 本版加这段是为了修「rerank_applied 看不见」。要是回写自己也静默失败，
+        # 修复等于没做，而响应里长期显示不出重排是否生效 —— 症状与修复前一致。
+        # 遥测不该把主查询带崩，所以照旧不抛，但必须留一笔。
+        logger.debug("rerank 遥测回写失败，响应里看不到 applied: %s", exc)
 
     # 4. 排序与截断
     scored.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)

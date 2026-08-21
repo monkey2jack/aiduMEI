@@ -22,11 +22,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ducky.bank_contract import normalize_bank_id, vector_item_in_bank
+from ducky.bank_contract import (
+    is_legacy_schema_error,
+    normalize_bank_id,
+    vector_item_in_bank,
+)
 from ducky.llm_client import call_llm
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 
@@ -258,7 +263,15 @@ def _gather_recent_facts(top_k: int, user_id: str = "", bank_id: str = "") -> li
                 f"ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?",
                 (*ids, normalize_bank_id(bank_id or "default"), top_k),
             ).fetchall()
-        except Exception:
+        except sqlite3.Error as exc:
+            # 这个降级出口把「按域取材」变成「全库取材」。老库缺 bank_id 列时
+            # 它是对的（全库本就是单一 default 域）；但原来用 except Exception
+            # 去接，等于让**任何**一次查询故障都能把域过滤摘掉，把乙库的事实
+            # 蒸进甲库的洞察 —— 而返回值和一次正常取材一模一样，没人会发现。
+            # 先验明病因：不是缺列/缺表就原样抛出。
+            if not is_legacy_schema_error(exc):
+                raise
+            logger.warning("facts 表无作用域列，反思取材退回 v19 全库口径：%s", exc)
             rows = conn.execute(
                 "SELECT id, category, fact_key, fact_value, updated_at FROM facts "
                 "WHERE archived=0 ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?",
@@ -277,8 +290,19 @@ def _gather_recent_facts(top_k: int, user_id: str = "", bank_id: str = "") -> li
                 "text": f"[{row['category']}] {row['fact_key']}: {value[:200]}",
             })
         return facts
+    except sqlite3.Error:
+        # 上面那个内层 handler 刚刚辨明了病因、把真故障原样抛出 —— 要是这里
+        # 再用 except Exception 接住返回 []，那一步等于没做：run_reflect 拿到
+        # 空素材，撞上「memories 与 facts 皆空」的早退分支，回一个
+        # {"status": "ok", "saved": 0}。于是**库被锁**与**本来就没有事实**
+        # 是同一个响应，谁也发现不了。三个调用方都有自己的 except
+        # （/reflect 转 error dict、session_end 记 warning、后台循环记
+        # error+堆栈），冒上去只会变可见，不会把服务带崩。
+        raise
     except Exception as e:
-        logger.debug(f"收集最近事实失败（降级为空）: {e}")
+        # 非数据库故障（取材期的编码/类型意外）仍降级为空素材，但必须留一笔：
+        # 原来是 debug，生产日志级别下等于没有这行。
+        logger.warning("收集最近事实失败（降级为空素材）: %s: %s", type(e).__name__, e)
         return []
 
 
