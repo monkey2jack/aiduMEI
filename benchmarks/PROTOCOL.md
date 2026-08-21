@@ -5,20 +5,60 @@
 
 ## 1. 数据集与许可证
 
-| 数据集 | 官方来源 | 许可证 | 规模 |
-|---|---|---|---|
-| LongMemEval | github.com/xiaowu0162/LongMemEval | MIT | 每文件 500 实例（`longmemeval_s` / `longmemeval_m` / `oracle`） |
-| LoCoMo | github.com/snap-research/locomo | **CC BY-NC 4.0**（仅限非商业评测） | 10 段长对话，QA 总数由装载器现场统计 |
+| 数据集 | 官方来源 | 提交号（本协议冻结时上游 HEAD） | 许可证 | 规模 |
+|---|---|---|---|---|
+| LongMemEval | github.com/xiaowu0162/LongMemEval | `9e0b455f4ef0e2ab8f2e582289761153549043fc` | MIT | 每文件 500 实例（`longmemeval_s` / `longmemeval_m` / `oracle`） |
+| LoCoMo | github.com/snap-research/locomo | `3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376` | **CC BY-NC 4.0**（仅限非商业评测） | 10 段长对话，QA 总数由装载器现场统计 |
 
 - 数据文件**不进仓库**；存放于 `AIDUMEI_BENCH_DATA_DIR`（默认 `~/.aidumem/bench_data`）。
-- `benchmarks/data_manifest.json` 进仓库，记录每个数据文件的 SHA-256。
+- `benchmarks/data_manifest.json` 进仓库，记录每个数据文件的 SHA-256
+  **与取数时的上游提交号**（`source_commit`）。
 - **哈希状态：PENDING**——数据尚未登记。`run.py --formal` 在 manifest
   缺失或含 PENDING 时**拒绝启动**，这是代码强制的闸门，不是口头约定。
+- **提交号同样是闸门**：`download.py --register` 缺 `--source-commit` 直接拒绝
+  登记（也不接受 tag / 分支名——会移动的标识当不了先验承诺），`run.py --formal`
+  在 `source_commit` 缺失或为 PENDING 时拒绝启动。理由是可复核性：SHA-256 只能
+  证明「我这次跑的就是这个文件」，证明不了「这个文件取自哪一版」。两个数据集的
+  标注都在持续修，别人拿我们公布的哈希对不上时，没有提交号就分不清是「取错了
+  版本」还是「文件被改过」——成绩也就无法被独立复核。
+  上表的提交号是**冻结时的上游 HEAD，仅作参考基准**；真正进 manifest、进
+  digest、有约束力的是登记那一刻记下的 `source_commit`。两者不一致不算违规，
+  但必须能解释（例如上游在冻结后又修了标注）。
 - LoCoMo 图片只有外部 URL：本管线不抓取、不缓存、不评测任何图片内容。
 - 上游数据的已知标注问题（如部分 cat5 只有 `adversarial_answer`、evidence
   引用缺失）由 schema 校验器**如实上报**进 manifest 的 `schema_report.anomalies`；
   原始数据一个字节不改。若评分需要修正，走版本化 correction manifest 并做
   敏感性分析（含/不含修正各报一遍）。
+
+### 1.1 修正清单（correction manifest）
+
+修正清单放在 `benchmarks/corrections/*.json`，由 `benchmarks/corrections.py`
+装载校验，`run.py --formal --corrections <清单>` 使用。规则如下，全部由代码
+强制，不是口头约定：
+
+| 约束 | 具体要求 | 违反时 |
+|---|---|---|
+| 版本号 | 必须有 `manifest_version` | 拒绝装载 |
+| 哈希钉 | 清单**非空**时 `applies_to_sha256` 必须等于本次数据哈希 | 拒绝装载 |
+| 动作白名单 | 只允许 `add_evidence`、`mark_adversarial` | 拒绝装载 |
+| 不许改正文 | 出现 `answer` / `question` / `adversarial_answer` / `text` 键 | 拒绝装载 |
+| 必须写理由 | 每条修正都要有非空 `why` | 拒绝装载 |
+| 不许静默失效 | 修正匹配不到目标（下标越界 / dia_id 不存在 / 类别不符 / 已生效） | 拒绝运行 |
+| 敏感性分析 | 非空清单必须配 `--sensitivity-baseline`（同一份数据的零修正 formal summary） | 拒绝启动 |
+
+三点设计交代：
+
+- **为什么只许重述标注**：补一条上游漏标的 evidence 引用、把官方口径的拒答题
+  标出来，改的是「上游少写了什么」；改 `answer` 正文改的是「正确答案是什么」，
+  那不是修正，是造数据。所以白名单是白名单，不是黑名单——新动作必须显式加进
+  代码并配上校验，加不进来就用不了。
+- **为什么空清单不用钉哈希**：空清单改不动任何数字，钉了没有意义。门槛正好
+  落在「能改动数字」的那一刻：加入第一条修正，哈希钉立刻成为硬性要求。
+- **为什么修正藏不住**：修正块写进 summary 的 `config`，而 `config` 进
+  digest（§5）。应用了修正，digest 必变——不存在「悄悄改了分数」的路径。
+
+当前状态：`benchmarks/corrections/locomo_v0.json` 是**空清单**（0 条修正）。
+LongMemEval 无清单。
 
 ## 2. 系统配置（被测方）
 
@@ -130,13 +170,23 @@
 # 注意：别把闸门命令接管道——管道会把退出码换成管尾命令的退出码，红灯会被吞掉。
 # longmemeval 同理，把 --dataset 换掉即可。
 
-# 数据登记（手工获取后锁哈希）
-.venv/bin/python -m benchmarks.download --register longmemeval longmemeval_s.json
+# 数据登记（手工获取后锁哈希 + 锁上游提交号；缺 --source-commit 拒绝登记）
+.venv/bin/python -m benchmarks.download --register longmemeval longmemeval_s.json \
+  --source-commit "$(git -C /path/to/LongMemEval rev-parse HEAD)"
 .venv/bin/python -m benchmarks.download --show
 
 # formal（哈希闸门通过后才会启动；--deterministic 在此被硬拒）
 .venv/bin/python -m benchmarks.run --formal --dataset longmemeval \
   --data-path "$AIDUMEI_BENCH_DATA_DIR/longmemeval_s.json" --base-url http://127.0.0.1:8100
+
+# 带修正的 formal（§1.1）：先跑零修正基线，再拿基线 summary 做敏感性对照。
+# 顺序反了不行——非空清单没有基线一律拒绝启动。
+.venv/bin/python -m benchmarks.run --formal --dataset locomo \
+  --data-path "$AIDUMEI_BENCH_DATA_DIR/locomo10.json" --base-url http://127.0.0.1:8100
+.venv/bin/python -m benchmarks.run --formal --dataset locomo \
+  --data-path "$AIDUMEI_BENCH_DATA_DIR/locomo10.json" --base-url http://127.0.0.1:8100 \
+  --corrections benchmarks/corrections/locomo_v0.json \
+  --sensitivity-baseline benchmarks/runs/formal_locomo_<戳>_summary.json
 ```
 
 ## 8. 修订记录
