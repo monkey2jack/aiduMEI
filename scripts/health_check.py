@@ -165,7 +165,9 @@ except Exception as e:
 total_ms = int((time.time() - start) * 1000)
 all_ok = all(v.get("ok") for v in checks.values())
 
-print(f"🧠 aiduMEM 健康检查 ({'🟢' if all_ok else '🔴'})")
+# 这一行是运维直接读的输出，属用户可见门面，用当前品牌名。
+# 本文件其余 aiduMEM 都在注释里（不露脸），刻意不动。
+print(f"🧠 aiduMEI 健康检查 ({'🟢' if all_ok else '🔴'})")
 print(f"llm_model_name={llm_model}")
 print(f"emb_model_name={emb_model}")
 for name, result in checks.items():
