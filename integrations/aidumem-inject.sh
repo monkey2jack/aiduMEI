@@ -263,7 +263,10 @@ if ctx:
 results = result.get('results') or []
 if results:
     limit = int(os.environ['AIDUMEM_SEARCH_LIMIT'])
-    lines = ['[aiduMEM Recall]']
+    # 这一行会原样出现在下一轮对话里，是**用户可见门面**，用当前品牌名。
+    # 与 ducky/hot/health.py 的 service=f"aiduMEM-v" 刻意相反：那个是机器契约
+    # （生产监控按 aiduMEM-v* 匹配），这个是给人看的。别用一次 sed 把两者一起改。
+    lines = ['[aiduMEI Recall]']
     for r in results[:limit]:
         mem = r.get('memory') or r.get('text') or ''
         if mem:
