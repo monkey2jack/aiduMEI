@@ -22,6 +22,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO / "integrations" / "hermes-plugin"
@@ -205,18 +206,15 @@ class TestProviderContract(unittest.TestCase):
     # -- 配置来源 -----------------------------------------------------------
 
     def test_config_beats_env(self):
-        os.environ["AIDUMEM_URL"] = "http://env:9999"
-        os.environ["AIDUMEM_USER_ID"] = "env_user"
-        try:
+        # 环境变量一律用 patch.dict 进出（理由见 backup_paths 那条的注释）。
+        with mock.patch.dict(os.environ, {"AIDUMEM_URL": "http://env:9999",
+                                          "AIDUMEM_USER_ID": "env_user"}):
             p = self.Provider({"url": "http://cfg:1234", "user_id": "cfg_user"})
             self.assertEqual(p._client.base, "http://cfg:1234")
             self.assertEqual(p._client.user_id, "cfg_user")
             q = self.Provider({})
             self.assertEqual(q._client.base, "http://env:9999")
             self.assertEqual(q._client.user_id, "env_user")
-        finally:
-            os.environ.pop("AIDUMEM_URL", None)
-            os.environ.pop("AIDUMEM_USER_ID", None)
 
     def test_backup_paths_returns_existing_dir_only(self):
         p = self.Provider({})
@@ -224,23 +222,20 @@ class TestProviderContract(unittest.TestCase):
         # 要验「不存在的显式目录不进清单」，必须连 home 回退一起架空，
         # 否则在真实部署机上（/root/.aidumem 确实存在）回退会命中，
         # 挂掉的是机器状态而不是代码契约 —— 生产实测就是这么挂的。
+        #
+        # ★ 环境变量必须用 `patch.dict` 进出，**不许手写 pop 收尾**。
+        #   `pop` 是「删掉」，不是「还原」：本来有值的变量会被抹成没有。
+        #   v20.0 验收当天这里就把根 conftest 设的 `AIDUMEM_DATA_DIR` 抹掉了，
+        #   而红的是四百条之后的数据隔离护栏 —— 报错指着无辜的人。更阴的是
+        #   本文件在没装宿主的开发机上整份 skip，所以这个泄漏只在**装了宿主的
+        #   那台机器**上现形，也就是用户那台。
         with tempfile.TemporaryDirectory() as empty_home:
-            old_home = os.environ.get("HOME")
-            os.environ["HOME"] = empty_home
-            os.environ["AIDUMEM_DATA_DIR"] = "/definitely/not/here"
-            try:
+            with mock.patch.dict(os.environ, {
+                    "HOME": empty_home,
+                    "AIDUMEM_DATA_DIR": "/definitely/not/here"}):
                 self.assertEqual(p.backup_paths(), [], "不存在的目录不该报进备份清单")
-            finally:
-                os.environ.pop("AIDUMEM_DATA_DIR", None)
-                if old_home is None:
-                    os.environ.pop("HOME", None)
-                else:
-                    os.environ["HOME"] = old_home
-        os.environ["AIDUMEM_DATA_DIR"] = str(REPO)
-        try:
+        with mock.patch.dict(os.environ, {"AIDUMEM_DATA_DIR": str(REPO)}):
             self.assertEqual(p.backup_paths(), [str(REPO)])
-        finally:
-            os.environ.pop("AIDUMEM_DATA_DIR", None)
 
     # -- 注册入口 -----------------------------------------------------------
 
