@@ -134,6 +134,63 @@ def test_layer1_default_bank_stamps_default_not_missing(isolate_side_effects):
     assert mem.adds[0].get("bank_id") == DEFAULT_BANK_ID
 
 
+def test_layer1_dedup_update_failure_leaves_a_trace(isolate_side_effects, caplog):
+    """去重更新失败而降级为新增时，必须留痕，并且降级出口也要盖域戳。
+
+    这是 layer1 的**第三个出口**，此前没有任何用例走到过：update 抛异常
+    → 静默改走 add。后果是库里多出一条重复记忆，而返回的 action="new"
+    与「本来就是一条新记忆」在调用方看来完全一样 —— 坏掉的更新通路
+    可以坏很久没有任何东西发红，用户只会觉得「记忆怎么越来越重复」。
+
+    连带钉住两件事：
+      ① 降级出口同样盖 bank_id（三个出口里最容易漏的就是这个异常分支）；
+      ② 反向对照 —— update 正常时 details 里**不许**出现这个降级标记，
+         否则断言可能因为别的原因恒真，等于没测。
+    """
+    l1, _ = isolate_side_effects
+
+    # —— 正向：update 抛异常 ——
+    mem = _RecordingMemory(dedup_hit=True, candidate_bank="work")
+
+    def _boom(memory_id, text, metadata=None, **kw):
+        raise RuntimeError("向量库写超时")
+
+    mem.update = _boom
+
+    with caplog.at_level("WARNING", logger="aiduMEM.selfcheck"):
+        out = l1.layer1_add_wrapper(
+            mem, [{"role": "user", "content": "季度目标是跑分"}],
+            "alice", {"source": "chat"}, bank_id="work",
+        )
+
+    assert mem.adds, "update 失败后没有降级到 add —— 这条写入直接丢了"
+    assert mem.adds[0].get("bank_id") == "work", (
+        "降级新增出口没盖域戳 —— 异常分支上的向量在 payload 上与默认域无从区分"
+    )
+    trace = out["details"].get("dedup_update_failed")
+    assert trace, (
+        "去重更新失败却没在 details 里留痕 —— action=new 与正常新增无从区分"
+    )
+    assert trace["existing_id"] == "old-1"
+    assert "RuntimeError" in trace["error"] and "向量库写超时" in trace["error"], (
+        f"留痕没带上异常类型与原因，排障时等于没留：{trace['error']}"
+    )
+    assert any(
+        "降级为新增" in r.message for r in caplog.records
+    ), "日志里没有降级告警 —— 运维侧看不见这条通路坏了"
+
+    # —— 反向对照：update 正常时不许出现这个标记 ——
+    ok_mem = _RecordingMemory(dedup_hit=True, candidate_bank="work")
+    ok_out = l1.layer1_add_wrapper(
+        ok_mem, [{"role": "user", "content": "季度目标是跑分"}],
+        "alice", {"source": "chat"}, bank_id="work",
+    )
+    assert ok_mem.updates, "反向对照没走到去重更新出口，这一半白测了"
+    assert "dedup_update_failed" not in ok_out["details"], (
+        "update 成功也报降级 —— 标记恒真，等于没有这个信号"
+    )
+
+
 def test_layer1_stamp_does_not_mutate_caller_metadata(isolate_side_effects):
     l1, _ = isolate_side_effects
     caller_md = {"source": "chat"}

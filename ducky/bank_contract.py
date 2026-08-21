@@ -26,7 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import re
-from typing import Any, Iterable
+import sqlite3
+from typing import Any
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 
@@ -96,18 +97,47 @@ def make_scope(user_id: Any = None, bank_id: Any = None) -> BankScope:
     return BankScope(normalize_user_id(user_id), normalize_bank_id(bank_id))
 
 
-def _table_columns(conn: Any, table: str) -> set[str]:
+def is_legacy_schema_error(exc: BaseException) -> bool:
+    """这个异常是否确实是「老库缺列/缺表」—— 兼容降级唯一允许的触发原因。
+
+    v20 全仓遍布同一种写法：先按 (user_id, bank_id) 过滤，失败就退回老口径
+    （空集、全库、或把行一律当 default 域）。**降级本身是对的**：老库根本没有
+    bank_id 列，具名域的行存不下，只能按老规矩办。
+
+    错的是用 ``except Exception`` 去接它。那等于宣布「凡是这条 SQL 出问题，
+    就当这是个老库」—— 数据库被锁、磁盘写满、连接被回收，全都会命中同一个
+    降级分支，于是**域过滤被悄悄摘掉**，调用方拿到跨域的行，而返回值的形状
+    与一次正常查询完全一样。这正是本版反复在讲的那类事故：静默失败与成功
+    无从区分。租户隔离要是能被一次瞬时故障摘掉，它就不叫隔离。
+
+    所以降级前先验明病因：只有 ``OperationalError`` 且消息里确实说了缺列/
+    缺表，才算兼容问题；其余一律原样抛出，宁可红一次，也不能悄悄跨域。
+    """
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "no such column" in msg or "no such table" in msg
+
+
+def table_columns(conn: Any, table: str) -> set[str]:
     """Return columns for a known table; tolerate absent/legacy tables."""
     # ``table`` is always an internal constant at call sites.  Still bind the
     # lookup parameter and never interpolate user input into this statement.
     try:
         return {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    except Exception:
+    except sqlite3.Error as exc:
+        # 实测：``PRAGMA table_info(不存在的表)`` 返回空集，**不抛异常**。
+        # 也就是说这个 handler 只可能被真故障（库锁、文件损坏、连接已关）走到，
+        # 「表不存在」根本到不了这里。原来的 ``except Exception: return set()``
+        # 于是把真故障翻译成「这张表没有这些列」，调用方据此走兼容降级 ——
+        # 域过滤被摘掉，而返回值形状与正常查询一样。空集照旧返回（调用方的
+        # 兼容路径是对的），但这一笔必须发出来。
+        logger.warning("PRAGMA table_info(%s) 失败，按无此表处理：%s", table, exc)
         return set()
 
 
 def _add_column_if_missing(conn: Any, table: str, column: str, ddl: str) -> bool:
-    if column in _table_columns(conn, table):
+    if column in table_columns(conn, table):
         return False
     try:
         # table/column names come only from the fixed internal call sites.
@@ -116,7 +146,7 @@ def _add_column_if_missing(conn: Any, table: str, column: str, ddl: str) -> bool
     except Exception as exc:
         # Concurrent workers can race the same idempotent ALTER.  Re-check
         # before logging a real migration failure.
-        if column in _table_columns(conn, table):
+        if column in table_columns(conn, table):
             return False
         logger.warning("bank schema add column skipped table=%s column=%s: %s", table, column, exc)
         return False
@@ -221,7 +251,10 @@ def _table_names(conn: Any) -> set[str]:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-    except Exception:
+    except sqlite3.Error as exc:
+        # sqlite_master 永远存在，空库也只是查出空集 —— 同 table_columns，
+        # 走到这里必是真故障。空集会让调用方以为「一张表都还没建」。
+        logger.warning("枚举表名失败，按空库处理：%s", exc)
         return set()
 
 

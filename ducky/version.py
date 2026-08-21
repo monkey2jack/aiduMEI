@@ -67,6 +67,41 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         而两次翻车的症状是同一个 0。判据从病因挪到症状，才不用等下次踩坑再补第四道。
         守卫见 tests/test_release_hygiene.py，其一刻意把敏感词塞进二进制文件里 ——
         词就在那儿，只是没人读过它。
+    16. 降级纪律: 兼容降级不许接住真故障。全仓「先按 (user_id, bank_id) 过滤、失败退回
+        老口径」的写法原先一律用 except Exception 接 —— 库锁/磁盘满/连接回收都会命中
+        同一个降级分支，域过滤被悄悄摘掉，返回值形状与正常查询逐字相同。租户隔离要是
+        能被一次瞬时故障摘掉，它就不叫隔离。ducky/bank_contract.py 新增
+        is_legacy_schema_error()（只认 OperationalError 且消息确实说了缺列/缺表），
+        ducky/reflect.py 取材与 ducky/salience/conflict.py 冲突检测据此改为「不是缺列
+        就原样抛出」；reflect 还拆掉外层那个把内层再抛吞掉的 except Exception ——
+        否则「库被锁」与「本来就没有事实」同归 {"status":"ok","saved":0}。
+        table_columns()（原 _table_columns）与 _table_names() 补 WARNING 留痕: 实测
+        PRAGMA table_info(不存在的表) 返回空集不抛异常，那个 handler 只可能被真故障
+        走到。ducky/conflict_resolver.py 与 ducky/tombstone.py 手写的 PRAGMA + 宽捕获
+        收归 table_columns。新增 tests/test_v20_fallback_discipline.py 10 条守卫，
+        逐条做过反证（撤掉修复后应红的 5 条全红且红在预期那一行，恢复后 diff 指纹
+        逐字节复原）—— 前后都绿的守卫不叫闸门。
+    17. 另外三处宽捕获按病因收窄: ducky/governance.py 的 _row_scope 只认 row 不支持
+        按键取值（AttributeError/IndexError/KeyError），否则具名域候选会被静默判成
+        默认域；ducky/hot/add.py 的 messages 解析只认 ValueError，不再让「进程出事」
+        伪装成「这串文本不是 JSON」；ducky/scoring.py 的 rerank 遥测回写照旧不抛但补
+        debug 留痕 —— 本版加那段就是为了修 rerank_applied 看不见，回写自己再静默失败
+        则症状与修复前一致。
+    18. /update 漏注册记忆域，写路径最后一个缺口: 它会把 bank_id 盖进向量 metadata 并
+        按该域重建 FTS，却没调 ensure_bank_registered（add/tombstone/core_memory/
+        conflict_resolver 都调了），于是数据落在某域、memory_banks 里查不到这个域 ——
+        域存在与否取决于当初从哪个端点进来。ducky/hot/crud.py 补 INSERT OR IGNORE 式
+        幂等注册。同期如实登记: memory_banks 被 11 处写入却只有 bank_contract.list_banks
+        一个读者，而它全仓零调用方、无端点、无测试；新守卫是它的第一个读者。
+    19. layer1 去重更新失败必须留痕（第三个出口，此前无用例走到）: 去重命中却 update
+        抛异常时 ducky/layer1_selfcheck.py 静默改走新增，库里多出重复记忆而 action="new"
+        与正常新增无从区分。语义不变，补 WARNING 与 details.dedup_update_failed；
+        守卫进 tests/test_v20_vector_write_stamp.py，连带钉住降级出口同样盖域戳，
+        并加反向对照（update 正常时标记不许出现，否则断言恒真等于没测）。
+    20. 重构收尾与文档数字复测: 清掉 layer1 的死 json 导入与两个 v20 测试文件里的
+        死导入/零调用辅助函数；用例总数 682 → 693（无宿主 681 passed + 12 skipped），
+        README.md 与 README_EN.md 的 12 处测试数字按 --collect-only 实测同步 ——
+        文档数字由实测反算，写错就红。
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」
