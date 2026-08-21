@@ -63,6 +63,8 @@ def register_add_routes(app: FastAPI) -> None:
             # 兼容 async / async_mode
             async_flag = bool(getattr(req, "async_mode", False))
             extra = getattr(req, "__pydantic_extra__", None) or {}
+            # v20：免抽取写入开关。默认 True＝生产语义不变。
+            infer_flag = bool(getattr(req, "infer", True))
             if not async_flag and isinstance(extra, dict):
                 async_flag = bool(extra.get("async") or extra.get("async_mode"))
             # metadata 里也可带 async
@@ -190,10 +192,17 @@ def register_add_routes(app: FastAPI) -> None:
 
             def _run_pipeline(uid, msgs, meta):
                 try:
-                    return lazy_import_layer1()(mem, msgs, uid, meta, bank_id=req.bank_id)
+                    return lazy_import_layer1()(
+                        mem, msgs, uid, meta,
+                        bank_id=req.bank_id, infer=infer_flag,
+                    )
                 except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
                     logger.warning(f"Layer 1 自检异常，降级为直接写入: {e}")
-                    add_result = mem.add(msgs, user_id=uid, metadata=meta)
+                    # v20：降级分支同样尊重 infer —— 否则调用方显式要的
+                    # 免抽取写入会在降级时偷偷变回 LLM 抽取，确定性通路
+                    # 就成了「大部分时候确定」，最坏的时候最不确定。
+                    add_result = mem.add(msgs, user_id=uid, metadata=meta,
+                                         infer=infer_flag)
                     register_salience_for_add(add_result, user_id=uid, bank_id=req.bank_id)
                     try:
                         from ducky.text_fts import _index_memory
@@ -311,6 +320,7 @@ def register_add_routes(app: FastAPI) -> None:
                             "status": "accepted",
                             "action": "coalesce_buffered",
                             "job_id": job_id,
+                            "infer": infer_flag,
                             "message": "短句已入合并队列，空闲后一次总结落库",
                             "preview": text_preview,
                             "coalesce": {
@@ -326,6 +336,7 @@ def register_add_routes(app: FastAPI) -> None:
                         "status": "accepted",
                         "action": "coalesce_flushed",
                         "job_id": job_id,
+                        "infer": infer_flag,
                         "message": "合并包已提交后台总结落库",
                         "preview": text_preview,
                         "coalesce": {
@@ -345,12 +356,18 @@ def register_add_routes(app: FastAPI) -> None:
                     "status": "accepted",
                     "action": "async_queued",
                     "job_id": job_id,
+                    "infer": infer_flag,
                     "message": "已收下，后台正在总结落库",
                     "preview": text_preview,
                     "coalesce_skip": why,
                 }
 
-            return _run_pipeline(req.user_id, messages_json, md)
+            out = _run_pipeline(req.user_id, messages_json, md)
+            # v20：回显 infer —— 调用方（尤其跑分适配器）据此断言服务端
+            # 真的按免抽取写入执行了，而不是把这个字段静默丢掉。
+            if isinstance(out, dict):
+                out = {**out, "infer": infer_flag}
+            return out
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。

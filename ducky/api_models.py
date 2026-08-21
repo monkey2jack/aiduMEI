@@ -30,6 +30,14 @@ class AddRequest(BaseModel):
     metadata: dict = Field(default_factory=dict)
     # true=先回执后台落库；默认 false 保持同步语义（兼容旧调用方）
     async_mode: bool = False
+    # v20：显式的免抽取写入开关（mem0 的 infer 参数）。
+    # infer=true（默认，生产语义）：LLM 抽取事实后落库。
+    # infer=false：跳过 LLM，原文规范化直写；写入链路变成
+    #   「同输入 → 同输出」的确定性通路。仓内 speed/pipeline.py:127
+    #   的 fastpath 早就在用 infer=False，只是 /add 从未暴露。
+    # 这是**公开契约参数**，不是隐藏的 benchmark 模式：调用方显式传，
+    # 服务端在响应里回显（见 hot/add.py），无法被静默忽略。
+    infer: bool = True
 
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
