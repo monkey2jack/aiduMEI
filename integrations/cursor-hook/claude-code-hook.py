@@ -212,14 +212,14 @@ def cmd_health(args: argparse.Namespace) -> None:
     result = _get("/health")
     status = result.get("health_status", "unknown")
     version = result.get("version", "?")
-    print(f"{'✅' if status == 'ok' else '❌'} aiduMEM {version} — {status}")
+    print(f"{'✅' if status == 'ok' else '❌'} aiduMEI {version} — {status}")
     if result.get("degraded"):
         print(f"⚠️  降级模块: {result['degraded']}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="aiduMEM × Claude Code Hook CLI",
+        description="aiduMEI × Claude Code Hook CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subs = parser.add_subparsers(dest="command", required=True)

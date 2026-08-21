@@ -1,6 +1,6 @@
 name: aidumem
 version: 19.2.1
-description: "aiduMEM — self-hosted multi-tier memory (CoreMemory + FTS5 + Qdrant) over a local HTTP service."
+description: "aiduMEI — self-hosted multi-tier memory (CoreMemory + FTS5 + Qdrant) over a local HTTP service."
 requires_env: []
 hooks:
   - on_pre_compress
