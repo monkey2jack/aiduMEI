@@ -31,6 +31,8 @@ import time
 from typing import Any
 
 from benchmarks.adapter import AdapterError, AiduMEIBenchmarkAdapter
+from benchmarks.corrections import (CorrectionError, apply_corrections,
+                                    load_corrections)
 from benchmarks.schemas import validate_locomo, validate_longmemeval
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -328,6 +330,12 @@ def run_locomo_sample(
         results = search_out["results"]
         evidence = [str(e) for e in (qa.get("evidence") or [])]
         hits, basis = _match_evidence(results, evidence, text_to_dia)
+        # 修正清单打上的拒答标记（corrections.py 的 mark_adversarial）。
+        # 诚实交代：这个标记只会把题从召回分母里拿掉，方向上**只可能抬高**
+        # 我们的数字。所以它必须写理由、必须钉数据哈希、必须配零修正基线
+        # 对照——三道约束都在 corrections.py 里强制，不靠自觉。
+        forced_abstain = bool(qa.get("_marked_adversarial"))
+        applicable = bool(evidence) and not forced_abstain
         records.append({
             "sample_id": sample_id,
             "qa_index": j,
@@ -340,10 +348,12 @@ def run_locomo_sample(
             # 没有这一栏，「召回 1.0」就说不清是精确回指还是兜底匹配。
             "evidence_hit_basis": basis,
             # 同 longmemeval：无证据（category 5 对抗题）＝ 不适用，记 N/A
-            "evidence_recall_applicable": bool(evidence),
+            "evidence_recall_applicable": applicable,
             "evidence_recall_diagnostic": (
-                len(hits) / len(evidence) if evidence else None
+                len(hits) / len(evidence) if applicable else None
             ),
+            # 这一栏进 JSONL 也进 digest：哪几道题是被修正拿掉的，逐条可查。
+            "correction_marked_adversarial": forced_abstain,
             "would_answer": bool(results),
             # v20 补：LoCoMo 记录此前**不含检索结果**，而 PROTOCOL.md §5
             # 承诺 JSONL 要留「检索结果」证据链。这既是协议欠账，也让
@@ -468,7 +478,7 @@ def run_smoke(base_url: str, dataset: str, *, top_k: int, out_dir: str,
 
 
 def _check_formal_manifest(dataset: str, data_path: str) -> dict:
-    """formal 闸门：manifest 必须存在、无 PENDING、且数据哈希对得上。"""
+    """formal 闸门：manifest 必须存在、无 PENDING、哈希对得上、上游提交号已锁。"""
     if not os.path.exists(MANIFEST_PATH):
         raise SystemExit(
             "formal 拒绝启动：缺 data_manifest.json（先跑 download.py 锁哈希）"
@@ -486,31 +496,100 @@ def _check_formal_manifest(dataset: str, data_path: str) -> dict:
             f"formal 拒绝启动：{dataset} 数据哈希不匹配\n"
             f"  manifest: {locked}\n  实际:     {actual}"
         )
+    # 提交号排在哈希之后查：哈希不符是更根本的问题，先报它，报错信息才不误导。
+    # 但缺提交号同样拒绝开跑——哈希只证明「跑的是这个文件」，提交号才证明
+    # 「这个文件取自上游哪一版」。第三方拿哈希对不上时，没有提交号就无从分辨
+    # 「取错了版本」还是「文件被人改过」，成绩也就无法被独立复核。
+    commit = str(entry.get("source_commit", "")).strip()
+    if not commit or "PENDING" in commit.upper():
+        raise SystemExit(
+            f"formal 拒绝启动：{dataset} 的 source_commit 未锁定——"
+            "重跑 `download.py --register … --source-commit <上游提交号>`"
+        )
     return entry
 
 
+def _check_sensitivity_baseline(dataset: str, entry: dict, path: str | None) -> dict:
+    """带修正跑正式成绩，必须同时给出一次**不含修正**的基线运行。
+
+    否则「修正后」的数字就成了唯一公布的数字，读者无从判断这几分是系统的
+    还是修正带来的。基线必须是同一数据集、同一份数据（哈希相同）、且
+    修正条数为 0 的一次真实 formal 运行 summary。
+    """
+    if not path:
+        raise SystemExit(
+            "formal 拒绝启动：修正清单非空却没给 --sensitivity-baseline。\n"
+            "  请先用同一份数据跑一次不带 --corrections 的 formal，再把它的\n"
+            "  summary.json 作为基线传进来（敏感性分析见 PROTOCOL.md §1）。"
+        )
+    if not os.path.exists(path):
+        raise SystemExit(f"formal 拒绝启动：基线 summary 不存在: {path}")
+    baseline = _load_json(path)
+    cfg = (baseline or {}).get("config") or {}
+    if cfg.get("dataset") != dataset:
+        raise SystemExit(
+            f"formal 拒绝启动：基线是 {cfg.get('dataset')!r} 的，本次跑 {dataset!r}"
+        )
+    if cfg.get("data_sha256") != entry["sha256"]:
+        raise SystemExit(
+            "formal 拒绝启动：基线跑的不是同一份数据"
+            f"（基线 {str(cfg.get('data_sha256'))[:16]}… / "
+            f"本次 {entry['sha256'][:16]}…）——那不叫敏感性分析，叫换了题再比分"
+        )
+    applied = ((cfg.get("corrections") or {}).get("applied")) or 0
+    if applied:
+        raise SystemExit(
+            f"formal 拒绝启动：基线自己带了 {applied} 条修正——"
+            "基线必须是零修正运行，否则比不出修正的影响"
+        )
+    return {"path": os.path.basename(path),
+            "digest": baseline.get("digest"),
+            "recall_aggregate": baseline.get("recall_aggregate")}
+
+
+def _load_formal_corrections(dataset: str, path: str | None, entry: dict,
+                             sensitivity_baseline: str | None) -> tuple[dict, dict | None]:
+    """读修正清单并决定是否需要基线。没传 --corrections 就是零修正。"""
+    if not path:
+        return ({"manifest_version": None, "count": 0, "corrections": []}, None)
+    loaded = load_corrections(path, dataset=dataset, data_sha256=entry["sha256"])
+    baseline = None
+    if loaded["count"]:
+        baseline = _check_sensitivity_baseline(dataset, entry, sensitivity_baseline)
+    return (loaded, baseline)
+
+
 def run_formal(base_url: str, dataset: str, *, top_k: int, data_path: str,
-               out_dir: str) -> dict:
-    """正式运行：哈希闸门 → 严格 schema（500/10）→ 全量执行 → 留证。"""
+               out_dir: str, corrections_path: str | None = None,
+               sensitivity_baseline: str | None = None) -> dict:
+    """正式运行：哈希闸门 → 严格 schema（500/10）→ 修正（可选）→ 全量执行 → 留证。"""
     entry = _check_formal_manifest(dataset, data_path)
-    instances = _load_json(data_path)
+    raw = _load_json(data_path)
+
+    # schema 报告永远描述**上游原件**（与 manifest 里的 schema_report 同源）。
+    # 修正只作用于内存副本，落地文件一个字节不动。
     if dataset == "longmemeval":
-        data_report = validate_longmemeval(instances, expect_total=500)
-        adapter = AiduMEIBenchmarkAdapter(base_url)
-        adapter.health()
+        data_report = validate_longmemeval(raw, expect_total=500)
+    elif dataset == "locomo":
+        data_report = validate_locomo(raw, expect_samples=10)
+    else:
+        raise ValueError(f"未知数据集: {dataset}")
+
+    loaded, baseline = _load_formal_corrections(
+        dataset, corrections_path, entry, sensitivity_baseline)
+    instances, corr_report = apply_corrections(dataset, raw, loaded)
+
+    adapter = AiduMEIBenchmarkAdapter(base_url)
+    adapter.health()
+    if dataset == "longmemeval":
         records = [
             run_longmemeval_instance(adapter, inst, top_k=top_k)
             for inst in instances
         ]
-    elif dataset == "locomo":
-        data_report = validate_locomo(instances, expect_samples=10)
-        adapter = AiduMEIBenchmarkAdapter(base_url)
-        adapter.health()
+    else:
         records = []
         for sample in instances:
             records.extend(run_locomo_sample(adapter, sample, top_k=top_k))
-    else:
-        raise ValueError(f"未知数据集: {dataset}")
 
     config = {
         "mode": "formal",
@@ -523,6 +602,17 @@ def run_formal(base_url: str, dataset: str, *, top_k: int, data_path: str,
         # （infer=true，LLM 抽取在环）。这里写死，不接受参数。
         "write_path": "production_infer_true",
         "data_report": data_report,
+        # 修正块进 config，而 config 进 digest：**修正永远不可能被悄悄应用**。
+        # 零修正时也照样写进来——键缺失和「没改过」是两件事，不能靠猜。
+        "corrections": {
+            "manifest": loaded.get("path"),
+            "manifest_version": loaded.get("manifest_version"),
+            "manifest_sha256": loaded.get("manifest_sha256"),
+            "applies_to_sha256": loaded.get("applies_to_sha256"),
+            "applied": corr_report["applied"],
+            "details": corr_report["details"],
+            "sensitivity_baseline": baseline,
+        },
     }
     digest = _stable_digest(records, config)
     summary = {
@@ -565,12 +655,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-path", help="formal 模式的数据文件路径")
     parser.add_argument("--out-dir", default=os.path.join("benchmarks", "runs"))
     parser.add_argument(
+        "--corrections", metavar="MANIFEST",
+        help=("仅 formal：版本化修正清单（benchmarks/corrections/*.json）。"
+              "只许重述上游标注，不许改答案正文；非空清单必须钉数据哈希，"
+              "并须配 --sensitivity-baseline。见 PROTOCOL.md §1"),
+    )
+    parser.add_argument(
+        "--sensitivity-baseline", metavar="SUMMARY",
+        help=("仅 formal：同一份数据的**零修正** formal summary.json。"
+              "修正清单非空时必填——否则修正后的数字就成了唯一公布的数字"),
+    )
+    parser.add_argument(
         "--deterministic", action="store_true",
         help=("仅 smoke：以 infer=false 灌注（LLM 出环），用于 G3b "
               "bit 级复现性自检。此模式的召回数字不代表生产表现，"
               "更不得作为成绩；formal 拒绝此开关。"),
     )
     args = parser.parse_args(argv)
+
+    if args.smoke and (args.corrections or args.sensitivity_baseline):
+        # smoke 跑的是合成 fixture，没有上游标注可修——在这里放行只会让人
+        # 误以为「修正已生效」，而 fixture 里根本没有对应的题。
+        parser.error("--corrections / --sensitivity-baseline 只用于 --formal")
 
     try:
         if args.smoke:
@@ -585,14 +691,21 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--formal 不接受 --deterministic（正式跑分必须与生产同路）")
             summary = run_formal(args.base_url, args.dataset,
                                  top_k=args.top_k, data_path=args.data_path,
-                                 out_dir=args.out_dir)
+                                 out_dir=args.out_dir,
+                                 corrections_path=args.corrections,
+                                 sensitivity_baseline=args.sensitivity_baseline)
     except AdapterError as e:
         print(f"运行失败（{e.kind}）: {e}", file=sys.stderr)
+        return 2
+    except CorrectionError as e:
+        print(f"修正清单被拒: {e}", file=sys.stderr)
         return 2
 
     print(json.dumps(
         {"gate": summary["config"].get("gate", "formal"),
          "write_path": summary["config"]["write_path"],
+         "corrections_applied":
+             (summary["config"].get("corrections") or {}).get("applied", 0),
          "digest": summary["digest"],
          "records_total": summary["records_total"],
          "recall_aggregate": summary["recall_aggregate"],

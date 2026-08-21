@@ -94,7 +94,6 @@ def register_add_routes(app: FastAPI) -> None:
             if media_url:
                 # 检查 Vision 模块开关
                 try:
-                    import json
                     import os
                     from ducky.mem0_runtime import MEM0_CONFIG
                     if os.path.exists(MEM0_CONFIG):

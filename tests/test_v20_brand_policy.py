@@ -57,18 +57,48 @@ def _readable(rel):
         return False
 
 
+# 源码清单**不走 git**。理由是实测出来的，不是洁癖：
+# 生产那台机器是**拷文件部署**的，仓里的 .git 停在旧提交（实测 231 条索引 vs
+# 磁盘上 282 个文件）。那种状态下 `git ls-files` 不报错，只少报 —— 51 个 v20
+# 新增文件一个都不在清单里，下面每条守卫照常变绿，却根本没查到新增的那一面。
+# 而在 sdist/tar 解出来的目录里（客户拿到的就是这个）它直接 128 报错。
+# 「跑不通」看得见，「少查」看不见 —— 所以按目录白名单走文件系统，谁都不依赖。
+_SKIP_DIRS = frozenset({
+    ".git", ".idea", ".vscode", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+    "__pycache__", "venv", ".venv", "env", "node_modules", "dist", "build",
+    ".eggs", "data", "backups", "logs", "htmlcov", "tests",
+})
+# 生产目录里混着未受版本控制的东西：真 .env、库文件、日志、备份包。
+# 它们既不该被品牌守卫扫（会误红），更不该被断言消息打印出来（会泄密）。
+_SKIP_SUFFIXES = (
+    ".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3",
+    ".log", ".tar", ".gz", ".tgz", ".zip", ".whl", ".bak", ".swp", ".pem", ".key",
+)
+
+
+def _is_secret_env(name):
+    """真 .env 一律跳过；`.env.example` 是要发给客户的样例，必须留下。"""
+    return (name == ".env" or name.startswith(".env.")) and not name.endswith(".example")
+
+
 def _source_files():
-    """受版本控制的非测试文本文件。
+    """随包发布的非测试文本文件（按目录走盘，与 git 无关）。
 
     扣掉 tests/ 是因为测试里带占位键名（例如断言前缀行为用的 AIDUMEM_SOME_OTHER），
     把它们算进冻结集只会让守卫在无关的测试改动上变红 —— 一条经常误红的守卫，
     最后会被人养成「见红就改数字」的习惯，那就等于没有守卫。
     真正会发给客户的配置只从源码来。
     """
-    out = subprocess.run(
-        ["git", "ls-files"], cwd=_REPO_ROOT, capture_output=True, text=True, check=True
-    ).stdout.split()
-    return [f for f in out if f and not f.startswith("tests/") and _readable(f)]
+    found = []
+    for cur, dirs, files in os.walk(_REPO_ROOT):
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
+        for name in sorted(files):
+            if name.endswith(_SKIP_SUFFIXES) or _is_secret_env(name):
+                continue
+            rel = os.path.relpath(os.path.join(cur, name), _REPO_ROOT)
+            if _readable(rel):
+                found.append(rel)
+    return found
 
 
 # 「代码面」= 真的会被执行的文件，再扣掉 ducky/version.py。
@@ -331,12 +361,44 @@ def test_guard_tables_are_not_empty_and_point_at_real_files():
     )
     missing = [r for r in sorted(rels) if not os.path.isfile(os.path.join(_REPO_ROOT, r))]
     assert not missing, "守卫表指向了不存在的文件（改名/搬家没同步）：" + ", ".join(missing)
-    assert _source_files(), "源码文件清单是空的，git ls-files 没跑通，这一轮什么都没查"
+    assert _source_files(), "源码文件清单是空的（走盘没扫到东西），这一轮什么都没查"
     assert _code_files(), "代码面清单是空的，logger 处数那一条会变成 0 == 85 的空转"
     stale = [r for r in sorted(_RECORD_FILES) if not os.path.isfile(os.path.join(_REPO_ROOT, r))]
     assert not stale, (
         "流水账文件被改名/搬家了，_RECORD_FILES 里的排除项已经排除不到任何东西："
         + ", ".join(stale)
+    )
+
+
+def test_source_file_list_has_no_blind_spot_versus_git():
+    """走盘清单不许漏掉任何一个受版本控制的源码文件。
+
+    走盘换掉 `git ls-files` 解决了「在客户机器上跑不起来 / 少查」的问题，代价是
+    目录白名单会过期：以后新开一个顶层目录、或往 _SKIP_DIRS 里多塞一个名字，
+    守卫的射程就静静地缩一圈 —— 又是一次「看不见的少查」。所以在**有 git 的地方**
+    （开发机、CI）反过来验一次：git 认的、磁盘上还在的，走盘必须一个不少。
+
+    只验这一个方向。反方向（走盘扫到 git 不认的）在生产机上必然成立且无害 ——
+    那台机器的索引本来就旧 51 个文件 —— 拿它当红线只会在用户机器上误红。
+    """
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=_REPO_ROOT,
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pytest.skip("不在 git 工作区里（sdist/拷贝部署），没有可比对的基准")
+    expected = {
+        f for f in tracked
+        if f and not f.startswith("tests/")
+        and os.path.basename(f) not in {".env"}
+        and not f.endswith(_SKIP_SUFFIXES)
+        and _readable(f)
+    }
+    blind = sorted(expected - set(_source_files()))
+    assert not blind, (
+        "这些文件受版本控制、磁盘上也在，但走盘清单里没有 —— "
+        "品牌守卫对它们完全失明：\n  " + "\n  ".join(blind)
     )
 
 

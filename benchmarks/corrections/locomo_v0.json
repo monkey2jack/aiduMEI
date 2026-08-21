@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "dataset": "locomo",
+  "manifest_version": "locomo-v0",
+  "applies_to_sha256": "PENDING",
+  "rationale": "空清单：截至 v20.0，上游 LoCoMo 标注的可疑点一律如实上报进 schema_report.anomalies，不做任何修正。此文件存在的意义是把「修正必须走版本化清单」这条路先铺好并纳入闸门，而不是等到需要改分数那天再临时发明规则。空清单不要求钉 applies_to_sha256（改不动任何数字），故留 PENDING；一旦加入第一条修正，哈希钉即成为硬性要求，闸门会拒绝放行。",
+  "corrections": []
+}

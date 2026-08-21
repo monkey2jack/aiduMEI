@@ -198,6 +198,63 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         那批文件」的疑问，而这恰恰是脱敏闸门唯一要回答的问题。两处提示改为「目录或文件
         均可」并在代码里留下因果；test_release_hygiene.py 22 条全绿，单文件正向对照实测
         报「已扫 1 个文件」、退出码 0。
+    28. tests/test_v20_brand_policy.py 的源码清单从 git ls-files 改为按目录走盘 ——
+        品牌守卫此前只在开发机上有效。生产是**拷文件部署**的: 那台机器的 .git 停在
+        旧提交（实测索引 231 条 vs 磁盘 282 个文件），git ls-files 不报错、只少报，
+        51 个 v20 新增文件一个都不在清单里，冻结集/logger 处数/高危键读取点三条
+        守卫照常全绿，却根本没查新增的那一面；而在 sdist 解出来的目录里它直接
+        128 退出（实测该文件 10 条用例全红）。跑不通看得见，少查看不见 —— 后者才是
+        这个文件开篇警告的那种失败。改为 os.walk + 目录黑名单（含 data/backups/venv）
+        与文件后缀黑名单（.db/.log/.pem 等），真 .env 跳过而 .env.example 保留。
+        代价是白名单会过期，故补守卫 test_source_file_list_has_no_blind_spot_versus_git:
+        有 git 的地方反验「git 认的、盘上还在的，走盘一个不少」，单向 —— 反方向在
+        索引偏旧的生产机上必然不成立，拿它当红线只会在用户机器上误红。
+        负向对照实测: 把 ducky/ 塞进跳过名单，守卫报出 112 个失明文件。
+        用例总数 742 → 743（无宿主 731 passed + 12 skipped），README.md 与
+        README_EN.md 的 18 处数字同步。
+    29. benchmarks/download.py 新增必填 --source-commit，数据溯源从「锁哈希」补到
+        「锁上游提交号」—— 只有哈希，第三方复核对不上时分不清「取错了版本」还是
+        「文件被人改过」，而两个数据集的标注都在持续修。7–40 位十六进制，tag 名与
+        分支名一律拒收（会移动的标识当不了先验承诺）；空值与 PENDING 也拒绝登记 ——
+        最坏的是随手给个占位符，formal 闸门只查「非空且非 PENDING」，占位符正好骗得过。
+        benchmarks/run.py 的 formal 闸门同步拒绝缺号开跑，且排在哈希校验之后 ——
+        哈希不符是更根本的问题，先报它报错信息才不误导。benchmarks/PROTOCOL.md §1
+        写明取法（上游检出目录 git rev-parse HEAD）。
+    30. 新增 benchmarks/corrections.py —— 上游标注要修，就必须钉版本、钉数据哈希、
+        配零修正基线，且改不动答案正文。此前只承诺「原始数据一个字节不改」，没给
+        合法修正路径；没有合法路径，将来只会有不留痕的路径。三道硬约束: 必须有
+        manifest_version（没版本号的清单能悄悄变，成绩无法复核）；非空清单必须钉
+        applies_to_sha256（门槛正好落在「能改动数字」那一刻）；只许 add_evidence /
+        mark_adversarial，碰 answer/question/adversarial_answer/text 一律拒收。
+        另: 匹配不到目标必须报错（静默失效的修正让报告说谎），修正只作用于内存副本。
+        benchmarks/run.py 补敏感性闸门: 带非空清单跑正式成绩必须同时给出同数据、
+        零修正的基线 summary，否则拒绝启动。方向上诚实交代: mark_adversarial 只可能
+        抬高我们的数字，正因单向有利才更要钉死。随仓库发零条清单
+        benchmarks/corrections/locomo_v0.json。过程中抓到两个自己的问题: 其一
+        mark_adversarial 一度是空承诺（标记写了没人读），遂接进召回判定
+        并补正/负对照；其二我自己的校验报错顺序把红线盖住了 —— 正文字段本身也算
+        「未知键」，先报未知键就让「想改答案」被一句「拼错了」顶掉，改为特定在前。
+        tests/test_v20_benchmarks.py 新增 12 条。
+    31. scripts/vector_shadow_poc.py 新增 --scale，向量后端从趋势判断补到实测曲线，
+        docs/ADR-001-vector-backend-contract-and-poc.md 落表。此前只跑到 5000 点。
+        实测（维度 64/每档 20 查/top-k 10）: sqlite-vec 路径 p50 12.18 → 125.71 →
+        1332.41ms（每 10 倍规模约 10.3–10.6 倍耗时，干净 O(n) 全表扫描），同规模
+        Qdrant 0.19 / 1.03 / 9.72ms，100k 时相差 137×；而三档 recall@10 全 1.000。
+        正确性满分与性能不可用同时成立。三条量化口径进文档: recall 的标准答案是
+        numpy 精确余弦而非另一个后端（后者只能证明「它们一致」）；每档一个子进程，
+        因为 ru_maxrss 是进程累计峰值、只增不减，同进程混跑就是拿大档数字冒充小档，
+        且该字段单位随平台变（macOS 字节、Linux KiB），不换算会把 Linux 报小 1024 倍；
+        规模档是测量不是判定，少一档非零退出。tests/test_v20_vector_migration_poc.py
+        新增 6 条，含文档护栏 test_adr_scale_table_matches_script（脚本改档而文档没改，
+        读者会拿 100k 的结论去推一个从没跑过的规模）。
+    32. ducky/hot/add.py 删掉一个多余的内层 import json —— 生产沙箱按 282 个文件逐一
+        比哈希，只对上这一处不一致，采纳生产侧那份、两边归一。这条本身微不足道，
+        值得记的是核验方式: 部署后逐文件比哈希，而不是「测试全绿就算部署对了」——
+        测试绿只证明代码能跑，证明不了两边跑的是同一份代码。同轮清掉跨平台传输带进
+        沙箱的 AppleDouble 伴生文件（._*），它们会让按目录走盘的守卫读到非 UTF-8
+        字节而报 UnicodeDecodeError；此后 macOS→Linux 打包统一带 COPYFILE_DISABLE=1。
+        用例总数 743 → 761（无宿主 749 passed + 12 skipped），README.md 与
+        README_EN.md 的 18 处数字同步。
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」

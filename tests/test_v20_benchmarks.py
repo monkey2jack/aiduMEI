@@ -676,6 +676,68 @@ def test_formal_refuses_without_hash_manifest(tmp_path, monkeypatch):
         brun._check_formal_manifest("longmemeval", str(data))
 
 
+def test_formal_refuses_without_source_commit(tmp_path, monkeypatch):
+    """提交号闸门：哈希对得上但没锁上游提交号，formal 照样拒绝。
+
+    哈希只证明「跑的是这个文件」，提交号才证明「文件取自上游哪一版」。
+    两个数据集的标注都在持续修，第三方哈希对不上时没有提交号就分不清
+    「取错版本」还是「文件被改过」——成绩就无法被独立复核。
+    """
+    import benchmarks.run as brun
+
+    data = tmp_path / "data.json"
+    data.write_text("[]", encoding="utf-8")
+    real = brun._sha256_file(str(data))
+
+    # 哈希对上、提交号缺失 → 拒
+    no_commit = tmp_path / "m3.json"
+    no_commit.write_text(json.dumps({"longmemeval": {"sha256": real}}),
+                         encoding="utf-8")
+    monkeypatch.setattr(brun, "MANIFEST_PATH", str(no_commit))
+    with pytest.raises(SystemExit, match="source_commit 未锁定"):
+        brun._check_formal_manifest("longmemeval", str(data))
+
+    # 提交号还是 PENDING → 同样拒
+    pending_commit = tmp_path / "m4.json"
+    pending_commit.write_text(json.dumps(
+        {"longmemeval": {"sha256": real, "source_commit": "PENDING"}}),
+        encoding="utf-8")
+    monkeypatch.setattr(brun, "MANIFEST_PATH", str(pending_commit))
+    with pytest.raises(SystemExit, match="source_commit 未锁定"):
+        brun._check_formal_manifest("longmemeval", str(data))
+
+    # 正向对照：哈希 + 提交号都齐了才放行
+    ok = tmp_path / "m5.json"
+    ok.write_text(json.dumps(
+        {"longmemeval": {"sha256": real, "source_commit": "9e0b455"}}),
+        encoding="utf-8")
+    monkeypatch.setattr(brun, "MANIFEST_PATH", str(ok))
+    assert brun._check_formal_manifest("longmemeval", str(data))["source_commit"] \
+        == "9e0b455"
+
+
+def test_register_refuses_moving_or_missing_source_commit():
+    """登记闸门：空/PENDING/tag 名/分支名一律拒绝，不给占位符默认值。
+
+    给个 "unknown" 占位符最省事，也最危险——manifest 会带着一个看起来
+    已登记、实则没有溯源的条目进仓库，而 formal 闸门只查「非空且非
+    PENDING」，占位符正好骗得过它。
+    """
+    from benchmarks.download import normalize_source_commit
+
+    for bad, why in [(None, "空"), ("", "空串"), ("  ", "全空白"),
+                     ("PENDING", "占位"), ("v1.0.0", "tag 名"),
+                     ("main", "分支名"), ("zzzzzzz", "非十六进制"),
+                     ("abc", "不足 7 位")]:
+        with pytest.raises(SystemExit):
+            normalize_source_commit(bad)
+
+    # 正向对照：短号认、长号认、大写归一成小写
+    assert normalize_source_commit("9e0b455") == "9e0b455"
+    assert normalize_source_commit("3EB6F2C585F5E1699204E3C3BDF7ADC5C28CB376") \
+        == "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
+
+
 # ---------------------------------------------------------------------------
 # 证据匹配器：两条召回路径形状不同，判据必须可审计（v20 修订 2）
 # ---------------------------------------------------------------------------
@@ -1006,3 +1068,325 @@ def test_gate_cli_exit_codes(tmp_path, capsys):
     bad = _write_run(tmp_path, "bad", digest="0" * 64)
     assert main([a, bad, "--gate", "g3b"]) == 1
     assert main([a, str(tmp_path / "nope.json"), "--gate", "g3b"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# 修正清单：版本化、钉哈希、只许重述标注、不许静默失效（PROTOCOL.md §1.1）
+# ---------------------------------------------------------------------------
+
+def _corr_sample(**over):
+    """复用上面的 LoCoMo 夹具，补一道 cat5 拒答题当 mark_adversarial 的靶子。
+
+    刻意**不**新写一份样本：两份同名夹具会互相遮蔽，前面的 schema 测试就会
+    悄悄换掉输入。qa 下标固定为 0=常规题（带 evidence）、1=cat5 拒答题。
+    """
+    return _locomo_sample(qa=[
+        {"question": "谁先打招呼？", "answer": "A", "category": 4,
+         "evidence": ["D1:1"]},
+        {"question": "A 的生日是哪天", "adversarial_answer": "没提过",
+         "category": 5},
+    ], **over)
+
+
+def _write_corr(path, **kw):
+    body = {"schema_version": 1, "dataset": "locomo",
+            "manifest_version": "t-v1", "corrections": []}
+    body.update(kw)
+    path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    return str(path)
+
+
+def test_shipped_correction_manifest_is_empty_and_moves_nothing():
+    """随仓库发布的清单是空清单：能装载、改不动任何数字。
+
+    空清单**不要求**钉数据哈希——它改不动数字，钉了没有意义。这道门槛
+    正好落在「能改动数字」的那一刻，下一个测试钉的就是那一刻。
+    """
+    import os
+
+    from benchmarks.corrections import apply_corrections, load_corrections
+
+    shipped = os.path.join("benchmarks", "corrections", "locomo_v0.json")
+    loaded = load_corrections(shipped, dataset="locomo", data_sha256="0" * 64)
+    assert loaded["manifest_version"] == "locomo-v0"
+    assert loaded["count"] == 0
+    # 空清单即使钉的是 PENDING 也放行（对照：下一个测试里非空就拒）
+    assert loaded["applies_to_sha256"] == "PENDING"
+
+    data = [_corr_sample()]
+    out, report = apply_corrections("locomo", data, loaded)
+    assert report["applied"] == 0 and report["details"] == []
+    assert out == data
+
+
+def test_nonempty_correction_manifest_must_pin_the_data_hash(tmp_path):
+    """能改动数字的清单必须钉住它改的是哪份数据。"""
+    from benchmarks.corrections import CorrectionError, load_corrections
+
+    op = {"op": "mark_adversarial", "sample_index": 0, "qa_index": 1,
+          "why": "官方口径此题为拒答题"}
+
+    # 非空 + 没钉哈希 → 拒
+    p = _write_corr(tmp_path / "c1.json", corrections=[op])
+    with pytest.raises(CorrectionError, match="没钉数据哈希"):
+        load_corrections(p, dataset="locomo", data_sha256="a" * 64)
+
+    # 非空 + 钉了 PENDING → 同样拒
+    p = _write_corr(tmp_path / "c2.json", corrections=[op],
+                    applies_to_sha256="PENDING")
+    with pytest.raises(CorrectionError, match="没钉数据哈希"):
+        load_corrections(p, dataset="locomo", data_sha256="a" * 64)
+
+    # 非空 + 钉了别份数据的哈希 → 拒（拿 A 的修正改 B 的分数）
+    p = _write_corr(tmp_path / "c3.json", corrections=[op],
+                    applies_to_sha256="b" * 64)
+    with pytest.raises(CorrectionError, match="不予放行"):
+        load_corrections(p, dataset="locomo", data_sha256="a" * 64)
+
+    # 正向对照：钉对了才放行
+    p = _write_corr(tmp_path / "c4.json", corrections=[op],
+                    applies_to_sha256="a" * 64)
+    assert load_corrections(p, dataset="locomo", data_sha256="a" * 64)["count"] == 1
+
+
+def test_correction_manifest_rejects_illegal_shapes(tmp_path):
+    """清单本身的合法性：版本号、数据集、动作白名单、未知键、理由。"""
+    from benchmarks.corrections import CorrectionError, load_corrections
+
+    ok_op = {"op": "mark_adversarial", "sample_index": 0, "qa_index": 1,
+             "why": "官方口径此题为拒答题"}
+    pin = {"applies_to_sha256": "a" * 64}
+
+    cases = [
+        ("schema_version", {"schema_version": 99}, "schema_version"),
+        ("no_version", {"manifest_version": ""}, "manifest_version"),
+        ("other_dataset", {"dataset": "longmemeval"}, "本次跑的是"),
+        ("not_a_list", {"corrections": {}}, "必须是列表"),
+        ("unknown_op", dict(pin, corrections=[dict(ok_op, op="delete_qa")]),
+         "不在白名单"),
+        ("typo_key", dict(pin, corrections=[dict(ok_op, whyy="拼错了")]),
+         "未知键"),
+        ("no_why", dict(pin, corrections=[
+            {"op": "mark_adversarial", "sample_index": 0, "qa_index": 1}]),
+         "缺 why"),
+        ("neg_index", dict(pin, corrections=[dict(ok_op, sample_index=-1)]),
+         "必须是非负整数"),
+        ("empty_dia", dict(pin, corrections=[
+            {"op": "add_evidence", "sample_index": 0, "qa_index": 0,
+             "dia_ids": [], "why": "上游漏标"}]),
+         "非空字符串列表"),
+    ]
+    for name, patch, expect in cases:
+        p = _write_corr(tmp_path / f"bad_{name}.json", **patch)
+        with pytest.raises(CorrectionError, match=expect):
+            load_corrections(p, dataset="locomo", data_sha256="a" * 64)
+
+
+def test_correction_manifest_refuses_to_rewrite_answers(tmp_path):
+    """负向对照（红线）：改答案正文不是修正，是造数据——schema 层拦死。"""
+    from benchmarks.corrections import CorrectionError, load_corrections
+
+    for field in ("answer", "question", "adversarial_answer", "text"):
+        op = {"op": "mark_adversarial", "sample_index": 0, "qa_index": 1,
+              "why": "想顺手改正文", field: "我说的才对"}
+        p = _write_corr(tmp_path / f"rw_{field}.json", corrections=[op],
+                        applies_to_sha256="a" * 64)
+        with pytest.raises(CorrectionError, match="造数据"):
+            load_corrections(p, dataset="locomo", data_sha256="a" * 64)
+
+
+def test_corrections_apply_on_a_copy_and_are_itemized(tmp_path):
+    """正向：补 evidence / 标拒答都生效，且**原数据一个字节不动**。"""
+    from benchmarks.corrections import apply_corrections, load_corrections
+
+    p = _write_corr(
+        tmp_path / "good.json",
+        applies_to_sha256="a" * 64,
+        corrections=[
+            {"op": "add_evidence", "sample_index": 0, "qa_index": 0,
+             "dia_ids": ["D1:2"], "why": "上游漏标了乙的追问这一轮"},
+            {"op": "mark_adversarial", "sample_index": 0, "qa_index": 1,
+             "why": "官方口径此题为拒答题"},
+        ])
+    loaded = load_corrections(p, dataset="locomo", data_sha256="a" * 64)
+
+    data = [_corr_sample()]
+    before = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    out, report = apply_corrections("locomo", data, loaded)
+
+    assert report["applied"] == 2
+    assert out[0]["qa"][0]["evidence"] == ["D1:1", "D1:2"]
+    assert out[0]["qa"][1]["_marked_adversarial"] is True
+    # 逐条留痕：改了哪道题、加了什么、为什么
+    assert report["details"][0]["added"] == ["D1:2"]
+    assert "漏标" in report["details"][0]["why"]
+    # 原对象没被就地改写（磁盘原件更不会动）
+    assert json.dumps(data, ensure_ascii=False, sort_keys=True) == before
+
+
+def test_stale_correction_is_an_error_not_a_silent_noop(tmp_path):
+    """匹配不到目标的修正必须报错——静默跳过会让清单腐烂、让报告说谎。"""
+    from benchmarks.corrections import (CorrectionError, apply_corrections,
+                                        load_corrections)
+
+    def loaded_with(op):
+        p = _write_corr(tmp_path / f"stale_{op['op']}_{op['qa_index']}.json",
+                        applies_to_sha256="a" * 64, corrections=[op])
+        return load_corrections(p, dataset="locomo", data_sha256="a" * 64)
+
+    data = [_corr_sample()]
+
+    # 下标越界
+    with pytest.raises(CorrectionError, match="只有 2 道题"):
+        apply_corrections("locomo", data, loaded_with(
+            {"op": "mark_adversarial", "sample_index": 0, "qa_index": 9,
+             "why": "越界"}))
+    with pytest.raises(CorrectionError, match="个样本"):
+        apply_corrections("locomo", data, loaded_with(
+            {"op": "mark_adversarial", "sample_index": 7, "qa_index": 0,
+             "why": "越界"}))
+
+    # dia_id 在该样本里根本不存在——补一个不存在的证据只会凭空拉高召回
+    with pytest.raises(CorrectionError, match="凭空拉高召回"):
+        apply_corrections("locomo", data, loaded_with(
+            {"op": "add_evidence", "sample_index": 0, "qa_index": 0,
+             "dia_ids": ["D9:9"], "why": "查无此轮"}))
+
+    # 要补的 evidence 已经在题里了——这条修正已失效，必须报错让人删掉
+    with pytest.raises(CorrectionError, match="已经全在题里"):
+        apply_corrections("locomo", data, loaded_with(
+            {"op": "add_evidence", "sample_index": 0, "qa_index": 0,
+             "dia_ids": ["D1:1"], "why": "重复"}))
+
+    # 官方口径只有 cat5 走拒答判定，别的类别不许标
+    with pytest.raises(CorrectionError, match="只有 cat5"):
+        apply_corrections("locomo", data, loaded_with(
+            {"op": "mark_adversarial", "sample_index": 0, "qa_index": 0,
+             "why": "类别不符"}))
+
+
+def test_marked_adversarial_actually_removes_the_question_from_recall(stub_server):
+    """标记必须**真的被消费**：拒答题从召回分母里拿掉，且逐条留痕。
+
+    一个没人读的标记等于没有这个机制。这里钉的是 run_locomo_sample
+    确实认这个标记——否则 mark_adversarial 只是一句空承诺。
+    """
+    import benchmarks.run as brun
+
+    state, base_url = stub_server
+    state.search_response = {"status": "ok", "results": [
+        {"id": "m1", "memory": "你好",
+         "metadata": {"bench_dia_id": "D1:1", "bench_session_id": "session_1"}},
+    ]}
+    adapter = _adapter(base_url)
+
+    # 两道题都配上 evidence，好让"被拿掉"这件事看得见：
+    # 未标记时该题召回 1.0，标记后整题退出分母（None）。
+    sample = _corr_sample()
+    sample["qa"][1]["evidence"] = ["D1:1"]
+
+    plain = brun.run_locomo_sample(adapter, json.loads(json.dumps(sample)), top_k=3)
+    assert plain[1]["evidence_recall_applicable"] is True
+    assert plain[1]["evidence_recall_diagnostic"] == 1.0
+    assert plain[1]["correction_marked_adversarial"] is False
+
+    marked = json.loads(json.dumps(sample))
+    marked["qa"][1]["_marked_adversarial"] = True
+    after = brun.run_locomo_sample(adapter, marked, top_k=3)
+    assert after[1]["evidence_recall_applicable"] is False
+    assert after[1]["evidence_recall_diagnostic"] is None
+    assert after[1]["correction_marked_adversarial"] is True
+    # 正向对照：另一道题不受影响，标记只作用于被点名那一题
+    assert after[0]["evidence_recall_applicable"] is True
+    assert after[0]["correction_marked_adversarial"] is False
+    # 检索确实发生过（不是因为没跑到而"看起来"通过）
+    assert sum(1 for r in state.requests if r["path"] == "/search") == 4
+
+
+def test_corrections_cannot_be_applied_invisibly():
+    """修正块进 config，config 进 digest——不存在「悄悄改了分数」的路径。"""
+    import benchmarks.run as brun
+
+    records = [{"sample_id": "s1", "evidence_hits": ["D1:1"]}]
+    base = {"mode": "formal", "dataset": "locomo",
+            "corrections": {"manifest_version": None, "applied": 0,
+                            "details": []}}
+    with_corr = {"mode": "formal", "dataset": "locomo",
+                 "corrections": {"manifest_version": "t-v1", "applied": 1,
+                                 "details": [{"op": "mark_adversarial",
+                                              "at": [0, 1], "why": "x"}]}}
+    assert brun._stable_digest(records, base) \
+        != brun._stable_digest(records, with_corr)
+    # 正向对照：同样的配置两遍必须一致（digest 只对内容敏感）
+    assert brun._stable_digest(records, base) \
+        == brun._stable_digest(records, json.loads(json.dumps(base)))
+
+
+def test_formal_demands_a_zero_correction_baseline(tmp_path):
+    """非空修正要跑正式成绩，必须拿同一份数据的零修正基线做对照。"""
+    import benchmarks.run as brun
+
+    entry = {"sha256": "a" * 64, "source_commit": "9e0b455"}
+    p = _write_corr(tmp_path / "one.json", applies_to_sha256="a" * 64,
+                    corrections=[{"op": "mark_adversarial", "sample_index": 0,
+                                  "qa_index": 1, "why": "官方口径为拒答题"}])
+
+    # 没给基线 → 拒
+    with pytest.raises(SystemExit, match="sensitivity-baseline"):
+        brun._load_formal_corrections("locomo", p, entry, None)
+
+    # 基线文件不存在 → 拒
+    with pytest.raises(SystemExit, match="基线 summary 不存在"):
+        brun._load_formal_corrections("locomo", p, entry,
+                                      str(tmp_path / "nope.json"))
+
+    def baseline(name, **cfg):
+        f = tmp_path / name
+        body = {"digest": "d" * 64, "recall_aggregate": {},
+                "config": dict({"dataset": "locomo", "data_sha256": "a" * 64,
+                                "corrections": {"applied": 0}}, **cfg)}
+        f.write_text(json.dumps(body), encoding="utf-8")
+        return str(f)
+
+    # 基线是别的数据集 → 拒
+    with pytest.raises(SystemExit, match="本次跑"):
+        brun._load_formal_corrections(
+            "locomo", p, entry, baseline("b1.json", dataset="longmemeval"))
+
+    # 基线跑的不是同一份数据 → 拒（那叫换了题再比分）
+    with pytest.raises(SystemExit, match="换了题再比分"):
+        brun._load_formal_corrections(
+            "locomo", p, entry, baseline("b2.json", data_sha256="b" * 64))
+
+    # 基线自己带着修正 → 拒（比不出修正的影响）
+    with pytest.raises(SystemExit, match="基线必须是零修正"):
+        brun._load_formal_corrections(
+            "locomo", p, entry, baseline("b3.json",
+                                         corrections={"applied": 2}))
+
+    # 正向对照：合格基线放行，并把基线信息带进 config 留证
+    loaded, base = brun._load_formal_corrections(
+        "locomo", p, entry, baseline("b4.json"))
+    assert loaded["count"] == 1
+    assert base["path"] == "b4.json" and base["digest"] == "d" * 64
+
+    # 零修正运行不需要基线（也不该被逼着给一个）
+    empty, none_base = brun._load_formal_corrections("locomo", None, entry, None)
+    assert empty["count"] == 0 and none_base is None
+
+
+def test_correction_ops_are_documented_in_protocol():
+    """代码里加了新动作，协议里必须同步写明——文档漂移守卫。"""
+    from benchmarks.corrections import ALLOWED_OPS
+
+    with open("benchmarks/PROTOCOL.md", encoding="utf-8") as f:
+        protocol = f.read()
+
+    assert "### 1.1 修正清单" in protocol
+    for op in ALLOWED_OPS:
+        assert f"`{op}`" in protocol, f"新动作 {op} 未写进 PROTOCOL.md §1.1"
+    # 随仓库发布的空清单必须在协议里点名，否则读者无从知道它存在
+    assert "benchmarks/corrections/locomo_v0.json" in protocol
+    # 敏感性分析与哈希钉这两条硬约束必须留在纸面上
+    assert "--sensitivity-baseline" in protocol
+    assert "applies_to_sha256" in protocol
