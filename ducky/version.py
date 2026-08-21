@@ -302,6 +302,31 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         管不到「整份 skip 的文件」—— 这次撞的就是这个盲区。用例总数 769 → 771（无宿主
         759 passed + 12 skipped），README.md 与 README_EN.md 的 18 处数字同步。
         这一条同样是测试设施修复，不是产品修复: ducky/ 下一行未改。
+    36. 拿本版自己写的基准回头逐条对账，查出两处漏项 —— 都是「门禁根本没法表达」级别的
+        缺口。① 基准 §3.2 点名 VectorBackend 七个方法（upsert/search/delete/count/
+        health/snapshot/restore），实现里只有六个: restore 从头到尾没写。一个只能备份、
+        取不出来的抽象，等于让 G5「恢复演练」与 G7「备份可恢复」两项门禁在这一层压根无法
+        表达 —— 不是没跑，是没得跑。补 SQLiteVecBackend.restore() 时把顺序焊死: 全部校验
+        发生在覆盖之前（源不能是当前库自身 → 文件必须存在 → 只读探针 SELECT COUNT(*)
+        FROM vectors 必须打得开），因为一次「先清空、再发现快照是垃圾」的恢复比不恢复更糟，
+        那是拿一个坏备份把生产数据擦掉；覆盖之后再做一次后置条数对账，抄少了也算失败，
+        不许「部分恢复」冒充成功；返回值是 int 而不是 None，让「什么都没恢复出来」没法被
+        读成「恢复成功」。QdrantBackend 与它的 snapshot 对称地拒绝，不提供一个「看着像
+        恢复」的假实现。② 基准 §8.1 要求 schema_version 可读，/health 里没有这一栏。补的
+        时候躲开一个坑: 只回显代码里的 CURRENT_SCHEMA_VERSION 是假绿灯 —— 库还停在旧版本
+        时它照样报新版本号。所以 schema_version 取磁盘上的 PRAGMA user_version（真相），
+        代码期望值另开一栏 schema_version_expected，两者不一致时 schema_version_ok=False
+        且记名降级。③ 自己捅出来的回归，而且失败形状是反的: 新探针里顺手写了一句函数内
+        from ducky.degradation import DegradationTracker，Python 于是把这个名字变成整个
+        函数的局部变量，模块级那处 import（ducky/hot/health.py:35）被遮蔽，于是版本对得上、
+        走不到那个分支时，函数末尾原有的引用直接 UnboundLocalError —— /health 在「一切正常」
+        的情况下 500，四条鉴权门禁用例连坐变红。删掉那句局部 import 即修复，把教训留成注释
+        钉在原地。护栏的 bug 会伪装成产品的 bug，这次它还伪装成了「只在健康的时候才坏」。
+        新增 9 条用例，两处各配负向对照: 把 restore 里的写回改成 no-op，往返演练必须红 ——
+        顺带发现返回值断言（restored == 2）会碰巧对上，真正有鉴别力的是 payload/ID 逐项
+        比对那一句；把代码期望值抬高一档，schema_version_ok 必须翻成 False（这同时证明了
+        schema_version 不是常量回显）。用例总数 771 → 780（无宿主 768 passed +
+        12 skipped），README.md 与 README_EN.md 的 9 处数字同步。
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」
