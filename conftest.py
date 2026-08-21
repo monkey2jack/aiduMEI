@@ -26,8 +26,10 @@
 3. **只删自己建的那一个**。套件里有用例会另起 pytest 子进程，子进程继承 env、
    沿用同一个目录；谁建的谁删，否则子进程退出时会把父进程正在用的目录删掉
    （这事真发生过，详见 ``_redirect`` 的注释）。
-4. **有测试盯着**（``tests/test_v20_test_data_isolation.py``）：护栏被摘掉、
-   逃生门变成默认、或清理越权删了别人的目录，用例先红。
+4. **谁改坏的谁红**。用例跑完这两个环境变量必须还在原处；被 ``pop`` 掉的
+   （"删掉"不是"还原"）当场红在肇事的那条上，而不是红在四百条之后的护栏上。
+5. **有测试盯着**（``tests/test_v20_test_data_isolation.py``）：护栏被摘掉、
+   逃生门变成默认、清理越权删了别人的目录、或对账闸失灵，用例先红。
 
 conftest.py 放在仓库根，是因为 pytest 会在收集任何测试模块**之前**导入它——
 这个「之前」是整套隔离的全部立足点，换个位置就不成立了。
@@ -103,3 +105,42 @@ if REDIRECTED_DATA_DIR and OWNS_REDIRECTED_DIR:
     # 删不掉（还有连接没关）也不许让退出码变红——清理失败是清理的问题，
     # 不是被测代码的问题。
     atexit.register(shutil.rmtree, REDIRECTED_DATA_DIR, True)
+
+
+if REDIRECTED_DATA_DIR:
+    import pytest
+
+    #: 隔离就靠这两个变量。基线取 `_redirect` 之后**环境里实际的样子**，
+    #: 不是照公式重算一遍——沿用分支下 `AIDUMEM_LOG_DIR` 可能是继承来的，
+    #: 重算出来的值会和实际不符，于是每条用例都红。
+    _ISOLATION_ENV = {k: os.environ[k]
+                      for k in ("AIDUMEM_DATA_DIR", "AIDUMEM_LOG_DIR")
+                      if k in os.environ}
+
+    @pytest.fixture(autouse=True)
+    def _isolation_env_must_survive_each_test():
+        """每条用例跑完对一遍隔离环境变量：**谁改坏的谁红**。
+
+        为什么不是"末尾统一查一次"：v20.0 验收当天，
+        ``tests/test_hermes_plugin.py`` 里一句 ``os.environ.pop("AIDUMEM_DATA_DIR")``
+        （本意是收尾，实际是"删掉"而非"还原"）把护栏设的值抹没了，红的却是
+        四百条之后的隔离护栏用例——报错指着无辜的人，真正的肇事者一路绿灯。
+        **坏掉的样子要长在坏掉的地方。**
+
+        而且那次只在**用户那台机器**上现形：肇事文件在没装宿主的开发机上整份
+        skip，本地全绿、生产一红。所以这道闸放在 conftest 里对全套生效，
+        而不是指名盯住某个文件。
+
+        先还原再断言：还原是不让后面的用例连坐（一个泄漏不该炸出一串假红），
+        断言是不让肇事者混过去。两件事都要做，顺序不能颠倒。
+        """
+        yield
+        drifted = {k: os.environ.get(k) for k, v in _ISOLATION_ENV.items()
+                   if os.environ.get(k) != v}
+        os.environ.update(_ISOLATION_ENV)
+        assert not drifted, (
+            f"这条用例跑完把隔离环境变量改坏了：{drifted}"
+            "（已自动还原，后面的用例不受影响）。收尾请用 monkeypatch 或 "
+            "unittest.mock.patch.dict——pop 是「删掉」不是「还原」，"
+            "本来有值的变量会被抹成没有"
+        )
