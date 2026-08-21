@@ -66,10 +66,13 @@ logging.basicConfig(
 logger = logging.getLogger(f"aiduMEM-v{SERVICE_VERSION}")
 
 app = FastAPI(
-    # /docs 的封面标题，是 API 侧唯一的「品牌门面」。
-    # 注意只改这里的展示文案：logger 名、/health 的 service 字段、
-    # 各模块 docstring 里的 aiduMEM 都是机器契约或历史内部名，
-    # 生产侧的日志采集与监控按它们匹配，v19.4.2 一律不动（决策 D2）。
+    # /docs 的封面标题，是 API 侧的「品牌门面」。
+    # 注意只改展示文案：logger 名、/health 的 service 字段、线程名、
+    # `AIDUMEM_*` 环境变量、各模块 docstring 里的 aiduMEM 都是机器契约或历史内部名，
+    # 生产侧的日志采集与监控按它们匹配，v19.4.2 决策 D2 起一律不动。
+    # v20 把这条分界写成了可执行的守卫，见 tests/test_v20_brand_policy.py：
+    # 露脸的字（打印/注入/--help/systemctl status/用户会打开的文档与样例）必须是
+    # 当前品牌名；机器认的键一个都不动；历史记录只新增、不改写。
     # v20 uses a two-part version and intentionally has no current codename.
     # Keep the OpenAPI version machine-readable instead of coupling clients to
     # a display label that changed every mythological generation.
@@ -413,7 +416,7 @@ def _start_background() -> None:
         logger.info(f"▶ {name} 后台线程已启动")
 
     logger.info(
-        "✅ aiduMEM v%s %s 后台线程已启动 (%s 个)",
+        "✅ aiduMEI v%s %s 后台线程已启动 (%s 个)",
         SERVICE_VERSION,
         DISPLAY_NAME,
         len(_BACKGROUND_LOOPS),

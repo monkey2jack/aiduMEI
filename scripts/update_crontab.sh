@@ -15,7 +15,7 @@ BACKUP_FILE="${LOG_DIR}/crontab_backup_$(date +%Y%m%d_%H%M%S).txt"
 
 # 记忆巩固：每天 04:00 跑一次（衰减 + 矛盾检测 + 指标）
 NEW_ENTRIES=$(cat <<CRON
-# aiduMEM: 每日记忆巩固（Salience 衰减 / 矛盾检测 / 每日指标）
+# aiduMEI: 每日记忆巩固（Salience 衰减 / 矛盾检测 / 每日指标）
 0 4 * * * cd ${REPO_ROOT} && ${PY} scripts/consolidator.py >> ${LOG_DIR}/consolidator.log 2>&1
 CRON
 )
@@ -41,7 +41,7 @@ if echo "$CURRENT" | grep -q "scripts/consolidator.py"; then
     echo "consolidator.py 已存在于 crontab，跳过添加"
 else
     (crontab -l 2>/dev/null; echo ""; echo "$NEW_ENTRIES") | crontab -
-    echo "已添加 aiduMEM 维护条目"
+    echo "已添加 aiduMEI 维护条目"
 fi
 
 echo ""

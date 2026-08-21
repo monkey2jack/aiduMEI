@@ -127,9 +127,9 @@ def push_to_aidumem(text: str, category: str, source: str) -> bool:
                 "async_queued", "new", "updated", "fastpath", "merged", "direct"
             ):
                 if job_id:
-                    logger.debug(f"  aiduMEM async: job={job_id[:12]} | {text[:40]}...")
+                    logger.debug(f"  aiduMEI async: job={job_id[:12]} | {text[:40]}...")
                 else:
-                    logger.debug(f"  aiduMEM: {action or status} | {text[:40]}...")
+                    logger.debug(f"  aiduMEI: {action or status} | {text[:40]}...")
                 return True
             logger.warning(f"  ❌ 未识别返回: {str(data)[:200]}")
             return False
@@ -224,7 +224,7 @@ def daemon_loop():
 # ═══════════════════════════════════════════════
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hermes MEMORY.md → aiduMEM 同步引擎")
+    parser = argparse.ArgumentParser(description="Hermes MEMORY.md → aiduMEI 同步引擎")
     parser.add_argument("--once", action="store_true", help="全量同步一次后退出")
     parser.add_argument("--daemon", action="store_true", help="守护模式，inotify 实时监听")
     parser.add_argument("--reset", action="store_true", help="清除同步状态，全量重新同步")

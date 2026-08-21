@@ -130,7 +130,7 @@ class _Client:
         self.api_token = _resolve_api_token()
         if not self.api_token:
             logger.info(
-                "aiduMEM 插件未读到 %s（环境变量与 .env 兜底链均为空）。"
+                "aiduMEI 插件未读到 %s（环境变量与 .env 兜底链均为空）。"
                 "若后端已启用鉴权门禁，所有记忆调用都会 401 且不报错。",
                 _ENV_TOKEN_KEY,
             )
@@ -174,15 +174,15 @@ class _Client:
         except urlerror.HTTPError as exc:
             if exc.code in (401, 403):
                 logger.warning(
-                    "aiduMEM 鉴权失败 HTTP %s（%s %s）：记忆功能已全线失效。"
+                    "aiduMEI 鉴权失败 HTTP %s（%s %s）：记忆功能已全线失效。"
                     "请确认 %s 已注入宿主进程，或让 AIDUMEM_ENV_FILE 指向部署的 .env。",
                     exc.code, method, path, _ENV_TOKEN_KEY,
                 )
             else:
-                logger.debug("aiduMEM %s %s failed: HTTP %s", method, path, exc.code)
+                logger.debug("aiduMEI %s %s failed: HTTP %s", method, path, exc.code)
             return None
         except (urlerror.URLError, OSError, ValueError) as exc:
-            logger.debug("aiduMEM %s %s failed: %s", method, path, exc)
+            logger.debug("aiduMEI %s %s failed: %s", method, path, exc)
             return None
 
 
@@ -193,7 +193,7 @@ class _Client:
 SEARCH_SCHEMA = {
     "name": "aidumem_search",
     "description": (
-        "Search aiduMEM long-term memory for facts from past sessions — user "
+        "Search aiduMEI long-term memory for facts from past sessions — user "
         "preferences, project decisions, people, dates, past troubleshooting. "
         "Use whenever prior context would change the answer."
     ),
@@ -210,7 +210,7 @@ SEARCH_SCHEMA = {
 REMEMBER_SCHEMA = {
     "name": "aidumem_remember",
     "description": (
-        "Store a durable fact in aiduMEM: user preferences, corrections, stable "
+        "Store a durable fact in aiduMEI: user preferences, corrections, stable "
         "environment facts, decisions. Not for task progress or transient state."
     ),
     "parameters": {
@@ -224,7 +224,7 @@ REMEMBER_SCHEMA = {
 
 STATUS_SCHEMA = {
     "name": "aidumem_status",
-    "description": "Check aiduMEM health — version, probes, degraded subsystems, usage.",
+    "description": "Check aiduMEI health — version, probes, degraded subsystems, usage.",
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
@@ -258,7 +258,7 @@ class AiduMemProvider(MemoryProvider):
         return [
             {
                 "key": "url",
-                "description": "aiduMEM service URL (keep on loopback unless proxied with auth)",
+                "description": "aiduMEI service URL (keep on loopback unless proxied with auth)",
                 "default": DEFAULT_URL,
                 "env_var": "AIDUMEM_URL",
             },
@@ -278,7 +278,7 @@ class AiduMemProvider(MemoryProvider):
 
     def system_prompt_block(self) -> str:
         return (
-            "# aiduMEM\n"
+            "# aiduMEI\n"
             "Self-hosted long-term memory is active. Use aidumem_search before "
             "asking the user to repeat past context, and aidumem_remember for "
             "durable facts worth keeping across sessions."
@@ -305,7 +305,7 @@ class AiduMemProvider(MemoryProvider):
             )
             lines = self._format_hits(hits)
             if lines:
-                blocks.append("[aiduMEM 记忆检索]\n" + "\n".join(lines))
+                blocks.append("[aiduMEI 记忆检索]\n" + "\n".join(lines))
 
         if not blocks:
             return ""
@@ -395,7 +395,7 @@ class AiduMemProvider(MemoryProvider):
                 },
                 timeout=_WRITE_TIMEOUT,
             )
-            logger.info("aiduMEM pre-compress flush: %d messages", len(parts))
+            logger.info("aiduMEI pre-compress flush: %d messages", len(parts))
 
         self._spawn(_flush, "aidumem-precompress")
         return ""
@@ -461,7 +461,7 @@ class AiduMemProvider(MemoryProvider):
                 timeout=_QUERY_TIMEOUT,
             )
             if hits is None:
-                return tool_error("aiduMEM unreachable")
+                return tool_error("aiduMEI unreachable")
             lines = self._format_hits(hits)
             return json.dumps(
                 {"result": "\n".join(lines) if lines else "No relevant memories found."},
@@ -483,13 +483,13 @@ class AiduMemProvider(MemoryProvider):
                 timeout=_WRITE_TIMEOUT,
             )
             if res is None:
-                return tool_error("aiduMEM unreachable")
-            return json.dumps({"result": "Stored in aiduMEM."}, ensure_ascii=False)
+                return tool_error("aiduMEI unreachable")
+            return json.dumps({"result": "Stored in aiduMEI."}, ensure_ascii=False)
 
         if tool_name == "aidumem_status":
             health = self._client.try_request("GET", "/health", timeout=_QUERY_TIMEOUT)
             if health is None:
-                return tool_error("aiduMEM unreachable")
+                return tool_error("aiduMEI unreachable")
             # /usage 返回逐日全量历史（几十 KB 起），整块塞进工具结果会把
             # health 挤出截断边界。只留最近一天。
             usage_raw = self._client.try_request("GET", "/usage", timeout=_QUERY_TIMEOUT) or {}
@@ -521,7 +521,7 @@ class AiduMemProvider(MemoryProvider):
             if path and os.path.isdir(path):
                 return [path]
         logger.warning(
-            "aiduMEM: 数据目录未找到，记忆不会进入宿主备份。"
+            "aiduMEI: 数据目录未找到，记忆不会进入宿主备份。"
             "设 AIDUMEM_DATA_DIR 指向数据目录（已试: %s）",
             ", ".join(p for p in candidates if p),
         )

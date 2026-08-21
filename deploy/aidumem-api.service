@@ -14,7 +14,7 @@
 #   确认没有告警。
 
 [Unit]
-Description=aiduMEM Memory Engine REST API
+Description=aiduMEI Memory Engine REST API
 Documentation=https://github.com/monkey2jack/aiduMEI
 After=network.target
 Wants=network.target

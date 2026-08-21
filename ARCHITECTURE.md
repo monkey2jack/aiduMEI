@@ -1,4 +1,4 @@
-# aiduMEM 架构速览
+# aiduMEI 架构速览
 
 > 优忆思目录地图。细节见各模块 docstring。
 

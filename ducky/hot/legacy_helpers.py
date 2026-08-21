@@ -70,7 +70,10 @@ _RE_QUOTED      = re.compile(r'["\\\']([^"\\\']+)["\\\']')
 _RE_AKA         = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
 _RE_USER        = re.compile(r'\b(User|用户)\b')
 _RE_AI          = re.compile(r'\b(AI|Assistant|助手)\b')
-_RE_PROJECT     = re.compile(r'\b(aiduMEM|mem0|Hermes|Qdrant|FastAPI|SQLite)\b', re.IGNORECASE)
+# 品牌名跨了三代（duMem → aiduMEM → aiduMEI），而这条正则是拿去匹配**存量记忆文本**的。
+# IGNORECASE 帮不上忙：aiduMEM 与 aiduMEI 差在最后一个字母。只留新名 = 老记忆里的项目实体
+# 全部认不出来；只留旧名 = 改名之后写进来的新记忆全部认不出来。匹配器必须同时覆盖两代。
+_RE_PROJECT     = re.compile(r'\b(aiduMEI|aiduMEM|duMem|mem0|Hermes|Qdrant|FastAPI|SQLite)\b', re.IGNORECASE)
 _RE_TECH        = re.compile(r'\b(Hermes|DeepSeek|Qdrant|NVIDIA|FTS5|WAL|VACUUM|nginx|systemd|FastAPI)\b')
 
 

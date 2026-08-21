@@ -1,12 +1,12 @@
 ---
-description: aiduMEM integration — store code changes into long-term memory
+description: aiduMEI integration — store code changes into long-term memory
 globs: ["**/*.py", "**/*.ts", "**/*.js", "**/*.go", "**/*.rs", "**/*.java"]
 alwaysApply: false
 ---
 
-# aiduMEM Code Memory Hook
+# aiduMEI Code Memory Hook
 
-When you make significant code changes (new functions, refactors, bug fixes), automatically store them to aiduMEM's Raw Drawer for long-term recall.
+When you make significant code changes (new functions, refactors, bug fixes), automatically store them to aiduMEI's Raw Drawer for long-term recall.
 
 ## Trigger
 

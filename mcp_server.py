@@ -145,7 +145,7 @@ mcp = FastMCP("aidumem", log_level="INFO")
 
 @mcp.tool()
 def mem_add(messages: str, user_id: str = DEFAULT_USER_ID) -> str:
-    """添加记忆到 aiduMEM（自动提炼 + 向量化存储）。
+    """添加记忆到 aiduMEI（自动提炼 + 向量化存储）。
 
     Args:
         messages: JSON 字符串，格式 [{"role": "user/assistant", "content": "..."}]
@@ -268,7 +268,7 @@ def mem_stats(user_id: str = DEFAULT_USER_ID) -> str:
 
 @mcp.tool()
 def mem_health() -> str:
-    """检查 aiduMEM 服务健康状态，包含所有子模块探针结果和版本信息。"""
+    """检查 aiduMEI 服务健康状态，包含所有子模块探针结果和版本信息。"""
     result = _api_get("/health")
     return _ok(result)
 
