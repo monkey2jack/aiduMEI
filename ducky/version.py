@@ -137,6 +137,58 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         露脸两处改回旧名则那两条转红，机器契约改成新名则本文件与 v19.4.2 的老守卫
         一起转红，恢复后三个文件 sha256 逐字节复原。用例总数 696 → 702（无宿主
         690 passed + 12 skipped），两份 README 的 12 处数字同步。
+    23. 品牌 VI 统一 —— 露脸的字改，机器认的键一个都不动，历史只增不改:
+        边界是「只改品牌 UI，不动系统内的文件夹，让新老客户部署起来无风险、无差异感」。
+        全仓 330 处旧名先分类再动手，判据只有一句 —— 这串字符会不会被人读到。
+        运行时露脸的（api_server.py 启动横幅、mcp_server.py 工具说明、mem0_sync.py
+        的 --help、deploy/aidumem-api.service 的 Description、scripts/update_crontab.sh
+        写进用户 crontab 的注释、integrations/hermes-plugin/aidumem/__init__.py 注入进
+        宿主对话的那一段）与用户会打开来读/编辑的（ARCHITECTURE.md、.env.example、
+        requirements.txt、requirements-dev.txt、mem0_config_local.json.example、
+        integrations/INTEGRATION_GUIDE.md、integrations/config.yaml.snippet、
+        integrations/cursor-hook/README.md、integrations/cursor-hook/cursor-aidumem.mdc）
+        改为 aiduMEI，共 48 处 / 18 个文件。落盘方式是逐行钉住（文件 + 行号 + 原文
+        预期）、干跑 48 处全命中才写入，没有用 sed —— 上一条记的那次事故本身就是
+        一次顺手的批量替换。机器认的键一处不动: logger 名、/health 的 service 字段、
+        线程名、AIDUMEM_* 环境变量、包名/目录名/文件名，外加两处最容易被误认成文案
+        的东西 —— ducky/federation/schema.py 的 INSERT OR IGNORE 种子值（为一致而
+        冻结: 老装机的库里永远是旧字面量，改源码只会让新老部署从此不一致）、
+        scripts/consolidator.py 里那句拿去检索存量记忆的查询串。
+    24. 改名带出一个真功能缺口 —— 实体抽取的正则跨不过品牌的两代:
+        ducky/hot/legacy_helpers.py 的 _RE_PROJECT 原本只认 aiduMEM，而它是拿去匹配
+        存量记忆正文的。re.IGNORECASE 在这里帮不上忙 —— aiduMEM 与 aiduMEI 差在最后
+        一个字母。只留新名则改名前写进来的记忆里项目实体全部认不出，只留旧名则改名后
+        写进来的全部认不出；两种都不报错，只是安静地少抽出实体。改成同时覆盖三代
+        (aiduMEI|aiduMEM|duMem)，这条正则同时服务着在用端点。
+    25. 新增 tests/test_v20_brand_policy.py 40 条，把这条分界线写成可执行的规则:
+        五面 —— ① 10 个纯文档/样例文件整份归零（大小写敏感，故 AIDUMEM_URL 这类大写
+        键名不会被误判成品牌残留）; ② 14 处运行时输出逐条点名「必须有新名、必须没有
+        旧名」; ③ 以旧名开头的 logger 取用处（getLogger 调用）钉在 85 处; ④ AIDUMEM_* 键名钉成 72 键的冻结
+        集，多一个就是新变量误用了旧前缀（新变量该用 AIDUMEI_），少一个就是既有键被
+        改名、老客户的 .env 从此静默失配; ⑤ 6 个历史文件里旧名必须还在。第 ④ 面的洞
+        是负向对照自己撞出来的: 集合相等只看名字在不在，只改读取处而文档照旧提这个键
+        的话集合毫无变化、守卫照旧绿灯，运行时却已经读不到值了。于是补上第六条断言 ——
+        AIDUMEM_API_TOKEN（鉴权）、AIDUMEM_UI_PASSWORD、AIDUMEM_STRICT_TENANT（v20 的
+        记忆域隔离开关）、AIDUMEM_LEGACY_USER_IDS、AIDUMEM_DATA_DIR、
+        AIDUMEM_ROUTER_DB_PATH、AIDUMEM_SQLITE_VEC_PATH 这 7 个「读不到就静默回落、
+        且后果严重」的键，必须仍然出现在真实的 os.environ.get 里，光在文档里被提到
+        不算。空表/文件搬家会让逐条断言变成空转，故另有一条断言表非空、键数为 72、
+        所指文件都在。负向对照 7/7 双向成立: 露脸面回填旧名、启动横幅退回旧名、
+        ducky/hot/health.py 的 logger 被顺手改、既有键全量改名、新键误用旧前缀、
+        只改 ducky/facts_recall.py 的读取处而文档不动、CHANGELOG.md 被「清理干净」,
+        七种各自命中该红的那一条，且每次改完按 sha256 逐字节复原。
+    26. 仓内仍有 302 处 aiduMEM/duMem，是有意留下的，不是漏改:
+        这个数刻意不含 CHANGELOG.md 与本文件这两个流水账 —— 它们逐版本引用旧名本就
+        应该，且一旦算进来，「把总数写进流水账」这个动作本身就会改变总数，写下的
+        数字当场作废。剩下 302 处分五类 —— 源码 docstring/注释/logger/线程名/键名/
+        种子值 171 处（v19.4.2 决策 D2 早已定为不动，本轮只把 api_server.py 里那段
+        策略注释更新成 v20 的说法并指向新守卫）、tests/ 78 处（守卫必须继续引用旧名，
+        否则断言自己就死了；本轮新增的那个守卫文件就占 30 处）、docs/ 下有日期的设计
+        文档 37 处、根目录两份白皮书 15 处、README.md 的「品牌演进」那一句 1 处
+        （把 aiduMEM → aiduMEI 改写成 aiduMEI → aiduMEI 只会得到一句废话）。另记一笔:
+        Hermes 插件那几处改动要等宿主自己重启才生效，本轮不动宿主网关。用例总数
+        702 → 742（无宿主 730 passed + 12 skipped），README.md 与 README_EN.md
+        的 16 处数字同步。
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」

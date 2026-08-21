@@ -21,7 +21,7 @@ JSON 字段吃饭，字段一变形就静默返回空，长期不注入也不报
 
 ### 能力对照
 
-| 钩子 | aiduMEM 端点 | 作用 |
+| 钩子 | aiduMEI 端点 | 作用 |
 |---|---|---|
 | `prefetch` | `/api/core-memory/inject` + `/search` | turn 开头注入常驻块 + 本轮相关检索 |
 | `sync_turn` | `/add` | 每轮对话后台归档，不阻塞对话 |
@@ -59,7 +59,7 @@ curl -s localhost:8767/health | head -c 200
 
 ### ⚠️ 安全提示
 
-aiduMEM 服务自身**不做鉴权**。默认监听 `127.0.0.1`，请保持这样。
+aiduMEI 服务自身**不做鉴权**。默认监听 `127.0.0.1`，请保持这样。
 要跨机访问就在前面挂一层带认证 + TLS 的反向代理，再把 `AIDUMEM_URL` 指过去；
 直接把服务暴露到公网等于把全部记忆公开可读可写。
 
@@ -78,7 +78,7 @@ Hermes (pre_llm_call)
    ↓ JSON payload via stdin
 [aidumem-inject.sh]
    ↓ HTTP POST（短超时）
-aiduMEM /api/core-memory/inject + /search
+aiduMEI /api/core-memory/inject + /search
    ↓
 {"context": "..."} via stdout
    ↓
@@ -153,7 +153,7 @@ rm ~/.hermes/agent-hooks/aidumem-inject.sh
 systemctl restart hermes-gateway     # 若以 gateway 方式运行
 ```
 
-两种方案都不动 aiduMEM 的数据，回滚只是断开接入。
+两种方案都不动 aiduMEI 的数据，回滚只是断开接入。
 
 ---
 

@@ -141,11 +141,11 @@ HTTP_CODE=$(curl -s -o /tmp/aidumem_resp.json -w "%{http_code}" \
 
 if [[ "$HTTP_CODE" == "200" ]]; then
     ID=$(python3 -c "import json; d=json.load(open('/tmp/aidumem_resp.json')); print(d.get('id','?'))" 2>/dev/null || echo "?")
-    echo "✅ aiduMEM: ${REL_PATH} → Raw Drawer [${ID}]"
+    echo "✅ aiduMEI: ${REL_PATH} → Raw Drawer [${ID}]"
 elif [[ "$HTTP_CODE" == "401" || "$HTTP_CODE" == "403" ]]; then
     # 单独点名鉴权失败：这是最常见也最容易误判为「服务挂了」的一种失败。
-    echo "⚠️  aiduMEM: 鉴权失败 (HTTP ${HTTP_CODE})。请设置 AIDUMEM_API_TOKEN，" >&2
+    echo "⚠️  aiduMEI: 鉴权失败 (HTTP ${HTTP_CODE})。请设置 AIDUMEM_API_TOKEN，" >&2
     echo "    或让 AIDUMEM_ENV_FILE 指向部署的 .env（当前未读到 token）。" >&2
 else
-    echo "⚠️  aiduMEM: 存储失败 (HTTP ${HTTP_CODE})" >&2
+    echo "⚠️  aiduMEI: 存储失败 (HTTP ${HTTP_CODE})" >&2
 fi
