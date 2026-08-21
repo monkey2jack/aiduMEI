@@ -255,6 +255,34 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         字节而报 UnicodeDecodeError；此后 macOS→Linux 打包统一带 COPYFILE_DISABLE=1。
         用例总数 743 → 761（无宿主 749 passed + 12 skipped），README.md 与
         README_EN.md 的 18 处数字同步。
+    33. 新增仓库根 conftest.py: 全套用例的数据目录隔离。起因是我们自己把测试行写进了
+        生产库 —— ducky/utils.py 里 DATA_DIR 在 import 那一刻定型，于是「在一棵已部署
+        的树里跑一遍 pytest」会让走真落盘的用例写进那棵树的生产库。v20.0 验收当天真的
+        发生了: 生产 data/workspace.db 多出三条 alice 测试行、data/qdrant/ 多出一个
+        无人持有的 .lock，而套件报的是 760 passed。这缺陷能活到今天，是因为写进去的
+        样子和没写进去的样子在退出码上一模一样。修法: 在任何 ducky 模块被 import 之前
+        把 AIDUMEM_DATA_DIR 与 AIDUMEM_LOG_DIR 一并改指到本次会话的临时目录，无条件
+        生效（不「尊重」环境里原有的值 —— 生产配置本身就指着生产数据），只留一个响亮
+        的逃生门 AIDUMEI_TEST_ALLOW_REAL_DATA_DIR=1。新增
+        tests/test_v20_test_data_isolation.py 8 条盯着护栏本身，负向对照证明它能被
+        关掉、且只能被那一个显式值关掉（"0"/"false"/""/" 1" 一律按没开处理）。
+    34. 上一条护栏的第一版自己造了一次事故: 护栏的 bug 会伪装成产品的 bug。首版清理是
+        无条件 atexit 删目录，而套件里有用例会再起一个 pytest 子进程（README 用例数
+        护栏要 --collect-only 数一遍真实用例数）。子进程继承 env、沿用父进程的目录，
+        退出时把父进程正在用的数据目录整棵删了。报出来的却是 ducky/wal_engine.py 的
+        FileNotFoundError: .../wal/mem_mutations.wal ×5 —— 看着像「产品在新克隆上建
+        不出 WAL 目录」这个毫不相干的缺陷，而 WALEngine.__init__ 明明 mkdir 过。前一轮
+        据此记下的「第二处产品缺陷」是误判，此条撤回: ducky/wal_engine.py 与
+        ducky/utils.py 一行未改，「克隆即跑」本来就成立。定位靠六次探针逐次否证，最后
+        一次只记 True→False 那一次状态翻转（不是记「哪些时刻是 False」），一跑就点出
+        了名字。两个措施焊进代码: _redirect 改为返回 (目录, 是否本进程新建)，atexit
+        只在「自己建的」时候注册 —— 清理必须问「这目录是我建的吗」，而不是「我知道它
+        在哪」；并补两条真子进程对照，一条钉「继承来的目录退出后必须还在」、一条钉
+        「自己建的目录退出后必须没了」，"从不清理"和"清理越权"哪边都过不去。另记两个
+        测量陷阱: -p 加载的插件早于 conftest 执行，那时读 env 是空的（探针 1、4 假
+        阴性）；进程内 monkeypatch shutil.rmtree 看不见子进程的删除（探针 2 假阴性）。
+        用例总数 761 → 769（无宿主 757 passed + 12 skipped），README.md 与
+        README_EN.md 的 18 处数字同步。这一条是测试设施修复，不是产品修复。
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」
