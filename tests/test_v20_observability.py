@@ -374,3 +374,49 @@ def test_health_probes_include_rerank_configured(monkeypatch):
     probes = r.json()["probes"]
     assert probes["rerank_configured"] is True
     assert probes["rerank_provider"] == "siliconflow"
+
+
+def _health_probes():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from ducky.hot.health import register_health_routes
+
+    app = FastAPI()
+    register_health_routes(app)
+    r = TestClient(app).get("/health")
+    assert r.status_code == 200
+    return r.json()["probes"]
+
+
+def test_health_exposes_schema_version_from_disk_not_from_the_constant(monkeypatch):
+    """v20 回归清单要求 schema_version 可读。
+
+    关键在于它必须来自磁盘上的 ``PRAGMA user_version``。只回显代码常量的话，
+    库还停在旧版本时 /health 照样报新版本号 —— 那是标准的假绿灯。
+    """
+    from ducky.schema_bootstrap import CURRENT_SCHEMA_VERSION
+    from ducky.utils import get_facts_conn
+
+    conn = get_facts_conn()
+    on_disk = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    conn.close()
+
+    probes = _health_probes()
+    assert "schema_version" in probes, "/health 里读不到 schema_version"
+    assert probes["schema_version"] == on_disk, \
+        f"schema_version 不是磁盘真值: {probes['schema_version']} != {on_disk}"
+    assert probes["schema_version_expected"] == int(CURRENT_SCHEMA_VERSION)
+    assert probes["schema_version_ok"] is (on_disk == int(CURRENT_SCHEMA_VERSION))
+
+
+def test_health_schema_version_mismatch_is_not_reported_green(monkeypatch):
+    """负向对照：把代码期望值抬高一档，schema_version_ok 必须翻成 False。
+
+    如果这条还报 True，说明上面那条测试是空的 —— 它只是碰巧两边相等。
+    """
+    import ducky.schema_bootstrap as sb
+
+    monkeypatch.setattr(sb, "CURRENT_SCHEMA_VERSION", int(sb.CURRENT_SCHEMA_VERSION) + 7)
+    probes = _health_probes()
+    assert probes["schema_version_ok"] is False, "版本对不上却报绿灯"
+    assert probes["schema_version"] != probes["schema_version_expected"]

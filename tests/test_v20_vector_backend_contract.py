@@ -218,3 +218,120 @@ def test_snapshot_to_a_real_destination_still_works(_no_singleton):
     ids = {r[0] for r in conn.execute("SELECT id FROM vectors").fetchall()}
     conn.close()
     assert ids == {"a"}, f"快照内容不对: {ids}"
+
+
+# ── restore：备份取不出来就不叫备份 ──────────────────────────────
+
+_SEVEN = ("upsert", "search", "delete", "count", "health", "snapshot", "restore")
+
+
+def test_vector_backend_contract_declares_all_seven_methods(_no_singleton):
+    """基准 §3.2 点名七个方法。少一个 restore，「恢复演练」这项门禁就无法表达。"""
+    from ducky.vector_backend import QdrantBackend, VectorBackend
+
+    for holder in (VectorBackend, SQLiteVecBackend, QdrantBackend):
+        missing = [name for name in _SEVEN if not callable(getattr(holder, name, None))]
+        assert not missing, f"{holder.__name__} 缺少契约方法: {missing}"
+        # 负向对照：防止 getattr 恒真把上面这句变成空断言
+        assert getattr(holder, "restore_all_the_things", None) is None, \
+            f"{holder.__name__} 上凭空长出了不存在的方法，这条断言是假的"
+
+
+def test_restore_is_the_true_inverse_of_snapshot(_no_singleton):
+    """往返演练：snapshot → 改坏 → restore → ID / payload / 向量逐项还原。"""
+    src, snap = _tmp_path("live.sqlite"), _tmp_path("snap.sqlite")
+    backend = SQLiteVecBackend(src)
+    try:
+        backend.upsert("a", [1.0, 0.0], {"bank_id": "default", "text": "甲"})
+        backend.upsert("b", [0.0, 1.0], {"bank_id": "default", "text": "乙"})
+        before = {r["id"]: r["payload"] for r in backend.search([1.0, 1.0], top_k=10)}
+        backend.snapshot(snap)
+
+        # 把现场改坏：删一条、加一条、再改一条的 payload
+        assert backend.delete(["a"]) == 1
+        backend.upsert("c", [1.0, 1.0], {"bank_id": "other", "text": "丙"})
+        backend.upsert("b", [0.0, 1.0], {"bank_id": "other", "text": "被改坏了"})
+        assert backend.count() == 2
+        assert {r["id"] for r in backend.search([1.0, 1.0], top_k=10)} == {"b", "c"}
+
+        restored = backend.restore(snap)
+        assert restored == 2, f"restore 返回条数不对: {restored}"
+        after = {r["id"]: r["payload"] for r in backend.search([1.0, 1.0], top_k=10)}
+        assert after == before, f"恢复后与快照时刻不一致: {after} != {before}"
+        assert backend.count() == 2
+        # 被 restore 覆盖掉的那条新数据必须真的没了
+        assert backend.count(filters={"bank_id": "other"}) == 0, "restore 没有覆盖掉后来的写入"
+    finally:
+        backend.close()
+
+
+def test_restore_refuses_a_missing_snapshot_instead_of_returning_zero(_no_singleton):
+    """源不存在必须炸。返回 0 会被读成「恢复成功、只是空的」。"""
+    backend = SQLiteVecBackend(_tmp_path("live2.sqlite"))
+    try:
+        backend.upsert("a", [1.0, 0.0], {"k": "v"})
+        with pytest.raises(BackendError):
+            backend.restore(_tmp_path("does_not_exist.sqlite"))
+        assert backend.count() == 1, "失败的 restore 动了现场"
+    finally:
+        backend.close()
+
+
+def test_restore_refuses_a_corrupt_snapshot_and_leaves_the_store_untouched(_no_singleton):
+    """先清空、再发现快照是垃圾 = 拿坏备份擦掉生产数据。校验必须在覆盖之前。"""
+    bad = _tmp_path("garbage.sqlite")
+    with open(bad, "wb") as fh:
+        fh.write(b"this is definitely not a sqlite database\n" * 8)
+
+    backend = SQLiteVecBackend(_tmp_path("live3.sqlite"))
+    try:
+        backend.upsert("keep", [1.0, 0.0], {"k": "v"})
+        with pytest.raises(BackendError):
+            backend.restore(bad)
+        assert {r["id"] for r in backend.search([1.0, 0.0], top_k=10)} == {"keep"}, "坏快照把现场擦了"
+    finally:
+        backend.close()
+
+
+def test_restore_refuses_a_foreign_sqlite_database(_no_singleton):
+    """是个正经 SQLite，但不是本契约的库：同样要在覆盖之前失败。"""
+    foreign = _tmp_path("foreign.sqlite")
+    conn = sqlite3.connect(foreign)
+    conn.execute("CREATE TABLE unrelated(id TEXT)")
+    conn.commit()
+    conn.close()
+
+    backend = SQLiteVecBackend(_tmp_path("live4.sqlite"))
+    try:
+        backend.upsert("keep", [1.0, 0.0], {"k": "v"})
+        with pytest.raises(BackendError):
+            backend.restore(foreign)
+        assert backend.count() == 1, "外来库把现场擦了"
+    finally:
+        backend.close()
+
+
+def test_restore_refuses_the_live_database_as_its_own_source(_no_singleton):
+    """自己恢复自己：和 snapshot 到自身一样，是静默自毁。"""
+    path = _tmp_path("live5.sqlite")
+    backend = SQLiteVecBackend(path)
+    try:
+        backend.upsert("a", [1.0, 0.0], {"k": "v"})
+        with pytest.raises(BackendError):
+            backend.restore(path)
+        with pytest.raises(BackendError):
+            backend.restore(os.path.join(os.path.dirname(path), ".", os.path.basename(path)))
+        assert backend.count() == 1, "源库被自毁了"
+    finally:
+        backend.close()
+
+
+def test_qdrant_restore_refuses_instead_of_faking_success(_no_singleton):
+    """Qdrant 侧不提供「看着像恢复」的假实现，与 snapshot 对称地拒绝。"""
+    from ducky.vector_backend import QdrantBackend
+
+    backend = QdrantBackend(_FakeClient(), "mem0_facts")
+    with pytest.raises(BackendError):
+        backend.snapshot("/tmp/whatever.snapshot")
+    with pytest.raises(BackendError):
+        backend.restore("/tmp/whatever.snapshot")
