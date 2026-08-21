@@ -76,15 +76,29 @@ else
 fi
 
 # 代码仓轻量备份（排除 venv / 缓存 / 大包，保持轻量；不进门禁链）
+#
+# v20.0：这一步以前写的是 `cp -a --exclude=...`，而 cp **没有** --exclude 这个选项
+#   （GNU coreutils 与 BSD 双双不认，实测 `cp: unrecognized option '--exclude=venv'`
+#   退出码 1、目标目录一个都不生成）。于是自 v19.4.0 引入以来它从未成功过一次：
+#   每跑必 bad，FAIL 恒 ≥1，整脚本恒退 1 —— 一个永远发红的闸门等于没有闸门，
+#   谁都得绕过它才能升级，备份纪律于是名存实亡。
+#   改用 tar（--exclude 是 GNU tar 与 bsdtar 都支持的实装选项），
+#   中间包裹写进 TMPDIR，避免 BACKUP_ROOT 被人指到仓内时把自己卷进归档。
 TS="$(date +%Y%m%d_%H%M%S)"
 CODE_BACKUP_DIR="${BACKUP_ROOT}/aidumem.bak-pre-upgrade-${TS}"
 echo "  📦 备份代码仓 ${REPO_ROOT} → ${CODE_BACKUP_DIR}"
-if cp -a --exclude='venv' --exclude='__pycache__' --exclude='*.tar.gz' \
-        --exclude='data.bak-*' --exclude='*.bak-*' \
-        "${REPO_ROOT}" "${CODE_BACKUP_DIR}" 2>/dev/null; then
+CODE_TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/aidumem_code_bak_XXXXXX.tar")"
+if tar -cf "${CODE_TMP_TAR}" \
+        --exclude='venv' --exclude='.venv' --exclude='__pycache__' \
+        --exclude='*.tar.gz' --exclude='*.bak-*' \
+        -C "${REPO_ROOT}" . 2>/dev/null \
+   && mkdir -p "${CODE_BACKUP_DIR}" \
+   && tar -xf "${CODE_TMP_TAR}" -C "${CODE_BACKUP_DIR}" 2>/dev/null; then
+  rm -f "${CODE_TMP_TAR}"
   ok "代码仓备份完成: ${CODE_BACKUP_DIR}"
 else
-  bad "代码仓备份失败（cp 异常）"
+  rm -f "${CODE_TMP_TAR}"
+  bad "代码仓备份失败（tar 异常）"
 fi
 
 # ============================================================================
