@@ -113,6 +113,34 @@ def register_health_routes(app: FastAPI) -> None:
             probes["memory_banks_ok"] = False
             probes["memory_banks_error"] = str(_bank_exc)[:120]
 
+        # v20 回归清单：schema_version 必须可读。
+        # 只报代码里的常量是**假绿灯**——库还停在 v1 时它照样报 2。
+        # 所以 schema_version 取磁盘上的 PRAGMA user_version（真相），
+        # 代码期望值另开一个字段，两者不一致就记名降级。
+        try:
+            from ducky.schema_bootstrap import CURRENT_SCHEMA_VERSION
+            from ducky.utils import get_facts_conn
+            _sv_conn = get_facts_conn()
+            try:
+                _on_disk = int(_sv_conn.execute("PRAGMA user_version").fetchone()[0])
+            finally:
+                _sv_conn.close()
+            probes["schema_version"] = _on_disk
+            probes["schema_version_expected"] = int(CURRENT_SCHEMA_VERSION)
+            probes["schema_version_ok"] = _on_disk == int(CURRENT_SCHEMA_VERSION)
+            if not probes["schema_version_ok"]:
+                # 用模块级的 DegradationTracker（本文件顶部已 import）。
+                # 这里若再写一次函数内 import，Python 会把这个名字变成**整个函数的局部变量**，
+                # 于是版本对得上（不进本分支）时，函数末尾那处引用直接 UnboundLocalError
+                # —— /health 在「一切正常」的情况下 500。护栏的 bug 会伪装成产品的 bug。
+                DegradationTracker.record_degradation(
+                    "schema_version", f"on-disk user_version={_on_disk} != expected {CURRENT_SCHEMA_VERSION}"
+                )
+        except Exception as _sv_exc:
+            probes["schema_version"] = None
+            probes["schema_version_ok"] = False
+            probes["schema_version_error"] = str(_sv_exc)[:120]
+
         try:
             from ducky.vector_backend import backend_health
             _backend = backend_health()
