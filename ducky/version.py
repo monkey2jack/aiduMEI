@@ -283,6 +283,25 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         阴性）；进程内 monkeypatch shutil.rmtree 看不见子进程的删除（探针 2 假阴性）。
         用例总数 761 → 769（无宿主 757 passed + 12 skipped），README.md 与
         README_EN.md 的 18 处数字同步。这一条是测试设施修复，不是产品修复。
+    35. 同一个护栏第二次张冠李戴，且现场只在用户那台机器上: tests/test_hermes_plugin.py
+        用 os.environ.pop("AIDUMEM_DATA_DIR", None) 收尾 —— 本意是擦干净，实际是「删掉」
+        而不是「还原」，抹掉的正是根 conftest.py 设的隔离目录。红的却是四百条之后的
+        test_root_conftest_exists_and_redirected_the_env（AIDUMEM_DATA_DIR 未被设置），
+        报错指着无辜的人。更阴的是本地永远复现不出来: 该文件在没装宿主的开发机上整份
+        skip（本地 12 skipped、生产 1 skipped，差的就是这 11 条），本地全绿、生产那台
+        一跑就红 —— 只有用户会遇到的失败是最贵的那一种。这次定位没靠二分，一句
+        grep "environ.pop" 直接落到行上: 问题形状（有人把它删了）本身是静态可搜的。
+        三个措施: ① 肇事两处改用 unittest.mock.patch.dict（进出成对，连「原本没有」也
+        能还原），顺手修掉同文件 test_config_beats_env 里同一写法；② 根 conftest.py 加
+        一道 autouse 对账闸，每条用例跑完核对隔离环境变量，先还原（不让后面的用例连坐
+        炸出一串假红）再断言（不让肇事者混过去）—— 谁改坏的谁红；③
+        tests/test_v20_test_data_isolation.py 补两条: 一条真起 pytest 子进程做正负对照
+        （不动环境的绿、抹掉的红，且必须点名肇事用例 —— 只验「抹掉会红」证明不了分辨力），
+        一条静态兜底扫全套用例文件禁掉这种写法，并用「种一个违规文件必须被抓到、
+        monkeypatch 写法不许被误伤」自证尺子量得准。静态那条不能省，因为运行期的闸门
+        管不到「整份 skip 的文件」—— 这次撞的就是这个盲区。用例总数 769 → 771（无宿主
+        759 passed + 12 skipped），README.md 与 README_EN.md 的 18 处数字同步。
+        这一条同样是测试设施修复，不是产品修复: ducky/ 下一行未改。
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」
