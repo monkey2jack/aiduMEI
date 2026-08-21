@@ -192,14 +192,35 @@ def scan_bytes(raw: bytes, words: list[str]) -> tuple[dict[str, int], dict[str, 
 
 def scan_tree(root: str | Path, words: list[str]) -> tuple[
         dict[str, dict[str, int]], dict[str, dict[str, int]], int, int]:
-    """递归扫一个目录。返回 (命中, 已豁免, 已扫文件数, 跳过数)。
+    """递归扫一个目录，**或**扫单个文件。返回 (命中, 已豁免, 已扫文件数, 跳过数)。
 
     命中与已豁免的形状都是 {标签: {相对路径: 次数}}。
+
+    ⚠️ 单文件目标是补上来的：原实现只 ``rglob`` 目录，喂给它一个文件时
+        ``rglob`` 返回空迭代器 —— 于是 ``README.md`` 这种目标扫出 0 个文件，
+        报告照样打印「✅ 无硬敏感命中」。这与 ``--name X`` 那次是同一个病：
+        **一个存在的、但一个文件都没被读到的目标，换来一行绿色**。
+        实战中扫 v20.0 变更面时当场踩到（目标里带了三个 .md 文件）。
     """
     root = Path(root)
     found: dict[str, dict[str, int]] = {}
     waived: dict[str, dict[str, int]] = {}
     scanned = skipped = 0
+
+    # 单文件目标：相对路径用文件名本身，报告里才看得出扫的是谁。
+    if root.is_file() and not root.is_symlink():
+        try:
+            raw = root.read_bytes()
+        except OSError:
+            return found, waived, 0, 1
+        if b"\x00" in raw[:_BINARY_SNIFF]:
+            return found, waived, 0, 1
+        h, e = scan_bytes(raw, words)
+        for k, n in h.items():
+            found.setdefault(k, {})[root.name] = n
+        for k, n in e.items():
+            waived.setdefault(k, {})[root.name] = n
+        return found, waived, 1, 0
 
     for p in root.rglob("*"):
         if p.is_symlink() or not p.is_file():
@@ -355,13 +376,28 @@ def main(argv: list[str]) -> int:
         return 2
 
     grand = 0
+    empty: list[str] = []
     for t in targets:
         found, waived, scanned, skipped = scan_tree(t, words)
         report, n = format_report(t, found, waived, words, scanned, skipped)
         print(report)
         grand += n
+        if scanned == 0:
+            empty.append(t)
 
     print(f"\n总计硬敏感命中 = {grand} 次")
+
+    # 一个文件都没读到的目标，不许换来一行绿色。
+    # 这条是**结构性兜底**：前面两条（未知选项、目标不存在）各自只堵住一个
+    # 已知成因，而「扫了 0 个文件」是所有成因的**共同症状** —— 拼错的参数、
+    # 不存在的路径、把文件当目录喂进来、空目录、整目录全是二进制、权限不足，
+    # 症状都是同一个 0。所以判据放在症状上，而不是继续一个个枚举病因。
+    if empty:
+        print(f"[拒绝运行] 以下目标一个文件都没扫到：{' '.join(empty)}；"
+              f"扫了 0 个文件的「无命中」与「真的干净」无法区分，本轮结论作废。",
+              file=sys.stderr)
+        return 2
+
     return 1 if grand else 0
 
 

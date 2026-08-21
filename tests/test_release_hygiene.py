@@ -247,3 +247,79 @@ def test_nonexistent_target_refuses_to_run(tmp_path, monkeypatch):
     assert rs.main([str(target), str(tmp_path / "也没有")]) == 2
     # 对照：只给真目录时必须放行，证明拒绝来自那个不存在的路径
     assert rs.main([str(target)]) == 0
+
+
+def _wl_and_target(tmp_path, *, dirty=False):
+    """词表放在被扫目录之外，避免扫描器读到词表自身而自造命中。"""
+    wl = tmp_path / "wordlist" / "w.txt"
+    wl.parent.mkdir()
+    wl.write_text("某敏感词\n", encoding="utf-8")
+    target = tmp_path / "target"
+    target.mkdir()
+    body = "内容里有某敏感词\n" if dirty else "这里没有任何敏感内容\n"
+    (target / "a.txt").write_text(body, encoding="utf-8")
+    return wl, target
+
+
+def test_single_file_target_is_actually_scanned(tmp_path, monkeypatch):
+    """把**文件**当扫描目标时，必须真的读它 —— 而不是扫出 0 个文件后发绿灯。
+
+    ⚠️ 实战踩到的第二次同类静默失败（v20.0 补）：原 scan_tree 只对目录
+        ``rglob``，喂给它一个文件时迭代器直接为空，于是
+        ``release_scan.py README.md`` 报「已扫 0 个文件 …… ✅ 无硬敏感命中」。
+        目标存在、参数没拼错、退出码 0 —— 三道现有防线全都放行，
+        而那个文件**根本没被读过一个字节**。
+    """
+    wl, target = _wl_and_target(tmp_path)
+    monkeypatch.setenv("AIDUMEI_SCAN_WORDLIST", str(wl))
+    words = rs.load_words()
+
+    clean_file = target / "a.txt"
+    found, _waived, scanned, skipped = rs.scan_tree(clean_file, words)
+    assert scanned == 1, f"单文件目标必须计入已扫文件数，实际 {scanned}"
+    assert not rs._hard_only(found, words), "干净文件不该被误报"
+
+    dirty_file = target / "b.txt"
+    dirty_file.write_text("这里藏了某敏感词\n", encoding="utf-8")
+    found, _waived, scanned, _skipped = rs.scan_tree(dirty_file, words)
+    assert scanned == 1
+    hard = rs._hard_only(found, words)
+    # 正向对照：单文件路径不只是「跑起来了」，而是真的能报出命中
+    assert "某敏感词" in hard, "单文件目标扫不出已知命中 —— 这条通路仍然是瞎的"
+    assert hard["某敏感词"] == {"b.txt": 1}, f"命中定位错了：{hard}"
+
+    # 端到端：整条 CLI 也必须红（退出码 1），不能只有底层函数对
+    assert rs.main([str(dirty_file)]) == 1
+    assert rs.main([str(clean_file)]) == 0
+
+
+def test_zero_scanned_files_refuses_to_run(tmp_path, monkeypatch):
+    """扫了 0 个文件，一律拒绝 —— 这是所有「假绿」成因的共同症状。
+
+    前两条守卫（未知选项、目标不存在）各自堵住一个**已知病因**，
+    而两次实战翻车的**症状**是同一个：``已扫 0 个文件`` 后面跟着一行绿色。
+    所以这条判据放在症状上：空目录、整目录全是二进制、权限不足、
+    以及任何还没被想到的成因，全都落进同一张网。
+    """
+    wl, target = _wl_and_target(tmp_path)
+    monkeypatch.setenv("AIDUMEI_SCAN_WORDLIST", str(wl))
+
+    # ① 空目录：存在、参数正确，但一个文件都没有
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    assert rs.main([str(empty_dir)]) == 2
+
+    # ② 整目录只有二进制：文件在场却全被跳过，等于什么都没验。
+    #    刻意把敏感词**放进**这个二进制里 —— 词就在那儿，只是没人读过它。
+    #    旧行为会打印「已扫 0 个文件 …… ✅ 无硬敏感命中」，绿得毫无根据。
+    bin_dir = tmp_path / "bins"
+    bin_dir.mkdir()
+    (bin_dir / "blob.bin").write_bytes(b"\x00\x01\x02" + "某敏感词".encode("utf-8"))
+    assert rs.main([str(bin_dir)]) == 2
+
+    # ③ 混合：一个有效目标 + 一个空目标，整轮作废，不许「扫到的那部分算数」
+    assert rs.main([str(target), str(empty_dir)]) == 2
+
+    # 正向对照：有文件可扫时必须放行 —— 证明拒绝来自那个 0，
+    # 而不是这条检查本身在无条件判红（一个永远拒绝的闸门同样等于没有闸门）
+    assert rs.main([str(target)]) == 0

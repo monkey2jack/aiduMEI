@@ -157,16 +157,24 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
         return {"merged_groups": 0, "deleted": 0}
 
 
-def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank_id: str = "default") -> dict:
+def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank_id: str = "default",
+                       infer: bool = True) -> dict:
     """
     Layer 1 写入包装器：
     1. 去重检查
     2. 容量检查 → 需要时自动合并
     3. 写入记忆
+
+    ``infer``（v20 新增，默认 True＝生产语义不变）：
+    False 时走**免抽取确定性通路** —— 跳过 LLM 语义 self-edit，
+    ``memory.add(..., infer=False)`` 直写规范化原文。留在链上的
+    去重/容量/演化追踪都只用嵌入检索与规则，同输入必得同输出。
+    这是给「跑分器自身可复现」用的（PROTOCOL.md G3b）；正式跑分
+    的成绩运行一律 infer=True。
     """
     start = time.time()
     action = "new"
-    details = {}
+    details: dict = {"infer": bool(infer)}
 
     # 🔴v20：把域盖进 mem0 metadata —— 这是向量 payload 里唯一能承载 bank_id
     # 的通道（mem0.add 只认 messages/user_id/metadata）。不盖这个戳，命名域的
@@ -184,30 +192,35 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
         text = str(messages_json)
 
     # Step 0: P0-2 记忆去重自编辑（LLM 语义级判重，先行；失败降级回 Jaccard）
-    try:
-        from ducky.self_edit import self_edit_on_add
-        self_edit_result = self_edit_on_add(memory, user_id, messages_json, metadata, bank_id=bank_id)
-        if self_edit_result:
-            details["self_edit"] = self_edit_result
-            action = self_edit_result["action"]
-            # self-edit 直接更新了既有记忆内容，记忆向量与文本索引会因
-            # update 而异动；热度与 FTS 仍需同步，否则合并后的记忆在
-            # 检索侧被降权/漏检。这里做保守同步，失败不阻断返回。
-            _sync_indexes_after_update(
-                memory,
-                memory_id=self_edit_result.get("memory_id", ""),
-                content=self_edit_result.get("merged_content", text),
-                user_id=user_id, bank_id=bank_id,
-            )
-            elapsed_ms = int((time.time() - start) * 1000)
-            details["ms"] = elapsed_ms
-            return {
-                "status": "ok",
-                "action": action,
-                "details": details,
-            }
-    except Exception as se:
-        logger.debug(f"self-edit 跳过（降级）: {se}")
+    # infer=False 时整段跳过：这一步会调 LLM 判定「新旧是否同一件事」
+    # 并合成 merged_content，是确定性通路上最大的一处不确定来源。
+    if infer:
+        try:
+            from ducky.self_edit import self_edit_on_add
+            self_edit_result = self_edit_on_add(memory, user_id, messages_json, metadata, bank_id=bank_id)
+            if self_edit_result:
+                details["self_edit"] = self_edit_result
+                action = self_edit_result["action"]
+                # self-edit 直接更新了既有记忆内容，记忆向量与文本索引会因
+                # update 而异动；热度与 FTS 仍需同步，否则合并后的记忆在
+                # 检索侧被降权/漏检。这里做保守同步，失败不阻断返回。
+                _sync_indexes_after_update(
+                    memory,
+                    memory_id=self_edit_result.get("memory_id", ""),
+                    content=self_edit_result.get("merged_content", text),
+                    user_id=user_id, bank_id=bank_id,
+                )
+                elapsed_ms = int((time.time() - start) * 1000)
+                details["ms"] = elapsed_ms
+                return {
+                    "status": "ok",
+                    "action": action,
+                    "details": details,
+                }
+        except Exception as se:
+            logger.debug(f"self-edit 跳过（降级）: {se}")
+    else:
+        details["self_edit_skipped"] = "infer=false"
 
     # Step 1: 去重检查
     existing_id = dedup_check(memory, user_id, text, bank_id=bank_id)
@@ -223,7 +236,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
             _sync_indexes_after_update(memory, memory_id=existing_id, content=text, user_id=user_id, bank_id=bank_id)
         except Exception:
             # update 失败就走新增
-            add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
+            add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
             _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""), bank_id=bank_id)
             action = "new"
     else:
@@ -245,7 +258,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
 
         # Step 3: 写入
         # 🔴2：主链写入路径必须登记 salience + FTS 索引，否则新记忆全文搜不到、热度不累计。
-        add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
+        add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
         _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""), bank_id=bank_id)
 
     elapsed_ms = int((time.time() - start) * 1000)
