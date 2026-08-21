@@ -1,5 +1,5 @@
 {
-  "_comment": "aiduMEM 配置模板 — 复制为 mem0_config_local.json 后填入你自己的 key。该文件已在 .gitignore 中，不会被提交。",
+  "_comment": "aiduMEI 配置模板 — 复制为 mem0_config_local.json 后填入你自己的 key。该文件已在 .gitignore 中，不会被提交。",
 
   "llm": {
     "provider": "openai",
