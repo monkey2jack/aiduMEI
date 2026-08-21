@@ -13,7 +13,9 @@
   ③ workspace.db 跟着 DATA_DIR 走，不许自己硬拼回仓库；
   ④ 逃生门是**唯一**不隔离的路，且必须显式打开（负向对照）；
   ⑤ 逃生门不许变成默认（把它写成"默认打开"，这条会红）；
-  ⑥ 清理只删自己建的那一个——子进程不许删父进程正在用的目录（真子进程对照）。
+  ⑥ 清理只删自己建的那一个——子进程不许删父进程正在用的目录（真子进程对照）；
+  ⑦ 用例把隔离环境变量改坏了，红的必须是**肇事的那条**（真 pytest 子进程正负对照），
+     外加一道静态兜底——运行期的闸门管不到"整份 skip 的文件"，静态检查管得到。
 
 跑法：cd <仓库根> && .venv/bin/pytest tests/test_v20_test_data_isolation.py -v
 """
@@ -22,6 +24,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -268,3 +271,110 @@ def test_owner_process_still_cleans_up_its_own_data_dir():
     assert os.path.basename(chosen).startswith(_guard().DIR_PREFIX)
     assert not os.path.exists(chosen), \
         f"子进程退出后自己建的临时目录还在（{chosen}）——atexit 清理没生效"
+
+
+# ═══════════════ ⑦ 谁把隔离环境变量改坏的，就红在谁头上 ═══════════════
+def test_clobbering_the_isolation_env_reddens_the_culprit_not_a_bystander():
+    """真跑一遍 pytest：抹掉 `AIDUMEM_DATA_DIR` 的那条用例必须自己红。
+
+    这条盯的是 v20.0 验收当天的第二次"张冠李戴"：
+    `tests/test_hermes_plugin.py` 用 `os.environ.pop` 收尾（"删掉"而非"还原"），
+    把护栏设的值抹没了，红的却是本文件第一条——报错指着无辜的人。
+
+    所以对照必须是**两条**同时跑：不动环境的那条要绿，抹掉的那条要红。
+    只验"抹掉会红"证明不了闸门有分辨力——一个对所有用例都报错的实现
+    也能过那一半。
+
+    整个探针在仓库之外的临时目录里跑（拷一份 conftest 过去），
+    不往被验收的树里写任何东西。
+    """
+    probe = tempfile.mkdtemp(prefix="aidumei_env_probe_")
+    try:
+        shutil.copy2(_CONFTEST_PATH, os.path.join(probe, "conftest.py"))
+        with open(os.path.join(probe, "test_probe.py"), "w", encoding="utf-8") as f:
+            f.write(
+                "import os\n\n\n"
+                "def test_leaves_the_isolation_env_alone():\n"
+                "    assert os.environ.get('AIDUMEM_DATA_DIR')\n\n\n"
+                "def test_pops_the_isolation_var():\n"
+                "    os.environ.pop('AIDUMEM_DATA_DIR', None)\n"
+            )
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("AIDUMEM_DATA_DIR", "AIDUMEM_LOG_DIR",
+                            _guard().ESCAPE_HATCH)}
+        out = subprocess.run(
+            [sys.executable, "-m", "pytest", probe, "-q", "-p", "no:cacheprovider"],
+            cwd=probe, env=env, capture_output=True, text=True, timeout=300)
+        text = out.stdout + out.stderr
+
+        assert "把隔离环境变量改坏了" in text, (
+            "抹掉 AIDUMEM_DATA_DIR 之后对账闸没出声——泄漏会再一次悄悄"
+            f"落到别人头上：\n{text[-900:]}"
+        )
+        assert out.returncode != 0, "对账闸出了声，退出码却是绿的——CI 拦不住"
+        assert "test_pops_the_isolation_var" in text, \
+            "报错里没点名肇事的那条用例——查起来又要从头二分"
+        assert "2 passed" in text and "1 error" in text, (
+            "正负对照没同时成立：不动环境的那条要绿、抹掉的那条要红，"
+            f"实际是：\n{text[-900:]}"
+        )
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
+#: `pop` 掉隔离变量的两种写法。monkeypatch 系列**不**在内——它退出时会还原。
+_POP_ISOLATION_ENV = re.compile(
+    r"""(?:os\.environ\.pop\(\s*["']AIDUMEM_(?:DATA|LOG)_DIR["']"""
+    r"""|del\s+os\.environ\[\s*["']AIDUMEM_(?:DATA|LOG)_DIR["']\s*\])""")
+
+
+def _pop_offenders(directory: str, skip: frozenset | set = frozenset()) -> list[str]:
+    """列出 `directory` 下所有 `pop` 掉隔离环境变量的位置（`文件名:行号`）。"""
+    found = []
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".py") or name in skip:
+            continue
+        with open(os.path.join(directory, name), encoding="utf-8") as f:
+            for lineno, line in enumerate(f, 1):
+                if _POP_ISOLATION_ENV.search(line):
+                    found.append(f"{name}:{lineno}")
+    return found
+
+
+def test_no_test_file_pops_the_isolation_env_instead_of_restoring_it():
+    """静态兜底：全套用例里不许再出现 `pop` 掉隔离环境变量的写法。
+
+    为什么运行期的对账闸还不够——它有个盲区，而这次就是撞在盲区上：
+    肇事文件 `test_hermes_plugin.py` 在**没装宿主的开发机上整份 skip**，
+    用例不跑，闸门自然不响。本地全绿、用户那台一红，正是这个盲区的形状。
+
+    静态检查没有这个盲区：文件在仓库里，就查得到。
+    """
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    # 本文件自己豁免，且**只有**本文件：定义规则的地方必然要把违规写法当素材
+    # （上面那段探针源码、下面那条正向对照都得原样写出来）。豁免范围放大一点，
+    # 这条护栏就开始给自己发通行证——所以这里写死成"就这一个文件名"。
+    offenders = _pop_offenders(tests_dir, skip={os.path.basename(os.path.abspath(__file__))})
+
+    assert not offenders, (
+        f"这些地方在 pop 隔离环境变量：{offenders}。"
+        "pop 是「删掉」不是「还原」——请改用 monkeypatch.setenv 或 "
+        "unittest.mock.patch.dict，它们退出时会把原值放回去"
+    )
+
+    # 负向对照：这把尺子必须真的能量到东西。种一个违规文件进去，它得被抓出来；
+    # 同时 monkeypatch 那种"会自动还原"的写法不许被误伤。
+    planted = tempfile.mkdtemp(prefix="aidumei_lint_probe_")
+    try:
+        with open(os.path.join(planted, "test_bad.py"), "w", encoding="utf-8") as f:
+            f.write("import os\nos.environ.pop('AIDUMEM_DATA_DIR', None)\n")
+        with open(os.path.join(planted, "test_ok.py"), "w", encoding="utf-8") as f:
+            f.write("def test_x(monkeypatch):\n"
+                    "    monkeypatch.delenv('AIDUMEM_DATA_DIR', raising=False)\n")
+        caught = _pop_offenders(planted)
+        assert caught == ["test_bad.py:2"], (
+            f"这把尺子量不准：应当只抓到 test_bad.py:2，实际 {caught}——"
+            "抓不到就是摆设，误伤 monkeypatch 就会逼着大家绕开它"
+        )
+    finally:
+        shutil.rmtree(planted, ignore_errors=True)
