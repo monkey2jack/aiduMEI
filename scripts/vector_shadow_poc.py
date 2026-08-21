@@ -13,6 +13,11 @@
   自测模式   --selftest 用内存 Qdrant + 临时 SQLite 把整条管线真跑一遍，
              两个后端都是真实现，不是 mock——这就是 ADR 里性能与能力
              实测数字的来源。
+  规模档     --scale 按 1k/10k/100k 三档量两个后端的 p50/p95、影子库占盘、
+             峰值内存与 recall@k。recall 的标准答案是 numpy 精确余弦，
+             不是"另一个后端"——两个后端互相对照只能证明它们一致，
+             证明不了它们对。每档跑在**独立子进程**里，好让峰值内存
+             真的归属于那一档（ru_maxrss 只增不减）。
 
 安全边界（每一条都有测试盯着，见 tests/test_v20_vector_migration_poc.py）：
 
@@ -28,6 +33,7 @@
 
 跑法：
   .venv/bin/python scripts/vector_shadow_poc.py --selftest --report /tmp/shadow_report.json
+  .venv/bin/python scripts/vector_shadow_poc.py --scale --report /tmp/scale_report.json
   .venv/bin/python scripts/vector_shadow_poc.py \
       --source /path/to/COPY_of_qdrant_dir --collection mem0 \
       --dest /tmp/shadow_vectors.sqlite --checkpoint /tmp/shadow_ckpt.json
@@ -319,6 +325,165 @@ def selftest(n: int = 200, dim: int = 32, seed: int = 7,
     }
 
 
+# ── 规模档实测（ADR-001 的 1k/10k/100k 表就是这里跑出来的）────────────
+
+#: 三档规模。改这里就必须同步改 ADR-001 的表——有测试盯着，见
+#: tests/test_v20_vector_migration_poc.py::test_adr_scale_table_matches_script.
+DEFAULT_SCALE_SIZES = (1_000, 10_000, 100_000)
+
+
+def _percentile(values: list[float], q: float) -> float:
+    """线性插值分位数。样本少的时候不假装精确，但也不四舍五入成谎话。"""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = (len(ordered) - 1) * q
+    low = int(pos)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (pos - low)
+
+
+def _rss_peak_mb() -> float:
+    """本进程峰值 RSS（MB）。
+
+    ``ru_maxrss`` 的单位随平台变：**macOS 是字节，Linux 是 KiB**。不换算就
+    会把 Linux 的数字报小 1024 倍——这种"看着挺合理"的错数比报错更难发现。
+    """
+    import resource
+    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(raw / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
+
+
+def _sqlite_disk_bytes(path: str) -> int:
+    """影子库真实占盘：主文件 + WAL + SHM，一个都不许漏算。"""
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            total += os.path.getsize(path + suffix)
+        except OSError:
+            pass
+    return total
+
+
+def scale_one(size: int, *, dim: int = 64, queries: int = 20, top_k: int = 10,
+              seed: int = 7, work_dir: str | None = None) -> dict:
+    """量一个规模档：两后端的 p50/p95、占盘、峰值内存、recall@k。
+
+    recall@k 的**标准答案不是另一个后端**，而是 numpy 算的精确余弦 top-k
+    ——两个后端互相对照只能证明"它们一致"，证明不了"它们对"。
+    """
+    import numpy as np
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Distance, VectorParams
+
+    rss_start = _rss_peak_mb()
+    rng = np.random.default_rng(seed * 1_000_003 + size)
+    matrix = rng.standard_normal((size, dim), dtype=np.float64)
+    probes = rng.standard_normal((queries, dim), dtype=np.float64)
+    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"aidumem-scale-{size}-{i}"))
+           for i in range(size)]
+
+    work = work_dir or tempfile.mkdtemp(prefix=f"aidumem_scale_{size}_")
+    dest = os.path.join(work, "shadow_vectors.sqlite")
+    collection = f"scale{size}"
+
+    raw = QdrantClient(":memory:")
+    raw.create_collection(
+        collection, vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
+    qdrant = QdrantBackend(raw, collection)
+    sqlite = SQLiteVecBackend(path=dest)
+    try:
+        # 灌注：两边都走契约面 upsert，不抄近道，测的就是契约面的成本。
+        rows = matrix.tolist()
+        t0 = time.perf_counter()
+        for pid, vec in zip(ids, rows):
+            qdrant.upsert(pid, vec, {"user_id": "scale", "seq": 0})
+        qdrant_ingest = round(time.perf_counter() - t0, 2)
+        t0 = time.perf_counter()
+        for pid, vec in zip(ids, rows):
+            sqlite.upsert(pid, vec, {"user_id": "scale", "seq": 0})
+        sqlite_ingest = round(time.perf_counter() - t0, 2)
+
+        # 标准答案：精确余弦全量排序（numpy，独立于两个被测后端）。
+        norms = matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
+        truth: list[set[str]] = []
+        for probe in probes:
+            sims = norms @ (probe / np.linalg.norm(probe))
+            best = np.argpartition(-sims, top_k)[:top_k]
+            truth.append({ids[i] for i in best})
+
+        lat: dict[str, list[float]] = {"qdrant": [], "sqlite": []}
+        hit: dict[str, int] = {"qdrant": 0, "sqlite": 0}
+        for probe, expected in zip(probes.tolist(), truth):
+            for name, backend in (("qdrant", qdrant), ("sqlite", sqlite)):
+                t0 = time.perf_counter()
+                hits = backend.search(probe, top_k=top_k)
+                lat[name].append((time.perf_counter() - t0) * 1000)
+                hit[name] += len({h["id"] for h in hits} & expected)
+
+        out = {
+            "size": size, "dim": dim, "queries": queries, "top_k": top_k,
+            "qdrant_ingest_s": qdrant_ingest,
+            "sqlite_ingest_s": sqlite_ingest,
+            "sqlite_disk_bytes": _sqlite_disk_bytes(dest),
+            "rss_start_mb": rss_start,
+            "rss_peak_mb": _rss_peak_mb(),
+        }
+        for name in ("qdrant", "sqlite"):
+            out[f"{name}_p50_ms"] = round(_percentile(lat[name], 0.50), 2)
+            out[f"{name}_p95_ms"] = round(_percentile(lat[name], 0.95), 2)
+            out[f"{name}_recall_at_k"] = round(hit[name] / (queries * top_k), 4)
+        return out
+    finally:
+        sqlite.close()
+        try:
+            raw.close()
+        except Exception:
+            pass
+
+
+def scale_probe(sizes: tuple[int, ...] = DEFAULT_SCALE_SIZES, *, dim: int = 64,
+                queries: int = 20, top_k: int = 10, seed: int = 7,
+                in_process: bool = False) -> dict:
+    """跑完整规模表。
+
+    默认**每档一个子进程**：``ru_maxrss`` 是进程累计峰值、只增不减，同进程
+    里跑完 100k 再报 1k 的"峰值内存"就是拿大档的数字冒充小档。子进程让
+    每一行的内存数真的归属于那一行。``in_process=True`` 只给测试用（省去
+    进程开销），此时内存列会被标记为不可归因。
+    """
+    rows = []
+    for size in sizes:
+        if in_process:
+            row = scale_one(size, dim=dim, queries=queries, top_k=top_k, seed=seed)
+            row["rss_attributable"] = False
+        else:
+            import subprocess
+            proc = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "--scale-one", str(size),
+                 "--dim", str(dim), "--queries", str(queries),
+                 "--top-k", str(top_k), "--seed", str(seed)],
+                capture_output=True, text=True, check=False,
+            )
+            if proc.returncode != 0:
+                raise BackendError(
+                    f"规模档 {size} 子进程失败（exit={proc.returncode}）: "
+                    f"{proc.stderr.strip()[-300:]}"
+                )
+            row = json.loads(proc.stdout)
+            row["rss_attributable"] = True
+        rows.append(row)
+    return {
+        "mode": "scale",
+        "sizes": list(sizes),
+        "rows": rows,
+        "extension_gate": extension_gate_report(),
+        "platform": _platform_report(),
+    }
+
+
 def run_migration(source_path: str, collection: str, dest: str,
                   checkpoint_path: str, *, batch: int = 256,
                   max_batches: int | None = None) -> dict:
@@ -353,8 +518,20 @@ def run_migration(source_path: str, collection: str, dest: str,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--selftest", action="store_true", help="内存双后端真跑整条管线")
+    ap.add_argument("--scale", action="store_true",
+                    help="跑规模档实测（1k/10k/100k × p50/p95/占盘/内存/recall@k）")
+    ap.add_argument("--scale-one", type=int, default=None,
+                    help="内部用：只跑一个规模档并打印一行 JSON（--scale 的子进程入口，"
+                         "为的是让峰值内存能归因到单一档位）")
+    ap.add_argument("--sizes", default=None,
+                    help="逗号分隔的规模档，默认 "
+                         + ",".join(str(s) for s in DEFAULT_SCALE_SIZES))
+    ap.add_argument("--queries", type=int, default=20, help="每档查询次数")
+    ap.add_argument("--top-k", type=int, default=10, help="规模档 top-k")
+    ap.add_argument("--seed", type=int, default=7, help="随机种子（可复现）")
     ap.add_argument("--n", type=int, default=200, help="selftest 点数")
-    ap.add_argument("--dim", type=int, default=32, help="selftest 向量维度")
+    ap.add_argument("--dim", type=int, default=None,
+                    help="向量维度（selftest 默认 32，规模档默认 64）")
     ap.add_argument("--source", help="Qdrant 本地库目录（必须是快照拷贝，非生产目录）")
     ap.add_argument("--collection", help="源集合名")
     ap.add_argument("--dest", help="影子 SQLite 文件路径")
@@ -365,8 +542,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", help="把报告 JSON 写到该路径（默认只打印）")
     args = ap.parse_args(argv)
 
-    if args.selftest:
-        report = selftest(n=args.n, dim=args.dim)
+    if args.scale_one is not None:
+        # 子进程入口：只打印这一档的 JSON，父进程负责拼表。
+        print(json.dumps(scale_one(
+            args.scale_one, dim=args.dim or 64, queries=args.queries,
+            top_k=args.top_k, seed=args.seed), ensure_ascii=False))
+        return 0
+
+    if args.scale:
+        sizes = (tuple(int(s) for s in args.sizes.split(",") if s.strip())
+                 if args.sizes else DEFAULT_SCALE_SIZES)
+        report = scale_probe(sizes, dim=args.dim or 64, queries=args.queries,
+                             top_k=args.top_k, seed=args.seed)
+    elif args.selftest:
+        report = selftest(n=args.n, dim=args.dim or 32)
     else:
         missing = [k for k in ("source", "collection", "dest", "checkpoint")
                    if not getattr(args, k)]
@@ -381,6 +570,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:
             f.write(text + "\n")
+    if report.get("mode") == "scale":
+        # 规模档是**测量**，不是判定：数字难看也算跑成功，成功的定义是
+        # 每一档都真的量到了。少一档就非零退出，别让缺失被读成"没问题"。
+        return 0 if len(report.get("rows") or []) == len(report["sizes"]) else 1
     v = report.get("verify") or {}
     ok = (report.get("migrate", {}).get("done", False)
           and v.get("count_match", False)
