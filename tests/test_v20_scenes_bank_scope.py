@@ -91,14 +91,6 @@ def _bind_test_db(monkeypatch):
     yield
 
 
-def _facts_rows(sql: str, params=()):
-    conn = sqlite3.connect(_TEST_DB)
-    try:
-        return conn.execute(sql, params).fetchall()
-    finally:
-        conn.close()
-
-
 def _scene_rows(sql: str, params=()):
     conn = sqlite3.connect(_SCENES_DB)
     try:

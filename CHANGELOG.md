@@ -129,6 +129,57 @@
   **判据从病因挪到症状**，才不用等下一次踩坑再补第四道。
   `tests/test_release_hygiene.py` 两条新守卫各带正向对照，其中一条刻意把敏感词
   塞进二进制文件里：词就在那儿，只是没人读过它——旧行为会为此发一张绿灯。
+- **降级纪律：兼容降级不许接住真故障**。本版全仓遍布同一种写法——先按
+  `(user_id, bank_id)` 过滤，失败就退回老口径（空集、全库、或把行一律当 default 域）。
+  **降级本身是对的**：老库根本没有 `bank_id` 列，具名域的行存不下，只能按老规矩办。
+  错的是用 `except Exception` 去接它：那等于宣布「凡是这条 SQL 出问题就当这是个老库」，
+  于是库被锁、磁盘写满、连接被回收统统命中同一个降级分支，**域过滤被悄悄摘掉**，
+  调用方拿到跨域的行，而返回值的形状与一次正常查询逐字相同。
+  租户隔离要是能被一次瞬时故障摘掉，它就不叫隔离。
+  修法是降级前先验明病因：`ducky/bank_contract.py` 新增 `is_legacy_schema_error()`
+  （只认 `OperationalError` 且消息确实说了缺列/缺表），`ducky/reflect.py` 的反思取材
+  与 `ducky/salience/conflict.py` 的冲突检测据此改为「不是缺列/缺表就原样抛出」——
+  后者原先会把具名域的行一律**改写**成 `("default","default")`，甲库的「要」于是
+  重新能跟乙库的「不要」配对，两库显著性一起腰斩。`reflect` 那处还有**第二层**要拆：
+  内层刚辨明病因抛出去，外层一个 `except Exception: return []` 又接住了，于是
+  「库被锁」与「本来就没有事实」同归 `{"status":"ok","saved":0}`——内层那一步等于没做。
+  `table_columns()`（原 `_table_columns`，本版起对内公开）与 `_table_names()` 的宽捕获
+  也各补一笔 WARNING：实测 `PRAGMA table_info(不存在的表)` 返回空集**不抛异常**，
+  所以那个 handler 只可能被真故障走到，原来的静默 `return set()` 是把真故障翻译成
+  「这张表没有这些列」。`ducky/conflict_resolver.py` 与 `ducky/tombstone.py` 里手写的
+  `PRAGMA` + 宽捕获一并收归 `table_columns`——手写一遍就等于把加固绕过一遍。
+  新增 `tests/test_v20_fallback_discipline.py` 10 条守卫（含 3 条 sqlite 实测语义钉子、
+  2 条老库降级正向对照），并**逐条做过反证**：临时撤掉修复后应红的 5 条全红、
+  且红在预期的那一行，恢复后改动面 diff 指纹逐字节复原——**前后都绿的守卫不叫闸门**。
+- **另外三处宽捕获按病因收窄，各留其应留之痕**：`ducky/governance.py` 的 `_row_scope`
+  只认「row 不支持按键取值」（`AttributeError`/`IndexError`/`KeyError`），否则任何异常
+  都会让具名域的候选事实被静默判成默认域，审批面上无从察觉；`ducky/hot/add.py` 的
+  messages 解析只认 `ValueError`（`JSONDecodeError` 的父类），不再让「进程出事」
+  伪装成「这串文本不是 JSON」；`ducky/scoring.py` 的 rerank 遥测回写照旧不抛
+  （遥测不该把主查询带崩）但补 debug 留痕——本版加那段就是为了修「`rerank_applied`
+  看不见」，回写自己再静默失败，症状与修复前一模一样。
+- **`/update` 漏注册记忆域，写路径的最后一个缺口**。`/update` 会把 `bank_id` 盖进向量
+  metadata 并按该域重建 FTS 索引，也就是说它能把一条记忆搬进一个从没被注册过的域；
+  `add` / `tombstone` / `core_memory` / `conflict_resolver` 都调了 `ensure_bank_registered`，
+  只有这一处漏了。后果是数据落在某域、`memory_banks` 里却查不到这个域——
+  **域存在与否取决于当初是从哪个端点进来的**，注册表从此不可信。`ducky/hot/crud.py`
+  补上注册（`INSERT OR IGNORE`，幂等，对已注册域是 no-op）。连带如实记一笔同期发现：
+  `memory_banks` 被 11 处写入，却只有 `bank_contract.list_banks` 一个读者，
+  而它**全仓零调用方、无端点、无测试**——一张只写不读的注册表，坏了也不会有人知道。
+  新增的 `/update` 守卫是它的第一个读者。
+- **layer1 去重更新失败必须留痕——第三个出口，此前没有任何用例走到过**。
+  去重命中却 update 抛异常时，`ducky/layer1_selfcheck.py` 静默改走新增：库里多出一条
+  重复记忆，而返回的 `action="new"` 与「本来就是一条新记忆」在调用方看来完全一样。
+  坏掉的更新通路可以坏很久而没有任何东西发红，用户只会觉得「记忆怎么越来越重复」，
+  查不到根因。语义不变（照旧降级新增），补 WARNING 日志与
+  `details.dedup_update_failed`（带异常类型与原因）。守卫进
+  `tests/test_v20_vector_write_stamp.py`，连带钉住降级出口同样盖域戳，并加反向对照：
+  update 正常时这个标记**不许**出现，否则断言可能因为别的原因恒真，等于没测。
+- **重构收尾与文档数字复测**：清掉 `ducky/layer1_selfcheck.py` 的死 `json` 导入，
+  以及 `tests/test_v20_feedback_bank_scope.py`、`tests/test_v20_scenes_bank_scope.py`
+  里的死导入与零调用辅助函数；本轮用例总数从 682 增至 **693**（无宿主 681 passed +
+  12 skipped），`README.md` 与 `README_EN.md` 的 12 处测试数字按 `--collect-only`
+  实测同步——文档数字不是文案，它由实测反算，写错就红。
 
 ---
 
