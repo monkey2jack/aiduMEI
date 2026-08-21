@@ -42,6 +42,9 @@ class VectorBackend(Protocol):
     def count(self, filters: dict[str, Any] | None = None) -> int: ...
     def health(self) -> dict[str, Any]: ...
     def snapshot(self, destination: str) -> str: ...
+    # 只有 snapshot 没有 restore 的抽象，是一个**取不出来的备份**：
+    # 迁移门禁里的「恢复演练」和「备份可恢复」两项，靠这层根本没法表达。
+    def restore(self, source: str) -> int: ...
 
 
 def _clean_vector(vector: Iterable[float]) -> tuple[float, ...]:
@@ -214,6 +217,45 @@ class SQLiteVecBackend:
             target.close()
         return destination
 
+    def restore(self, source: str) -> int:
+        """Restore this store **from** a snapshot: the exact inverse of :meth:`snapshot`.
+
+        全部校验都发生在**覆盖之前**。一次「先清空、再发现快照是垃圾」的恢复，
+        比不恢复更糟 —— 那是拿一个坏备份把生产数据擦掉。所以：
+        源不存在、打不开、没有本契约的表，都在原地炸掉，现场保持不动。
+
+        返回恢复出的条数。故意不返回 ``None``：让「什么都没恢复出来」
+        没法被读成「恢复成功」。
+        """
+        src = os.path.abspath(source)
+        dst = os.path.abspath(self.path)
+        if src == dst:
+            raise BackendError(f"restore 源不能是当前库自身: {src}")
+        if not os.path.isfile(src):
+            raise BackendError(f"restore 源快照不存在: {src}")
+        probe = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        try:
+            expected = int(probe.execute("SELECT COUNT(*) FROM vectors").fetchone()[0])
+        except Exception as exc:
+            # 文件损坏、或压根不是本契约的库：在动手之前失败。
+            raise BackendError(f"restore 源快照不可用: {exc}") from exc
+        finally:
+            probe.close()
+
+        # 校验通过才覆盖。用在线备份反向写回，活着的连接与句柄继续有效，
+        # 不需要调用方重新 connect。
+        source_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        try:
+            source_conn.backup(self._conn)
+        finally:
+            source_conn.close()
+        self._conn.commit()
+        restored = int(self._conn.execute("SELECT COUNT(*) FROM vectors").fetchone()[0])
+        if restored != expected:
+            # 后置校验：抄少了也算失败，不许「部分恢复」冒充成功。
+            raise BackendError(f"restore 后条数与快照不一致: {restored} != {expected}")
+        return restored
+
     def close(self) -> None:
         self._conn.close()
 
@@ -273,6 +315,11 @@ class QdrantBackend:
 
     def snapshot(self, destination: str) -> str:
         raise BackendError("Qdrant snapshot must use the deployment's official snapshot API")
+
+    def restore(self, source: str) -> int:
+        # 与 snapshot 对称地拒绝：Qdrant 的恢复必须走它自己的 snapshot API，
+        # 这里不提供一个「看着像恢复」的假实现。
+        raise BackendError("Qdrant restore must use the deployment's official snapshot API")
 
 
 def _live_vector_store() -> Any | None:
