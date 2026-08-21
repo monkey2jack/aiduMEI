@@ -347,7 +347,11 @@ def _row_scope(row) -> tuple[str, str]:
         uid = row["scope_user_id"] if "scope_user_id" in keys else ""
         bid = row["bank_id"] if "bank_id" in keys else ""
         return str(uid or ""), str(bid or "")
-    except Exception:
+    except (AttributeError, IndexError, KeyError):
+        # 收窄自 except Exception：这里唯一可能出事的是「row 不支持按键取值」
+        # （拿到的是 tuple 而不是 sqlite3.Row）。("","") 归 default 域是对的
+        # 兼容口径，但用宽捕获接的话，任何别的异常也会让这一行被判成 default，
+        # 具名域的候选事实就此当成默认域的处理 —— 审批面上无从察觉。
         return "", ""
 
 

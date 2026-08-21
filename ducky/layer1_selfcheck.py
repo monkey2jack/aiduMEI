@@ -9,7 +9,7 @@ Aion Memory 设计哲学：
 - Instinct 同域 ≥3 → 标记可毕业
 """
 
-import json, logging, time
+import logging, time
 from typing import Optional
 
 from .bank_contract import (
@@ -234,8 +234,20 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
             logger.info(f"Layer1 去重更新: {existing_id[:16]}")
             # 🔴2：更新既有记忆后同步热度与 FTS，避免检索侧漏检/降权
             _sync_indexes_after_update(memory, memory_id=existing_id, content=text, user_id=user_id, bank_id=bank_id)
-        except Exception:
-            # update 失败就走新增
+        except Exception as ue:
+            # update 失败就走新增 —— 但**必须留痕**。
+            # 去重命中却更新失败，结果是库里多出一条重复记忆，而返回的
+            # action="new" 与「本来就是一条新记忆」在调用方看来一模一样。
+            # 不记这一笔，坏掉的更新通路可以坏很久而没有任何东西发红：
+            # 用户只会觉得「记忆怎么越来越重复」，查不到根因。
+            # 语义不变（照旧降级新增），只是把降级这件事说出来。
+            logger.warning(
+                f"Layer1 去重更新失败，降级为新增: {existing_id[:16]} {type(ue).__name__}: {ue}"
+            )
+            details["dedup_update_failed"] = {
+                "existing_id": existing_id,
+                "error": f"{type(ue).__name__}: {str(ue)[:200]}",
+            }
             add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
             _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""), bank_id=bank_id)
             action = "new"

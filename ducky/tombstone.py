@@ -46,6 +46,7 @@ from ducky.bank_contract import (
     ensure_memory_banks_schema,
     make_scope,
     scoped_storage_key,
+    table_columns,
 )
 
 logger = logging.getLogger("aiduMEM.tombstone")
@@ -111,10 +112,10 @@ def _capture_facts_row(
         conn = get_facts_conn()
         ensure_memory_banks_schema(conn)
         exact_keys = (memory_id, f"fact:{memory_id}", f"raw:{memory_id}")
-        try:
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
-        except Exception:
-            cols = set()
+        # 同 conflict_resolver：手写 PRAGMA + 宽捕获会把真故障翻译成
+        # 「facts 没有 user_id/source/agent_id 列」，于是 owner_terms 全空，
+        # 墓碑查询退化成不认所有者 —— 统一走已加固的 table_columns。
+        cols = table_columns(conn, "facts")
         owner_terms = ["user_id=?"] if "user_id" in cols else []
         owner_params = [scope.user_id] if "user_id" in cols else []
         if "source" in cols:

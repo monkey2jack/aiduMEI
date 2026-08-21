@@ -27,6 +27,7 @@ from ducky.bank_contract import (
     ensure_memory_banks_schema,
     legacy_fact_scope_predicate,
     make_scope,
+    table_columns,
 )
 
 logger = logging.getLogger("aiduMEM.ConflictResolver")
@@ -62,13 +63,10 @@ def _fact_scope_sql(conn: Any, scope) -> tuple[str, list[Any]]:
     永远走契约谓词。没有 bank_id 列的表存不下具名域的行，此时对具名域
     的消解应当一行都命不中（1=0），而不是退回全库。
     """
-    try:
-        columns = {
-            str(row[1])
-            for row in conn.execute("PRAGMA table_info(facts)").fetchall()
-        }
-    except Exception:
-        columns = set()
+    # 统一走 bank_contract.table_columns：那里已经把「PRAGMA 失败」与
+    # 「表不存在」分开了（后者返回空集不抛异常），手写一遍就会把真故障
+    # 静默翻译成「老库没有作用域列」，从而把消解退回全库口径。
+    columns = table_columns(conn, "facts")
 
     if {"user_id", "bank_id", "source", "agent_id"} <= columns:
         sql, params = legacy_fact_scope_predicate(scope)

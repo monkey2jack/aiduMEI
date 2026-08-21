@@ -55,7 +55,12 @@ def register_add_routes(app: FastAPI) -> None:
             if isinstance(req.messages, str):
                 try:
                     messages_json = json.loads(req.messages) if req.messages.strip().startswith(("[", "{")) else req.messages
-                except Exception:
+                except ValueError:
+                    # 收窄自 except Exception：这里唯一可能抛的是 json 解析失败
+                    # （JSONDecodeError 继承 ValueError）。原来的宽捕获会连带
+                    # 吞掉 MemoryError / KeyboardInterrupt 之外的一切系统级异常，
+                    # 让「进程出事」伪装成「这串文本不是 JSON」。降级本身是对的，
+                    # 不是 JSON 就按纯文本存，所以无需记录。
                     messages_json = req.messages
             else:
                 messages_json = req.messages
