@@ -16,6 +16,12 @@
    HTTP 200 + body ``status:"error"``**——这正是「搜挂了」和「没搜到」
    的分界线，body 状态必须检查，故障必须抛错，不许静默当空结果。
 4. 不实现、不伪造任何 ``benchmark_mode``：适配器不得暗中改变生产门控。
+   v20 补注：``add_turn(infer=False)`` 不违反这一条 —— ``infer`` 是
+   ``/add`` 的**公开契约字段**（``ducky/api_models.py``），由本适配器
+   显式传入、由服务端回显确认，且只用于 G3b 的复现性自检；正式跑分
+   （``--formal``）一律 ``infer=True``，与生产完全同路。区别在于：
+   隐藏模式是「适配器偷偷换了被测系统的行为」，公开参数是「调用方
+   要求了什么，回执里写着什么」。
 5. case 隔离用哈希后的稳定命名空间：``user_id = bench-<dataset>-<h>``、
    ``bank_id = bench-<h>``（h = sha256(case_id) 前 16 位十六进制），
    原始题目内容不进日志、不进标识符。
@@ -224,27 +230,54 @@ class AiduMEIBenchmarkAdapter:
         role: str,
         content: str,
         timestamp: str,
+        dia_id: str = "",
+        infer: bool = True,
     ) -> dict:
         """写入一轮对话。同步优先（force_sync），异步回执必须等 job 落定。
 
         注意重试语义：/add 非幂等，_request 的 5xx/超时重试可能造成
         重复写入；评测语境下「重复的记忆」只会让检索更难而非更容易，
         不会虚增成绩，故接受这一偏保守的取舍并留在协议里说明。
+
+        ``dia_id``（v20 修）：LoCoMo 的证据标识（形如 ``D1:1``）。此前
+        **从未灌进元数据**，而 run.py 的证据匹配器正是拿它去召回结果里
+        找 —— 于是 LoCoMo 的 ``evidence_hits`` 结构性恒为空、召回诊断
+        恒为 0.0。不是能力问题，是管线没接上。
+
+        ``infer``（v20 新增）：False 请求服务端走免抽取确定性写入
+        （PROTOCOL.md G3b）。**显式参数，不是隐藏模式**；且服务端必须
+        回显 ``infer:false``，否则本方法抛协议错 —— 一个被静默忽略的
+        确定性开关比没有开关更危险。
         """
         user_id, bank_id = self._scope(case_id)
+        metadata = {
+            "recorded_at": str(timestamp),
+            "force_sync": True,
+            "source": "benchmark",
+            "bench_session_id": str(session_id),
+            "bench_turn_index": int(turn_index),
+        }
+        if dia_id:
+            metadata["bench_dia_id"] = str(dia_id)
         payload = {
             "messages": [{"role": str(role), "content": str(content)}],
             "user_id": user_id,
             "bank_id": bank_id,
-            "metadata": {
-                "recorded_at": str(timestamp),
-                "force_sync": True,
-                "source": "benchmark",
-                "bench_session_id": str(session_id),
-                "bench_turn_index": int(turn_index),
-            },
+            # 显式传，不靠服务端默认值：与 force_sync 同一个理由
+            "infer": bool(infer),
+            "metadata": metadata,
         }
         resp, rid = self._request("POST", "/add", payload)
+
+        if not infer and resp.get("infer") is not False:
+            # 服务端没回显 infer=false ⇒ 无法证明它真的跳过了 LLM 抽取。
+            # 此时若继续跑，G3b 的「bit 复现」断言就变成一句空话。
+            self.stats["protocol_errors"] += 1
+            raise AdapterError(
+                KIND_PROTOCOL,
+                "请求了 infer=false 但服务端未回显确认——不接受未经证实的确定性",
+                request_id=rid, detail=resp,
+            )
 
         if resp.get("status") == "accepted":
             # 服务端仍决定异步：轮询 job 直到 done/error（HTTP 202 不算完成）
