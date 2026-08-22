@@ -28,7 +28,13 @@
 6. 只有检索返回的证据才可交给答案模型（由 run.py 负责）；适配器保证
    证据链字段原样透传。
 
-依赖只用标准库（urllib），评测工具不得给运行时引入未声明依赖。
+HTTP 只用标准库（urllib），评测工具不得给运行时引入未声明的**第三方**依赖。
+
+唯一的仓内依赖是 ``ducky.utils.api_auth_headers``：鉴权头必须走产品自己的
+**单一真相源**，适配器不许另抄一份读 token 的逻辑 —— 抄一份就是把同一条契约
+写成两半，改一半忘一半（v20.0 甲3 的病根）。依赖方向是「工具 → 产品」，
+不是反向，不给产品增加任何依赖；未配置 token 时它返回空 dict，
+本机零配置的行为与门禁未启用时完全一致。
 """
 from __future__ import annotations
 
@@ -41,6 +47,9 @@ import urllib.error
 import urllib.request
 import uuid
 from typing import Any
+
+# 唯一的仓内依赖：鉴权头的单一真相源。见模块 docstring 的依赖说明。
+from ducky.utils import api_auth_headers
 
 logger = logging.getLogger("aiduMEM.benchmarks.adapter")
 
@@ -126,6 +135,11 @@ class AiduMEIBenchmarkAdapter:
         url = f"{self.base_url}{path}"
         data = None
         headers = {"X-Request-ID": request_id, "Accept": "application/json"}
+        # 鉴权头取自产品的单一真相源，不在这里自带一份读 token 的实现（v20.0 甲3）。
+        # 改造前这里一个 Authorization 都不发，而生产机门禁是开着的 ——
+        # 拿它去打生产，第一个请求就 401：跑分不是分低，是压根跑不起来。
+        # 每次请求都重新取，是为了让「运行中改配置」和测试里的 monkeypatch 都生效。
+        headers.update(api_auth_headers())
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"

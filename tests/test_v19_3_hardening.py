@@ -36,7 +36,6 @@ def test_v19_3_version_alignment():
     这与 README 测试数字三版互相矛盾是同一类毛病：**用人手同步代替可执行校验**。
     """
     import json
-    import os
     import re
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

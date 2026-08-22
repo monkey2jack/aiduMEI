@@ -224,7 +224,7 @@ def register_add_routes(app: FastAPI) -> None:
                                     # 于是向量进了 work 域、FTS 行却落在 default 域，
                                     # 之后 work 域的关键词召回永远查不到这条。且这是**降级
                                     # 路径**：出问题的时候才走到，最不容易被发现。
-                                    _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category", ""), bank_id=req.bank_id)
+                                    _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category"), bank_id=req.bank_id)
                     except Exception as ie:
                         logger.debug(f"FTS index on add 跳过: {ie}")
                     return {"status": "ok", "action": "direct"}
