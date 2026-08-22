@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 
+from ducky.bank_contract import is_legacy_schema_error
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 
 logger = logging.getLogger("aiduMEM.opinion")
@@ -93,6 +95,28 @@ def _fact_scope(conn, fact_id: int) -> tuple[str, str]:
     信念的归属跟着事实走（fact_id 全局唯一，一条事实只属于一个库），
     调用方无权也无需另报作用域。老库 facts 没有作用域列、或事实行
     不存在时落 default/default——与存量回填口径一致。
+
+    甲8 第 7 处，八处里**写侧**后果最重的一处（读侧最重的是
+    ``hot/legacy_helpers.py`` 的 ``_extract_key_facts``，那处是跨库泄密；
+    这处是把账本改错。一个泄密一个改账，方向不同，不必强行排出高下）。
+    原来这里是 ``except Exception → logger.debug →
+    return ("default","default")``，两层都出了问题：
+
+    1. **降级出口写的是持久化的错戳**。上面 ``set_opinion`` 的 upsert 带着
+       ``DO UPDATE SET user_id=excluded.user_id, bank_id=excluded.bank_id``，
+       所以一次瞬时锁库不只是让新行盖错戳——它会把一条**本来盖对了戳**的
+       信念行永久改写成 ``default|default``，账本事件 ``opinion_set`` 一并
+       跟着盖错。别处的降级是读漏、是跨库合并；这处是**把账本改错**，事后
+       审计会拿着这条戳理直气壮地说「它属于 default 库」。
+    2. **日志级别是 debug**。生产跑在 INFO 上，这一句一个字都不会出现。
+       别处至少还留一句 warning 供人回溯，这处是真正的一声不响。
+
+    修法与兄弟位点同一模板：只有「老库缺列/缺表」才配走降级，其余原样抛出，
+    交给 ``set_opinion`` 外层收成 ``{"ok": False, "detail": ...}``——那个诚实
+    出口本来就在，只是这条路从来没走到过。
+
+    注意「事实行不存在」根本不走 except：``fetchone()`` 返回 None，直接落到
+    末尾那个 default——那条是**有意的**语义，不在本次收窄范围内。
     """
     try:
         row = conn.execute(
@@ -100,8 +124,10 @@ def _fact_scope(conn, fact_id: int) -> tuple[str, str]:
         ).fetchone()
         if row:
             return (str(row[0] or "default"), str(row[1] or "default"))
-    except Exception as exc:
-        logger.debug("facts 作用域查询回退 default: %s", exc)
+    except sqlite3.Error as exc:
+        if not is_legacy_schema_error(exc):
+            raise
+        logger.warning("facts 表无作用域列，信念作用域回退 default: %s", exc)
     return ("default", "default")
 
 

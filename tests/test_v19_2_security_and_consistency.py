@@ -39,7 +39,6 @@ utils.FACTS_DB = _TEST_DB
 def _setup_test_env():
     utils.FACTS_DB = _TEST_DB
     from ducky.schema_bootstrap import ensure_core_schema
-    from ducky.memory_types import ensure_memory_types_schema
     ensure_core_schema(force=True)
     import ducky.memory_types as mt
     mt._checked = False

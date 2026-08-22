@@ -257,24 +257,36 @@ def store_verbatim(
     messages_json,
     metadata: dict | None = None,
     *,
-    bank_id: str = DEFAULT_BANK_ID,
+    bank_id: str | None = None,
 ) -> dict:
     """把一次 /add 的原文逐条落库。返回 {stored, skipped}。
 
     调用方（/add）在注入防御通过后调用本函数；本函数绝不抛异常阻断主链路。
+
+    域判据（🔴v20 甲13）：**显式传入的 `bank_id` 一律以它为准，包括显式传
+    `"default"`**；只有一个字都没传（哨兵 `None`）时，才回落到
+    `metadata["bank_id"]` —— 那条兜底是留给「只会传一个 dict」的老适配器的。
+
+    改前的判据是 `if bank_id == DEFAULT_BANK_ID and md.get("bank_id")`，
+    看着像「显式参数优先」（旁边的注释也这么写），实际正好相反：
+    `AddRequest.bank_id` 带默认值 `"default"`（api_models.py），且 `/add` 在
+    调用本函数前先执行 `md.setdefault("bank_id", req.bank_id)`（hot/add.py），
+    于是第二个合取项**恒为真**，整条判据塌缩成 `bank_id == DEFAULT_BANK_ID`。
+    后果不是「写进了没指名的库」这么轻 —— 客户端只在 metadata 里指名域时，
+    **同一次 /add 的两半会落进不同的域**：事实／向量／显著度／FTS 跟参数走，
+    原文跟 metadata 走。原文成了孤儿，而 `verbatim_search` 按 bank 严格过滤，
+    写的人拿自己一直在用的那个域，永远搜不到自己刚写下的那句话。
     """
     result = {"stored": 0, "skipped": 0}
     if not user_id:
         return result
     try:
-        scope = make_scope(user_id, bank_id)
-        ensure_verbatim_schema()
         md = metadata or {}
-        # Metadata is retained for old callers that only pass a dict.  An
-        # explicit function argument wins; if it is omitted, a metadata bank
-        # is accepted as a convenience for integration adapters.
-        if bank_id == DEFAULT_BANK_ID and md.get("bank_id"):
-            scope = make_scope(user_id, md.get("bank_id"))
+        effective_bank = (
+            bank_id if bank_id is not None else (md.get("bank_id") or DEFAULT_BANK_ID)
+        )
+        scope = make_scope(user_id, effective_bank)
+        ensure_verbatim_schema()
         ensure_bank_registered(scope)
         session_id = str(md.get("session_id") or md.get("conversation_id") or "")
         fconn = get_facts_conn()
@@ -601,26 +613,39 @@ def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: st
 def _delete_turn_ids(fconn, ids: list, scope=None) -> int:
     """按 turn_id 精确删除原文行 + FTS 映射。返回删除条数。
 
-    When a scope is supplied, the DELETE repeats the user/bank predicate even
-    though ids were selected under that predicate.  This closes a TOCTOU
-    window and keeps the helper safe for future callers that receive ids from
-    an untrusted request.
+    传入 scope 时，两条 DELETE **各自都带上 user/bank 谓词**：既关掉「先查后删」
+    之间的 TOCTOU 窗口，也让本助手对「id 来自不可信请求」这一情形真正成立。
+
+    🔴v20 甲13-②：改前只有主表那条 DELETE 带作用域谓词，FTS 清理是**无条件**
+    删调用方传进来的全部 id —— 主表命中 0 行时索引照删，结果是别的域的对话
+    还在表里、却从检索里消失了（`verbatim_search` 只走 FTS）。这条 docstring
+    当时已经在拿「safe for future callers」当既有性质用，而 FTS 那一半并不
+    具备它 —— 与甲12 那个替没落地的行作证的计数器同族：**注释/文档在替代码
+    撒谎**。当前三个调用方都先按域取 id，此路不可达，故它是**潜伏缺陷**、
+    不是正在漏的洞；修的是这句承诺与「删除两半作用域不对称」。
+
+    两张表在不同的库（facts / text_fts），跨库删除本就无法原子；对称谓词是
+    唯一干净的答案 —— 映射行的 user/bank 由 store_verbatim 与其原文行**同一
+    个 scope** 一次写入（见上文唯一插入点），两边判据因此天然一致。
     """
     if not ids:
         return 0
     placeholders = ",".join("?" for _ in ids)
     sql = f"DELETE FROM verbatim_turns WHERE id IN ({placeholders})"
+    fts_sql = f"DELETE FROM verbatim_fts_map WHERE turn_id IN ({placeholders})"
     params = list(ids)
+    fts_params = list(ids)
     if scope is not None:
-        sql += " AND user_id=? AND bank_id=?"
+        scope_clause = " AND user_id=? AND bank_id=?"
+        sql += scope_clause
+        fts_sql += scope_clause
         params.extend([scope.user_id, scope.bank_id])
+        fts_params.extend([scope.user_id, scope.bank_id])
     deleted = fconn.execute(sql, params).rowcount or 0
     fconn.commit()
     try:
         tconn = get_text_conn()
-        tconn.execute(
-            f"DELETE FROM verbatim_fts_map WHERE turn_id IN ({placeholders})", ids
-        )
+        tconn.execute(fts_sql, fts_params)
         tconn.commit()
     except Exception as fe:
         logger.debug("verbatim FTS 清理跳过: %s", fe)

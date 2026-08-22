@@ -314,15 +314,26 @@ def register_legacy_routes(app):
 
     # ── 6.4  矛盾检测 v2 ──
     @app.post("/prune/contradiction-v2")
-    def detect_contradictions_v2(dry_run: bool = True, min_overlap: float = 0.3, limit: int = 20):
+    def detect_contradictions_v2(dry_run: bool = True, min_overlap: float = 0.3, limit: int = 20,
+                                 user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
+        # v20 甲12：降权是**不可逆**的写。读是全库无域的，于是别的域的两条事实
+        # 会被配成一对；只要带 dry_run=false 调一次，那一对里分低的那条就被腰斩
+        # 到 0.1 —— 调用方不需要任何越权凭据，因为端点根本不看域。
+        # 本轮**只拦写、不动读**（读侧全库扫描随甲5 一起推迟到丙9 数据对账之后）。
+        # 所以 contradictions 列表里仍然可能出现别的域的配对：那是「看见了」，
+        # 不是「动过了」。真正落地几行由 audited 记账，被作用域挡掉几行由
+        # skipped_out_of_scope 记账 —— 两个计数都按 rowcount 算，不按「执行过」算，
+        # 否则响应就会替一次没有发生的降权作证。
+        # 老库（未迁移、没有 bank_id 列）拿到的是空 clause，行为与 v19 逐字节一致。
         conn = _get_facts_conn()
+        w_clause, w_params = tenant_clause(user_id, bank_id=normalize_bank_id(bank_id), conn=conn)
         cur = conn.cursor()
         rows = cur.execute(
             "SELECT id,category,fact_key,fact_value,trust_score FROM facts WHERE archived=0 ORDER BY updated_at DESC LIMIT 200"
         ).fetchall()
         if len(rows) < 2:
             conn.close()
-            return {"status":"ok","contradictions":[],"count":0}
+            return {"status":"ok","contradictions":[],"count":0,"audited":0,"skipped_out_of_scope":0}
         by_cat = defaultdict(list)
         for r in rows: by_cat[r["category"]].append(dict(r))
         all_ids = [r["id"] for r in rows]
@@ -341,6 +352,7 @@ def register_legacy_routes(app):
             return len(s1&s2)/len(s1|s2) if (s1|s2) else 0.0
 
         contradictions = []
+        audited = skipped_out_of_scope = 0
         for cat, cat_rows in by_cat.items():
             n = min(len(cat_rows), 50)
             for i in range(n):
@@ -361,15 +373,18 @@ def register_legacy_routes(app):
                             "entity_overlap":round(e_overlap,3),"content_similarity":round(c_sim,3),
                             "contradiction_score":round(c_score,3)})
                         if not dry_run and len(contradictions)<=limit:
-                            cur.execute("UPDATE facts SET trust_score=MAX(0.1,trust_score*0.5),updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                                       (ps[1]["id"],))
+                            cur.execute("UPDATE facts SET trust_score=MAX(0.1,trust_score*0.5),updated_at=CURRENT_TIMESTAMP WHERE id=?" + w_clause,
+                                       [ps[1]["id"]] + w_params)
+                            if cur.rowcount: audited += 1
+                            else:            skipped_out_of_scope += 1
         if not dry_run: conn.commit()
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
         result = contradictions[:limit]
         conn.close()
         total_pairs = sum(min(len(v),50)*(min(len(v),50)-1)//2 for v in by_cat.values() if len(v)>=2)
         return {"status":"ok (dry-run)" if dry_run else "ok (verified)","pairs_scanned":total_pairs,
-                "contradictions_found":len(result),"contradictions":result}
+                "contradictions_found":len(result),"audited":audited,
+                "skipped_out_of_scope":skipped_out_of_scope,"contradictions":result}
 
     # ── 6.5  Feedback ──
     @app.post("/facts/feedback")
@@ -380,8 +395,14 @@ def register_legacy_routes(app):
 
     # ── 6.6  旧 v1 矛盾检测 ──
     @app.post("/prune/contradiction")
-    def detect_contradictions(dry_run: bool = True, min_trust: float = 0.3):
+    def detect_contradictions(dry_run: bool = True, min_trust: float = 0.3,
+                              user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
+        # v20 甲12：与 /prune/contradiction-v2 同一条缺陷、同一种修法 —— 只给
+        # UPDATE 挂作用域条件，读侧一个字不动（缘由见 v2 处注释）。
+        # 顺带修掉一个撒谎的计数器：audited 原先在 execute 之后**无条件** +1，
+        # 于是「一行都没落地」也会报成「审计了 N 条」。改成按 rowcount 记账。
         conn = _get_facts_conn()
+        w_clause, w_params = tenant_clause(user_id, bank_id=normalize_bank_id(bank_id), conn=conn)
         cur = conn.cursor()
         cur.execute("""
             SELECT category, COUNT(*) as cnt, GROUP_CONCAT(id) as ids
@@ -391,6 +412,7 @@ def register_legacy_routes(app):
         """, (min_trust,))
         groups = cur.fetchall()
         contradictions, audited = [], 0
+        skipped_out_of_scope = 0
         for cat, cnt, ids_str in groups:
             ids = [int(x) for x in ids_str.split(",")][:50]
             cur.execute(f"SELECT id,fact_key,fact_value,trust_score FROM facts WHERE id IN ({','.join('?'*len(ids))})", ids)
@@ -409,13 +431,16 @@ def register_legacy_routes(app):
                                 "higher_trust":{"id":high["id"],"trust":high["trust_score"],"value":(high["fact_value"]or"")[:100]},
                                 "pattern":word_set[0]})
                             if not dry_run:
-                                cur.execute("UPDATE facts SET trust_score=MAX(0.1,trust_score*0.5),updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                                           (low["id"],)); audited += 1
+                                cur.execute("UPDATE facts SET trust_score=MAX(0.1,trust_score*0.5),updated_at=CURRENT_TIMESTAMP WHERE id=?" + w_clause,
+                                           [low["id"]] + w_params)
+                                if cur.rowcount: audited += 1
+                                else:            skipped_out_of_scope += 1
                             break
         if not dry_run: conn.commit()
         conn.close()
         return {"status":"ok (dry-run)" if dry_run else "ok","groups_scanned":len(groups),
-                "contradictions_found":len(contradictions),"audited":audited,"contradictions":contradictions[:10]}
+                "contradictions_found":len(contradictions),"audited":audited,
+                "skipped_out_of_scope":skipped_out_of_scope,"contradictions":contradictions[:10]}
 
     # ── 6.7  标签系统 + 信任统计 ──
     @app.post("/facts/tags/generate")
