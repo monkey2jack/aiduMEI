@@ -30,6 +30,18 @@ import sys
 import time
 from typing import Any
 
+# 启动件补 sys.path。本文件有两种启动方式：
+#   `python -m benchmarks.run`  —— cwd 已在 sys.path 上，本段是空操作；
+#   `python benchmarks/run.py`  —— sys.path[0] 是 benchmarks/，
+#                                  `import benchmarks.adapter` 和 `import ducky` 都会 ImportError。
+# 修正只放在**启动件**这一层：库模块（adapter.py 等）不碰 sys.path ——
+# 它们被导入的时刻，下面这两行早已执行完毕，在库模块内部再写一遍是
+# 一行到不了的代码（v20.0 甲3 实测：编辑态安装靠的是 meta_path finder，
+# 仓库根从来不在 sys.path 上，包名解析失败时库模块的模块体一行都没执行）。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from benchmarks.adapter import AdapterError, AiduMEIBenchmarkAdapter
 from benchmarks.corrections import (CorrectionError, apply_corrections,
                                     load_corrections)

@@ -225,7 +225,7 @@ def test_05_search_facts() -> bool:
 
 def main() -> int:
     print("════════════════════════════════════════")
-    print("🧪 aiduMEM API 烟雾测试")
+    print("🧪 aiduMEI API 烟雾测试")
     print(f"   target: {API_BASE}")
     print(f"   timeout: {TIMEOUT}s")
     print("════════════════════════════════════════")

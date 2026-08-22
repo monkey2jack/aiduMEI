@@ -187,7 +187,14 @@ def test_candidate_stamped_with_fact_scope():
     res2 = _write("盖戳区", "默认域候选键", "助手喜欢在周末整理记忆库",
                   user=utils.DEFAULT_USER_ID, bank="default")
     cand2 = _cand(res2["governance"]["candidate_id"])
-    assert cand2["scope_user_id"] == "default"
+    # 🔴v20.0（甲9-a）：全套里唯一一条真·测试侧假红。原先断言写死字面量 "default"，
+    # 可上面 :188 是以 utils.DEFAULT_USER_ID 的身份写入的 —— 产品把这个身份盖上去
+    # 完全正确，改名部署上实测盖的是配置身份而不是 'default'。红的是断言把「配置
+    # 身份」和「字面量 default」当成了同一个东西，不是产品盖错戳。断言就该回指测试
+    # 自己传进去的那个值，否则它测的是「部署方没改过默认身份」，而不是「盖戳对不对」。
+    # 下一行的 "default" 故意保留：bank 轴的 DEFAULT_BANK_ID 是不可被环境覆盖的普通
+    # 常量（bank_contract.py:36），字面量在那条轴上永远不会说谎，动它只是洁癖。
+    assert cand2["scope_user_id"] == utils.DEFAULT_USER_ID
     assert cand2["bank_id"] == "default"
 
 

@@ -17,9 +17,32 @@ from ducky.salience.config import (
     LANE_KEYWORDS,
     SALIENCE_FLOOR,
 )
+from ducky.bank_contract import is_legacy_schema_error
 from ducky.utils import get_salience_conn
 
 logger = logging.getLogger("aiduMEM.salience")
+
+# 甲17：缺表/缺列降级只在每个进程里喊第一次（键是降级位点）。
+_schema_warned: set[str] = set()
+
+
+def _warn_schema_degraded(where: str, exc: BaseException) -> None:
+    """记一次「显著性整体不在」，而不是逐次记账。
+
+    这两个位点都在 ``/search`` 热路径上。表真不在的时候，每次检索喊一遍会把
+    日志刷成噪音，运维反而看不见那一行 —— 埋掉信号和没有信号一样糟。所以
+    喊一次说清「加成整体失效、检索仍照常返回」，后续降为 debug。
+    """
+    if where in _schema_warned:
+        logger.debug("salience 表结构缺失，%s 继续降级：%s", where, exc)
+        return
+    _schema_warned.add(where)
+    logger.warning(
+        "salience 表结构缺失（缺表或缺列），%s 已降级 —— 显著性加成整体失效，"
+        "检索照常返回但排序少了这一档；本进程内同一位点不再重复告警。"
+        "建表在 ducky/salience/db.py::_ensure_db（甲17）：%s",
+        where, exc,
+    )
 
 def _detect_lane(memory_content: str) -> str:
     """从记忆内容自动检测 Lane"""
@@ -98,30 +121,51 @@ def on_memory_added(memory_id: str, initial_salience: float = 0.5,
 
 
 def on_memory_accessed(memory_id: str):
-    """记忆被访问时 boost 显著性"""
+    """记忆被访问时 boost 显著性
+
+    ⚠️ 缺表/缺列时**静默跳过**，不许抛给调用方（甲17）。
+
+    这是 ``/search`` 上的第二个出口，而且比批量查询那条更隐蔽：
+    ``mem0_runtime.boost_salience_for_results`` 在 ``hot/search.py`` 里被调两次，
+    一次完全裸调，另一次裹在 ``except ImportError`` 里 —— 而
+    ``OperationalError`` 不是 ``ImportError``，照样逃出去。「访问提权」是一次
+    纯副作用：提不动权，检索结果一个字都不该少。
+
+    同一文件里的兄弟 ``on_memory_added`` 在调用点就被 ``try/except`` 兜住了，
+    这条没有 —— 又一处漏网，不是两种设计。
+
+    病因判据同上：只有确实缺表/缺列才降级，其余原样抛出。顺带收口一个旧洞：
+    原来这里没有 ``try``，任何一次异常都会让连接漏掉（``conn.close()`` 走不到）。
+    """
     now = time.time()
     conn = get_salience_conn()
-    row = conn.execute(
-        "SELECT salience, last_access, access_count FROM salience WHERE memory_id = ?",
-        (memory_id,)
-    ).fetchone()
-    if row:
-        old_s, old_ts, cnt = row
-        days_elapsed = (now - old_ts) / 86400
-        decayed = old_s * math.exp(-DECAY_RATE * days_elapsed)
-        new_s = min(1.0, decayed + ACCESS_BOOST)
-        conn.execute(
-            "UPDATE salience SET salience = ?, last_access = ?, access_count = ? WHERE memory_id = ?",
-            (new_s, now, cnt + 1, memory_id)
-        )
-    else:
-        conn.execute(
-            "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at) "
-            "VALUES (?, ?, ?, 0, ?)",
-            (memory_id, 0.5, now, now)
-        )
-    conn.commit()
-    conn.close()
+    try:
+        row = conn.execute(
+            "SELECT salience, last_access, access_count FROM salience WHERE memory_id = ?",
+            (memory_id,)
+        ).fetchone()
+        if row:
+            old_s, old_ts, cnt = row
+            days_elapsed = (now - old_ts) / 86400
+            decayed = old_s * math.exp(-DECAY_RATE * days_elapsed)
+            new_s = min(1.0, decayed + ACCESS_BOOST)
+            conn.execute(
+                "UPDATE salience SET salience = ?, last_access = ?, access_count = ? WHERE memory_id = ?",
+                (new_s, now, cnt + 1, memory_id)
+            )
+        else:
+            conn.execute(
+                "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at) "
+                "VALUES (?, ?, ?, 0, ?)",
+                (memory_id, 0.5, now, now)
+            )
+        conn.commit()
+    except sqlite3.Error as exc:
+        if not is_legacy_schema_error(exc):
+            raise
+        _warn_schema_degraded("访问提权", exc)
+    finally:
+        conn.close()
 
 
 def decay_all() -> dict:
@@ -208,7 +252,25 @@ def get_stats() -> dict:
     }
 
 def get_batch_salience_records(memory_ids: list[str]) -> dict[str, dict]:
-    """批量获取记忆显著性记录，消除 N+1 查询。"""
+    """批量获取记忆显著性记录，消除 N+1 查询。
+
+    ⚠️ 缺表/缺列时**必须降级成空 map**，不许把异常抛给调用方（甲17）。
+
+    显著性只是排序加成（read-side enrichment）：``scoring.score_and_rank_candidates``
+    拿它给候选加分，拿不到就该按「没有这一档加成」去排，而不是让整次检索失败。
+    原来这里是 ``try/finally`` 而没有 ``except``，于是 ``salience`` 表一旦不在，
+    ``OperationalError`` 一路穿过 ``scoring.py`` → ``engine.py``，**整个 /search
+    500**；而它只是想给结果加一点分。判据很朴素：富化查询失败，降级的是排序质量，
+    不该是可用性。
+
+    这不是设计意图，是漏网 —— 同一个函数里紧挨着的下一次批量富化查询
+    （``get_batch_memory_types``）本来就是降级的，两次同类查询一个有兜一个没兜。
+
+    降级前先验明病因（与同子包 ``conflict.py`` 同一道判据）：只有确实缺表/缺列
+    才算兼容问题；库被锁、磁盘写满一律原样抛出。否则一次瞬时故障会被悄悄读成
+    「这批记忆都没有显著性」，排序被整体抹平，**而返回值形状与一次正常查询
+    一模一样** —— 静默失败与成功无从区分。
+    """
     if not memory_ids:
         return {}
     valid_ids = [str(m) for m in memory_ids if m]
@@ -219,6 +281,11 @@ def get_batch_salience_records(memory_ids: list[str]) -> dict[str, dict]:
         placeholders = ",".join("?" * len(valid_ids))
         rows = conn.execute(f"SELECT * FROM salience WHERE memory_id IN ({placeholders})", valid_ids).fetchall()
         return {r["memory_id"]: dict(r) for r in rows}
+    except sqlite3.Error as exc:
+        if not is_legacy_schema_error(exc):
+            raise
+        _warn_schema_degraded("批量显著性查询", exc)
+        return {}
     finally:
         conn.close()
 
