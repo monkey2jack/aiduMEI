@@ -29,11 +29,13 @@ from typing import Any, Optional
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,
+    LEGACY_PLACEHOLDER_USER_ID,
     ensure_bank_registered,
     ensure_memory_banks_schema,
     make_scope,
     scoped_storage_key,
     raw_storage_key,
+    visible_user_clause,
 )
 
 logger = logging.getLogger("aiduMEM.memory_types")
@@ -64,15 +66,20 @@ def ensure_memory_types_schema() -> None:
         # layers.  Calling it here also makes standalone imports (without the
         # API server's schema bootstrap) safe in tests and maintenance jobs.
         ensure_memory_banks_schema(conn)
-        conn.execute("""
+        # 🔴v20.0 卫生（**不是**假红修复）：两个 DEFAULT 从字面量 'default' 换成
+        # 常量插值。发出的 SQL 逐字节不变（两个常量的值就是 'default'），所以一个
+        # 红灯都不会变色 —— 换的是**可读性与可追溯性**：读代码的人能立刻看出这
+        # 里写的是「历史占位符」而不是「当前默认身份」，两者在改过名的部署上是
+        # 不同的东西。写死字面量正是 甲9 那一串缺陷的温床。
+        conn.execute(f"""
             CREATE TABLE IF NOT EXISTS memory_types (
                 memory_ref   TEXT PRIMARY KEY,  -- mem0 id 或 facts 表名:rowid
                 memory_type  TEXT NOT NULL DEFAULT 'FACTS',
                 source       TEXT DEFAULT 'rule',
                 confidence   REAL DEFAULT 0.5,
                 updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                user_id      TEXT NOT NULL DEFAULT 'default',
-                bank_id      TEXT NOT NULL DEFAULT 'default',
+                user_id      TEXT NOT NULL DEFAULT '{LEGACY_PLACEHOLDER_USER_ID}',
+                bank_id      TEXT NOT NULL DEFAULT '{DEFAULT_BANK_ID}',
                 memory_ref_raw TEXT
             )
         """)
@@ -95,9 +102,13 @@ def ensure_memory_types_schema() -> None:
         # the legacy memory_ref primary key is what keeps existing joins and
         # exports stable.  Named banks use a deterministic scoped storage key
         # (see _storage_ref below), while memory_ref_raw retains the public id.
+        # 🔴v20.0 卫生：同上，字面量换常量插值，发出的 SQL 逐字节不变。
+        # 这条 ALTER 正是 甲9 的成因本体：``ADD COLUMN … DEFAULT 'default'`` 会把
+        # **所有**存量行一次性写满字面量，于是后面那种
+        # ``WHERE user_id IS NULL OR TRIM(user_id)=''`` 的补写永远不可能触发。
         for column, ddl in (
-            ("user_id", "TEXT NOT NULL DEFAULT 'default'"),
-            ("bank_id", "TEXT NOT NULL DEFAULT 'default'"),
+            ("user_id", f"TEXT NOT NULL DEFAULT '{LEGACY_PLACEHOLDER_USER_ID}'"),
+            ("bank_id", f"TEXT NOT NULL DEFAULT '{DEFAULT_BANK_ID}'"),
             ("memory_ref_raw", "TEXT"),
         ):
             try:
@@ -146,6 +157,32 @@ def _scope(user_id: str | None = None, bank_id: str | None = None):
 def _storage_ref(memory_ref: str, scope) -> str:
     """Return a collision-free DB PK while preserving default legacy ids."""
     return scoped_storage_key(memory_ref, scope)
+
+
+def _readable_owners(scope) -> tuple[str, list[str]]:
+    """🔴v20.0：账本**读**侧的租户口径。返回 (sql_fragment, params)。
+
+    ``memory_types`` 的 scope 列是 v20.0 增补的，``ALTER TABLE … DEFAULT
+    'default'`` 会把所有存量行一次性写成字面量 ``default``。部署方一旦配了
+    ``AIDUMEM_DEFAULT_USER_ID``，读侧只认新身份，存量账本就整体失明 ——
+    表现是「类型明明标过，查出来全是 FACTS」。参见 ``reflect.py`` 里
+    ``_identity_ids`` 记录的 2026-08-19 实例：改名让 10 条真实反思消失。
+
+    与 ``facts`` 不同，本表**没有**可用的归属信道：``source`` 列的取值是
+    ``rule``/``backfill``/``llm`` 这类**来源标签**，不是租户名，拿它当
+    ``(source=? OR agent_id=?)`` 那样的认领信道会张冠李戴。没有信道可验，就
+    只能走 :func:`~ducky.bank_contract.visible_user_ids` 的「只加不减」口径 ——
+    占位符行只发给默认租户，具名租户一行不多给、一行不少给。
+
+    起草这段时踩过一次：一开始图省事写的是 ``unclaimed_user_ids()``。那函数
+    不带调用方身份，返回的是「默认身份 + 占位符」，于是具名租户 ``alice``
+    会同时**丢掉自己的行**（``alice`` 不在集合里）和**读到默认租户的行** ——
+    一次功能损坏加一次越租户泄漏。两个函数名字像、语义不同，别再抄错。
+
+    **只给读用。** 删除路径（``reset_all_types``）必须保持精确匹配：放宽读
+    是让用户看见的变多，放宽删是让用户的数据变少，两者绝不共用一个口径。
+    """
+    return visible_user_clause(scope.user_id)
 
 
 # ── 确定性规则分类（无 LLM 兜底）────────────────────────────────────────
@@ -307,17 +344,21 @@ def get_batch_memory_types(
     try:
         placeholders = ",".join("?" for _ in unique_refs)
         storage_refs = [_storage_ref(ref, scope) for ref in unique_refs]
+        # 🔴v20.0：租户口径走 _readable_owners，不再是 user_id=? 精确匹配。
+        # bank 轴仍是精确相等 —— bank_id 不可被环境变量改名，没有存量占位符
+        # 问题，而 bank 一旦放宽就是跨库串味。
+        owner_sql, owner_params = _readable_owners(scope)
         query = f"""
             SELECT memory_ref, memory_ref_raw, ref_alt, memory_type
             FROM memory_types
-            WHERE user_id=? AND bank_id=? AND
+            WHERE {owner_sql} AND bank_id=? AND
               (memory_ref IN ({placeholders})
                OR memory_ref_raw IN ({placeholders})
                OR (ref_alt IS NOT NULL AND ref_alt IN ({placeholders})))
         """
         rows = conn.execute(
             query,
-            [scope.user_id, scope.bank_id] + storage_refs + unique_refs + unique_refs,
+            owner_params + [scope.bank_id] + storage_refs + unique_refs + unique_refs,
         ).fetchall()
         for r in rows:
             mtype = r["memory_type"]
@@ -353,12 +394,13 @@ def get_memory_type(
         return "FACTS"
     storage_ref = _storage_ref(raw_ref, scope)
     conn = get_facts_conn()
+    owner_sql, owner_params = _readable_owners(scope)   # 🔴v20.0：见 _readable_owners
     try:
         row = conn.execute(
             "SELECT memory_type FROM memory_types "
-            "WHERE user_id=? AND bank_id=? AND "
+            f"WHERE {owner_sql} AND bank_id=? AND "
             "(memory_ref=? OR memory_ref_raw=? OR (ref_alt IS NOT NULL AND ref_alt=?))",
-            (scope.user_id, scope.bank_id, storage_ref, raw_ref, raw_ref),
+            (*owner_params, scope.bank_id, storage_ref, raw_ref, raw_ref),
         ).fetchone()
         return row["memory_type"] if row else "FACTS"
     finally:
@@ -373,12 +415,13 @@ def list_types(
     ensure_memory_types_schema()
     scope = _scope(user_id, bank_id)
     conn = get_facts_conn()
+    owner_sql, owner_params = _readable_owners(scope)   # 🔴v20.0：见 _readable_owners
     try:
         rows = conn.execute(
             "SELECT memory_type, COUNT(*) AS cnt, ROUND(AVG(confidence),3) AS avg_conf "
-            "FROM memory_types WHERE user_id=? AND bank_id=? "
+            f"FROM memory_types WHERE {owner_sql} AND bank_id=? "
             "GROUP BY memory_type ORDER BY cnt DESC",
-            (scope.user_id, scope.bank_id),
+            (*owner_params, scope.bank_id),
         ).fetchall()
         return [
             {
@@ -440,13 +483,29 @@ def backfill_from_facts(
     scanned = 0
     try:
         # ``ensure_memory_banks_schema`` adds these columns to old facts
-        # tables.  Exact equality is intentional: a bank must never be a
-        # substring/LIKE filter, and the LIMIT must apply after isolation.
+        # tables.  A bank must never be a substring/LIKE filter, and the LIMIT
+        # must apply after isolation.
+        #
+        # 🔴v20.0：这里读的是 **facts**，但租户口径**不能**照抄
+        # ``facts_recall.tenant_clause``。实测（改名轴、宽严两档都一样）：默认
+        # 租户拿到的片段只有 `` AND bank_id=?``，**完全没有 user_id 谓词**，
+        # 于是连 ``alice`` 的行一起扫进来。``/search`` 那样读一下就算了，可
+        # 本函数**要写账本**（写侧盖的是 ``scope.user_id``）—— 那就等于把别的
+        # 租户的事实永久登记成默认租户的资产，还让默认租户的 ``list_types``
+        # 数出别人的条数。读侧宽一格是看得见的变多，写侧宽一格是越租户污染，
+        # 两者绝不能共用一个口径。
+        #
+        # 所以只做**红灯真正需要的那一格**：把 ALTER TABLE 一次性写满的存量
+        # 字面量算作可读（``_readable_owners`` 的只加不减集合），bank 轴保持
+        # 精确相等。原来写死 ``user_id=?``，存量行在改过名的部署上一条都扫不
+        # 到，scanned=0、classified=0 —— 迁移工具静默空跑，不报错，只是什么都
+        # 没干。
+        owner_sql, owner_params = _readable_owners(scope)
         rows = conn.execute(
             "SELECT id, fact_key, fact_value FROM facts "
-            "WHERE archived=0 AND user_id=? AND bank_id=? "
+            f"WHERE archived=0 AND {owner_sql} AND bank_id=? "
             "ORDER BY id LIMIT ?",
-            (scope.user_id, scope.bank_id, max(1, min(int(limit), 5000))),
+            (*owner_params, scope.bank_id, max(1, min(int(limit), 5000))),
         ).fetchall()
         scanned = len(rows)
         for r in rows:

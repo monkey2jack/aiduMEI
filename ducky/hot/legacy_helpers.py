@@ -27,6 +27,14 @@ from ducky.utils import (
     _get_thread_conn,
 )
 
+# 甲8：刻意放在**模块级**，不许挪进函数。本文件已有两处函数内
+# `from ducky.bank_contract import ...`——分别在 _fact_feedback_impl 与
+# _cluster_scenes_impl 里。函数内导入会让那个名字在**整个函数**内变成局部名，
+# 若把 is_legacy_schema_error 并进 _fact_feedback_impl 那条 import，同函数内
+# 位于它**之前**的降级判据就是 UnboundLocalError。这个坑本版已经踩过一次
+# （/health）。此处不写行号：行号会随编辑漂移，函数名不会。
+from ducky.bank_contract import is_legacy_schema_error
+
 # Pantheon v13：旧 /facts/add 端点也走统一分层，享受铁律零衰减。
 # 只读工具函数 + 常量，无循环导入风险（federation.tier/schema 不反向依赖 hot.legacy）。
 from ducky.federation import tier as _pantheon_tier
@@ -137,7 +145,15 @@ def _extract_key_facts(category: str, limit: int = 100,
                     "AND user_id=? AND bank_id=? ORDER BY updated_at DESC LIMIT ?",
                     (category, user_id or "default", bank_id or "default", limit),
                 ).fetchall()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                # 甲8：八个位点里**读侧**后果最重的一个（写侧最重的是
+                # opinion._fact_scope，那处把持久化的作用域戳改错；一个泄密
+                # 一个改账，方向不同，不必强行排出高下）。降级出口做的事是**摘掉域
+                # 过滤**，而本函数的下游是 _cluster_scenes，scene.summary 直接
+                # 把 fact_value 抄进去——也就是那段聚类注释声称已经堵住的那条
+                # 跨库泄漏。库被锁一次，就能把它重新打开。
+                if not is_legacy_schema_error(exc):
+                    raise
                 rows = conn.execute(
                     "SELECT * FROM facts WHERE archived=0 AND category=? ORDER BY updated_at DESC LIMIT ?",
                     (category, limit)).fetchall()
@@ -211,8 +227,15 @@ def _fact_feedback_impl(fact_id: int, helpful: bool,
             row = cur.fetchone()
             row_scope = (str(row["user_id"] or "default"),
                          str(row["bank_id"] or "default")) if row else None
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
             # 老库还没迁出作用域列：整表视作 default 域（与存量回填口径一致）
+            #
+            # 甲8：一次瞬时故障走到这里，row_scope 会被写成 ("default","default")。
+            # 对具名库调用方是 fail-closed（域不符 → 404，还算安全）；但**默认域
+            # 的调用方会匹配上**，于是能去改一条其实属于具名库的事实的
+            # trust_score。危害比 _extract_key_facts 那处窄，方向一样。
+            if not is_legacy_schema_error(exc):
+                raise
             cur.execute("SELECT category,trust_score FROM facts WHERE id=?", (fact_id,))
             row = cur.fetchone()
             row_scope = ("default", "default") if row else None
@@ -489,7 +512,12 @@ def _cluster_scenes_impl(category: str = None, dry_run: bool = True, min_similar
         try:
             scopes = [((r[0] or "default"), (r[1] or "default")) for r in conn.execute(
                 "SELECT DISTINCT user_id, bank_id FROM facts WHERE archived=0").fetchall()]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            # 甲8：一次瞬时故障会让**全部 bank 塌成一个域**，聚类随即跨库跑，
+            # 又落回 scene.summary 那条泄漏。降级本身对老库是对的，但得先证明
+            # 面对的确实是老库。
+            if not is_legacy_schema_error(exc):
+                raise
             scopes = [("", "")]  # 旧库无作用域列：单一全库域，行为与 v19 一致
     clustered = 0
     scenes_out = []
@@ -498,7 +526,13 @@ def _cluster_scenes_impl(category: str = None, dry_run: bool = True, min_similar
             categories = [category] if category else [r[0] for r in conn.execute(
                 "SELECT DISTINCT category FROM facts WHERE archived=0 AND user_id=? AND bank_id=? ORDER BY category",
                 (scope_uid, scope_bid)).fetchall()]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            # 甲8：八个位点里后果最轻的一个，如实记着——category 只是标签，
+            # 下面 _extract_key_facts 仍然带着 scope 去取事实，多枚举出的外库
+            # 分类拿不到本域事实，len(facts) < 2 就 continue 掉了，不构成越域
+            # 读取。但四个兄弟都验了病因，独留这一个不验没有道理。
+            if not is_legacy_schema_error(exc):
+                raise
             categories = [category] if category else [r[0] for r in conn.execute(
                 "SELECT DISTINCT category FROM facts WHERE archived=0 ORDER BY category").fetchall()]
         for cat in categories:
