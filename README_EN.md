@@ -457,31 +457,53 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **780** (measured via `pytest --collect-only`) |
-| Clean dev machine | 768 passed · **12 skipped** — the skipped ones require the host Hermes source tree, unavailable in a bare checkout |
-| Complete environment | **780 all green** (with the Hermes source present, all 12 run and pass; verified on production) |
+| Total cases | **838** (measured via `pytest --collect-only`) |
+| Clean dev machine | 826 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Deployed tree | 837 passed · **1 skipped** — host Hermes source present, no git worktree (measured in a sandbox on the production box, v20.0) |
+| All axes present | 838 all green — **derived, never measured**: skips have four independent axes and no machine we have satisfies all four at once |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 768 and 780**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. The 12-case gap is exactly the set of integration
-> tests that need the host Hermes source: without it pytest reports `skipped` (not failed); with it they all pass.
+> **Why report both 826 and 837**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. 826 is measured here; 837 is measured in a sandbox on the production box. Both are real runs on real machines, in different environments.
 > Always state the environment alongside a test count.
+>
+> **Skips have more than one axis** (corrected by measurement in v20.0): this section used to recognise
+> only the host-Hermes axis, and therefore treated "all green" as something you get simply by installing
+> the host. Production said otherwise — the host *is* present on the deployed tree, and the run still
+> still printed **1 skipped**. A full census found **four independent skip axes**:
+>
+> | Skip axis | Gated cases | Location |
+> |-----------|-------------|----------|
+> | Host Hermes source | 12 | all of `tests/test_hermes_plugin.py` |
+> | git worktree | 1 | `tests/test_v20_brand_policy.py` (needs `git ls-files` as its baseline) |
+> | `scripts/backup_gate.sh` + POSIX shell | 7 | all of `tests/test_v19_4_1_backup_gate.py` |
+> | `qdrant_client` installed | 1 | `tests/test_v20_vector_bank_contract.py` |
+>
+> A dev machine lacks the first → 826 + 12. The deployed tree lacks the second (copy-deployment, no
+> `.git`) → 837 + 1. **Each is missing one, so "838 all green" has never actually been measured** — it
+> is a derived number. The previous README claimed it was "verified on production", and the very
+> production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
+> must survive the measurement it cites.**
 >
 > **Those 12 are reproducible, not folklore** (added in v19.4.2): they all live in
 > `tests/test_hermes_plugin.py` and skip when the host's `agent/memory_provider.py` cannot be found.
 > `HERMES_SRC` is a three-state switch, so **both directions reproduce**:
 >
 > ```bash
-> pytest tests/ -q -rs | tail -1                                 # no host: 768 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 780 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 768 passed, 12 skipped
+> pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
+> pytest tests/ -q -rs | tail -1                                 # no host: 826 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 838 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 826 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 780 passed, 0 skipped.
+> our own production box is exactly that), the first command above actually prints 837 passed, 1 skipped (measured in a sandbox on the production box).
+> That last skip sits on a different axis — git worktree. Production is a copy-deployment with no `.git`,
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 838 passed` line in
+> the code block above was run on a tree cloned from git: 838 needs *both* axes present.
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >

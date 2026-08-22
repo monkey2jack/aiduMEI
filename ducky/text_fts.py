@@ -260,12 +260,31 @@ def _init_text_fts():
     threading.Thread(target=_delayed_backfill, daemon=True, name="aiduMEM-fts-backfill").start()
 
 
-def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category="", bank_id=DEFAULT_BANK_ID):
+def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category=None, bank_id=DEFAULT_BANK_ID):
+    """把一条记忆写进外挂 FTS。
+
+    category 用 None 当哨兵，它和空串是两个意思，不许塌成同一个默认值：
+
+      * None —— 调用方没提分类（例如 /update 的请求体里根本没有这个字段），
+        沿用行里已经存着的分类；
+      * ""   —— 调用方明确要求分类为空，照写。
+
+    这条区分不是洁癖：本函数是「先删再插」（见下方注释），一旦把「没说」当成
+    「说空」，每次不带分类的更新都会把存量分类覆盖掉一次，而向量侧靠 mem0 的
+    payload merge 保住了自己那一份 —— 两半都在跑，但两半保留的信息量不同。
+    """
     if not memory_id or not content:
         return
     scope = make_scope(user_id, bank_id)
     storage_id = scoped_storage_key(memory_id, scope)
     conn = get_text_conn()
+    if category is None:
+        # 只有「没说」才回查；说了分类的调用方一律不付这次 SELECT 的代价。
+        prev = conn.execute(
+            "SELECT category FROM memories WHERE id=? AND user_id=? AND bank_id=?",
+            (storage_id, scope.user_id, scope.bank_id),
+        ).fetchone()
+        category = prev[0] if prev is not None else ""
     # 先删再插，保证 content= 外挂 FTS 与 rowid 同步（避免 REPLACE 残留）
     conn.execute("DELETE FROM memories WHERE id=? AND user_id=? AND bank_id=?", (storage_id, scope.user_id, scope.bank_id))
     conn.execute(
@@ -287,7 +306,13 @@ def _unindex_memory(memory_id, user_id=DEFAULT_USER_ID, bank_id=DEFAULT_BANK_ID)
 
 
 def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> int:
-    """从 mem0 拉一批记忆灌入 FTS，供向量失败时兜底。"""
+    """从 mem0 拉一批记忆灌入 FTS，供向量失败时兜底。
+
+    ``bank_id`` 目前**不影响写入行为**，别把它当成「把这批回填进某个库」的开关：
+    FTS 行的归属只能跟源记忆走 —— payload 上有 bank 戳就用那个戳，没戳的是启用
+    多库之前的存量、按迁移契约归默认库。这个形参留着是给读侧的（下面那句
+    ``get_all`` 还没有按 bank 过滤），读那半单独定，写这半一律不看它。
+    """
     try:
         # 优先 mem0_runtime，避免强依赖 api_server 组装层
         try:
@@ -308,7 +333,19 @@ def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID, bank_i
             if not mid or not text:
                 continue
             meta = item.get("metadata") or {}
-            _index_memory(mid, text, user_id=item.get("user_id", user_id), category=meta.get("category", ""), bank_id=meta.get("bank_id", bank_id))
+            # category 缺省不写死空串：payload 里没有分类 ≠ 分类是空的（见 _index_memory 哨兵约定）
+            # bank 缺省回落 DEFAULT_BANK_ID 而不是形参：payload 上没戳 bank ≠ 属于
+            # 操作者这次点的库。没戳的是启用多库之前的存量，按迁移契约归默认库；
+            # 回落到形参等于把一条老记忆永久改判过去，而且 _index_memory 的 DELETE
+            # 按 (id, user, bank) 三键定位 —— 错戳出来的是另一行，不是覆盖，再回填
+            # 一次也清不掉。
+            _index_memory(
+                mid,
+                text,
+                user_id=item.get("user_id", user_id),
+                category=meta.get("category"),
+                bank_id=meta.get("bank_id", DEFAULT_BANK_ID),
+            )
             n += 1
         logger.info(f"✅ FTS 回填完成: {n} 条")
         return n

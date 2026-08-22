@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ── 关键：在导入任何 ducky 模块之前把 DB 指向临时库 ──
 _tmp_dir = tempfile.mkdtemp(prefix="aidumem_p0_test_")
 _TEST_DB = os.path.join(_tmp_dir, "facts.db")
+_TEST_SALIENCE_DB = os.path.join(_tmp_dir, "salience.db")
 
 import ducky.utils as utils  # noqa: E402
 
@@ -34,8 +35,24 @@ utils.FACTS_DB = _TEST_DB
 # 跨文件并行/串行跑测试时，其他测试模块也可能在 import 阶段改掉
 # utils.FACTS_DB。每个测试前再强制指回本文件的临时库，保证隔离。
 @pytest.fixture(autouse=True)
-def _bind_test_db():
+def _bind_test_db(monkeypatch):
     utils.FACTS_DB = _TEST_DB
+
+    # 显著性库也得自带。本文件里两条 engine.search 用例会穿过
+    # scoring → get_batch_salience_records；此前这里不绑，它们读的是
+    # 「import 期字母序最后那个测试文件」的临时库 —— 绿是侥幸（赢家的库
+    # 恰好建了 salience 表，替这边把坑填上了），改个文件名就会无端翻红。
+    #
+    # 刻意用 monkeypatch 而不是模块级赋值：模块级赋值正是这场污染的成因本身
+    # （全套 tests/ 里 35 个文件、60 处在 import 期抢同一批全局），再添一处
+    # 只是把坑挖给别人。monkeypatch 出了作用域自动还原，本文件的绑定不外溢。
+    monkeypatch.setattr(utils, "SALIENCE_DB", _TEST_SALIENCE_DB)
+
+    # 建表走产品自己的迁移函数，不手抄 DDL —— 手抄的会和产品迁移脱节，
+    # 到时候「表在但列不对」，比缺表更难查。全是 IF NOT EXISTS，可重入。
+    from ducky.salience.db import _ensure_db
+    _ensure_db()
+
     yield
 
 _FACTS_DDL = """

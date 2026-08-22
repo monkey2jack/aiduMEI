@@ -491,14 +491,36 @@ def test_api_auth_headers_empty_when_no_token(tmp_path, monkeypatch):
 #    用的又是没被登记的变量名。今后新增指向本服务的环境变量必须同时登记到这里。
 _TARGETS_THIS_SERVICE = r"8767|8777|AIDUMEM_API_BASE|AIDUMEM_URL|AIDUMEM_UPSTREAM"
 
+# 「地址靠注入」的本服务调用方登记表（v20.0 甲3）
+#
+# ⚠️ 上面那条正则的判据是「文件里怎么称呼本服务」。它能抓住**把地址写死**的调用方，
+#    抓不住**把地址注入进来**的调用方 —— 而后者恰恰是工程上更规范的写法，于是
+#    **越规范的代码越容易逃过这道守卫**。
+#
+#    v19.4.2 给 frontend/dev_server.py 补的是 AIDUMEM_UPSTREAM 这**一个词**，
+#    没补「地址不出现在源码里」这**一个模式**。于是 benchmarks/adapter.py 用构造
+#    参数 base_url 拿到地址，在原地又逃了一次：跑分适配器一个 Authorization 头都
+#    不发，而生产机门禁是开着的 —— 拿它去打生产，第一个请求就 401，跑分根本跑不起来。
+#
+#    这类调用方在源码里根本没有本服务的名字，正则天生看不见，只能**显式登记**。
+#    新增一个「打本服务、但地址靠参数/配置/环境注入」的文件，就往这里加一行；
+#    test_v19_4_2_auth_coverage.py 有一条完备性断言会强制你登记，删不掉也绕不开。
+_INJECTED_ADDRESS_CALLERS = {
+    "benchmarks/adapter.py",
+}
+
 
 def _iter_credential_consumers():
     """全仓「以客户端身份调用本服务 REST 接口」的 Python 文件。
 
     v19.4.2 扩面：`scripts/` + 仓库根 + `integrations/` + `frontend/`（含子目录）
     + `tests/` 下的运维件（integration_* / perf_* / smoke_*，非单元测试）。
+    v20.0 扩面：`benchmarks/` —— 跑分适配器打的是**真实服务**，门禁一开同样 401。
     排除 api_server.py —— 它是服务端本身（门禁的实施者，不是通过门禁的人），
     只是因为源码里写了默认端口 8767 才被正则捞到。
+
+    判据是「正则命中本服务的名字 **或** 登记在 _INJECTED_ADDRESS_CALLERS 里」。
+    后半句是 v20.0 加的：地址靠注入的调用方，源码里没有本服务的名字可供正则命中。
 
     ⚠️ 改这个函数 = 改守卫的射程。tests/test_v19_4_2_auth_coverage.py 里有一条
     元测试会拿全仓实际的 HTTP 调用方来核对本函数的返回集合，缩小射程会立刻变红。
@@ -516,6 +538,8 @@ def _iter_credential_consumers():
         + sorted(pathlib.Path(_REPO_ROOT, "tests").glob("integration_*.py"))
         + sorted(pathlib.Path(_REPO_ROOT, "tests").glob("perf_*.py"))
         + sorted(pathlib.Path(_REPO_ROOT, "tests").glob("smoke_*.py"))
+        # v20.0：跑分适配器同样以客户端身份打真实服务，必须进射程。
+        + sorted(pathlib.Path(_REPO_ROOT, "benchmarks").glob("*.py"))
     )
     out = []
     for path in files:
@@ -524,7 +548,8 @@ def _iter_credential_consumers():
         if "__pycache__" in path.parts:
             continue
         text = path.read_text(encoding="utf-8")
-        if re.search(_TARGETS_THIS_SERVICE, text):
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        if re.search(_TARGETS_THIS_SERVICE, text) or rel in _INJECTED_ADDRESS_CALLERS:
             out.append(path)
     return out
 
@@ -536,6 +561,60 @@ def _is_standalone_integration(path) -> bool:
     所以不能要求它 import ducky —— 但凭据行为必须与仓库一致。
     """
     return "integrations" in path.parts
+
+
+def _module_level_actions(path) -> list[str]:
+    """列出一个文件「模块级会真正执行的动作」。只认动作，不认声明。
+
+    inert（不算动作）：docstring、import、赋值、def、class、pass。
+    这些只是在准备名字，不改变任何外部状态。
+
+    为什么要量这个：判断一个文件「是启动件还是库模块」，最硬的证据不是
+    它住在哪个目录、叫什么名字，而是**把它当脚本启动会不会发生任何事**。
+    实测（v20.0 甲3）：`scripts/` 下四个真·cron 脚本（health_check、
+    restore_backup、restore_bg、restore_from_facts）都没有 __main__ 块，
+    但模块级各有 6~18 个动作（shutil.copytree / os.chdir / conn.close ...）
+    —— 它们是「直线脚本」，靠模块体本身干活。若拿「住在包里 + 无 __main__」
+    当判据，会把这四个真脚本一起豁免掉，等于在守卫最该看住的地方开个洞。
+    """
+    import ast
+
+    inert = (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef,
+             ast.ClassDef, ast.Assign, ast.AnnAssign, ast.Pass)
+    actions = []
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            continue                                   # 文档字符串
+        if isinstance(node, inert):
+            continue
+        actions.append(f"L{node.lineno} {type(node).__name__}")
+    return actions
+
+
+def _is_pure_library_module(path) -> bool:
+    """纯库模块：住在包里、无 __main__ 块、模块级零动作。
+
+    三条同时成立才算 —— 即「启动它什么都不会发生，它只能被 import」。
+    对这类文件不要求自补 sys.path，理由是实测出来的，不是嫌麻烦：
+
+    编辑态安装（PEP 660）靠的是挂在 ``sys.meta_path`` 上的 finder，
+    **仓库根从来不在 sys.path 上**。所以在「用户 clone 了但没 pip install -e」
+    这一守卫本意针对的场景下，``import benchmarks.adapter`` 的失败发生在
+    *包名解析* 阶段：报 ``No module named 'benchmarks'``，被导入文件的
+    模块体**一行都没有执行**。也就是说，在仓里所有调用方实际走的那条
+    import 路径上，「在库模块内部补 sys.path」是一行到不了的代码。
+
+    修正必须落在**启动件**那一层（见 benchmarks/run.py 顶部），
+    那里它才真的会执行。豁免不是白给的：见
+    test_library_module_exemption_is_backed_by_a_launcher —— 它要求
+    每个被豁免的库模块都存在一个「按包路径导入它、且自带 sys.path 修正」
+    的非测试启动件，并禁止任何人把它当顶层模块 import。
+    """
+    if not (path.parent / "__init__.py").exists():
+        return False
+    if "__main__" in path.read_text(encoding="utf-8"):
+        return False
+    return not _module_level_actions(path)
 
 
 def _has_env_fallback_chain(text: str) -> bool:
@@ -602,9 +681,66 @@ def test_scripts_add_repo_root_to_syspath():
     for path in _iter_credential_consumers():
         if _is_standalone_integration(path):
             continue      # 独立集成件不 import ducky，见 _is_standalone_integration
+        if _is_pure_library_module(path):
+            # 纯库模块：启动它什么都不会发生，只能被 import；而 import 失败发生在
+            # 包名解析阶段，它的模块体一行都没执行 —— 在它内部补 sys.path 是
+            # 到不了的代码。修正落在启动件那层（见 _is_pure_library_module 的
+            # 完整实测说明），并由下一条元测试钉死这个豁免不会烂掉。
+            continue
         text = path.read_text(encoding="utf-8")
         if "api_auth_headers" not in text:
             continue
         if "sys.path.insert" not in text:
             offenders.append(str(path.relative_to(_REPO_ROOT)))
     assert not offenders, "以下脚本缺 sys.path 修正，cron 下会 ImportError: " + ", ".join(offenders)
+
+
+def test_library_module_exemption_is_backed_by_a_launcher():
+    """元测试：上一条的「库模块豁免」必须有启动件兜着，否则豁免就是个洞。
+
+    豁免一个文件永远比修它容易，所以豁免必须自带代价。对每个被豁免的
+    纯库模块，这里查两件事：
+
+    1. **禁止把它当顶层模块 import**（``import adapter`` / ``from adapter import``）。
+       这是唯一一条「库模块内部的 sys.path 修正真会执行」的路径 —— 一旦
+       仓里出现这种写法，豁免的前提就不成立了，必须立刻红。
+    2. **必须存在一个非测试的仓内启动件**，按包路径 import 它（``from pkg.mod
+       import`` / ``import pkg.mod``）且自身带 sys.path 修正。这才是「cron 下
+       也 import 得到」的真实保证所在；测试文件不算，pytest 的 rootdir 机制
+       会替它把路径铺好，靠它兜底等于什么都没兜。
+    """
+    import pathlib
+    import re
+
+    exempted = [p for p in _iter_credential_consumers()
+                if not _is_standalone_integration(p) and _is_pure_library_module(p)]
+    assert exempted, ("没有任何文件被库模块豁免命中 —— 判据要么写错了，要么射程变了；"
+                      "无论哪种，这条元测试都必须失效在这里而不是默默通过")
+
+    all_py = [q for q in pathlib.Path(_REPO_ROOT).rglob("*.py")
+              if "__pycache__" not in q.parts and ".venv" not in q.parts]
+    for path in exempted:
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        stem = path.stem
+        pkg_path = rel[:-3].replace("/", ".")
+
+        bare = re.compile(rf"^\s*(?:import\s+{stem}\b|from\s+{stem}\s+import)", re.M)
+        culprits = [q.relative_to(_REPO_ROOT).as_posix() for q in all_py
+                    if q != path and bare.search(q.read_text(encoding="utf-8"))]
+        assert not culprits, (
+            f"{rel} 被当作顶层模块 import 了（{', '.join(culprits)}）——"
+            f"这条路径上「库模块内部补 sys.path」是会执行的，豁免前提不再成立")
+
+        by_pkg = re.compile(rf"(?:from\s+{re.escape(pkg_path)}\s+import|"
+                            rf"import\s+{re.escape(pkg_path)}\b)")
+        launchers = []
+        for q in all_py:
+            qrel = q.relative_to(_REPO_ROOT).as_posix()
+            if q == path or qrel.startswith("tests/"):
+                continue                     # 测试不算：pytest 会替它铺好 sys.path
+            qtext = q.read_text(encoding="utf-8")
+            if by_pkg.search(qtext) and "sys.path.insert" in qtext:
+                launchers.append(qrel)
+        assert launchers, (
+            f"{rel} 被豁免了 sys.path 修正，但仓里找不到任何「按包路径导入它、"
+            f"且自带 sys.path 修正」的非测试启动件 —— 那 cron 下究竟靠谁 import 得到？")

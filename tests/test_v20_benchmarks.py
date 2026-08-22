@@ -8,7 +8,9 @@
 2. 适配器——对一个**线程内真实 HTTP 服务**（http.server）跑完整 urllib
    栈：同步写、异步回执必须等 job、/search 的 HTTP 200 + body error 必须
    抛错（组件故障 ≠ 空结果，这是负向对照）、5xx 有限重试后失败且计数、
-   空结果诚实计数、X-Request-ID 随请求出门、delete_all 带 confirm。
+   空结果诚实计数、X-Request-ID 随请求出门、delete_all 带 confirm；
+   v20.0 甲3 新增：门禁开着时必须打得通**且服务端确实收到 Bearer**，
+   抽走凭据必须响亮红在 auth 上（一正一反两条，互为对照）。
 3. runner——digest 剥离簿记字段但不丢语义字段（含负向对照）；
    `--deterministic` 让每一条写入都走 infer=false 且闸门标识进 config
    （G3a/G3b 不可相撞），默认模式一条都不许偷偷免抽取；LongMemEval 注入
@@ -25,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from benchmarks.adapter import (
+    KIND_AUTH,
     AdapterError,
     AiduMEIBenchmarkAdapter,
     case_namespace,
@@ -215,6 +218,13 @@ class _StubState:
         # v20：真实服务端会回显 /add 的 infer。置 False 模拟「服务端把
         # 确定性开关静默吞了」——负向对照用。
         self.echo_infer = True
+        # v20.0 甲3：门禁替身。置 True 后，任何不带
+        # `Authorization: Bearer <expected_token>` 的请求一律 401 ——
+        # 生产机上门禁就是开着的，而改造前适配器一个凭据都不发。
+        # 这个开关让「跑分打不通生产」在测试里可复现，而不是只靠
+        # grep 源码里出现过 api_auth_headers 这个名字就算交差。
+        self.require_auth = False
+        self.expected_token = ""
         self._job_seen: dict[str, int] = {}
         self._5xx_left = 0
 
@@ -238,11 +248,29 @@ class _StubHandler(BaseHTTPRequestHandler):
             "method": self.command,
             "path": self.path,
             "request_id": self.headers.get("X-Request-ID", ""),
+            # v20.0 甲3：把凭据头也记下来。断言必须能证明「服务端**收到**了
+            # Bearer」，而不是只证明「客户端源码里出现过 api_auth_headers」。
+            "authorization": self.headers.get("Authorization", ""),
             "payload": payload,
         })
 
+    def _auth_ok(self) -> bool:
+        """门禁替身的判据：与 api_server.py 的 http 中间件同形。
+
+        require_auth 关着时永远放行 —— 其余用例（重试、job 轮询、组件故障）
+        与鉴权无关，不该被这条改动牵连。
+        """
+        st = self.state
+        if not st.require_auth:
+            return True
+        return self.headers.get("Authorization", "") == f"Bearer {st.expected_token}"
+
     def do_GET(self):
         st = self.state
+        # 门禁在路由之前（与 api_server.py 的 @app.middleware("http") 同序）
+        if not self._auth_ok():
+            self._record()
+            return self._reply(401, {"error": "unauthorized"})
         if st._5xx_left > 0:
             st._5xx_left -= 1
             self._record()
@@ -264,6 +292,11 @@ class _StubHandler(BaseHTTPRequestHandler):
         st = self.state
         length = int(self.headers.get("Content-Length", 0))
         payload = json.loads(self.rfile.read(length) or b"{}")
+        # 门禁同样在路由之前；但 body 必须**先读干净**，否则客户端拿到的是
+        # 连接重置而不是 401 —— 那测出来的就不是门禁，是一个假的传输错误。
+        if not self._auth_ok():
+            self._record(payload)
+            return self._reply(401, {"error": "unauthorized"})
         if st._5xx_left > 0:
             st._5xx_left -= 1
             self._record(payload)
@@ -305,6 +338,81 @@ def _adapter(base_url: str) -> AiduMEIBenchmarkAdapter:
     return AiduMEIBenchmarkAdapter(
         base_url, timeout=5.0, retry_backoff=0.01, job_poll_interval=0.01,
         job_deadline=5.0,
+    )
+
+
+def test_adapter_authenticates_against_a_gated_service(stub_server, monkeypatch):
+    """★ v20.0 甲3 的**运行时证明**：门禁开着，适配器必须打得通。
+
+    这条用例不看源码、不 grep 函数名 —— 它起一个**真的会 401** 的服务，
+    让适配器把四条真实契约路径各打一次，然后断言两件事：
+
+      · 客户端没吃到任何鉴权失败（`auth_errors == 0`，拿到了正常回执）；
+      · **服务端确实收到了** `Authorization: Bearer <token>`。
+
+    第二条才是关键。「源码里出现过 api_auth_headers」只是静态证据，
+    而甲3 的缺陷形态恰恰是「静态看不出来」：适配器的地址是构造参数，
+    门禁的存在也不在它的源码里。改造前跑这条会红在第一个 /delete_all 上 ——
+    拿它去打生产，第一个请求就 401，那不是「跑分分低」，是压根跑不起来。
+
+    token 用纯 ASCII：HTTP 头按 latin-1 编码，非 ASCII 的 token 会在
+    urllib 里炸成 UnicodeEncodeError，那样红的是编码不是门禁。
+    """
+    state, base_url = stub_server
+    state.require_auth = True
+    state.expected_token = "bench-token-jia3"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", "bench-token-jia3")
+
+    ad = _adapter(base_url)
+    ad.reset_case("longmemeval", "case-auth")
+    ad.add_turn("case-auth", "s1", 0, "user", "内容", "2023/05/01 09:00")
+    state.search_response = {"status": "ok", "results": [{"memory": "x"}]}
+    ad.search("case-auth", "查询")
+    ad.health()
+
+    assert ad.stats["auth_errors"] == 0, "门禁开着却算出鉴权失败 ⇒ 凭据没送到"
+    assert state.requests, "服务端一个请求都没收到，这条用例什么也没证明"
+    # 逐条点名核对，不用 any()：任何一条漏带凭据都是一次生产事故
+    for r in state.requests:
+        assert r["authorization"] == "Bearer bench-token-jia3", (
+            f"{r['method']} {r['path']} 到达服务端时不带凭据"
+        )
+    # 四条路径都真的跑过 —— 否则上面的循环可能只覆盖了 /delete_all，
+    # 「全都带凭据」就成了一句只在一个请求上成立的空话。
+    assert {"/delete_all", "/add", "/search", "/health"} <= {
+        r["path"] for r in state.requests
+    }
+
+
+def test_adapter_without_credentials_fails_loudly_on_auth(stub_server, monkeypatch, tmp_path):
+    """★ 负向对照：把凭据抽走，必须**响亮地**红在 auth 上。
+
+    这是上一条的对照组。没有它，上一条无法排除「服务端其实根本没在验」
+    这个假绿：两条用例一正一反打同一个开关，才能证明验的是凭据本身。
+
+    并且 401 必须落进 `auth_errors` 这个桶 —— 混进 client_errors 或被
+    当成空结果，症状就变成「跑分分低」，而真相是「一条数据都没写进去」。
+
+    AIDUMEM_ENV_FILE 指向一个不存在的路径：本机仓根没有 .env，但**生产沙箱
+    里有**。不钉这一下，这条对照会在生产机上假绿（token 从 .env 兜底进来了）。
+    """
+    state, base_url = stub_server
+    state.require_auth = True
+    state.expected_token = "bench-token-jia3"
+    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
+    monkeypatch.setenv("AIDUMEM_ENV_FILE", str(tmp_path / "nonexistent.env"))
+
+    ad = _adapter(base_url)
+    with pytest.raises(AdapterError) as exc:
+        ad.reset_case("longmemeval", "case-noauth")
+
+    assert exc.value.kind == KIND_AUTH, "401 必须分类成 auth，不许混进别的桶"
+    assert exc.value.status == 401
+    assert ad.stats["auth_errors"] == 1
+    # 4xx 一律不重试：重复一个被拒绝的请求不会让它被接受
+    assert ad.stats["requests"] == 1 and ad.stats["retries"] == 0
+    assert state.requests and state.requests[0]["authorization"] == "", (
+        "对照组竟然带上了凭据 —— 那它对照的就不是「无凭据」这件事"
     )
 
 
