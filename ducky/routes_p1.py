@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
-from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope, visible_user_clause
 
 logger = logging.getLogger("aiduMEM.routes_p1")
 
@@ -105,22 +105,29 @@ def register_p1_routes(app: FastAPI) -> None:
             ensure_memory_types_schema()
             conn = get_facts_conn()
             scope = make_scope(user_id, bank_id)
+            # 🔴v20.0：JOIN 的**两侧**都要放宽租户口径，少放一侧等于没放 ——
+            # 账本行和事实行都是 ALTER TABLE 一次性写满的字面量 ``default``，
+            # 改过名的部署上任一侧精确匹配都会把整个结果集打成空。这是用户直接
+            # 看得见的接口：查出来 count=0，像是「类型账本没记过」，其实记过。
+            # bank 轴保持精确相等（不可被环境变量改名，放宽就是跨库串味）。
+            mt_owner_sql, mt_owner_params = visible_user_clause(scope.user_id, alias="mt")
+            f_owner_sql, f_owner_params = visible_user_clause(scope.user_id, alias="f")
             rows = conn.execute(
-                """
+                f"""
                 SELECT f.id, f.category, f.fact_key, f.fact_value, f.valid_from,
                        f.valid_to, f.recorded_at, mt.confidence AS type_confidence
                 FROM memory_types mt
                 JOIN facts f ON f.id = CAST(substr(mt.memory_ref_raw, 6) AS INTEGER)
                 WHERE mt.memory_type = ? AND f.archived = 0
-                  AND mt.user_id = ? AND mt.bank_id = ?
-                  AND f.user_id = ? AND f.bank_id = ?
+                  AND {mt_owner_sql} AND mt.bank_id = ?
+                  AND {f_owner_sql} AND f.bank_id = ?
                 ORDER BY f.updated_at DESC LIMIT ?
                 """,
                 (
                     memory_type,
-                    scope.user_id,
+                    *mt_owner_params,
                     scope.bank_id,
-                    scope.user_id,
+                    *f_owner_params,
                     scope.bank_id,
                     max(1, min(int(limit), 200)),
                 ),

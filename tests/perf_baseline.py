@@ -97,7 +97,7 @@ def percentile(data, p):
 
 
 print("="*70)
-print(f"📊 aiduMEM 性能基线（{len(QUERIES)} 问句）")
+print(f"📊 aiduMEI 性能基线（{len(QUERIES)} 问句）")
 print("="*70)
 print()
 

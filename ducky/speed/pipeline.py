@@ -149,7 +149,9 @@ def run_add_pipeline(
     try:
         from ducky.text_fts import _index_memory
 
-        category = (metadata or {}).get("category", "")
+        # 甲14：metadata 里没有 category ≠ 分类是空的。这里的 "updated" 分支是
+        # 重索引既有行，写死空串等于每次快路径更新都抹掉一次分类。
+        category = (metadata or {}).get("category")
         if action == "updated" and existing_id:
             _index_memory(existing_id, text, user_id=user_id, category=category, bank_id=bank_id)
         elif add_result is not None:

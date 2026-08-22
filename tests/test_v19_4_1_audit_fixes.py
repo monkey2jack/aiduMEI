@@ -1063,7 +1063,6 @@ def test_yellow_c_stats_counts_are_tenant_scoped():
     )
 
     # 语义验证：同一套 tenant_clause 施加在这两个查询上，陌生租户应查不到别人的数据
-    from ducky.facts_recall import tenant_clause
     from ducky.schema_bootstrap import ensure_core_schema
 
     ensure_core_schema(force=True)
@@ -1159,9 +1158,42 @@ def test_yellow_a_readme_claims_are_consistent():
     # 测试数字：README 必须同时给出两个环境的数字并说明差异来源
     readme = pathlib.Path(_REPO_ROOT, "README.md").read_text(encoding="utf-8")
     assert "12 跳过" in readme, "README 未说明跳过项的成因"
-    assert "独立开发机" in readme and "完整环境" in readme, (
-        "README 未区分两个运行环境的测试数字"
+    for _row in ("独立开发机", "生产部署树", "全轴齐备"):
+        assert _row in readme, f"README 测试数字表缺「{_row}」这一行 —— 未区分运行环境"
+    # 🔴v20.0：「全轴齐备」那一行是推导值，必须当场自曝，不许伪装成实测。
+    assert "从未实测" in readme, (
+        "README 把一个从未实测过的数字写成了既成事实 —— 上一版就是这么栽的"
     )
+
+
+@functools.lru_cache(maxsize=1)
+def _git_gated_cases():
+    """git 工作区那条跳过轴门控了几条用例（源码测量）。
+
+    🔴v20.0：这个数字**没法用 pytest 跑出来**。要跑出它，你得站在一台没有
+    `.git` 的机器上收集；而守卫自己就活在 git 工作区里，永远看不到那种环境。
+    于是转交给 `tests/test_v20_skip_axis_census.py` 的 AST 普查去数 ——
+    那里数的是**真的被跳过语句罩住的测试函数**，不是「文案出现了几次」。
+    🔴v20.0 第一版就是数文案，结果把本函数自己那行 `marker = "…"` 也数了进去，
+    1 变成 2 —— **数提及不等于数位点**，跟普查扫到自己的正则字面量是同一个坑。
+
+    这正是上一版栽跟头的地方 —— 当时把「有宿主就该 0 跳过」硬编码成常数，
+    还在注释里管它叫「已实测事实」。**测不到的东西就要明说测不到**，
+    不能拿一个推导值冒充实测值，更不能把它写进 README 说是生产核验过的。
+    """
+    import importlib.util          # 就地导入：普查模块是轴测量的唯一真相源
+
+    path = os.path.join(_REPO_ROOT, "tests", "test_v20_skip_axis_census.py")
+    spec = importlib.util.spec_from_file_location("_v20_census_probe", path)
+    assert spec is not None and spec.loader is not None, f"载入普查模块失败：{path}"
+    census = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(census)
+    n = census._callsite_gated_cases("test_v20_brand_policy.py")
+    assert n > 0, (
+        "普查测不到 git 工作区那条跳过轴 —— "
+        "要么轴没了（README 得跟着改），要么位点搬了家（守卫失去着力点）"
+    )
+    return n
 
 
 @functools.lru_cache(maxsize=1)
@@ -1173,7 +1205,6 @@ def _collected_counts():
     """
     import re
     import subprocess
-    import sys
 
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
@@ -1250,7 +1281,9 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     import re
 
     actual_total, hermes_cases = _collected_counts()
-    passed = actual_total - hermes_cases   # 纯净开发机（无宿主）应有的通过数
+    passed = actual_total - hermes_cases   # 纯净开发机（无宿主，有 git 工作区）应有的通过数
+    git_cases = _git_gated_cases()
+    deployed_passed = actual_total - git_cases   # 生产部署树（有宿主，无 git 工作区）应有的通过数
 
     def _read(name):
         return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")
@@ -1262,10 +1295,13 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README.md", "表格·独立开发机",
          r"\|\s*独立开发机\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*",
          (passed, hermes_cases)),
-        ("README.md", "表格·完整环境",
-         r"\|\s*完整环境\s*\|\s*\*\*(\d+)\s*全绿\*\*", (actual_total,)),
+        ("README.md", "表格·生产部署树",
+         r"\|\s*生产部署树\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*",
+         (deployed_passed, git_cases)),
+        ("README.md", "表格·全轴齐备",
+         r"\|\s*全轴齐备\s*\|\s*(\d+)\s*全绿", (actual_total,)),
         ("README.md", "正文·为什么要把 X 和 Y 都写出来",
-         r"为什么要把\s*(\d+)\s*和\s*(\d+)\s*都写出来", (passed, actual_total)),
+         r"为什么要把\s*(\d+)\s*和\s*(\d+)\s*都写出来", (passed, deployed_passed)),
         ("README.md", "正文·复现命令（无宿主）",
          r"无宿主：(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
         ("README.md", "正文·复现命令（有宿主）",
@@ -1276,14 +1312,50 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README_EN.md", "table·Clean dev machine",
          r"\|\s*Clean dev machine\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*",
          (passed, hermes_cases)),
-        ("README_EN.md", "table·Complete environment",
-         r"\|\s*Complete environment\s*\|\s*\*\*(\d+)\s*all green\*\*", (actual_total,)),
+        ("README_EN.md", "table·Deployed tree",
+         r"\|\s*Deployed tree\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*",
+         (deployed_passed, git_cases)),
+        ("README_EN.md", "table·All axes present",
+         r"\|\s*All axes present\s*\|\s*(\d+)\s*all green", (actual_total,)),
         ("README_EN.md", "prose·Why report both X and Y",
-         r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, actual_total)),
+         r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, deployed_passed)),
         ("README_EN.md", "prose·repro command (no host)",
          r"no host:\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
         ("README_EN.md", "prose·repro command (with host)",
          r"with host:\s*(\d+)\s*passed", (actual_total,)),
+
+        # 🔴v20.0：下面四条原先**全在射程之外**，于是各自烂在文档里一次没红过。
+        # 当时 README 写着「照旧 768 passed, 12 skipped」和「其实是 780 passed、
+        # 0 skipped」，而同一张表宣称总数 789：768+12=780≠789，三个数字互相矛盾。
+        # 根因不是手滑，是**跨树**：那两个数字是在生产快照树（收集 780 条）上测的，
+        # 却和本树的命令并排放在同一个代码块里，读者无从分辨。
+        # 也就是说，本守卫 docstring 自己点名的那个病——「守卫的射程小于缺陷的分布」
+        # ——就长在它自己守着的那一段里，而且长在**最讲证伪**的那一段里。
+        # 判据按语义定，不是按算术凑：
+        #   · HERMES_SRC=none 是「有宿主也强制关掉」，在任何机器上都等价于无宿主轴，
+        #     故必须与上面「无宿主」一字不差（实测两轴逐字节相同，这才是「照旧」的实义）；
+        #   · 有宿主机器上的裸命令会自动发现宿主，12 条集成用例全跑。
+        #
+        # 🔴v20.0 二次订正：上面这条判据原先期望 (全量, 0)，注释里管那个 0 叫
+        # 「已实测事实」——**它从来没被实测过**。守卫 docstring 点名的病
+        # （「守卫的射程小于缺陷的分布」）第二次长在守卫自己身上，这次长在注释里：
+        # 一个硬编码常数被论证成了测量结果。
+        # 生产实跑的真值是 832 passed, 1 skipped：跳过不止宿主一条轴，还有 git 工作区、
+        # backup_gate.sh+POSIX、qdrant_client，共四条互不相干的轴。拷贝部署没有 `.git`，
+        # 于是 tests/test_v20_brand_policy.py 里那条永远跳。
+        # 更难堪的是，证伪它的记录早就躺在自己仓里：CHANGELOG 和 version.py 写着
+        # 「生产 1 skipped」，README 同期宣称「0 skipped」，跨了好几个版本没红过 ——
+        # 因为本守卫的射程覆盖 README↔README_EN，从没覆盖 README↔CHANGELOG。
+        # 现在期望值改成活测的 (deployed_passed, git_cases)，常数一个不留。
+        ("README.md", "正文·复现命令（强制关宿主）",
+         r"照旧\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
+        ("README.md", "正文·有宿主机器上的裸命令",
+         r"其实是\s*(\d+)\s*passed、(\d+)\s*skipped", (deployed_passed, git_cases)),
+        ("README_EN.md", "prose·repro command (forced off)",
+         r"forced off:\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
+        ("README_EN.md", "prose·bare command on a host machine",
+         r"actually prints\s*(\d+)\s*passed,\s*(\d+)\s*skipped",
+         (deployed_passed, git_cases)),
     ]
 
     for fname, label, pattern, expected in checks:

@@ -89,7 +89,7 @@ def test(name, fn):
 
 
 print("="*60)
-print("🧪 aiduMEM 端到端集成测试（Phase 3）")
+print("🧪 aiduMEI 端到端集成测试（Phase 3）")
 print("="*60)
 cleanup()
 print()
@@ -212,7 +212,7 @@ print()
 cleanup()
 print("✅ 测试数据已清理")
 if FAIL == 0:
-    print(f"\n🎉 全部通过，aiduMEM 端到端 OK")
+    print(f"\n🎉 全部通过，aiduMEI 端到端 OK")
     sys.exit(0)
 else:
     print(f"\n⚠️ 有 {FAIL} 个测试失败，需要修")

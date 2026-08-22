@@ -712,28 +712,49 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **780**（`pytest --collect-only` 实测） |
-| 独立开发机 | 768 通过 · **12 跳过** —— 跳过项需宿主 Hermes 源码在场，纯净环境下无法执行 |
-| 完整环境 | **780 全绿**（Hermes 源码在场时 12 个跳过项全部执行并通过，生产实跑核验） |
+| 用例总数 | **838**（`pytest --collect-only` 实测） |
+| 独立开发机 | 826 通过 · **12 跳过** —— 缺宿主 Hermes 源码，有 git 工作区（实测） |
+| 生产部署树 | 837 通过 · **1 跳过** —— 有宿主 Hermes 源码，无 git 工作区（生产机沙箱实测，v20.0） |
+| 全轴齐备 | 838 全绿 —— **推导值，从未实测**：跳过有四条互不相干的轴，手上没有一台机器同时满足全部四条 |
 | 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
 | 语句覆盖率 | 约 51%（`ducky/` + 入口，`coverage` 实测） |
 | 未覆盖 | 真实 mem0 / Qdrant 集成、真实 LLM 调用、并发压测 —— 这些依赖外部服务，由生产环境实机冒烟承担 |
 
-> **为什么要把 768 和 780 都写出来**：同一份测试集在不同环境下跑出不同数字，只报其中一个都会误导读者。
-> 差值恰好是 12 个需要宿主 Hermes 源码的集成用例：没有它们时 pytest 报 `skipped`（不是失败），有它们时全部通过。
-> 引用测试数字时请连带说明运行环境 —— 这本身就是「宣称即承诺」纪律的一部分。
+> **为什么要把 826 和 837 都写出来**：同一份测试集在不同环境下跑出不同数字，只报其中一个都会误导读者。
+> 826 是本机实测，837 是生产机沙箱实测 —— 两个数都来自真实机器，只是环境不同。
+> 引用测试数字时请连带说明运行环境 ——
+> 这本身就是「宣称即承诺」纪律的一部分。
+>
+> **跳过不止一条轴**（v20.0 实测补正）：此前这一段只认「宿主 Hermes 源码」一条轴，于是把「全绿」
+> 当成了装上宿主就能拿到的东西。生产实跑打脸 —— 部署树上宿主明明在场，跑出来**仍有 1 条跳过**。
+> 全量普查后，跳过其实有**四条互不相干的轴**：
+>
+> | 跳过轴 | 门控用例数 | 位点 |
+> |--------|-----------|------|
+> | 宿主 Hermes 源码 | 12 | `tests/test_hermes_plugin.py` 整份 |
+> | git 工作区 | 1 | `tests/test_v20_brand_policy.py`（要 `git ls-files` 当比对基准） |
+> | `scripts/backup_gate.sh` + POSIX shell | 7 | `tests/test_v19_4_1_backup_gate.py` 整份 |
+> | `qdrant_client` 已安装 | 1 | `tests/test_v20_vector_bank_contract.py` |
+>
+> 开发机缺第一条 → 826 + 12；生产部署树缺第二条（拷贝部署没有 `.git`）→ 837 + 1。
+> **两边各缺一条，所以「833 全绿」我们从来没有实测过**，它只是推导值。上一版 README 把它写成
+> 「生产实跑核验」，而它恰恰被自己引用的那次生产实跑当场证伪 —— 留着这段，是为了记住：
+> **绝对措辞必须经得起自己引用的那次测量**。
 >
 > **这 12 条不是玄学，自己就能验**（v19.4.2 补）：它们全在 `tests/test_hermes_plugin.py`，
 > 跳过条件是宿主 `agent/memory_provider.py` 找不到。`HERMES_SRC` 三态可控，**两个方向都能复现**：
 >
 > ```bash
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：768 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：780 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 768 passed, 12 skipped
+> pip install -r requirements-dev.txt                            # 跑测试要 pytest；requirements.txt 里不含它
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：826 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：838 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 826 passed, 12 skipped
 > ```
 >
 > 「跳过」必须能被复现成「通过」，**反过来也必须成立**。机器上恰好装着宿主时（`/hermes/hermes-agent`
-> 会被自动发现，我们自己的生产机就是这样），上面第一条命令跑出来其实是 780 passed、0 skipped ——
+> 会被自动发现，我们自己的生产机就是这样），上面第一条命令跑出来其实是 837 passed、1 skipped（生产机沙箱实测）——
+> 剩下那 1 条卡在 git 工作区那条轴上（生产是拷贝部署，树里没有 `.git`）。上面代码块里的
+> `有宿主：833 passed` 是**从 git clone 出来的树上**跑的：两条轴都齐备，才有 833。
 > 没有 `HERMES_SRC=none` 这一档，读者根本无法在自己机器上把我们宣称的「12 跳过」复现出来。
 > **双向可复现才叫可证伪**：一个你没法让它跳过的「跳过」，和一个你没法让它通过的「通过」，同样不可信。
 >

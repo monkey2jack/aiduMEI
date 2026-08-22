@@ -5,12 +5,14 @@ v11 Hyperion · 定期蒸馏：合并重复事实、提炼操作日志、标记�
 """
 import json
 import logging
+import sqlite3
 import threading
 import time
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ducky.bank_contract import is_legacy_schema_error
 from ducky.utils import get_facts_conn
 from ducky.version import FULL_VERSION
 
@@ -124,9 +126,19 @@ def _get_recent_facts(days: int = 7) -> list:
             WHERE created_at >= ? AND (archived IS NULL OR archived = 0)
             ORDER BY fact_key
         """, (cutoff,)).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         # 旧库还没有作用域列时全库本就是单一 default 域，退回 v19 查询
         # 并统一盖 default 戳——不能因迁移未跑就让蒸馏整体哑掉。
+        #
+        # 甲7：降级前先验明病因。原来这里是 `except Exception`——于是「库被锁」
+        # 「磁盘写满」和「老库缺列」共用同一个出口，而这个出口做的事情正是
+        # **摘掉作用域**：下面的循环给每一行盖 `or "default"` 戳，蒸馏随即拿
+        # 甲库的事实去跟乙库的事实做合并。隔离要是能被一次瞬时故障摘掉，它
+        # 就不叫隔离。非兼容问题原样抛出——蒸馏是后台任务，宁可这一轮红着
+        # 停掉，也不能悄悄跨库合并。
+        if not is_legacy_schema_error(e):
+            raise
+        logger.warning("facts 表无作用域列，蒸馏退回 v19 全库口径（一律 default 域）：%s", e)
         try:
             rows = conn.execute("""
                 SELECT id, fact_key, fact_value, category, created_at
@@ -134,8 +146,10 @@ def _get_recent_facts(days: int = 7) -> list:
                 WHERE created_at >= ? AND (archived IS NULL OR archived = 0)
                 ORDER BY fact_key
             """, (cutoff,)).fetchall()
-        except Exception:
-            logger.error(f"Failed to query facts table: {e}")
+        except Exception as fallback_exc:
+            # 原来这行 f-string 里插的是 e（**外层**异常），内层真正的失败原因
+            # 被丢掉了——日志指着上一个错误说话，比不记日志更误导人。
+            logger.error("facts 表查询失败（v19 回落也失败）: %s", fallback_exc)
             conn.close()
             return []
 

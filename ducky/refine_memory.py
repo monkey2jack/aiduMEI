@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
+from ducky.bank_contract import DEFAULT_BANK_ID, table_columns
 from ducky.security.injection_guard import wrap_memory_context_sandbox
 
 logger = logging.getLogger("aiduMEM.refine_memory")
@@ -282,10 +283,30 @@ def apply_refinement(refine_id: int) -> dict:
         row_dict = dict(row)
         summary_val = row_dict.get("summary", "")
         cat = row_dict.get("category") or "general"
+        # 🔴v20.0（甲9-d）：这条 INSERT 原先一列作用域都不给。实测三条轴后才看清
+        # 后果：facts 的 agent_id / source 两列 DDL 默认值是**按配置插值**的，改名
+        # 部署上确实跟着走；只有 user_id 的默认值是**硬编码字面量** 'default'。
+        # 于是每应用一次精炼，就在改过名的部署上**新造**一行搁浅在历史占位符上的
+        # 记录。这不是「少写一列」这么轻 —— 甲9 读侧放宽的立论前提是「占位符行都
+        # 是多租户之前的老数据」，盲写会让这个前提永久失真：老行只搁浅一次，盲写
+        # 是源源不断地制造搁浅。所以这一笔是保住 9b 正确性的承重墙，不是补妆。
+        #
+        # 归属取**账本行自己的** user_id，而不是配置默认值：refine_group(user_id, …)
+        # 早已把发起方身份写进 refined_memories，具名租户精炼出来的摘要就该归它。
+        # bank 轴 refined_memories 压根没记（这个模块里没有 bank 概念），只能落默认
+        # 库 —— 这条限制记账（9c），不在这里凭空发明一个域。
+        # 列存在性用 table_columns 兜：v19 老库上 facts 没有这两列，硬写会 SQL 报错。
+        owner = str(row_dict.get("user_id") or DEFAULT_USER_ID)
+        _cols = table_columns(conn, "facts")
+        _scope_cols = [c for c in ("user_id", "bank_id") if c in _cols]
+        _scope_vals = [owner if c == "user_id" else DEFAULT_BANK_ID for c in _scope_cols]
         conn.execute(
-            "INSERT INTO facts (category, fact_key, fact_value, source) "
-            "VALUES (?, ?, ?, 'refine_memory')",
-            (cat, f"refined:{refine_id}", summary_val)
+            "INSERT INTO facts (category, fact_key, fact_value, source"
+            + "".join(f", {c}" for c in _scope_cols)
+            + ") VALUES (?, ?, ?, 'refine_memory'"
+            + ", ?" * len(_scope_cols)
+            + ")",
+            (cat, f"refined:{refine_id}", summary_val, *_scope_vals)
         )
         # 📒 事件账本（v19.4.0 🟡-D）：精炼摘要入库留痕，同事务
         try:

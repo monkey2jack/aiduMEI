@@ -192,7 +192,6 @@ def test_dedup_can_be_disabled():
 
 # 🔴3 回归：两个 agent 写同 (category, fact_key) 不得互相覆盖
 def test_cross_agent_same_key_no_overwrite():
-    import sqlite3
 
     from ducky.federation.registry import register_agent
     from ducky.federation.writer import write_fact
@@ -221,7 +220,6 @@ def test_cross_agent_same_key_no_overwrite():
 
 # 🔴3 同 agent 同 key 仍走 upsert 覆盖（唯一性在 agent 内保持）
 def test_same_agent_same_key_upserts():
-    import sqlite3
 
     from ducky.federation.writer import write_fact
 

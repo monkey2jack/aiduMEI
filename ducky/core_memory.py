@@ -17,6 +17,7 @@ from ducky.bank_contract import (
     DEFAULT_BANK_ID,
     ensure_bank_registered,
     ensure_memory_banks_schema,
+    is_legacy_schema_error,
     make_scope,
     raw_storage_key,
     scoped_storage_key,
@@ -78,7 +79,14 @@ def _ensure_table():
         # 自动迁移：旧表可能没有 last_verified_at 列
         try:
             conn.execute("SELECT last_verified_at FROM core_memory LIMIT 1")
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            # 甲8：探针失败不等于「缺这一列」。库被锁、磁盘写满同样抛
+            # OperationalError，此时去 ALTER 只会再失败一次，最终抛出来的是那个
+            # 二次错误（甚至可能是 "duplicate column"），把真正的病因盖住。
+            # 这一处的危害**止于难查**——ALTER 也必然失败，不存在静默走错，
+            # 不必夸大；但让报错说真话是本轮的统一口径。
+            if not is_legacy_schema_error(exc):
+                raise
             conn.execute("ALTER TABLE core_memory ADD COLUMN last_verified_at TIMESTAMP")
             # 用 updated_at 回填
             conn.execute("UPDATE core_memory SET last_verified_at = updated_at WHERE last_verified_at IS NULL")
@@ -115,14 +123,36 @@ def _ensure_table():
         conn.close()
 
 
-def _seed_defaults(scope=None):
-    """首次运行时写入指定 bank 的默认值。"""
+def _seed_defaults(scope=None) -> dict:
+    """首次运行时写入指定 bank 的默认值。
+
+    返回 ``{"readable": int, "blocked": list[str]}`` —— 播种完成后这个域**实际
+    能读到几块**，以及有哪几块因为裸键被别的域占着而根本没能建起来。
+
+    🔴甲16（v20.0）：这里原来是一句光秃秃的 ``INSERT OR IGNORE``，而
+    ``INSERT OR IGNORE`` 撞上冲突时**不报错、不写入、也不吭声**。默认域对任何
+    租户都用 v19 裸键（硬契约，见 put_block 里 甲1a 的长注释），于是：v19 存量
+    行被增量迁移打上 ``user_id='default'`` 的戳 → 运行时身份是个非 default 的
+    值 → 播种时裸键已被 default 那三行占着 → 三次 IGNORE、一行没建 →
+    ``get_all_blocks`` 查这个域得 0 行 → ``inject_context()`` 返回 ``""``。
+
+    **整个 CoreMemory 静默失效，日志上一个字都没有。** 这就是「静默拒绝」比
+    「静默覆盖」更难发现的地方：覆盖至少留下了一行被改坏的数据，拒绝什么都不留，
+    而调用方拿到的是「初始化完成」。
+
+    本轮只做「让它可见」这一件事：写路径**一个字节不动**（下面那句 INSERT OR
+    IGNORE 照旧无条件执行，观察代码不参与任何决策——护栏自己不许有能力改变结果），
+    只在播完之后回查实际可读块数，撞域的留 warning。真正的修复是把存量行归并到
+    正确的域，属于 丙9 数据对账；键形状改造属于 甲1b，且必须排在 丙9 之后。
+    """
     scope = scope or make_scope()
     try:
         ensure_bank_registered(scope)
     except Exception as exc:
         logger.debug("CoreMemory bank registration skipped: %s", exc)
     conn = _get_conn()
+    blocked: list[str] = []
+    readable = 0
     try:
         now = datetime.now().isoformat()
         for key, content in DEFAULT_BLOCKS.items():
@@ -136,11 +166,33 @@ def _seed_defaults(scope=None):
                 )
             )
         conn.commit()
+        # 播种之后回查：这个域现在究竟能读到几块，哪几块被别的域占着。
+        for key in DEFAULT_BLOCKS:
+            owner = conn.execute(
+                "SELECT user_id, bank_id FROM core_memory WHERE block_key=?",
+                (scoped_storage_key(key, scope),),
+            ).fetchone()
+            if owner is None:
+                continue
+            if (owner["user_id"], owner["bank_id"]) == (scope.user_id, scope.bank_id):
+                readable += 1
+            else:
+                blocked.append(key)
+        if blocked:
+            logger.warning(
+                "CoreMemory 播种被静默拒绝：user_id=%s bank_id=%s 下有 %d/%d 块建不起来"
+                "（裸键已被别的域占着，INSERT OR IGNORE 不报错也不写入）—— "
+                "这个域的 inject_context() 会返回空串，CoreMemory 对它整块失效。"
+                "受影响 block：%s；存量行归并见 丙9 数据对账（甲16）",
+                scope.user_id, scope.bank_id, len(blocked), len(DEFAULT_BLOCKS),
+                ",".join(blocked),
+            )
     except Exception as e:
         logger.error(f"CoreMemory seed defaults error: {e}")
         raise
     finally:
         conn.close()
+    return {"readable": readable, "blocked": blocked}
 
 
 def init_core_memory(
@@ -155,12 +207,14 @@ def init_core_memory(
         if scope_key in _initialized_scopes:
             return
         _ensure_table()
-        _seed_defaults(scope)
+        seeded = _seed_defaults(scope)
         _initialized_scopes.add(scope_key)
         _initialized = True
+        # 🔴甲16：这句原来无条件写「3 个 block 就绪」。播种被静默拒绝时一块都没
+        # 就绪，它照样这么报 —— 日志本身在撒谎，比没有日志更糟。改成报实数。
         logger.info(
-            "CoreMemory 初始化完成（3 个 block 就绪） user_id=%s bank_id=%s",
-            scope.user_id, scope.bank_id,
+            "CoreMemory 初始化完成（%d/%d 个 block 就绪） user_id=%s bank_id=%s",
+            seeded["readable"], len(DEFAULT_BLOCKS), scope.user_id, scope.bank_id,
         )
 
 
@@ -246,16 +300,51 @@ def put_block(
         logger.debug("CoreMemory bank registration skipped: %s", exc)
     now = datetime.now().isoformat()
     conn = _get_conn()
+    owner_user, owner_bank = scope.user_id, scope.bank_id
     try:
+        storage_key = scoped_storage_key(block_key, scope)
+        # 🔴甲1a（v20.0）：键的形状本轮**一个字不动**。
+        #
+        # 默认域对**任何**租户都保留 v19 裸键，这不是疏漏而是硬契约，见
+        # tests/test_v20_bank_scope_core.py::
+        #   test_default_bank_keeps_the_v19_key_shape_for_every_tenant
+        # —— 那条用例是从一次真实的「非默认租户的 v19 存量行整体失踪」里长出来
+        # 的：写进去带前缀、读出来带前缀，自己跟自己对得上，测试全绿，而升级前
+        # 就存在的裸键行从此再也没人去读。
+        #
+        # 代价是单列主键 block_key 比唯一索引 (user_id,bank_id,block_key_raw)
+        # 粗一档：默认域里两个域写同一个 block_key 会撞进同一行。本轮只做两件
+        # **不可能变坏**的事：
+        #   ① upsert 不再回写 user_id/bank_id —— 一次内容更新永远不该把这一行
+        #      搬到另一个域去。这是本条缺陷里唯一「静默改归属」的来源。
+        #   ② 撞上别的域时留一条 warning，并把**真实归属**回给调用方，让这个
+        #      现象在生产上可见（丙9 域对账要靠它认出哪些行需要归并）。
+        #
+        # 真正的隔离（键形状改造 + 读侧回落 + 存量迁移）横跨 5 个模块
+        # （tombstone / memory_types / text_fts / core_memory / wal_engine），
+        # 依赖 丙1 的租户模型定论，且**必须排在 丙9 数据对账之后**：现在就把
+        # 撞键改成硬失败，会把生产机器上「运行时身份写、存量行挂在 default」
+        # 那条正在工作的路径直接打断。
+        owner = conn.execute(
+            "SELECT user_id, bank_id FROM core_memory WHERE block_key=?",
+            (storage_key,),
+        ).fetchone()
+        if owner is not None and (owner["user_id"], owner["bank_id"]) != (scope.user_id, scope.bank_id):
+            owner_user, owner_bank = owner["user_id"], owner["bank_id"]
+            logger.warning(
+                "CoreMemory 跨域撞键：block_key=%s 现属 user_id=%s bank_id=%s，"
+                "本次写入来自 user_id=%s bank_id=%s —— 内容被更新，归属保持不变（甲1a/丙9）",
+                block_key, owner_user, owner_bank, scope.user_id, scope.bank_id,
+            )
         conn.execute(
             "INSERT INTO core_memory "
             "(block_key, content, updated_at, last_verified_at, user_id, bank_id, block_key_raw) "
             "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(block_key) DO UPDATE SET content=excluded.content, "
             "updated_at=excluded.updated_at, last_verified_at=excluded.last_verified_at, "
-            "user_id=excluded.user_id, bank_id=excluded.bank_id, block_key_raw=excluded.block_key_raw",
+            "block_key_raw=excluded.block_key_raw",
             (
-                scoped_storage_key(block_key, scope), content, now, now,
+                storage_key, content, now, now,
                 scope.user_id, scope.bank_id, block_key,
             )
         )
@@ -268,12 +357,12 @@ def put_block(
 
     logger.info(
         "CoreMemory: %s 已更新+验证 user_id=%s bank_id=%s",
-        block_key, scope.user_id, scope.bank_id,
+        block_key, owner_user, owner_bank,
     )
     return {
         "block_key": block_key,
-        "user_id": scope.user_id,
-        "bank_id": scope.bank_id,
+        "user_id": owner_user,
+        "bank_id": owner_bank,
         "content": content,
         "updated_at": now,
         "last_verified_at": now,

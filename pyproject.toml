@@ -47,6 +47,12 @@ full = [
     "inotify_simple>=1.3.5; sys_platform == 'linux'",
 ]
 
+# dev: 跑测试用。requirements-dev.txt 是这一组的镜像，两边必须同步
+#（tests/test_v20_dev_deps_declaration.py 盯着）。
+# pytest 下限 7：subTest 失败在 7 和 9 上都会红，只是 9 起才逐条报
+# （subtests 是 pytest 9 的内置插件，不是第三方依赖 —— 别再往清单里加）。
+dev = ["pytest>=7.0.0"]
+
 [project.scripts]
 aidumem = "api_server:main"
 aidumei = "api_server:main"

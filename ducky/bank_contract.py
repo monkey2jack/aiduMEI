@@ -36,6 +36,83 @@ logger = logging.getLogger("aiduMEM.bank_contract")
 DEFAULT_BANK_ID = "default"
 MAX_SCOPE_LENGTH = 128
 
+#: 迁移 DDL 里写死的占位符身份 —— 「这一行还没有主人」的字面量拼写。
+#:
+#: 作用域列是 ``ALTER TABLE ... ADD COLUMN user_id TEXT NOT NULL DEFAULT
+#: 'default'`` 补上的，SQLite 用这个**字面量**填满所有存量行；紧跟其后的
+#: 回填只管 ``NULL``/空白，于是一行都轮不到（生产实测：存量行全部停在
+#: 字面量上，回填从未命中）。
+#:
+#: 所以「占位符」有两种拼写：DDL 写下的 ``'default'``，和部署方配置的
+#: ``DEFAULT_USER_ID``。默认部署里两者相等，裂缝隐形；一旦部署方改名
+#: （``AIDUMEM_DEFAULT_USER_ID``），读侧只认后者就会对存量行全体失明。
+#: 这不是假设：2026-08-19 改名当天，reflections 表的历史洞察就这么消失过
+#: （见 :func:`ducky.reflect._identity_ids`，那里用「只加不减」捞了回来）。
+#:
+#: 本常量同时供 DDL 生成与读侧谓词使用 —— 两半焊在同一个名字上，不会再各自漂移。
+LEGACY_PLACEHOLDER_USER_ID = "default"
+
+
+def unclaimed_user_ids() -> list[str]:
+    """「尚未认领」的 ``user_id`` 取值集合（保序去重）。
+
+    只加不减：默认部署返回 ``['default']``，与改名前逐字节等价；改过名的
+    部署返回 ``['<新名>', 'default']``，存量行重新进入读侧射程。本函数只
+    放宽可见口径，**不迁移、不改写、不删除任何一行数据**。
+    """
+    ids = [DEFAULT_USER_ID]
+    if LEGACY_PLACEHOLDER_USER_ID not in ids:
+        ids.append(LEGACY_PLACEHOLDER_USER_ID)
+    return ids
+
+
+def visible_user_ids(user_id: str) -> list[str]:
+    """某个调用方**读**得到的 ``user_id`` 集合（保序去重）。
+
+    与 :func:`unclaimed_user_ids` 是两个概念，别混：
+
+      * ``unclaimed_user_ids()`` 不带参数，只回答「哪些取值算**没人认领**」，
+        用在 ``facts`` 那种**有归属信道**的表上 —— 那里占位符行还要再过一道
+        ``(source=? OR agent_id=?)`` 的信道闸，具名租户拿不走别人的行。
+      * ``visible_user_ids(uid)`` 带参数，回答「**这个**调用方能看见谁的行」，
+        用在**没有信道列**的表上（``memory_types``、``reflections`` 等）。没有
+        信道可验，就不能把占位符行发给具名租户，否则是越租户泄漏。
+
+    判据只有一条：占位符行**早于**多租户能力存在（scope 列是后加的，
+    ``ALTER TABLE … DEFAULT 'default'`` 一次性写满存量行），所以它们只可能属于
+    默认租户。于是——
+
+      * 老部署（默认身份就叫 ``default``）→ ``['default']``，逐字节不变；
+      * 具名租户（``alice``）→ ``['alice']``，看不到也丢不掉自己的行；
+      * 改过名的默认身份（如配了 ``AIDUMEM_DEFAULT_USER_ID``）→
+        ``['<新名>', 'default']``，存量行重新进入读侧射程。
+
+    只放宽**读**，**不迁移、不改写、不删除任何一行数据**。删除路径一律保持精确
+    匹配：放宽读是让用户看见的变多，放宽删是让用户的数据变少。
+    """
+    if user_id == DEFAULT_USER_ID and user_id != LEGACY_PLACEHOLDER_USER_ID:
+        return [user_id, LEGACY_PLACEHOLDER_USER_ID]
+    return [user_id]
+
+
+def visible_user_clause(user_id: str, *, alias: str = "") -> tuple[str, list[str]]:
+    """把 :func:`visible_user_ids` 拼成 SQL 片段。返回 ``(sql, params)``。
+
+    片段形如 ``user_id IN (?)`` / ``user_id IN (?,?)``，**不带**前导 ``AND``，也
+    不带 bank 轴 —— 调用方自己拼，别在这里替它决定。``alias`` 用于带表别名的
+    JOIN 场景（``alias='f'`` → ``f.user_id IN (…)``），口径与
+    ``facts_recall.tenant_clause`` 的同名参数一致。
+
+    老部署上集合只有一个元素，片段退化成 ``user_id IN (?)`` —— 与原来的
+    ``user_id=?`` 完全等价，一行读不多也读不少。
+
+    **只给读用。** 删除/更新路径必须保持精确匹配，理由见 :func:`visible_user_ids`。
+    """
+    owners = visible_user_ids(user_id)
+    col = f"{alias}.user_id" if alias else "user_id"
+    placeholders = ",".join("?" for _ in owners)
+    return f"{col} IN ({placeholders})", list(owners)
+
 # Keep the accepted alphabet intentionally conservative.  Unicode user ids
 # are allowed (the deployment already supports them), while control
 # characters, SQL punctuation and path separators are not.  The value is
@@ -189,8 +266,8 @@ def ensure_memory_banks_schema(conn: Any | None = None) -> dict[str, Any]:
         # transition.
         if "facts" in _table_names(conn):
             for column, ddl in (
-                ("user_id", "TEXT NOT NULL DEFAULT 'default'"),
-                ("bank_id", "TEXT NOT NULL DEFAULT 'default'"),
+                ("user_id", f"TEXT NOT NULL DEFAULT '{LEGACY_PLACEHOLDER_USER_ID}'"),
+                ("bank_id", f"TEXT NOT NULL DEFAULT '{DEFAULT_BANK_ID}'"),
             ):
                 if _add_column_if_missing(conn, "facts", column, ddl):
                     added.append(f"facts.{column}")
@@ -215,8 +292,8 @@ def ensure_memory_banks_schema(conn: Any | None = None) -> dict[str, Any]:
 
         if "fact_events" in _table_names(conn):
             for column, ddl in (
-                ("user_id", "TEXT NOT NULL DEFAULT 'default'"),
-                ("bank_id", "TEXT NOT NULL DEFAULT 'default'"),
+                ("user_id", f"TEXT NOT NULL DEFAULT '{LEGACY_PLACEHOLDER_USER_ID}'"),
+                ("bank_id", f"TEXT NOT NULL DEFAULT '{DEFAULT_BANK_ID}'"),
             ):
                 if _add_column_if_missing(conn, "fact_events", column, ddl):
                     added.append(f"fact_events.{column}")
@@ -352,15 +429,19 @@ def legacy_fact_scope_predicate(
     scope = scope or make_scope()
     pfx = f"{alias}." if alias else ""
     if scope.bank_id == DEFAULT_BANK_ID:
+        # 占位符有两种拼写：DDL 写死的字面量、部署方配置的默认身份。
+        # 两种都算「尚未认领」，否则改过名的部署对存量行全体失明。
+        placeholder_ids = unclaimed_user_ids()
+        placeholder_sql = " OR ".join(f"{pfx}user_id=?" for _ in placeholder_ids)
         return (
             f" AND {pfx}bank_id=? AND ("
             f"{pfx}user_id=? OR ("
             f"({pfx}user_id IS NULL OR TRIM({pfx}user_id)='' "
-            f"OR {pfx}user_id=?) AND "
+            f"OR {placeholder_sql}) AND "
             f"({pfx}source=? OR {pfx}agent_id=?)))",
             [
                 scope.bank_id, scope.user_id,
-                DEFAULT_USER_ID, scope.user_id, scope.user_id,
+                *placeholder_ids, scope.user_id, scope.user_id,
             ],
         )
     return (
@@ -490,6 +571,7 @@ __all__ = [
     "BankScopeError",
     "DEFAULT_BANK_ID",
     "DEFAULT_USER_ID",
+    "LEGACY_PLACEHOLDER_USER_ID",
     "ensure_memory_banks_schema",
     "ensure_bank_registered",
     "legacy_fact_scope_predicate",
@@ -502,7 +584,10 @@ __all__ = [
     "scope_predicate",
     "scoped_storage_key",
     "stamp_bank_metadata",
+    "unclaimed_user_ids",
     "vector_item_bank",
     "vector_item_in_bank",
     "vector_scope_filters",
+    "visible_user_clause",
+    "visible_user_ids",
 ]

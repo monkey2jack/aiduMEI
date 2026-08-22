@@ -227,7 +227,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
     if existing_id:
         try:
             # Lethe v9.2.0: 触发演化追踪 (在更新前运行，便于捕获相似关系)
-            track_knowledge_evolution(memory, user_id, text, existing_id)
+            track_knowledge_evolution(memory, user_id, text, existing_id, bank_id=bank_id)
             memory.update(existing_id, text, metadata=metadata)
             action = "updated"
             details["existing_id"] = existing_id
@@ -249,7 +249,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
                 "error": f"{type(ue).__name__}: {str(ue)[:200]}",
             }
             add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
-            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""), bank_id=bank_id)
+            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id)
             action = "new"
     else:
         # Step 2: 容量检查
@@ -264,14 +264,14 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
         import hashlib
         try:
             new_id_placeholder = hashlib.md5(text.encode()).hexdigest()
-            track_knowledge_evolution(memory, user_id, text, new_id_placeholder)
+            track_knowledge_evolution(memory, user_id, text, new_id_placeholder, bank_id=bank_id)
         except Exception as e:
             logger.warning(f"写入前演化追踪失败: {e}")
 
         # Step 3: 写入
         # 🔴2：主链写入路径必须登记 salience + FTS 索引，否则新记忆全文搜不到、热度不累计。
         add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
-        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category", ""), bank_id=bank_id)
+        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id)
 
     elapsed_ms = int((time.time() - start) * 1000)
     details["ms"] = elapsed_ms
@@ -283,7 +283,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
     }
 
 
-def _index_after_add(add_result, user_id: str, category: str = "", bank_id: str = "default") -> None:
+def _index_after_add(add_result, user_id: str, category: str | None = None, bank_id: str = "default") -> None:
     """🔴2：mem0.add() 成功后登记 salience + 写 FTS 索引。
 
     正常新增路径此前只调 memory.add()，既不注册显著性、也不写全文索引，
@@ -352,26 +352,60 @@ def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: st
         logger.debug(f"self-edit 热度登记跳过: {e}")
     try:
         from ducky.text_fts import _index_memory
-        _index_memory(memory_id, content, user_id=user_id, category="", bank_id=bank_id)
+        # 🔴v20 甲14 故意不传 category：上面刚用 preserve_heat=True 保住了热度，
+        # 这里原来却硬写 category=""，同一个函数里一半在保、一半在毁。合并只改
+        # 内容不改分类，不传 = 让 _index_memory 沿用行上既有分类。
+        _index_memory(memory_id, content, user_id=user_id, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"self-edit FTS 索引刷新跳过: {e}")
 
 
-def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str = "new_item"):
-    """Lethe v9.2.0: 知识演化追踪 + 状态机流转"""
+def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str = "new_item",
+                              bank_id: str = DEFAULT_BANK_ID):
+    """Lethe v9.2.0: 知识演化追踪 + 状态机流转
+
+    v20 甲11 修复（跨库「标死」）
+    ─────────────────────────────
+    原来这里的检索是 ``filters={"user_id": user_id}``，不带 bank。同一函数体里
+    另外五个兄弟调用（``dedup_check`` / ``_sync_indexes_after_update`` /
+    ``_index_after_add`` / ``check_capacity`` / ``auto_merge_similar``）全都透传
+    了 ``bank_id``，只有这一处和它的两个调用点漏了——是**漏项**，不是设计。
+
+    后果不是「查不到」，是**改错别人家的账**：往 A 库写一条文本，检索会捞到
+    B 库一条共用中文词的记忆，判成 ``replaces``，把 B 库那条写成
+    ``memory_states.state='superseded'``；``recall_funnel`` 随后会把
+    superseded 的条目从召回结果里剔掉（recall_funnel.py 的
+    ``state = 'superseded'`` 那条 SQL）。于是 A 库的一次写入，让 B 库一条好端端
+    的记忆**从此召回不到**。生产目前只有一个库，缺陷在位但还没打响。
+
+    **不给 ``memory_states`` / ``knowledge_evolution`` 加作用域列。** 这两张表
+    本来就零作用域列，是**全局平表**；只要「生成行的那次检索」按域收敛，表里
+    就不可能出现跨库配对。这条不变量由负向对照守着，别为了「看起来更严谨」
+    去加列——加了列反而要处理两套口径。
+
+    过滤按 ``bank_contract`` 的两半契约走：``vector_scope_filters`` 负责下推，
+    ``vector_item_in_bank`` 负责复筛。默认域**故意不下推** ``bank_id``（否则
+    Qdrant 的 must 语义会把没有 bank_id 字段的 v19 存量点全判为不匹配，召回
+    直接归零），所以默认域下**复筛是唯一承重的那一半**——而生产跑的正是默认域。
+    """
     try:
         # 1. 查找最相似的候选记忆 (避开新写入的这一条)
-        results = memory.search(new_text, filters={"user_id": user_id}, limit=5)
+        results = memory.search(new_text, filters=vector_scope_filters(user_id, bank_id), limit=5)
         results_list = results.get("results", results) if isinstance(results, dict) else results
         if not results_list:
             return
-        
+
         for top in results_list:
             old_text = top.get("memory", "")
             old_id = top.get("id", "")
             if not old_text or not old_id or old_id == new_id:
                 continue
-            
+            # 甲11 复筛：默认域没下推 bank_id，这一句是本域唯一的隔离屏障。
+            # 缺字段的存量点按 default 算（vector_item_bank 的老语义），
+            # 所以默认域仍然能正常演化 v19 老数据。
+            if not vector_item_in_bank(top, bank_id):
+                continue
+
             # 2. 算 Jaccard 相似度 (Lethe v9.2.0: 中文 bigram 级 Jaccard 相似度阈值 + 共同名词检测)
             sim = jaccard_sim(new_text, old_text)
             

@@ -402,25 +402,21 @@ def cascade_delete_memory(
             # 删除路径的取舍与读取相反：少删可以重试，多删无法挽回。
             # 因此这里一律走**严格作用域**，渠道标记只对「确实没有正规主人」
             # 的老行在默认域内回落，且回落绝不越过已有归属。
-            if bank_id == DEFAULT_BANK_ID:
-                # 「未认领」= user_id 为 NULL/空白，或仍是占位符 default。
-                # 迁移会把存量行统一回填成 default，若只认 NULL/空白，
-                # v19 里靠 source/agent_id 记归属的租户将连自己的记忆都
-                # 删不掉（删除返回 ok、rowcount=0，又是一次静默失败）。
-                own_sql = (
-                    "bank_id=? AND (user_id=? OR "
-                    "((user_id IS NULL OR TRIM(user_id)='' OR user_id=?) "
-                    "AND (source=? OR agent_id=?)))"
-                )
-                own_params = [bank_id, user_id, DEFAULT_USER_ID, user_id, user_id]
-            else:
-                own_sql = "user_id=? AND bank_id=?"
-                own_params = [user_id, bank_id]
-
+            # 🔴v20.0：作用域谓词只许有一处实现。
+            #
+            # 这里曾把 legacy_fact_scope_predicate 的 SQL 连注释一起**手抄
+            # 一遍**，于是同一份契约有了两个副本。本文件第 24 行明明已经
+            # import 了那个函数、cascade_delete_all 也在调它，唯独这条单条
+            # 删除路径走的是复制品。后果是可以预料的：占位符口径在共享函数
+            # 里放宽之后，手抄件没跟上，单条删除继续对存量行失明 ——
+            # 删除返回 ok、rowcount=0，又是一次静默失败。
+            #
+            # 契约抄两遍，就一定会改一遍漏一遍。改成调用，副本消失。
+            scope_sql, own_params = legacy_fact_scope_predicate(scope)
             c1 = conn.execute(
                 f"""DELETE FROM facts
                    WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=?)
-                     AND ({own_sql})""",
+                     AND (1=1{scope_sql})""",
                 (memory_id, exact_keys[0], exact_keys[1], exact_keys[2], *own_params),
             ).rowcount
             try:

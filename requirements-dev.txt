@@ -1,3 +1,12 @@
 # aiduMEI 开发/测试依赖（与 pyproject.toml [project.optional-dependencies] dev 保持一致）
 # 安装：pip install -r requirements.txt -r requirements-dev.txt
+#
+# v20.0 补：此前表头就写着「与 pyproject 的 dev 组一致」，而 pyproject 里
+# 根本没有 dev 组 —— 声明的一半指着一个不存在的另一半。现已补齐，并由
+# tests/test_v20_dev_deps_declaration.py 盯着两边同步。
+#
+# 不要往这里加 pytest-subtests。测试里那 8 个 subTest 靠的是 pytest 9 的
+# **内置** subtests 插件（_pytest/subtests.py，在 default_plugins 里）；
+# 实测 pytest 7.4.4 上 subTest 失败照样红（只是不分条报），所以下限 7 是安全的，
+# 不存在「少装一个插件就假绿」的洞。
 pytest>=7.0.0

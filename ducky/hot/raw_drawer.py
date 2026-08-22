@@ -121,16 +121,37 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         try:
             from ducky.utils import get_facts_conn
             conn = get_facts_conn()
+            # 🔴v20 甲6：补 user_id / bank_id 两列作用域戳。
+            #
+            # facts 的唯一约束是 (agent_id, user_id, bank_id, category, fact_key)
+            # ——见 federation/schema.py 的 FACTS_UNIQUE_COLUMNS。原来这两列
+            # 一个字没给，落到迁移时的 DEFAULT 'default'，于是同一租户在库 A
+            # 和库 B 写同一段内容，凑出的唯一元组一模一样，``INSERT OR IGNORE``
+            # 把后写的那条**静默丢掉**（不抛异常、只有一句 debug 都不会有），
+            # 而下面的返回值照旧报 ``facts_registered: true`` —— 响应在替一次
+            # 没有发生的登记作证。同一类缺陷 v19.4.0 P0-2b 在 /facts/add 上
+            # 出过一次（见 version.py），那次的修法是按租户落 agent_id；
+            # bank 这一维是 v20 新加的，于是同一个坑又露了半边。
+            #
+            # fact_key 仍保持全局形状 ``raw:{hash}``，**没有**改成
+            # ``raw:{user}:{bank}:{hash}``（方案原文写的是改键形，实施时否掉了）：
+            #   · 作用域已经由上面两列进了唯一约束，键里再塞一遍是冗余；
+            #   · 存量库里的键是老形状，一改形状，同一段老内容在升级后会被
+            #     判成新键再插一行，OR IGNORE 的幂等去重就此失效。
+            # 第二条由 test_jia6_legacy_global_key_row_still_deduplicates 钉住。
             conn.execute(
                 """INSERT OR IGNORE INTO facts
-                   (category, fact_key, fact_value, source, memory_tier, agent_id)
-                   VALUES (?, ?, ?, ?, 'verbatim', ?)""",
+                   (category, fact_key, fact_value, source, memory_tier,
+                    agent_id, user_id, bank_id)
+                   VALUES (?, ?, ?, ?, 'verbatim', ?, ?, ?)""",
                 (
                     category,
                     f"raw:{content_hash}",
                     content[:500],
                     req.source,
                     req.user_id,
+                    req.user_id,
+                    req.bank_id,
                 )
             )
             conn.commit()

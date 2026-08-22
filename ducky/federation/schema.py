@@ -30,6 +30,13 @@ DEFAULT_AGENT = DEFAULT_AGENT_ID
 DEFAULT_PROFILE = "default"
 DEFAULT_AGENT_NAME = os.environ.get("AIDUMEM_DEFAULT_AGENT_NAME", DEFAULT_AGENT)
 
+# 本机主 Agent 的 description。它经 GET /federation/agents 的 SELECT a.* 回给
+# 调用方，是**人读得到的界面文案** —— 按品牌 VI 用新名 aiduMEI（logger 名、
+# AIDUMEM_* 环境变量、/health 的 service 字段等机器契约一律不动）。
+# 新旧值各只在此处出现一次，seed 与回填共用同一对常量。
+_SEED_DESCRIPTION = "aiduMEI local primary agent"
+_SEED_DESCRIPTION_LEGACY = "aiduMEM local primary agent"
+
 # ── facts 表联邦字段（列名 -> DDL 片段）────────────────
 _FACTS_COLUMNS: dict[str, str] = {
     "agent_id":    f"TEXT DEFAULT '{DEFAULT_AGENT}'",
@@ -175,9 +182,24 @@ def ensure_federation_schema(force: bool = False) -> dict:
                     conn.execute(f"ALTER TABLE facts ADD COLUMN {column} {ddl}")
                     added.append(column)
                 except sqlite3.OperationalError as exc:
-                    # 并发迁移时另一个线程可能已加上，重复即视为成功
+                    # 并发迁移时另一个线程可能已加上，重复即视为成功。
+                    #
+                    # 甲8：八个位点里唯一**返回值撒谎**的一个。（论「静默」它已经
+                    # 不是第一了：opinion._fact_scope 那处的日志是 debug 级，生产
+                    # 跑 INFO 时一个字都不出现，比这里更彻底。这处的独一无二之处
+                    # 在于**它把失败说成了成功**。）原来不论什么
+                    # 原因，都只 warning 一句就继续，函数末尾照样返回
+                    # {"status": "ok"}——库被锁导致这一列根本没加上，调用方看到
+                    # 的仍然是「迁移成功」，差别只在 added 里少一项，而 added
+                    # 少一项本来就是「列已存在」的正常情形。两种截然不同的结局
+                    # 在返回值里长得一模一样。
+                    #
+                    # 这里刻意**不用** is_legacy_schema_error：判据不是「老库缺
+                    # 列」，而是「这一列已经在了」。非此一律抛出，交给下面那个
+                    # except Exception 收成 {"status": "error"}——那个诚实的出口
+                    # 本来就在，只是这条路从来没走到过。
                     if "duplicate column" not in str(exc).lower():
-                        logger.warning("联邦字段 %s 迁移失败: %s", column, exc)
+                        raise
 
             # 历史行回填：ALTER 的 DEFAULT 只作用于新行，旧行为 NULL
             conn.execute(
@@ -217,7 +239,15 @@ def ensure_federation_schema(force: bool = False) -> dict:
             conn.execute(
                 """INSERT OR IGNORE INTO agents (agent_id, display_name, profile, description)
                    VALUES (?, ?, ?, ?)""",
-                (DEFAULT_AGENT, DEFAULT_AGENT_NAME, DEFAULT_PROFILE, "aiduMEM local primary agent"),
+                (DEFAULT_AGENT, DEFAULT_AGENT_NAME, DEFAULT_PROFILE, _SEED_DESCRIPTION),
+            )
+            # 🔴3→v20：INSERT OR IGNORE 对**存量行无效** —— 只改 seed 等于「新装机
+            # 才修好，老用户 /federation/agents 里看到的还是旧品牌名」，正是审计骂过
+            # 的「卖点没到生产」。按精确旧值等值匹配回填，碰不到任何用户自填的
+            # description；幂等，重复执行影响 0 行。
+            conn.execute(
+                "UPDATE agents SET description=? WHERE description=?",
+                (_SEED_DESCRIPTION, _SEED_DESCRIPTION_LEGACY),
             )
             conn.commit()
             _migrated = True

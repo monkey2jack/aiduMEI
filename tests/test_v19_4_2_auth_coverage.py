@@ -73,7 +73,35 @@ _TARGETS_SERVICE = re.compile(
 _MAKES_HTTP_PY = re.compile(r"requests\.(get|post|put|delete)\(|urllib\.request\.(urlopen|Request)\(|httpx\.")
 _MAKES_HTTP_SH = re.compile(r"\bcurl\b|urllib\.request")
 # 「带上了凭据」的信号
+#
+# ⚠️ 这是**整文件**正则：一个文件若既无凭据地打本服务、又带凭据地打第三方，
+#    它照样能蒙过这条判据。目前全仓无此形态（下面的分类表把两类分开登记了），
+#    但这是一个已知的假绿口子，记在案上。
 _CARRIES_AUTH = re.compile(r"api_auth_headers|_auth_headers|AUTH_ARGS|Authorization")
+
+# 「出站打第三方」的显式豁免表（v20.0 甲3）
+#
+# 判据从「怎么称呼服务」改成「是否发起 HTTP」之后，全仓的 HTTP 调用方就得**分成两类**：
+# 打本服务的（会撞门禁，必须带本服务凭据），和打第三方的（撞不上，与门禁无关）。
+# 后者必须**在这里登记并写明理由**，不许靠「正则碰巧不命中」蒙过去 —— 那样
+# 「真的打第三方」和「打本服务但地址靠注入」就分不出来了，而后者正是甲3 的缺陷形态。
+#
+# 每条理由都是**逐个文件读过调用点核对**的，不是照着「文件里有 Authorization」推的：
+# 那样写出来的理由和代码就是两半（甲9 的病），而这张表本身就是为了防这个。
+_OUTBOUND_THIRD_PARTY = {
+    "ducky/llm_client.py":
+        "出站打 LLM 供应商的 /chat/completions（:165 requests.post；:168 的 Bearer 来自 "
+        "_resolve_key(api_key, 'llm')，即供应商 key；地址来自 cfg['base_url']）。"
+        "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
+    "ducky/pipeline/memory_vision.py":
+        "出站打多模态供应商的 {base_url}/chat/completions（:81 requests.post；:54 的 Bearer "
+        "来自 cfg 的 api_key，未配置时 :47-48 直接返回错误串而不发请求）。"
+        "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
+    "ducky/instinct_graduation.py":
+        "出站打 LLM 供应商的 /chat/completions（:71-73 requests.post；Bearer 来自 cfg "
+        "或本地 key 文件，即供应商 key）。"
+        "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
+}
 
 
 def _is_in_scope(path: pathlib.Path) -> bool:
@@ -88,13 +116,13 @@ def _is_in_scope(path: pathlib.Path) -> bool:
     return not any(part in _SKIP_DIRS for part in parts)
 
 
-def _iter_repo_http_callers():
-    """全仓扫描：返回所有「以客户端身份对本服务发 HTTP 请求」的文件。
+def _iter_repo_http_makers():
+    """全仓扫描：返回所有「确实发起 HTTP 请求」的在射程文件（不分打谁）。
 
-    这是**事实集合** —— 仓库里客观存在多少个会撞上门禁的入口点。
-    守卫的覆盖集合必须包住它。
+    这是分类的**全集**。下面两处各取其一部分，共用这一次扫描 ——
+    复刻一遍扫描逻辑就是自造「两半契约」：改了一半忘了另一半，判据当场分裂。
     """
-    callers = []
+    makers = []
     for path in sorted(_ROOT.rglob("*")):
         if not path.is_file() or path.suffix not in (".py", ".sh"):
             continue
@@ -106,12 +134,42 @@ def _iter_repo_http_callers():
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        if not _TARGETS_SERVICE.search(text):
-            continue
         pattern = _MAKES_HTTP_PY if path.suffix == ".py" else _MAKES_HTTP_SH
         if pattern.search(text):
-            callers.append(path)
-    return callers
+            makers.append(path)
+    return makers
+
+
+def _targets_this_service(path: pathlib.Path, text: str) -> bool:
+    """这个 HTTP 调用方打的是不是**本服务**。
+
+    两条判据，命中其一即算：
+      · 正则命中本服务的名字/端口 —— 抓「把地址写死」的调用方；
+      · 或登记在守卫的 _INJECTED_ADDRESS_CALLERS 里 —— 抓「把地址注入进来」的调用方。
+
+    只有前半句就是 v19.4.2 的缺陷形态：benchmarks/adapter.py 的地址是**构造参数**，
+    源码里根本没有本服务的名字，正则天生看不见 —— **越规范的代码越容易逃过去**。
+    v19.4.2 给 dev_server.py 补的是 AIDUMEM_UPSTREAM 这一个**词**，
+    没补「地址不出现在源码里」这一个**模式**，于是跑分适配器在原地又逃了一次。
+    """
+    if _TARGETS_SERVICE.search(text):
+        return True
+    import test_v19_4_1_auth_gate as guard
+
+    return path.relative_to(_ROOT).as_posix() in guard._INJECTED_ADDRESS_CALLERS
+
+
+def _iter_repo_http_callers():
+    """全仓扫描：返回所有「以客户端身份对本服务发 HTTP 请求」的文件。
+
+    这是**事实集合** —— 仓库里客观存在多少个会撞上门禁的入口点。
+    守卫的覆盖集合必须包住它。
+    """
+    return [
+        path
+        for path in _iter_repo_http_makers()
+        if _targets_this_service(path, path.read_text(encoding="utf-8"))
+    ]
 
 
 def test_every_http_caller_carries_credentials():
@@ -127,6 +185,62 @@ def test_every_http_caller_carries_credentials():
     assert not offenders, (
         "以下文件会对本服务发 HTTP 请求但不带任何凭据，门禁开启后必然静默 401："
         + ", ".join(offenders)
+    )
+
+
+def test_every_http_maker_is_classified_ours_or_outbound():
+    """★ 判据升级的配套完备性断言（v20.0 甲3）：全仓每个 HTTP 调用方都必须**有归属**。
+
+    甲3 的教训不是「正则少写了一个词」，而是「判据用错了维度」——
+    按「文件里怎么称呼服务」分类，地址靠注入的调用方天生隐身。改成按「是否发 HTTP」
+    分类之后，出站打第三方的文件也会一并被捞进来，于是必须有一张**带理由的豁免表**
+    把它们摘出去；而豁免表一旦没人管，就会退化成一句「永真」。
+
+    这条断言就是那张表的牙齿，四个方向都咬：
+      · 新增 HTTP 调用方而两边都没登记 → 变红，逼你表态它打的是谁；
+      · 表里留着已不存在/已不发 HTTP 的条目 → 变红，防豁免表烂成永真；
+      · 同一文件两边都登记 → 变红，判据自相矛盾；
+      · 理由写空或写 TODO → 变红，豁免表退化成一个不解释的集合。
+    """
+    import test_v19_4_1_auth_gate as guard
+
+    makers = {p.relative_to(_ROOT).as_posix() for p in _iter_repo_http_makers()}
+    ours = {p.relative_to(_ROOT).as_posix() for p in _iter_repo_http_callers()}
+    outbound = set(_OUTBOUND_THIRD_PARTY)
+    injected = set(guard._INJECTED_ADDRESS_CALLERS)
+
+    unclassified = sorted(makers - ours - outbound)
+    assert not unclassified, (
+        "以下文件会发 HTTP 请求，却既未被认定为「打本服务」，也未在出站豁免表里登记：\n  "
+        + "\n  ".join(unclassified)
+        + "\n请二选一表态：打本服务但地址靠注入 → 加进 test_v19_4_1_auth_gate"
+        "._INJECTED_ADDRESS_CALLERS；打第三方 → 加进本文件 _OUTBOUND_THIRD_PARTY "
+        "并写明「为什么它永远不会撞本服务门禁」。不许两边都不登记。"
+    )
+
+    both = sorted(outbound & ours)
+    assert not both, (
+        "以下文件同时被认定为「打本服务」和「出站打第三方」，判据自相矛盾 —— "
+        "若它确实两边都打，请拆分调用点或改判据，不要靠豁免表掩盖：\n  "
+        + "\n  ".join(both)
+    )
+
+    stale_outbound = sorted(outbound - makers)
+    assert not stale_outbound, (
+        "出站豁免表里有已不存在、或已不再发 HTTP 的条目，豁免表正在烂成永真：\n  "
+        + "\n  ".join(stale_outbound)
+    )
+
+    stale_injected = sorted(injected - makers)
+    assert not stale_injected, (
+        "_INJECTED_ADDRESS_CALLERS 里有已不存在、或已不再发 HTTP 的条目，"
+        "登记表正在烂成永真：\n  " + "\n  ".join(stale_injected)
+    )
+
+    thin = sorted(k for k, v in _OUTBOUND_THIRD_PARTY.items() if len(v.strip()) < 20)
+    assert not thin, (
+        "出站豁免表的理由必须写清「为什么这个调用方永远不会撞本服务门禁」，"
+        "不许留空或写 TODO：\n  " + "\n  ".join(thin)
     )
 
 
@@ -174,7 +288,11 @@ def test_guard_actually_sees_the_known_entry_points():
                  # 后者曾被「整个 tests/ 豁免」一括子放走。
                  "dev_server.py",
                  "integration_smoke_api.py", "integration_e2e_lifecycle.py",
-                 "perf_baseline.py"):
+                 "perf_baseline.py",
+                 # v20.0 甲3 新增锚点：跑分适配器。它的地址是构造参数，源码里
+                 # 一个本服务的名字都没有 —— 正则天生看不见，只能靠显式登记进射程。
+                 # 这个名字钉在这里，是为了防「哪天有人把登记表清空，元测试照样全绿」。
+                 "adapter.py"):
         assert name in covered, f"{name} 脱离守卫覆盖 —— v19.4.1 的漏网之鱼又回来了"
 
 

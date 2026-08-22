@@ -382,7 +382,10 @@ def rollback_edit(edit_id: int, memory=None) -> dict:
     # 合并后的文本（旧记忆内容已恢复，索引却还是新的）。
     try:
         from ducky.text_fts import _index_memory
-        _index_memory(memory_id, old_content, user_id=row["user_id"], category="")
+        # 🔴v20 甲14 故意不传 category：回滚要还原的是**内容**，分类从来不在
+        # memory_edits 的快照里。原来这里硬写 category=""，等于每次回滚都顺手
+        # 把这条记忆的分类抹掉一次。不传 = 让 _index_memory 沿用行上既有分类。
+        _index_memory(memory_id, old_content, user_id=row["user_id"])
     except Exception as e:
         logger.debug(f"回滚 FTS 同步跳过: {e}")
     try:

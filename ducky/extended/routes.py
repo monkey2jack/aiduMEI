@@ -1,7 +1,9 @@
 """ducky.extended.routes — auto-memory + 15脉端点"""
 from __future__ import annotations
 
+from ducky.utils import DEFAULT_USER_ID
 from ducky.utils import get_facts_conn as _gfc
+from ducky.bank_contract import DEFAULT_BANK_ID, table_columns
 
 import logging
 import os
@@ -66,11 +68,28 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
                 "summary":f"AI是一个拥有 {len(facts)} 条自我认知的 AI 助手，涵盖 {len(traits)} 个维度"}
 
     @app.post("/persona/ai-self/add")
-    def persona_ai_self_add(category:str, key:str, value:str):
+    def persona_ai_self_add(category:str, key:str, value:str, user_id:str = DEFAULT_USER_ID):
+        # 🔴v20.0（甲9-d）：原先签名里连 user_id 都没有，INSERT 也一列作用域不给，
+        # 于是每写一条 AI 自我认知就落在硬编码字面量 user_id='default' 上（agent_id
+        # 和 source 反倒跟着配置走 —— 三条轴实测如此）。改过名的部署上这就是在不停
+        # **新造**搁浅行，把 甲9「占位符行都是多租户之前的老数据」这个前提蛀空。
+        # user_id 作为**新增**可选查询参数（默认取配置身份）：老调用方一个字不改，
+        # 落库归属从「历史占位符」变成「当前默认身份」，谁都不会因此少看见一行 ——
+        # 读侧 /persona/ai-self 压根没有域过滤，改前改后都是全看；具名租户改前改后
+        # 都看不见这行。只加不减，所以这一笔现在就修，不必等前置定论。
+        # 读侧那个「无域过滤」本身是另一笔（收窄会让用户看见的变少 → 记账，不动）。
         db = _get_facts_conn()
         now = datetime.now(timezone.utc).isoformat()
-        cur = db.execute("""INSERT INTO facts (category,fact_key,fact_value,peer,trust_score,created_at,updated_at)
-            VALUES (?,?,?,'ai',0.7,?,?)""", (category,key,value,now,now))
+        _cols = table_columns(db, "facts")
+        _scope_cols = [c for c in ("user_id", "bank_id") if c in _cols]
+        _scope_vals = [user_id if c == "user_id" else DEFAULT_BANK_ID for c in _scope_cols]
+        cur = db.execute(
+            "INSERT INTO facts (category,fact_key,fact_value,peer,trust_score,created_at,updated_at"
+            + "".join(f",{c}" for c in _scope_cols)
+            + ") VALUES (?,?,?,'ai',0.7,?,?"
+            + ",?" * len(_scope_cols)
+            + ")",
+            (category, key, value, now, now, *_scope_vals))
         fid = cur.lastrowid or 0
         # 📒 事件账本（v19.4.0 🟡-D）：AI 自我认知写入留痕，同事务
         try:

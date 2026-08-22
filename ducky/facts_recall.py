@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ducky.utils import DEFAULT_AGENT_ID, DEFAULT_USER_ID, get_facts_conn
-from ducky.bank_contract import DEFAULT_BANK_ID, ensure_memory_banks_schema, make_scope
+from ducky.bank_contract import (
+    DEFAULT_BANK_ID,
+    ensure_memory_banks_schema,
+    make_scope,
+    unclaimed_user_ids,
+)
 
 logger = logging.getLogger("aiduMEM.facts_recall")
 
@@ -137,20 +142,25 @@ def tenant_clause(
                 f" AND {prefix}bank_id=? AND {prefix}user_id=?",
                 [bank, owner],
             )
+        # 「尚未认领」有两种拼写：迁移 DDL 写死的字面量、部署方配置的默认身份。
+        # 默认部署里两者相等；改过名的部署只认后者就会对存量行失明（见
+        # bank_contract.LEGACY_PLACEHOLDER_USER_ID 的实测记录）。两种都认。
+        placeholder_ids = unclaimed_user_ids()
+        placeholder_sql = " OR ".join(f"{prefix}user_id=?" for _ in placeholder_ids)
         unclaimed = (
             f"({prefix}user_id IS NULL OR TRIM({prefix}user_id)='' "
-            f"OR {prefix}user_id=?)"
+            f"OR {placeholder_sql})"
         )
         if _strict_tenant_enabled():
             channel = f"({prefix}source=? OR {prefix}agent_id=?)"
-            params = [bank, owner, DEFAULT_USER_ID, owner, owner]
+            params = [bank, owner, *placeholder_ids, owner, owner]
         else:
             # 宽松档保留 v19 的共享兜底：未标记归属的历史/共享数据
             # （agent_id=DEFAULT_AGENT_ID）对域内所有租户可见。
             channel = (
                 f"({prefix}source=? OR {prefix}agent_id=? OR {prefix}agent_id=?)"
             )
-            params = [bank, owner, DEFAULT_USER_ID, owner, owner, DEFAULT_AGENT_ID]
+            params = [bank, owner, *placeholder_ids, owner, owner, DEFAULT_AGENT_ID]
         return (
             f" AND {prefix}bank_id=? AND ({prefix}user_id=? "
             f"OR ({unclaimed} AND {channel}))",
