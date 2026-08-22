@@ -77,13 +77,23 @@ def env_file(tmp_path):
 def _empty_env(env_file_path, tmp_path, **extra):
     """近乎空的环境 —— 网关/编辑器/cron 拉起子进程时的真实样子。
 
-    只保留 PATH（否则连 python3 都找不到）与一个不存在的 HOME
-    （防止误读到开发机自己的 ~/.aidumem/.env 而假绿灯）。
+    只保留跑得起来所必需的：PATH（否则连 python3 都找不到）、一个不存在的
+    HOME（防止误读到开发机自己的 ~/.aidumem/.env 而假绿灯）、被测的
+    AIDUMEM_ENV_FILE，以及两个指向 tmp_path 的数据/日志落点（见下方注释）。
+    **身份类变量一个都不给** —— 那才是本文件要测的东西。
     """
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(tmp_path / "nohome"),
         "AIDUMEM_ENV_FILE": str(env_file_path),
+        # 数据/日志落点钉进 tmp_path —— 与本文件所测的「身份解析」毫无关系，
+        # 纯粹是副作用隔离。子进程一 import ducky.utils，DATA_DIR 就按
+        # BASE_DIR/data 就地建库（utils.py 会 makedirs 并开连接），
+        # cwd 是谁的树就写进谁的树：沙箱里无害，可 cwd 若是生产部署树，
+        # facts/salience/workspace 三个库就直接开在活数据目录里了。
+        # 身份相关变量一个都不加 —— 回退路径照旧被测（见下方护栏用例）。
+        "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+        "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
     }
     env.update(extra)
     return env
