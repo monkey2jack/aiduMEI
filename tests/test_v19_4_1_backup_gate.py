@@ -76,9 +76,16 @@ def wal_data_dir(tmp_path):
 
 
 def _persistent_root(tmp_path):
-    """backup_gate 铁律拒绝 /tmp 系备份根，这里造一个非 /tmp 的持久目录。"""
-    root = pathlib.Path.home() / ".aidumem_test_backups" / tmp_path.name
-    root.parent.mkdir(exist_ok=True)
+    """backup_gate 铁律拒绝 /tmp 系备份根，这里造一个非 /tmp 的持久目录。
+
+    根位置可用 AIDUMEI_TEST_BACKUP_HOME 覆盖。不覆盖时仍是 ~，行为与从前一致；
+    沙箱跑测把它钉进沙箱，跑测就不会在真实 $HOME 里落下任何东西 ——
+    v20.0 生产机踏勘发现这七条用例一直在往用户家目录里写，虽自清但确实越界。
+    """
+    base = os.environ.get("AIDUMEI_TEST_BACKUP_HOME")
+    home = pathlib.Path(base) if base else pathlib.Path.home()
+    root = home / ".aidumem_test_backups" / tmp_path.name
+    root.parent.mkdir(parents=True, exist_ok=True)
     if root.exists():
         shutil.rmtree(root)
     return root

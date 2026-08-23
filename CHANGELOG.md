@@ -454,6 +454,30 @@
   鉴别力的是 payload/ID 逐项比对那一句；把代码期望值抬高一档，`schema_version_ok` 必须
   翻成 `False`（这同时证明了 `schema_version` 不是常量回显）。用例总数 771 → **780**
   （无宿主 768 passed + 12 skipped）；两份 README 的 9 处数字同步。
+- **「沙箱隔离」这句话对轴③本来就是假的：七条用例一直在往真实 `$HOME` 里写**。生产机踏勘
+  时按「跑测前后家目录快照对账」查越界写入，揪出 `~/.aidumem_test_backups` ——
+  `tests/test_v19_4_1_backup_gate.py` 的 `_persistent_root` 用的是 `pathlib.Path.home()`。
+  它的理由是正当的：备份门禁铁律拒绝 `/tmp` 系备份根，而 pytest 的 `tmp_path` 恰恰在 `/tmp` 下，
+  于是只能另找一个持久位置。**越界的规模也确实小**——目录带命名空间、每条用例 `finally` 自清，
+  查到时是空的。但小不等于没有：父目录 `~/.aidumem_test_backups` 从来不删，从 2026-08-18 起
+  就一直坐在用户家里；更要紧的是，我们在文档里说「沙箱跑测不碰宿主」，**这句话对这七条从来没成立过**。
+  修法不是「禁止碰 home」（那会把正当理由一起禁掉），而是留改道口：`AIDUMEI_TEST_BACKUP_HOME`
+  覆盖根位置，**不设时行为与从前逐字节一致**。对照实验两组：设了改道口 → 七条逐条 PASSED 且真实
+  家目录洁净、目录落在指定位置；不设 → 七条照样 PASSED 而家目录里重新出现——**后一组才证明前一组
+  的洁净是改道口的效果，不是巧合**。
+- **护栏的判据被自己的文档字符串喂假了，这一条值得单独钉住**。为防回归，新增
+  `tests/test_v20_subprocess_env_isolation.py` 的规则三：凡是取家目录的测试辅助函数，都必须读一个
+  `AIDUMEM_*` 改道项。第一版判据写成 `"AIDUMEM_" in ast.get_source_segment(...)` ——
+  **而 `get_source_segment` 返回的整段源码是含 docstring 的**，我又恰好把 `AIDUMEI_TEST_BACKUP_HOME`
+  这个名字写进了 `_persistent_root` 的 docstring 里。于是负向对照当场露馅：把真正的改道口代码删掉、
+  只留下提到它的那行注释，护栏**照样全绿**。合成样本咬得动、真文件咬不动——因为真文件里有注释，
+  而合成样本里没有。**数提及不是数位点**（这是本仓第三次栽在同一句话上）。改法是把判据整体换成
+  AST 结构判定：`_refs_home` 认 `Path.home()` / `expanduser` / `environ["HOME"]` 的**调用与下标节点**，
+  `_reads_aidumem_env` 认 `os.environ.get("AIDUMEM_…")` / `os.getenv` / `environ[…]` 的**实参常量**——
+  注释和 docstring 在 AST 里根本不是这些节点，骗不动。负向对照随即变红并点名 `_persistent_root`。
+  合成样本里也专门焊进一条 `bad_comment_only`（只在注释里提改道口的写法必须被咬），
+  让这个漏洞不能以任何形式复发。用例总数 842 → **845**（本机 833 passed + 12 skipped；
+  生产机沙箱另测）；`README.md` 与 `README_EN.md` 各 17 处数字同步，两条数字守卫各配负向对照（把总数改错一位必须红）。
 
 ---
 
