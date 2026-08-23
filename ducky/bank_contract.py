@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import logging
 import re
 import sqlite3
+import warnings
 from typing import Any
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
@@ -372,6 +373,26 @@ def scope_predicate(
     scope = scope or make_scope()
     pfx = f"{alias}." if alias else ""
     if include_legacy_aliases:
+        # ── v20.0 乙9 守卫 ──────────────────────────────────────────────
+        # 这个分支把归属判据从「只认 user_id」放宽成
+        # 「user_id OR source OR agent_id」。老库里 source/agent_id 是自由文本，
+        # 一旦有人顺手传 True，这两列就重新变成可匹配的归属依据，隔离等于开了
+        # 一道后门 —— 而参数名读起来却像「兼容老数据」，非常好传。
+        # 实测当前调用者 0 个：它只为「迁移期必须看见老行」的过渡代码留着。
+        # 这里不 raise —— raise 会让真正的迁移脚本没法用；改为运行时留痕，
+        # 配合静态守卫（tests/test_v20_legacy_alias_guard.py 扫全仓 True 调用点），
+        # 让「新增 True 调用者」在 CI 当场变红，而不是安静地上线。
+        warnings.warn(
+            "scope_predicate(include_legacy_aliases=True) 放宽了归属判据"
+            "（user_id OR source OR agent_id），仅限迁移期过渡代码；"
+            "新增调用点必须同步登记进守卫的允许名单，否则守卫会变红。",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        logger.warning(
+            "scope_predicate 放宽判据: bank_id=%s 允许 source/agent_id 参与归属匹配",
+            scope.bank_id,
+        )
         return (
             f" AND {pfx}bank_id=? AND ("
             f"{pfx}user_id=? OR {pfx}source=? OR {pfx}agent_id=?)",
