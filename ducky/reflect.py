@@ -149,7 +149,7 @@ def _identity_ids(user_id: str) -> list[str]:
     只加不减：
       - 老部署（默认身份就叫 default）→ 返回 ['default']，逐字节不变；
       - 具名租户（alice）→ 返回 ['alice']，完全不受影响；
-      - 改名后的默认身份（dudu）→ 返回 ['dudu', 'default']，历史条目重新可见。
+      - 改名后的默认身份（alice）→ 返回 ['alice', 'default']，历史条目重新可见。
     只放宽读取口径，**不迁移、不改写、不删除任何一行数据**。
     """
     if user_id == DEFAULT_USER_ID and user_id != "default":
@@ -448,7 +448,7 @@ def save_insights(insights: list[dict], user_id: str, source: str, bank_id: str 
     try:
         from ducky.security.injection_guard import validate_and_sanitize_memory_content
         # v19.4.2：去重查询也要按「可见身份集」来。读取放宽之后，若去重仍只认
-        # 精确身份，同一条洞察会在 dudu 名下再写一遍，然后两条一起被查出来 ——
+        # 精确身份，同一条洞察会在 alice 名下再写一遍，然后两条一起被查出来 ——
         # 放宽读取反而制造重复。写入（INSERT）仍落**真实身份**，只有查重放宽。
         dup_ids = _identity_ids(user_id)
         dup_ph = ",".join("?" * len(dup_ids))

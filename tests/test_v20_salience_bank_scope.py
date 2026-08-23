@@ -8,7 +8,7 @@
 4. conflict.detect_conflicts 反义词配对绝不跨库；同库配对为负向对照，
    resolve_conflict_salience 对半衰减
 5. 旧库（无作用域列）v19 回退查询仍能检测
-6. _canon_uid：改名默认身份（如 dudu）与字面量 'default' 折叠同组，老记忆矛盾不漏检
+6. _canon_uid：改名默认身份（如 alice）与字面量 'default' 折叠同组，老记忆矛盾不漏检
 7. register_salience_for_add 把调用方作用域透传到每一行
 
 注意：ducky.salience 包 __init__ 在 import 时就调 _ensure_db() 建表，
@@ -200,14 +200,14 @@ def test_detect_conflicts_v19_fallback_without_scope_columns():
 
 
 def test_canon_uid_collapses_renamed_default_identity(monkeypatch):
-    """部署方把默认身份改名（如 dudu）后，新写入盖 dudu、存量行是 'default'——
+    """部署方把默认身份改名（如 alice）后，新写入盖 alice、存量行是 'default'——
     两者必须折叠同组，否则老记忆的矛盾从此漏检（v19.4.2 同源教训）。"""
-    monkeypatch.setattr(conflict_mod, "DEFAULT_USER_ID", "dudu")
+    monkeypatch.setattr(conflict_mod, "DEFAULT_USER_ID", "alice")
     conn = utils.get_salience_conn()
     now = time.time()
     rows = [
         ("legacy-default", "周末要加班", "default"),   # 存量行：字面量 default
-        ("new-dudu", "周末不要加班", "dudu"),          # 改名后新写入
+        ("new-alice", "周末不要加班", "alice"),          # 改名后新写入
         ("stranger", "开会不要迟到", "someone_else"),  # 无关用户（负向对照）
         ("legacy-chidao", "开会要迟到", "default"),
     ]
@@ -221,7 +221,7 @@ def test_canon_uid_collapses_renamed_default_identity(monkeypatch):
 
     conflicts = conflict_mod.detect_conflicts()
     pairs = {frozenset((c["memory_a"], c["memory_b"])) for c in conflicts}
-    assert frozenset(("legacy-default", "new-dudu")) in pairs, \
+    assert frozenset(("legacy-default", "new-alice")) in pairs, \
         "改名默认身份必须与字面量 default 折叠同组"
     assert frozenset(("stranger", "legacy-chidao")) not in pairs, \
         "非默认身份的其他用户不许折叠进来（负向对照）"
