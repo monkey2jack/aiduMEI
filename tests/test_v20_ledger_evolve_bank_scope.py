@@ -3,7 +3,7 @@
 账本侧（ducky/event_ledger.py）：
 1. 盖戳往返：具名域事件只出现在该域账本视图；default 域视图把
    无戳存量（空串）一并算进来；不传作用域 = v19 管理员全库视图
-2. 改名默认身份（如 dudu）与 'default'/空串折叠同域（v19.4.2 教训）
+2. 改名默认身份（如 alice）与 'default'/空串折叠同域（v19.4.2 教训）
 3. 非法作用域直接抛 BankScopeError，不许静默降级成全库视图
 4. 老表（v19 无作用域列）就地迁移重试：账一条都不能丢
 5. 端到端：set_opinion 写入的 opinion_set 事件带着 facts 行的域戳
@@ -180,15 +180,15 @@ def test_ledger_stamp_roundtrip_and_bank_views():
 
 
 def test_ledger_renamed_default_identity_collapses(monkeypatch):
-    """部署方改名默认身份（dudu）后，空串/'default'/dudu 折叠同域查账；
+    """部署方改名默认身份（alice）后，空串/'default'/alice 折叠同域查账；
     其他用户不许蹭折叠（负向对照）。"""
-    monkeypatch.setattr(utils, "DEFAULT_USER_ID", "dudu")
+    monkeypatch.setattr(utils, "DEFAULT_USER_ID", "alice")
     _record("mem_2")                                  # 空串存量
     _record("mem_2", user_id="default", bank_id="default")
-    _record("mem_2", user_id="dudu", bank_id="default")
+    _record("mem_2", user_id="alice", bank_id="default")
     _record("mem_2", user_id="user_y", bank_id="default")
 
-    mine = get_history("mem_2", user_id="dudu")
+    mine = get_history("mem_2", user_id="alice")
     assert len(mine) == 3
     assert all(e["user_id"] != "user_y" for e in mine)
 
@@ -289,11 +289,11 @@ def test_evolve_feedback_missing_row_preinserts_stamped_row():
 
 
 def test_evolve_feedback_renamed_default_identity_collapses(monkeypatch):
-    """改名默认身份（dudu）折叠命中存量 'default' 行；他人不许蹭折叠。"""
-    monkeypatch.setattr(utils, "DEFAULT_USER_ID", "dudu")
+    """改名默认身份（alice）折叠命中存量 'default' 行；他人不许蹭折叠。"""
+    monkeypatch.setattr(utils, "DEFAULT_USER_ID", "alice")
     _seed_salience("m4", user_id="default", bank_id="default")
 
-    res = record_feedback("m4", "useful", user_id="dudu", bank_id="default")
+    res = record_feedback("m4", "useful", user_id="alice", bank_id="default")
     assert res["ok"] is True
     assert _salience_row("m4")["salience"] == pytest.approx(0.65)
 

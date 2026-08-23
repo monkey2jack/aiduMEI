@@ -253,7 +253,7 @@ def _fact_feedback_impl(fact_id: int, helpful: bool,
                 conn.close()
                 raise HTTPException(400, f"非法作用域: {be}")
 
-            # 改名默认身份（如 dudu）与字面量 'default' 折叠同域
+            # 改名默认身份（如 alice）与字面量 'default' 折叠同域
             # （v19.4.2 教训，口径同 salience.conflict._canon_uid）
             def _canon(uid: str) -> str:
                 return "default" if uid == DEFAULT_USER_ID else uid
