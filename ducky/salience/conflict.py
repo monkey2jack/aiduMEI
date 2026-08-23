@@ -14,7 +14,7 @@ def _canon_uid(uid: str) -> str:
     """把改名后的默认身份与字面量 'default' 折叠为同一组。
 
     存量 salience 行回填的是字面量 'default'，而新写入盖的是
-    AIDUMEM_DEFAULT_USER_ID（部署方可能改名成 dudu）。不折叠的话，
+    AIDUMEM_DEFAULT_USER_ID（部署方可能改名成 alice）。不折叠的话，
     同一个真实域的新旧记忆会被拆成两组，老记忆的矛盾从此漏检
     （与 reflect._identity_ids 的 v19.4.2 教训同源，只放宽分组不改数据）。
     """

@@ -457,16 +457,16 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **842** (measured via `pytest --collect-only`) |
-| Clean dev machine | 830 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 841 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`; v20.0, measured on the committed tree) |
-| All axes present | 842 all green — **derived, never measured**: skips have four independent axes and no machine we have satisfies all four at once |
+| Total cases | **845** (measured via `pytest --collect-only`) |
+| Clean dev machine | 833 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Sandbox on the production box | 844 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`; v20.0, measured on the committed tree) |
+| All axes present | 845 all green — **derived, never measured**: skips have four independent axes and no machine we have satisfies all four at once |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 830 and 841**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. 830 is measured here; 841 is measured in a sandbox on the production box. Both are real runs on real machines, in different environments.
+> **Why report both 833 and 844**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. 833 is measured here; 844 is measured in a sandbox on the production box. Both are real runs on real machines, in different environments.
 > Always state the environment alongside a test count.
 >
 > **Skips have more than one axis** (corrected by measurement in v20.0): this section used to recognise
@@ -481,8 +481,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `scripts/backup_gate.sh` + POSIX shell | 7 | all of `tests/test_v19_4_1_backup_gate.py` |
 > | `qdrant_client` installed | 1 | `tests/test_v20_vector_bank_contract.py` |
 >
-> A dev machine lacks the first → 830 + 12. The sandbox on the production box lacks the second (whitelist copy, no
-> `.git`) → 841 + 1. **Each is missing one, so "842 all green" has never actually been measured** — it
+> A dev machine lacks the first → 833 + 12. The sandbox on the production box lacks the second (whitelist copy, no
+> `.git`) → 844 + 1. **Each is missing one, so "845 all green" has never actually been measured** — it
 > is a derived number. The previous README claimed it was "verified on production", and the very
 > production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
 > must survive the measurement it cites.**
@@ -501,17 +501,17 @@ python -m compileall ducky api_server.py mcp_server.py
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 830 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 842 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 830 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 833 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 845 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 833 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 841 passed, 1 skipped (measured in a sandbox on the production box).
+> our own production box is exactly that), the first command above actually prints 844 passed, 1 skipped (measured in a sandbox on the production box).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 842 passed` line in
-> the code block above was run on a tree cloned from git: 842 needs *both* axes present.
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 845 passed` line in
+> the code block above was run on a tree cloned from git: 845 needs *both* axes present.
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >

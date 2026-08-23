@@ -7,7 +7,7 @@
    不泄露他库 fact 的存在性
 3. 护栏先于 L0 豁免：错库调用连铁律事实都探不到
 4. 非法 bank_id → 400，不许静默放行
-5. 改名默认身份（如 dudu）与字面量 'default' 折叠同域（v19.4.2 教训）
+5. 改名默认身份（如 alice）与字面量 'default' 折叠同域（v19.4.2 教训）
 6. 老库（无作用域列）整表视作 default 域，v19 行为不炸
 7. 路由层 /facts/feedback 把 user_id/bank_id 查询参数递进 impl
    （防「函数修了、路由没传」）
@@ -152,12 +152,12 @@ def test_feedback_invalid_bank_id_rejected_400():
 
 
 def test_feedback_renamed_default_identity_collapses(monkeypatch):
-    """部署方把默认身份改名（如 dudu）后，存量行仍是字面量 'default'——
-    scoped 调用传 dudu 必须能命中，其他用户不许蹭折叠（负向对照）。"""
-    monkeypatch.setattr(helpers, "DEFAULT_USER_ID", "dudu")
+    """部署方把默认身份改名（如 alice）后，存量行仍是字面量 'default'——
+    scoped 调用传 alice 必须能命中，其他用户不许蹭折叠（负向对照）。"""
+    monkeypatch.setattr(helpers, "DEFAULT_USER_ID", "alice")
     fid = _seed(user_id="default", bank_id="default")
 
-    res = _fact_feedback_impl(fid, True, user_id="dudu", bank_id="default")
+    res = _fact_feedback_impl(fid, True, user_id="alice", bank_id="default")
     assert res["status"] == "ok"
     assert _fact_state(fid) == (pytest.approx(0.6), 1, 0)
 

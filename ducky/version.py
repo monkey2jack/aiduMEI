@@ -327,6 +327,29 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         比对那一句；把代码期望值抬高一档，schema_version_ok 必须翻成 False（这同时证明了
         schema_version 不是常量回显）。用例总数 771 → 780（无宿主 768 passed +
         12 skipped），README.md 与 README_EN.md 的 9 处数字同步。
+    37. 跑测越界写入用户家目录，被「跑测前后家目录快照对账」当场揪出:
+        tests/test_v19_4_1_backup_gate.py 的 _persistent_root 取的是 pathlib.Path.home()，
+        七条用例一直在 ~/.aidumem_test_backups 下建目录。理由正当（备份门禁铁律拒绝 /tmp 系
+        备份根，而 pytest 的 tmp_path 恰在 /tmp 下），越界规模也小（带命名空间、每条用例
+        finally 自清、查到时是空的），但父目录从来不删，且我们在文档里说的「沙箱跑测不碰宿主」
+        对这七条从来没成立过。修法不是禁止碰 home（那会连正当理由一起禁掉），而是留改道口:
+        AIDUMEI_TEST_BACKUP_HOME 覆盖根位置，不设时行为与从前逐字节一致。对照实验两组 ——
+        设了改道口则七条逐条 PASSED 且真实家目录洁净，不设则家目录里重新出现；后一组才证明
+        前一组的洁净是改道口的效果而不是巧合。
+    38. 护栏的判据被自己的文档字符串喂假了: 为防回归在
+        tests/test_v20_subprocess_env_isolation.py 新增规则三（凡取家目录的测试辅助函数都必须读
+        一个 AIDUMEI_* 改道项），第一版判据写成 "AIDUMEM_" in ast.get_source_segment(...) ——
+        而该函数返回的整段源码含 docstring，改道项的名字又恰好写在 docstring 里。负向对照当场
+        露馅: 删掉真正的改道口代码、只留提到它的注释，护栏照样全绿；合成样本咬得动、真文件咬不动，
+        因为真文件里有注释而样本里没有。数提及不是数位点。改成 AST 结构判定后（_refs_home 认
+        Path.home()/expanduser/environ["HOME"] 的调用与下标节点，_reads_aidumem_env 认
+        os.environ.get/os.getenv/environ[...] 的实参常量，注释在 AST 里不是这些节点），负向对照
+        随即变红并点名 _persistent_root，并焊进一条 bad_comment_only 样本让该漏洞无法复发。
+        新变量按品牌命名用当前前缀 AIDUMEI_（AIDUMEM_ 是为兼容既有部署冻结的旧前缀，
+        不给新变量用），这一点是 tests/test_v20_brand_policy.py 的环境变量冻结守卫查出来的。
+        用例总数 842 → 845（本机 833 passed + 12 skipped），README.md 与 README_EN.md
+        各 17 处数字同步。
+
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
     核心主题: 一个坏掉的扫描器和一个干净的项目，报出来的东西一模一样 —— 都是「0」

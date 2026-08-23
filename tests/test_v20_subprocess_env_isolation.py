@@ -185,3 +185,142 @@ subprocess.run(["true"], env={**os.environ, "PATH": os.environ.get("PATH", "")})
         "规则二误伤了摊 os.environ 的写法"
     assert not _subprocess_env_offenders(ast.parse(good_inline_pinned), "样本"), \
         "规则二误伤了显式钉好的写法"
+
+
+# ---------------------------------------------------------------- 规则三：家目录
+# 跑测不许写进真实 $HOME。v20.0 生产机踏勘发现 backup_gate 那七条用例一直在
+# `~/.aidumem_test_backups` 下建目录 —— 它自清、也命了名，但它在沙箱外，
+# 「沙箱隔离」这句话对它本来就是假的。理由本身是正当的（备份门禁铁律拒绝 /tmp
+# 系备份根），所以判据不是「禁止碰 home」，而是「碰 home 必须可被环境变量改道」。
+#
+# 判据一律走 AST，不走字符串：这条规则的第一版数的是 `"AIDUMEM_" in 源码段`，
+# 结果撤掉改道口、只留下提到它的 docstring，护栏照样放行 —— 数提及不是数位点。
+
+
+_ENV_PREFIXES = ("AIDUMEM_", "AIDUMEI_")
+
+
+def _is_environ(node):
+    """认得 os.environ 与裸 environ"""
+    return (isinstance(node, ast.Attribute) and node.attr == "environ") or (
+        isinstance(node, ast.Name) and node.id == "environ"
+    )
+
+
+def _first_str_arg(call):
+    if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return call.args[0].value
+    return None
+
+
+def _refs_home(node):
+    """函数体里是否真的取了家目录（Path.home() / expanduser / environ["HOME"]）"""
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            if n.func.attr in {"home", "expanduser"}:
+                return True
+            if n.func.attr == "get" and _is_environ(n.func.value) and _first_str_arg(n) == "HOME":
+                return True
+        if isinstance(n, ast.Subscript) and _is_environ(n.value):
+            if isinstance(n.slice, ast.Constant) and n.slice.value == "HOME":
+                return True
+    return False
+
+
+def _reads_aidumem_env(node):
+    """函数体里是否真的读了某个 AIDUMEM_/AIDUMEI_ 环境变量（注释里提到不算）
+
+    两个前缀都认：AIDUMEM_ 是为兼容既有部署冻结的旧前缀，AIDUMEI_ 是当前命名。
+    """
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            f = n.func
+            attr = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+            if attr == "getenv" or (attr == "get" and isinstance(f, ast.Attribute) and _is_environ(f.value)):
+                s = _first_str_arg(n)
+                if s and s.startswith(_ENV_PREFIXES):
+                    return True
+        if isinstance(n, ast.Subscript) and _is_environ(n.value):
+            if isinstance(n.slice, ast.Constant) and isinstance(n.slice.value, str):
+                if n.slice.value.startswith(_ENV_PREFIXES):
+                    return True
+    return False
+
+
+def _home_offenders(tree, label):
+    """返回「真取了家目录、却没读任何 AIDUMEM_/AIDUMEI_ 改道项」的函数名"""
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if _refs_home(node) and not _reads_aidumem_env(node):
+            bad.append(f"{label}::{node.name}")
+    return bad
+
+
+def test_home_writes_are_env_overridable():
+    """任何摸家目录的测试辅助函数，都必须留一个 AIDUMEI_* 改道口"""
+    offenders = []
+    for path in _test_files():
+        offenders += _home_offenders(ast.parse(path.read_text(encoding="utf-8")), path.name)
+    assert not offenders, (
+        "这些函数把跑测产物写进真实 $HOME，且无法用环境变量改道：\n  "
+        + "\n  ".join(offenders)
+        + "\n沙箱跑测时它们会越界写到用户家里 —— 请读一个 AIDUMEI_* 覆盖项。"
+    )
+
+
+def test_home_census_reach_is_not_silently_vacuous():
+    """普查必须真的看见了家目录引用，否则规则三是空转的"""
+    seen = [
+        f"{path.name}::{node.name}"
+        for path in _test_files()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _refs_home(node)
+    ]
+    assert seen, (
+        "全测试目录里一处家目录引用都没数到 —— 规则三恒真，是白护栏。"
+        "要么写法变了（比如改用 os.path.expandvars），要么 _refs_home 该更新了。"
+    )
+
+
+def test_home_classifier_bites_on_synthetic_samples():
+    """负向对照：裸 home 必被咬；只在注释里提改道口的，也必须被咬"""
+    bad_home = """
+import pathlib
+def helper(tmp_path):
+    return pathlib.Path.home() / ".stuff" / tmp_path.name
+"""
+    bad_comment_only = """
+import pathlib
+def helper(tmp_path):
+    \"\"\"根位置可用 AIDUMEI_TEST_BACKUP_HOME 覆盖。\"\"\"
+    # os.environ.get("AIDUMEI_TEST_BACKUP_HOME") 早年在这里
+    return pathlib.Path.home() / ".stuff" / tmp_path.name
+"""
+    good_home = """
+import os, pathlib
+def helper(tmp_path):
+    base = os.environ.get("AIDUMEI_TEST_BACKUP_HOME")
+    home = pathlib.Path(base) if base else pathlib.Path.home()
+    return home / ".stuff" / tmp_path.name
+"""
+    good_expanduser_pinned = """
+import os
+def helper():
+    return os.path.expanduser(os.environ.get("AIDUMEI_TEST_BACKUP_HOME", "~"))
+"""
+    no_home = """
+def helper(tmp_path):
+    return tmp_path / "data"
+"""
+    assert _home_offenders(ast.parse(bad_home), "样本"), \
+        "规则三放过了裸 Path.home() —— 判据恒假，白护栏"
+    assert _home_offenders(ast.parse(bad_comment_only), "样本"), \
+        "规则三被注释和 docstring 骗过去了 —— 这正是它第一版的漏洞：数提及不是数位点"
+    assert not _home_offenders(ast.parse(good_home), "样本"), \
+        "规则三误伤了留了改道口的写法"
+    assert not _home_offenders(ast.parse(good_expanduser_pinned), "样本"), \
+        "规则三误伤了 expanduser + 改道口的写法"
+    assert not _home_offenders(ast.parse(no_home), "样本"), \
+        "规则三误伤了压根不碰 home 的写法"
