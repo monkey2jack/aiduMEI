@@ -96,6 +96,10 @@ def register_evolve_routes(app: FastAPI) -> None:
         """
         手动执行一次 EvolveMem 进化循环（正常由后台每 6h 自动执行）。
         返回本次 boost/decay 数量和 zero-hit 查询统计。
+
+        **这是全库维护作业，不按域隔离（v20.0 乙1）**：它扫 salience 全表调
+        权重，不带 user_id / bank_id 过滤，也不返回任何一条记忆的正文，只回
+        聚合计数。理由见 ducky.evolve_mem.run_evolution_cycle 的说明。
         """
         try:
             result = run_evolution_cycle()

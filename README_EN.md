@@ -23,7 +23,7 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-> **v20.0 · Full memory-bank isolation · Reproducible evaluation · Backend contract & data lifeline.** An architecture release. From this version on, version numbers return to two segments and the runtime carries no mythological codename — the gods stay in the pantheon as history. Before v20, the whole memory pipeline effectively had **one implicit memory pool**: "whose memory is this, and which domain does it belong to" was expressed part-time by channel markers like `source`/`agent_id`. But **a channel is not ownership** — the moment two unrelated memory domains collide on the same key, the later write silently overwrites the earlier one, **neither side errors**, and the earlier record is simply gone. So the theme of v20 is not "add a bank field" but turning scope from a **convention** into a **contract**: the new `ducky/bank_contract.py` establishes a two-dimensional `(user_id, bank_id)` scope, and every path — write, query, delete, restore, statistics, feedback, background tasks, the event ledger, the Instinct→Skill graduation chain, the persona profile — must state explicitly which scope it operates in; an invalid scope raises **before any data is fetched**, never silently degrading into a whole-store scan. The read side follows one uniform shape: **named banks push the filter down and re-screen; the default bank keeps the v19 filter shape but re-screens out named-bank items** (legacy vectors carry no bank field — not pushing down in the default bank exists precisely for them). The migration is additive throughout: **not one row of existing data is modified or deleted**; legacy data lands in the `default` bank with key shapes identical to v19. The same release adds `benchmarks/`, freezing evaluation into a **reproducible protocol** (datasets, judge, seed, and file hashes all locked and evidenced; the adapter speaks the real HTTP contract instead of in-process shortcuts; the oracle serves only as a retrieval-ceiling diagnostic and never enters the headline), and `ducky/vector_backend.py`, turning the vector backend from hardcoded into a **contract** (Qdrant remains the default; sqlite-vec is only a revertible shadow POC — **an irreversible backend switch and a data-domain migration are never bound to the same release**); `/health`, `/metrics`, and `/search` traces now carry bank / backend / degradation evidence, and component failures go into degraded / trace — **never disguised as empty results**: "nothing found" and "the search broke" look identical, a failure mode this project has paid tuition for repeatedly.
+> **v20.0 · Memory-bank isolation · Reproducible evaluation · Backend contract & data lifeline.** An architecture release. From this version on, version numbers return to two segments and the runtime carries no mythological codename — the gods stay in the pantheon as history. Before v20, the whole memory pipeline effectively had **one implicit memory pool**: "whose memory is this, and which domain does it belong to" was expressed part-time by channel markers like `source`/`agent_id`. But **a channel is not ownership** — the moment two unrelated memory domains collide on the same key, the later write silently overwrites the earlier one, **neither side errors**, and the earlier record is simply gone. So the theme of v20 is not "add a bank field" but turning scope from a **convention** into a **contract**: the new `ducky/bank_contract.py` establishes a two-dimensional `(user_id, bank_id)` scope, and every **online read/write** path (three areas are explicitly out of scope — see *Known Limitations & Not Covered*) — write, query, delete, restore, statistics, feedback, background tasks, the event ledger, the Instinct→Skill graduation chain, the persona profile — must state explicitly which scope it operates in; an invalid scope raises **before any data is fetched**, never silently degrading into a whole-store scan. The read side follows one uniform shape: **named banks push the filter down and re-screen; the default bank keeps the v19 filter shape but re-screens out named-bank items** (legacy vectors carry no bank field — not pushing down in the default bank exists precisely for them). The migration is additive throughout: **not one row of existing data is modified or deleted**; legacy data lands in the `default` bank with key shapes identical to v19. The same release adds `benchmarks/`, freezing evaluation into a **reproducible protocol** (datasets, judge, seed, and file hashes all locked and evidenced; the adapter speaks the real HTTP contract instead of in-process shortcuts; the oracle serves only as a retrieval-ceiling diagnostic and never enters the headline), and `ducky/vector_backend.py`, turning the vector backend from hardcoded into a **contract** (Qdrant remains the default; sqlite-vec is only a revertible shadow POC — **an irreversible backend switch and a data-domain migration are never bound to the same release**); `/health`, `/metrics`, and `/search` traces now carry bank / backend / degradation evidence, and component failures go into degraded / trace — **never disguised as empty results**: "nothing found" and "the search broke" look identical, a failure mode this project has paid tuition for repeatedly.
 
 > **v19.5.0 · Athena — The Redaction Gate: turning an iron rule into a program that cannot be bypassed.** A discipline release: no runtime behaviour changes, what changes is **the condition under which publishing is allowed at all**. Two consecutive releases tripped over the same thing — the redaction was done, but whether it was done *completely* rested on human memory and diligence. An iron rule written in prose gets missed, and **when it is missed, nothing turns red**. Worse, this class of tool fails *silently*: leave one word out of the list and the scan still runs, the report is still all green, and a dirty distribution reaches a public index — discovered only afterwards. It does not error, it does not crash; it quietly issues a certificate that says "this has been checked." **A broken scanner and a clean project produce exactly the same output: zero.** So the real question this release answers is not "can it find the dirty thing" but **"when the scanner breaks, does it fail honestly?"** The new `scripts/release_scan.py` covers seven public surfaces (newly including **the package index's rendered page** — prose rendered from metadata, **visible without downloading anything**), under three hard constraints: **the wordlist lives outside the repository, always** (the list contains precisely the things being hidden; committing it would manufacture a leak in the name of preventing one); **an empty wordlist refuses to run rather than passing** (exit code 2 — it will not emit the zero that is indistinguishable from genuinely clean); and **the negative control is welded into the code** — before every real scan it verifies itself three ways on built-in synthetic samples (the dirty sample must fire, the clean sample must not, and a waiver must not bleed past its own line), and any mismatch voids the entire run. The accompanying `tests/test_release_hygiene.py` puts 18 guards on the gate itself; the central one breaks the scan logic into three classic failure modes — **blind** (reports nothing), **manic** (reports everything), **sieve** (a waiver leaks across the whole file) — and requires the self-check to catch every one, because **a self-check that always passes is identical to having none**. The waiver exit is deliberately narrow: **it applies only to the line the hit is on** — no file-level and certainly no directory-level exemptions — and waived hits still appear in the report item by item. They disappear from the **failure count**, never from **view**.
 
@@ -59,7 +59,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 | Version | Codename | Deity | Core Mission |
 |---------|----------|-------|-------------|
-| **v20.0** | — (no codename) | Memory-bank isolation · Scope as contract | **A `(user_id, bank_id)` two-dimensional scope contract across write / query / delete / restore / stats / feedback / ledger / graduation · invalid scope rejected before any fetch · additive migration with zero change to existing data · `benchmarks/` reproducible evaluation protocol · `vector_backend` contract with shadow POC · observability carries bank / backend / degradation evidence** |
+| **v20.0** | — (no codename) | Memory-bank isolation · Scope as contract | **A `(user_id, bank_id)` two-dimensional scope contract across the online read/write paths (write / query / delete / restore / stats / feedback / ledger / graduation) · invalid scope rejected before any fetch · additive migration with zero change to existing data · `benchmarks/` reproducible evaluation protocol · `vector_backend` contract with shadow POC · observability carries bank / backend / degradation evidence** |
 | **v19.5.0** | **Athena** | Goddess of Wisdom · The Redaction Gate | **A seven-surface scanner welded into the release chain (index-rendered page added) · the wordlist never enters the repo · an empty wordlist refuses to run rather than passing · the negative control is welded in, so the self-check is itself falsifiable · waivers bind to one line and stay in the report** |
 | **v19.4.3** | **Athena** | Goddess of Wisdom · Release Hygiene | **Behaviourally identical to v19.4.2 (comments and version string only) · unpacking and scanning the distribution becomes a mandatory pre-upload gate · a scanner counts only after a negative control** |
 | **v19.4.2** | **Athena** | Goddess of Wisdom · Guard Coverage & Credential Wiring | **Meta-test welds the guard's range · 8 credential entry points on one source of truth · `.env` fallback chain through standalone integrations · crashloops become visible · rotation stops losing logs · wordmark residue cleared · configuration written ≠ configuration in effect (`StartLimit*` section) · reproducible both ways is what makes it falsifiable (`HERMES_SRC` three-state)** |
@@ -82,6 +82,51 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 | **v9.1** | **Mnemosyne** | Goddess of Memory | Tidal coalescing · dual-strategy tiering |
 
 [Full version history →](CHANGELOG.md)
+
+---
+
+## 🖥️ aiduMEI Console
+
+> **Ships with a visual console since v18.2** — not just an API service, but an engine where you can *watch a memory being recalled*.
+
+aiduMEI serves a lightweight web console straight from the backend at `/ui`. No separate frontend deployment, no build step — plain static HTML/CSS/JS, with ECharts (CDN) used only by the MAP panel. Six panels cover the full lifecycle of the memory engine:
+
+| Panel | Codename | What it shows |
+|-------|----------|---------------|
+| 💗 **PULSE** | Service + storage tiers | Version/codename, per-module probes, four-tier memory volume and capacity |
+| 🗄️ **VAULT** | Search + category ledger | Semantic search (vector + rerank), 6-domain category inventory, recent fact stream |
+| 🗺️ **MAP** | Knowledge starfield | ECharts force graph: core / domain / category / entity nodes, drag and zoom |
+| 🔍 **RECALL** | Recall funnel trace | Candidate pool → ignition → dedup → time decay → final, with per-stage latency and hit counts |
+| 🧬 **EVOLVE** | Retrieval quality board | 7-day queries / hits / scores / zero-hits, evolution cycle log, feedback signals |
+| ⚙️ **SETTINGS** | Models + modules + federation | LLM/Embedding/Reranker config (read-only, `api_key` masked), reasoning mode, tunables, module probes, federation members |
+
+> This repository **ships no UI screenshots** — screenshots go stale with every release and tend to turn demo data into an implied product promise. Each panel is described in prose below; start the service and open `/ui` to verify for yourself. `tools/shot.js` (the CDP-driven, scroll-aware capture script we use ourselves) is included if you need to produce your own.
+
+### PULSE — Vitals
+
+Service health and version codename; **per-module** probes across 11 core modules (online / degraded / offline — a degraded probe names the specific module, rather than going green just because the process is alive); volume and capacity watermarks for each of the four memory tiers.
+
+### VAULT — Memory Bank
+
+Semantic search (vector recall + rerank scoring, results carry both score and source domain); category inventory across 6 knowledge domains with real per-domain counts; a recent fact stream in reverse chronological order, filterable by domain.
+
+### MAP — Knowledge Starfield
+
+An ECharts force-directed graph. Core / domain / category / entity nodes are sized from actual inventory; scroll to zoom, drag nodes, hover to see how many facts hang off a node and a sample of them.
+
+### RECALL — Recall Funnel
+
+> This is the panel aiduMEI cares most about: other memory dashboards tell you *what was stored*; this one tells you *why it was recalled*.
+
+Candidate pool → 🔥 ignition → dedup → time decay → final. **Every stage reports its own latency and in/out counts**: what came in, what dropped it, what survived, and why the final set is what it is. Zero-hit queries render too — an empty result is still a result, and you can see exactly which stage it went empty at.
+
+### EVOLVE — Self-Evolving Retrieval
+
+A 7-day retrieval quality board: query count, average hits, average score, zero-hit count; below it, the evolution cycle log (what was tuned each round and on what evidence) and user feedback signals.
+
+### SETTINGS — Model Configuration
+
+LLM / Embedding / Reranker configuration is displayed **read-only** with `api_key` masked. The panel deliberately exposes no way to change a key — configuration flows only through server-side files and environment variables. Also shows reasoning-mode status, tunable parameters, core module probes, and the federation member list.
 
 ---
 
@@ -457,16 +502,16 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **845** (measured via `pytest --collect-only`) |
-| Clean dev machine | 833 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 844 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`; v20.0, measured on the committed tree) |
-| All axes present | 845 all green — **derived, never measured**: skips have four independent axes and no machine we have satisfies all four at once |
+| Total cases | **860** (measured via `pytest --collect-only`) |
+| Clean dev machine | 848 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Sandbox on the production box | 859 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`; v20.0, measured on the committed tree) |
+| All axes present | 860 all green — **derived, never measured**: skips have four independent axes and no machine we have satisfies all four at once |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 833 and 844**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. 833 is measured here; 844 is measured in a sandbox on the production box. Both are real runs on real machines, in different environments.
+> **Why report both 848 and 859**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. 848 is measured here; 859 is measured in a sandbox on the production box. Both are real runs on real machines, in different environments.
 > Always state the environment alongside a test count.
 >
 > **Skips have more than one axis** (corrected by measurement in v20.0): this section used to recognise
@@ -481,8 +526,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `scripts/backup_gate.sh` + POSIX shell | 7 | all of `tests/test_v19_4_1_backup_gate.py` |
 > | `qdrant_client` installed | 1 | `tests/test_v20_vector_bank_contract.py` |
 >
-> A dev machine lacks the first → 833 + 12. The sandbox on the production box lacks the second (whitelist copy, no
-> `.git`) → 844 + 1. **Each is missing one, so "845 all green" has never actually been measured** — it
+> A dev machine lacks the first → 848 + 12. The sandbox on the production box lacks the second (whitelist copy, no
+> `.git`) → 859 + 1. **Each is missing one, so "860 all green" has never actually been measured** — it
 > is a derived number. The previous README claimed it was "verified on production", and the very
 > production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
 > must survive the measurement it cites.**
@@ -501,17 +546,17 @@ python -m compileall ducky api_server.py mcp_server.py
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 833 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 845 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 833 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 848 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 860 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 848 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 844 passed, 1 skipped (measured in a sandbox on the production box).
+> our own production box is exactly that), the first command above actually prints 859 passed, 1 skipped (measured in a sandbox on the production box).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 845 passed` line in
-> the code block above was run on a tree cloned from git: 845 needs *both* axes present.
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 860 passed` line in
+> the code block above was run on a tree cloned from git: 860 needs *both* axes present.
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >
@@ -527,6 +572,27 @@ actually sends plain strings without timestamps, and a real bug shipped through 
 Since v19.4.1 we enforce an **anti-false-green rule**: any test touching payload shape, credential shape, or
 query shape must cover *every* shape; performance and index assertions must verify self-evident fields such as
 `_recall_path` rather than merely checking "did we get a hit".
+
+---
+
+## Known Limitations & Not Covered
+
+The `(user_id, bank_id)` scope contract covers the **online read/write paths**. The three areas below are
+**explicitly not covered** in this release. They are documented here rather than left for you to discover in production:
+
+| # | Exception | Current state | Why not in this release |
+|---|-----------|---------------|-------------------------|
+| 1 | **`core_memory` key shape** | The table's primary key is still the single column `block_key` (`ducky/core_memory.py`). Isolation is enforced by the unique index `idx_core_memory_scope_key(user_id, bank_id, block_key_raw)` together with a write path whose `DO UPDATE SET` clause never touches the ownership columns | Changing the primary key shape is a **breaking** change and must come **after** existing rows have been reconciled to their true banks. Doing it in the other order would weld unreconciled data to the wrong bank |
+| 2 | **Whole-database maintenance jobs** | Memory evolution and salience maintenance (`ducky/evolve_mem.py`, `ducky/routes_evolve.py`) scan the **whole database and do not isolate by bank**; this is annotated in the source docstrings | Whole-database maintenance is precisely their semantics — partitioning by bank would rob decay and consolidation of their global view. These jobs **never feed the user-visible retrieval path** |
+| 3 | **Bank attribution of pre-existing data** | Memories carried over from v19 all land in the `default` bank and have **not** been reconciled to their true owners | The premise of an additive migration is that not one existing row is changed or deleted. True attribution requires business-side confirmation: that is data governance, not a code release |
+
+**The boundary of the boundary**: exceptions 1 and 2 cannot cause one bank to read another's data — 1 is backstopped by
+the unique index (writes never rewrite ownership columns), and 2 never enters the retrieval path. The impact of
+exception 3 is "the bank label is inaccurate", not "banks leak into each other".
+
+> This section is itself a discipline: whenever the README states isolation in absolute terms, a **list of known
+> exceptions** must ship alongside it. Claiming "full" coverage without listing the exceptions leaves the user to
+> find the boundary in production — the exact failure shape this project has paid for repeatedly.
 
 ---
 
