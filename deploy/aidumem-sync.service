@@ -17,6 +17,20 @@
 #   ③ 没有 EnvironmentFile → 鉴权门禁开启后每次 POST 都 401
 #   三者相乘 = 同步静默停摆 8 天、重启 6000+ 次，没有任何一处报警。
 #   下面每一行配置都是针对上述三条的正面回答。
+#
+# ★ 降权（v20.0 P3-8）—— 这个单元和 API 那个**刻意不一样**，请先读完再抄：
+#
+#   本守护的全部工作是读一个 Markdown（默认 ~/.hermes/memories/MEMORY.md）
+#   然后 POST 给本机 API。它自己**不写任何数据库**。
+#   所以对它而言，「换个 uid」买到的安全收益很小，而代价可能很大：
+#
+#     那个 MEMORY.md 通常在某个真人的家目录里，权限是 600。
+#     要让第二个 uid 读到它，你必须放宽那个文件（或整个家目录）的权限 ——
+#     用「私有笔记的可读面变宽」去换「守护进程不是 root」，
+#     多数情况下不划算，而且这笔交易很容易在 chmod 的那一刻就被忘掉。
+#
+#   因此本模板的默认姿态是：**先加固能力面，uid 留给部署方自己决定**。
+#   下面 User= 一行默认注释掉，两条路都写清楚了，按你的实际情况选一条。
 
 [Unit]
 Description=aiduMEI MEMORY.md Sync Daemon
@@ -49,7 +63,25 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=root
+
+# ── 身份（v20.0 P3-8）──
+# 路线 A（推荐，前提是 MEMORY.md 你能安排到一个共享组里）：
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin aidumem
+#   sudo chgrp aidumem <你的 MEMORY.md 所在目录> && sudo chmod 750 <该目录>
+#   sudo chgrp aidumem <你的 MEMORY.md>          && sudo chmod 640 <该文件>
+#   然后取消下面两行注释。
+# 路线 B（MEMORY.md 必须保持 600 私有）：保持注释状态，单元以 root 运行，
+#   但下方的能力面加固**全部仍然生效** —— 一个没有任何 capability、
+#   文件系统只读、系统调用受限的 root，攻击面已远小于裸 root。
+#
+# ★ 不论走哪条路，都不要在这里加 ProtectHome=yes：
+#   本守护要读的就是家目录里的文件。加上它的表现是
+#   `FileNotFoundError: ~/.hermes/memories/MEMORY.md` ——
+#   看着像路径配错了，其实是被沙箱藏起来了，能排查半天。
+#   （API 单元里有 ProtectHome=yes，是因为它确实不读家目录。别互相照抄。）
+# User=aidumem
+# Group=aidumem
+
 WorkingDirectory=/opt/aidumem
 
 # 凭据来源：与 API 服务读同一份 .env（单一真相源）。
@@ -69,6 +101,55 @@ RestartSec=10
 
 StandardOutput=append:/opt/aidumem/logs/mem0_sync.log
 StandardError=append:/opt/aidumem/logs/mem0_sync.log
+
+# ══ 沙箱加固（v20.0 P3-8）══
+# 与 API 单元的差别只有两处：没有 ProtectHome（要读家目录），
+# ReadWritePaths 只要 logs（本守护不写数据库）。其余一致。
+# 验收只认 `systemd-analyze security aidumem-sync`。
+#
+# 提权面
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+
+# 文件系统面
+ProtectSystem=strict
+ReadWritePaths=/opt/aidumem/logs
+PrivateTmp=yes
+#   ↑ ★ 若 AIDUMEM_SYNC_STATE（默认 ~/.hermes/memories/.sync_state.json）
+#     指向 ReadWritePaths 之外的路径，同步会在**写状态文件**时失败 ——
+#     而它的表现是每次都从头重算、反复重推同一批记忆（不是报错退出）。
+#     把状态文件所在目录一并加进 ReadWritePaths，或用
+#     AIDUMEM_SYNC_STATE 把它挪到 /opt/aidumem/data 下。
+#   ↑ 这里**没有** ProtectHome：原因见上方 [Service] 段开头的说明。
+
+# 内核与设备面
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+PrivateDevices=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+
+# 网络面
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressAllow=localhost
+IPAddressDeny=any
+#   ↑ 本守护只往回环上的 API POST，所以只放回环就够。
+#     若 AIDUMEM_API_BASE 指向别的机器，这两行会让 POST 静默超时 ——
+#     此时把目标网段加进 IPAddressAllow。
+
+# 系统调用面
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+#   ↑ inotify 相关调用在 @system-service 之内（生产实测通过）。
 
 [Install]
 WantedBy=multi-user.target
