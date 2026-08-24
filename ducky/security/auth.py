@@ -105,6 +105,43 @@ def password_hash_path() -> str:
     return os.path.join(DATA_DIR, ".ui_password_hash")
 
 
+def initial_password_path() -> str:
+    """自动生成的初始口令的落脚处（明文，0600，取用后应删）。"""
+    from ducky.utils import DATA_DIR
+    return os.path.join(DATA_DIR, ".ui_initial_password")
+
+
+def write_initial_password(password: str) -> bool:
+    """把自动生成的初始口令写进 0600 文件；成功返回 True。
+
+    v20 · P1-7：这个函数存在的唯一理由是**替掉一条日志**。原先自动生成的口令是
+    `logger.warning(… 初始口令: %s …, gen_pwd, …)` 打出去的 —— 明文口令于是躺在
+    journald 里、躺在 logrotate 归档里、躺在任何一次「把启动日志贴给我看」里。
+    日志的读者范围永远大于口令的读者范围，这条路一旦走了就收不回来。
+
+    两个实现细节不是洁癖：
+
+    · **先以 0600 建文件，再写内容**（`os.open(..., 0o600)`，不是 `open()` 之后
+      `os.chmod`）。后者中间有一个「文件已存在、内容已写、权限还是默认 0644」的
+      窗口，同机任何用户都能在那一瞬间读到明文。哈希文件忍得起这个窗口，明文
+      口令忍不起。文件已存在时 `O_CREAT` 的 mode 参数会被内核忽略，所以后面
+      仍补一次显式 `chmod`。
+    · **失败一律返回 False，绝不把明文打进日志兜底**。「取不到口令」的正解是
+      让部署方显式设置 `AIDUMEM_UI_PASSWORD`，不是把它泄进日志换一次方便。
+    """
+    path = initial_password_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(password + "\n")
+        os.chmod(path, 0o600)  # 文件已存在时上面的 mode 会被忽略，补一刀
+        return True
+    except Exception as exc:
+        logger.error("写入初始口令文件失败: %s", exc)
+        return False
+
+
 # 口令来源标记（provenance）。文件格式：
 #     第 1 行 = 哈希本体
 #     第 2 行 = `source=auto` | `source=user`（缺失时按 user 处理，兼容旧文件）

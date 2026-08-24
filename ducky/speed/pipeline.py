@@ -11,6 +11,7 @@ from ducky.speed.cache import cache_get, cache_key, cache_set
 from ducky.speed.config import load_speed_cfg, messages_to_text
 from ducky.speed.fastpath import try_fastpath_text
 from ducky.security.injection_guard import validate_and_sanitize_memory_content
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.speed")
 
@@ -169,6 +170,7 @@ def run_add_pipeline(
                     if mid and content:
                         _index_memory(mid, content, user_id=user_id, category=category, bank_id=bank_id)
     except Exception as e:
+        feature_failed("index_memory", e)
         logger.debug(f"FTS 索引跳过: {e}")
     timing["fts"] = int((time.time() - t4) * 1000)
 

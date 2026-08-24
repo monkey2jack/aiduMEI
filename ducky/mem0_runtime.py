@@ -404,6 +404,16 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
 _load_usage()
 
 
+def mem0_patch_status():
+    """给 /health 用：mem0 补丁层实际台账（哪条打上了、哪条没打上、救回多少次）。"""
+    try:
+        from ducky.mem0_patches import patch_status
+        return patch_status()
+    except Exception as e:
+        return {"ok": False, "problems": ["patch_layer_import"],
+                "patches": {}, "counters": {}, "error": str(e)}
+
+
 def get_llm_usage() -> dict:
     """/usage 端点用：返回当前用量快照。"""
     return _llm_usage
@@ -425,38 +435,23 @@ _lazy_lock = threading.Lock()
 
 
 def _patch_usage_tracking(mem_instance):
-    """给 Memory 实例的 OpenAI client 打用量追踪补丁（首次加载时调用一次）"""
+    """兼容入口：真正的补丁逻辑已收敛到 ducky.mem0_patches（单一真相源）。
+
+    历史坑（v20.0pre 修）：本函数原先把用量追踪打在 `mem_instance.client` 上，
+    而 mem0 的 Memory 类根本没有 `client` 属性 —— OpenAI 客户端挂在
+    `Memory.llm.client` / `Memory.embedding_model.client` 上。于是补丁常年空转，
+    而 get_memory() 仍无条件打印「用量追踪已激活」。更深一层：即使挂载点写对，
+    原先 `_orig_create(self, *args)` 的绑定写法会多传一个位置参数，抛
+    TypeError 而根本到不了网络 —— 因为挂载点先错，这一层从未暴露。
+    """
     try:
-        from openai import OpenAI
-        client = getattr(mem_instance, "client", None)
-        if client is None or not isinstance(client, OpenAI):
-            return
-        _orig_create = client.chat.completions.create
-
-        def _tracked_create(self, *args, **kwargs):
-            resp = _orig_create(self, *args, **kwargs)
-            if hasattr(resp, "usage") and resp.usage:
-                _track_llm_usage(
-                    resp.usage.prompt_tokens or 0,
-                    resp.usage.completion_tokens or 0,
-                    resp.usage.total_tokens or 0,
-                )
-            return resp
-
-        client.chat.completions.create = _tracked_create.__get__(client, OpenAI)
-
-        _orig_embed = client.embeddings.create
-
-        def _tracked_embed(self, *args, **kwargs):
-            resp = _orig_embed(self, *args, **kwargs)
-            if hasattr(resp, "usage") and resp.usage:
-                _track_embed_usage(resp.usage.total_tokens or 0)
-            return resp
-
-        client.embeddings.create = _tracked_embed.__get__(client, OpenAI)
-        logger.info("✅ 用量追踪已打补丁")
+        from ducky.mem0_patches import apply_all
+        return apply_all(mem_instance)
     except Exception as e:
-        logger.warning(f"用量追踪打补丁跳过: {e}")
+        # 补丁层自身塌了也不能让 mem0 起不来，但绝不许静默（铁律 8）
+        logger.error(f"mem0 补丁层加载失败，基座将以未打补丁状态运行: {e}")
+        return {"ok": False, "problems": ["patch_layer_import"],
+                "patches": {}, "counters": {}}
 
 
 def _resolve_api_keys(cfg: dict) -> dict:
@@ -551,14 +546,23 @@ def get_memory():
             # 启动时清理 Qdrant 锁（与生产环境对齐：先读配置再清理）
             _clear_qdrant_lock()
             m = Memory.from_config(cfg)
-            _patch_usage_tracking(m)
+            _patch_state = _patch_usage_tracking(m)
             try:
                 from ducky.add_speed import patch_llm_for_speed
                 patch_llm_for_speed(m)
             except Exception as pe:
                 logger.warning(f"speed patch on init skip: {pe}")
             sys._aidumem_singleton = m
-            logger.info("✅ mem0 初始化成功 (用量追踪已激活)")
+            # 不再无条件宣称「已激活」—— 按补丁层的实际台账说话（铁律 7 宣称即承诺）
+            _p = (_patch_state or {}).get("patches", {})
+            _summary = ", ".join(f"{k}={v.get('status')}" for k, v in _p.items()) or "补丁台账为空"
+            if (_patch_state or {}).get("ok"):
+                logger.info(f"✅ mem0 初始化成功（补丁层: {_summary}）")
+            else:
+                logger.error(
+                    f"⚠️ mem0 初始化完成，但补丁层有问题项 "
+                    f"{(_patch_state or {}).get('problems')}（补丁层: {_summary}）"
+                )
             return m
         except Exception as e:
             logger.error(f"mem0 初始化失败: {e}")

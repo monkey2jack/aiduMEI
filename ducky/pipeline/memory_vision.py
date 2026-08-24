@@ -7,6 +7,7 @@ import json
 import base64
 import os
 import requests
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.Vision")
 
@@ -92,9 +93,11 @@ def extract_vision_caption(media_url_or_base64: str) -> str:
                 total_tokens=usage.get("total_tokens", 0),
             )
         except Exception as e:
+            feature_failed("vision_usage_track", e)
             logger.debug(f"extract_vision_caption: suppressed exception: {e}")
         logger.info("多模态记忆提取完成！")
         return caption
     except Exception as e:
+        feature_failed("vision_usage_track", e)
         logger.error(f"Vision API 请求失败: {e}")
         return f"图片解析失败: {e}"
