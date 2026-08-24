@@ -47,7 +47,14 @@ HP = _load_plugin_tests()
 def _make_host(root):
     """在临时目录里造一棵**看起来像宿主**的最小源码树。"""
     (Path(root) / "agent").mkdir(parents=True, exist_ok=True)
-    (Path(root) / "agent" / "memory_provider.py").write_text("", encoding="utf-8")
+    # 造一棵**完整**的假宿主树：判据现在逐个点名 test_hermes_plugin 真正会 import
+    # 的模块（v20 生产实机踩到一棵只有记忆子集的残树通过了准入，然后炸出 12 个
+    # ModuleNotFoundError）。夹具从被测模块取清单，不自己抄一份 —— 抄一份就会漂。
+    import test_hermes_plugin as _hp
+    for _rel in _hp._HOST_REQUIRED:
+        _f = Path(root, *_rel.split("/"))
+        _f.parent.mkdir(parents=True, exist_ok=True)
+        _f.write_text("", encoding="utf-8")
     return str(root)
 
 

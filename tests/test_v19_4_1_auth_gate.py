@@ -717,8 +717,20 @@ def test_library_module_exemption_is_backed_by_a_launcher():
     assert exempted, ("没有任何文件被库模块豁免命中 —— 判据要么写错了，要么射程变了；"
                       "无论哪种，这条元测试都必须失效在这里而不是默默通过")
 
+    # ⚠️ 必须挡掉虚拟环境。开发机的叫 `.venv`、生产机的叫 `venv` —— v20 实机踩到：
+    # 过滤器只认前者，于是在生产机上走进第三方包，撞上一个非 UTF-8 的 .py
+    # 文件，抛 UnicodeDecodeError。判据按**结构**认（同级有没有 pyvenv.cfg），
+    # 不按名字认 —— 换个名字建的 venv 照样挡得住。
+    def _in_venv(q):
+        for anc in q.parents:
+            if (anc / "pyvenv.cfg").is_file():
+                return True
+            if anc == pathlib.Path(_REPO_ROOT):
+                break
+        return False
+
     all_py = [q for q in pathlib.Path(_REPO_ROOT).rglob("*.py")
-              if "__pycache__" not in q.parts and ".venv" not in q.parts]
+              if ("__pycache__" not in q.parts and ".venv" not in q.parts) and not _in_venv(q)]
     for path in exempted:
         rel = path.relative_to(_REPO_ROOT).as_posix()
         stem = path.stem
@@ -726,7 +738,7 @@ def test_library_module_exemption_is_backed_by_a_launcher():
 
         bare = re.compile(rf"^\s*(?:import\s+{stem}\b|from\s+{stem}\s+import)", re.M)
         culprits = [q.relative_to(_REPO_ROOT).as_posix() for q in all_py
-                    if q != path and bare.search(q.read_text(encoding="utf-8"))]
+                    if q != path and bare.search(q.read_text(encoding="utf-8", errors="replace"))]
         assert not culprits, (
             f"{rel} 被当作顶层模块 import 了（{', '.join(culprits)}）——"
             f"这条路径上「库模块内部补 sys.path」是会执行的，豁免前提不再成立")
