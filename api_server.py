@@ -22,6 +22,7 @@ del _stub, _NoopPosthog, _types
 # ── end posthog stub ──────────────────────────────────
 
 import logging
+from contextlib import asynccontextmanager as _asynccontextmanager
 import os
 import threading
 import hmac
@@ -65,7 +66,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(f"aiduMEM-v{SERVICE_VERSION}")
 
+
+@_asynccontextmanager
+async def _lifespan(_app: "FastAPI"):
+    """把后台能力挂进 FastAPI 生命周期（v20 · P1-6）。
+
+    整改前，全部后台能力（建表、mem0 预热、WAL 启动对账与自愈、FTS 初始化、
+    核心记忆初始化、实体词表自检、以及 `_BACKGROUND_LOOPS` 里那一批常驻线程）
+    只挂在 `main()` 里。`main()` 是 `python api_server.py` 和控制台入口点走的路 ——
+    但**不是唯一的路**：
+
+        uvicorn api_server:app        # 官方文档最常见的起法
+        gunicorn -k uvicorn.workers.UvicornWorker api_server:app
+        任何把 `app` 当 ASGI 对象导入的进程
+
+    这些起法完全不经过 `main()`。于是服务照样监听、`/health` 照样返回 ok、
+    读写接口照样能用 —— **而 WAL 对账没跑、后台线程一个没起**。这不是崩溃，
+    是「服务看着是好的，一半的能力静默缺席」（静默失败铁律）。全文此前 0 处
+    `lifespan` / `on_event`，也就是说这条路上没有任何东西会告诉你缺了什么。
+
+    `_start_background()` 本身是幂等的（`_background_started` 双检锁），所以
+    `main()` 那一次调用保持原样不动 —— 两条路各自都能起，重复调用无副作用。
+    """
+    _start_background()
+    yield
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     # /docs 的封面标题，是 API 侧的「品牌门面」。
     # 注意只改展示文案：logger 名、/health 的 service 字段、线程名、
     # `AIDUMEM_*` 环境变量、各模块 docstring 里的 aiduMEM 都是机器契约或历史内部名，
@@ -218,6 +246,24 @@ def _request_authorized(request: Request) -> bool:
 
 
 @app.middleware("http")
+async def _record_http_outcome(request: Request, call_next):
+    """把每个响应的状态码记进进程内计数器（v20 · P1-9）。
+
+    放在鉴权 middleware **外面**（注册更晚 = 更外层）是刻意的：被门禁挡掉的 401
+    也是一次真实结局，事故里「凭据链断了导致满屏 401」正是要看见的形态之一。
+    未处理异常按 500 计入后再抛，否则「打挂了」这一类会从统计里凭空消失。
+    """
+    from ducky import http_metrics
+    try:
+        response = await call_next(request)
+    except Exception:
+        http_metrics.record(500)
+        raise
+    http_metrics.record(response.status_code)
+    return response
+
+
+@app.middleware("http")
 async def _require_credentials(request: Request, call_next):
     if not _auth_enabled():
         return await call_next(request)
@@ -247,7 +293,9 @@ def _ensure_ui_password() -> None:
     """
     from ducky.security.auth import (
         hash_password,
+        initial_password_path,
         password_hash_path,
+        write_initial_password,
         write_password_hash,
     )
     import secrets
@@ -256,15 +304,41 @@ def _ensure_ui_password() -> None:
     hash_file = password_hash_path()
     if not env_pwd and not os.path.exists(hash_file):
         gen_pwd = secrets.token_urlsafe(12)
+
+        # v20 · P1-7：明文口令**只落 0600 文件，不进日志**。
+        # 原先这里是 logger.warning(… 初始口令: %s …, gen_pwd, …)，于是每次
+        # 首启都把一条可直接登录的凭据写进 journald 和 logrotate 归档 ——
+        # 日志的读者范围永远大于口令的读者范围。
+        #
+        # 顺序是「先落明文、再落哈希」，不是反过来：
+        #   · 明文先落 → 若哈希落盘失败，最坏是留下一份没生效的口令文件（噪声）；
+        #   · 哈希先落 → 若明文落盘失败，口令**已经生效但没人知道它是什么**，
+        #     控制台当场锁死。两种失败都要处理，但只有后者会锁死用户。
+        if not write_initial_password(gen_pwd):
+            logger.error(
+                "🔐 [安全加固] 自动生成了控制台初始口令，但写 %s 失败 —— "
+                "本次**不落哈希**，下次启动重试（避免口令已生效却无人知晓而锁死控制台）。"
+                "按纪律这里绝不把明文打进日志兜底：请显式设置 AIDUMEM_UI_PASSWORD 后重启。",
+                initial_password_path(),
+            )
+            return
+
         # source="auto"：自动生成的口令只守 UI 登录，不启用 API 门禁 ——
         # 否则存量部署（hermes 插件 / MCP / cron 全走回环不带凭据）
         # 会在升级瞬间集体 401。详见 ducky/security/auth.py 的 provenance 说明。
         if write_password_hash(hash_password(gen_pwd), source="auto"):
             logger.warning(
-                "🔐 [安全加固] 未配置 AIDUMEM_UI_PASSWORD，已自动生成随机控制台初始口令: %s "
-                "(PBKDF2 哈希持久化至 %s，权限 0600，请妥善保存或通过控制台修改)",
-                gen_pwd,
+                "🔐 [安全加固] 未配置 AIDUMEM_UI_PASSWORD，已自动生成随机控制台初始口令。"
+                "明文只写在 %s（权限 0600，日志中不留明文），PBKDF2 哈希在 %s。"
+                "请取用后通过控制台改密，并删除该明文文件。",
+                initial_password_path(),
                 hash_file,
+            )
+        else:
+            logger.error(
+                "🔐 [安全加固] 初始口令明文已落 %s，但哈希落盘失败 —— 该口令并未生效。"
+                "请显式设置 AIDUMEM_UI_PASSWORD 后重启，并删除那个明文文件。",
+                initial_password_path(),
             )
 
 

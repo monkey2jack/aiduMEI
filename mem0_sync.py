@@ -200,8 +200,23 @@ def daemon_loop():
         sys.exit(1)
 
     last_sync = 0.0
-    logger.info("=== mem0_sync daemon 启动 ===")
+    #: 心跳间隔（秒）。用户视角审计六：服务 active 8 小时，journalctl 只有启动那 2 行，
+    #: 之后**零条目** —— 于是「在跑」和「启动就卡住」在运维面上完全无法区分。
+    #: 无变更时也打一条，才有「它还活着」这个信号。
+    heartbeat_s = 300
+    heartbeats = 0
+    syncs = 0
+    last_beat = time.time()
+    logger.info("=== mem0_sync daemon 启动 === 心跳间隔 %ds", heartbeat_s)
     while True:
+        # 心跳：无论有没有变更都打。这是本循环唯一的「我还活着」信号 ——
+        # 计数递增说明循环在转；计数停住说明卡在某处（而不是「没有变更」）。
+        now = time.time()
+        if now - last_beat >= heartbeat_s:
+            last_beat = now
+            heartbeats += 1
+            logger.info("💓 mem0_sync 心跳 #%d：累计同步 %d 次，监听 %s",
+                        heartbeats, syncs, MEMORY_MD.name)
         try:
             for event in inotify.read(timeout=1000):
                 fname = event.name
@@ -217,6 +232,7 @@ def daemon_loop():
         if last_sync > 0 and time.time() - last_sync >= DEBOUNCE_S:
             last_sync = 0.0
             sync_once()
+            syncs += 1
 
 
 # ═══════════════════════════════════════════════

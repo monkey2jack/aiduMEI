@@ -15,6 +15,7 @@ from ducky.mem0_runtime import (
     register_salience_for_add,
 )
 from ducky.bank_contract import ensure_bank_registered, make_scope
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -185,6 +186,7 @@ def register_add_routes(app: FastAPI) -> None:
                 from ducky.verbatim_vault import store_verbatim
                 store_verbatim(req.user_id, messages_json, md, bank_id=req.bank_id)
             except Exception as _ve:
+                feature_failed("store_verbatim", _ve)
                 logger.debug(f"📼 [VerbatimVault] 原文落库跳过: {_ve}")
 
             # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
@@ -201,6 +203,7 @@ def register_add_routes(app: FastAPI) -> None:
                         bank_id=req.bank_id, infer=infer_flag,
                     )
                 except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
+                    feature_failed("index_memory", e)
                     logger.warning(f"Layer 1 自检异常，降级为直接写入: {e}")
                     # v20：降级分支同样尊重 infer —— 否则调用方显式要的
                     # 免抽取写入会在降级时偷偷变回 LLM 抽取，确定性通路
@@ -226,6 +229,7 @@ def register_add_routes(app: FastAPI) -> None:
                                     # 路径**：出问题的时候才走到，最不容易被发现。
                                     _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category"), bank_id=req.bank_id)
                     except Exception as ie:
+                        feature_failed("index_memory", ie)
                         logger.debug(f"FTS index on add 跳过: {ie}")
                     return {"status": "ok", "action": "direct"}
 
@@ -378,6 +382,8 @@ def register_add_routes(app: FastAPI) -> None:
         except HTTPException:
             raise
         except Exception as e:
+            feature_failed("index_memory", e)
+            feature_failed("store_verbatim", e)
             logger.error(f"add 失败: {e}")
             raise HTTPException(500, str(e))
 

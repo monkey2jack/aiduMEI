@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import FastAPI, HTTPException
 
@@ -124,6 +125,74 @@ def _filter_results_by_time(results: list, before: str, after: str) -> None:
         return
 
 
+# ── 召回强度标注（v20 P0-6 同案）────────────────────────────────────────────
+#
+# 生产实测的分数分布（生产实例，8 个探针）：
+#     真问题  top = 0.558 / 0.560 / 0.662 / 0.651
+#     纯噪声  top = 0.457 / 0.423 / 0.466
+# 两组不重叠，也就是说**嵌入是有区分力的**。（第一次测时我拿「zzz9x9x9x 不存在的
+# 话题」当噪声，它拿到 0.589 —— 但那句里带着「不存在的话题」四个真词，压根不是噪声。
+# 一个选坏了的探针差点让我得出「分数毫无区分力」的相反结论。）
+#
+# 真实缺陷是：**纯噪声照样返回满额结果，且没有任何「这批很弱」的信号**。
+# 用户拿到 5 条分数 0.40–0.47 的东西，和拿到 5 条 0.66 的东西，在响应里长得一模一样。
+#
+# 为什么只标注、不默认过滤：8 个数据点定不出一个生产阈值 —— 那正是「拍脑袋常数」。
+# 默认过滤一旦把阈值定高，丢掉的是真记忆，比多返回几条噪声严重得多。所以：
+#   · 默认（floor=0）：只标注，不丢任何结果，行为与整改前逐字节一致；
+#   · 部署方显式设 `AIDUMEM_RECALL_SCORE_FLOOR` 才启用过滤，且过滤掉几条要报出来。
+_SCORE_FLOOR_ENV = "AIDUMEM_RECALL_SCORE_FLOOR"
+
+
+def _score_floor() -> float:
+    """读取召回下限；未设置或值非法一律返回 0.0（= 只标注不过滤）。
+
+    值非法时打 warning 而不是静默当 0 —— 「设了一个打错的阈值」和「没设」
+    在行为上一样，但在意图上完全不同（铁律 13）。
+    """
+    raw = (os.environ.get(_SCORE_FLOOR_ENV) or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        v = float(raw)
+    except ValueError:
+        logger.warning("%s=%r 不是数字，本次按不过滤处理（只标注）", _SCORE_FLOOR_ENV, raw[:20])
+        return 0.0
+    if not (0.0 <= v <= 1.0):
+        logger.warning("%s=%s 超出 [0,1]，本次按不过滤处理（只标注）", _SCORE_FLOOR_ENV, v)
+        return 0.0
+    return v
+
+
+def annotate_recall_strength(results: list, floor: float | None = None) -> dict:
+    """给召回结果打强度标注，返回随响应下发的元信息。
+
+    返回 `{"top_score", "floor", "weak", "dropped"}`：
+      · `top_score` —— 本次最高分（无结果时 None，**不是 0.0**：0.0 会被读成
+        「有结果但都是 0 分」，那是另一件事）
+      · `weak`      —— 最高分低于 floor（floor=0 时恒 False）
+      · `dropped`   —— 被 floor 过滤掉的条数（floor=0 时恒 0）
+    """
+    f = _score_floor() if floor is None else floor
+    scores = [r.get("score") for r in results if isinstance(r, dict)]
+    nums = [float(x) for x in scores if isinstance(x, (int, float))]
+    top = max(nums) if nums else None
+    dropped = 0
+    if f > 0.0 and results:
+        keep = [r for r in results
+                if not isinstance(r, dict)
+                or not isinstance(r.get("score"), (int, float))
+                or float(r["score"]) >= f]
+        dropped = len(results) - len(keep)
+        results[:] = keep
+    return {
+        "top_score": round(top, 4) if top is not None else None,
+        "floor": f,
+        "weak": bool(top is not None and f > 0.0 and top < f),
+        "dropped": dropped,
+    }
+
+
 def register_search_routes(app: FastAPI) -> None:
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
@@ -200,10 +269,17 @@ def register_search_routes(app: FastAPI) -> None:
             # v20 P0-4：召回路径与 rerank 三态随响应返回——「降级裸搜」和
             # 「重排序其实没生效」此前只活在服务端日志里，调用方无从察觉。
             rerank_telem = last_rerank_telemetry() or {"status": "not_invoked"}
+            # v20：召回强度随响应下发。整改前「5 条 0.66」和「5 条 0.42」
+            # 在响应里长得一模一样，调用方无从判断这批东西值不值得信。
+            strength = annotate_recall_strength(results)
+            if strength["dropped"]:
+                logger.info("召回下限过滤掉 %d 条（floor=%s, top=%s）",
+                            strength["dropped"], strength["floor"], strength["top_score"])
             return {
                 "status": "ok", "results": results,
                 "_recall_path": recall_path,
                 "_rerank": rerank_telem,
+                "_recall_strength": strength,
             }
         except Exception as e:
             logger.error(f"search 失败: {e}")

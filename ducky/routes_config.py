@@ -63,7 +63,11 @@ def _build_config_view() -> dict:
                 "max_tokens": lc.get("max_tokens"),
                 "temperature": lc.get("temperature"),
                 "is_reasoning_model": lc.get("is_reasoning_model", False),
-                "reasoning_effort": lc.get("reasoning_effort", "none"),
+                # v20 · P1-4：不许兜底成 "none"。配置里没写就是 None ——
+                # 兜一个字符串出来，控制台会显示得像「这个旋钮已经设好了」，
+                # 而实际上配置里一个字都没有。「配置没写却显示写了」和
+                # 「配置写了不等于配置生效」是同一种假绿灯。
+                "reasoning_effort": lc.get("reasoning_effort"),
                 "_note": lc.get("_note", ""),
             },
         },

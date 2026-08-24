@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ducky.salience.core import get_batch_salience_records
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.scoring")
 
@@ -224,6 +225,7 @@ def score_and_rank_candidates(
             rr_elapsed = round((time.time() - t_rr_start) * 1000, 1)
             logger.debug("🎯 [Scoring] rerank ok: %d docs -> top %d in %sms", len(docs), len(rr), rr_elapsed)
     except Exception as e:
+        feature_failed("rerank", e)
         logger.debug("Rerank 降级: %s", e)
 
     # v20 P0-4：rerank_applied 此前是丢在地上的局部变量，响应里永远看不到

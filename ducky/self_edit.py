@@ -28,7 +28,7 @@ from ducky.bank_contract import (
     vector_item_in_bank,
     vector_scope_filters,
 )
-from ducky.llm_client import call_llm
+from ducky.llm_client import COGNITIVE_MAX_TOKENS, call_llm
 # 🔴v19.2 遗留缺陷（v20 修）：下面 _detect_relation 里的注入防护调用了
 # validate_and_sanitize_memory_content，但这个符号**从来没被导入过** ——
 # 每次 LLM 判定 duplicate/conflict 都抛 NameError，被 self_edit_on_add 的
@@ -36,6 +36,7 @@ from ducky.llm_client import call_llm
 # 「LLM 回写前的注入清洗」自 v19.2.0 起从未真正执行过一次。
 from ducky.security.injection_guard import validate_and_sanitize_memory_content
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.self_edit")
 
@@ -186,7 +187,8 @@ def _detect_relation(memory, user_id: str, new_text: str,
     raw = call_llm(
         SELF_EDIT_USER_TEMPLATE.format(new_text=new_text[:400], candidates=cand_block),
         system=SELF_EDIT_SYSTEM,
-        max_tokens=512,
+        # 预算的唯一真相源在 llm_client（P1-5：512→1024，理由见常量注释）
+        max_tokens=COGNITIVE_MAX_TOKENS,
         temperature=0.2,
     )
     decision = _parse_decision(raw)
@@ -387,6 +389,7 @@ def rollback_edit(edit_id: int, memory=None) -> dict:
         # 把这条记忆的分类抹掉一次。不传 = 让 _index_memory 沿用行上既有分类。
         _index_memory(memory_id, old_content, user_id=row["user_id"])
     except Exception as e:
+        feature_failed("index_memory", e)
         logger.debug(f"回滚 FTS 同步跳过: {e}")
     try:
         from ducky.salience.core import on_memory_added
@@ -395,6 +398,7 @@ def rollback_edit(edit_id: int, memory=None) -> dict:
         # 会把命名库的 bank 戳重置回 'default'。不传 = 保留行上原有归属。
         on_memory_added(memory_id, content=old_content, preserve_heat=True)
     except Exception as e:
+        feature_failed("evolve_on_added", e)
         logger.debug(f"回滚 salience 同步跳过: {e}")
 
     conn.execute(

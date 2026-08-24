@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import sys
 import time
 from typing import Any
@@ -43,8 +44,12 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from benchmarks.adapter import AdapterError, AiduMEIBenchmarkAdapter
+from benchmarks.answerer import ROUTES, AnswerError, AnswerModel
 from benchmarks.corrections import (CorrectionError, apply_corrections,
                                     load_corrections)
+from benchmarks.locomo_official import (build_context, build_query,
+                                        build_question, get_cat_5_answer,
+                                        score_all, score_one)
 from benchmarks.schemas import validate_locomo, validate_longmemeval
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -295,11 +300,24 @@ def run_locomo_sample(
     top_k: int,
     max_qa: int | None = None,
     deterministic: bool = False,
+    answerer: AnswerModel | None = None,
+    seed: int = 0,
 ) -> list[dict]:
     """一个 LoCoMo 样本：灌注全部会话（对话即历史，无未来泄漏问题——
     问题针对整段既有对话提问），逐题检索并出诊断记录。
 
     ``deterministic``：见 ``run_longmemeval_instance``（G3b 自检专用）。
+
+    ``answerer``：给了就**生成答案并按官方口径打分**（``locomo_score``），
+    不给就只出召回诊断（v20.0 原有行为，向后兼容）。分开的理由是这两件事
+    失败模式不同：召回诊断不出网、可离线复跑；答题要花钱、会被上游 5xx
+    打断。做成可选参数意味着「管线本身对不对」永远能在不花一分钱的前提下
+    单独验证。
+
+    ``seed``：category 5 的 (a)/(b) 选项顺序由它派生。官方用的是没设种子的
+    全局 ``random.random()``，同一份数据两次跑分选项顺序不同——而顺序会影响
+    模型作答，不锁种子就谈不上可复现。种子按 ``seed:sample_id`` 派生，这样
+    增删样本不会移动其它样本已定的选项顺序。
     """
     import re
 
@@ -337,6 +355,8 @@ def run_locomo_sample(
 
     records: list[dict] = []
     qa_list = sample["qa"][:max_qa] if max_qa else sample["qa"]
+    rng = random.Random(int.from_bytes(
+        hashlib.sha256(f"{seed}:{sample_id}".encode()).digest()[:8], "big"))
     for j, qa in enumerate(qa_list):
         search_out = adapter.search(sample_id, str(qa["question"]), top_k=top_k)
         results = search_out["results"]
@@ -348,7 +368,7 @@ def run_locomo_sample(
         # 对照——三道约束都在 corrections.py 里强制，不靠自觉。
         forced_abstain = bool(qa.get("_marked_adversarial"))
         applicable = bool(evidence) and not forced_abstain
-        records.append({
+        rec: dict = {
             "sample_id": sample_id,
             "qa_index": j,
             "category": int(qa["category"]),
@@ -359,7 +379,10 @@ def run_locomo_sample(
             # 每条命中是靠哪种信号认出来的（metadata / verbatim_text）：
             # 没有这一栏，「召回 1.0」就说不清是精确回指还是兜底匹配。
             "evidence_hit_basis": basis,
-            # 同 longmemeval：无证据（category 5 对抗题）＝ 不适用，记 N/A
+            # 无证据的题＝不适用，记 N/A（不拿 0.0 充数）。
+            # 更正一处旧注释的事实错误：LoCoMo 的 category 5 **是带
+            # evidence 的**（真实数据 446 道全有），所以它们照样进召回
+            # 分母；真正无证据的是 LongMemEval 的 ``_abs`` 弃答题。
             "evidence_recall_applicable": applicable,
             "evidence_recall_diagnostic": (
                 len(hits) / len(evidence) if applicable else None
@@ -376,7 +399,38 @@ def run_locomo_sample(
                 item for item in results if isinstance(item, dict)
             ],
             "request_id": search_out["request_id"],
-        })
+        }
+
+        if answerer is not None:
+            # 官方 batch_size==1 的 RAG 口径：检索结果拼上下文 → 套官方
+            # QA_PROMPT → 取一句短答案 → 按题型打分。
+            # 每题都必须过 build_question：cat 2 要追加日期指令、cat 5 要
+            # 造 (a)/(b) 选项，这两件漏一件分数就不可比。
+            question, cat5_key = build_question(qa, rng)
+            query = build_query(build_context(results), question,
+                               int(qa["category"]))
+            try:
+                raw = answerer.complete(query)
+            except AnswerError as exc:
+                # 单题失败不终止全程（一次全量 1986 题，为一题重跑全部不
+                # 合算），但**必须留痕并计入分母**：见 _locomo_aggregate，
+                # 失败题不会被悄悄丢掉换一个更好看的均值。
+                rec["answer_error"] = str(exc)
+                rec["locomo_score"] = None
+            else:
+                prediction = (get_cat_5_answer(raw, cat5_key)
+                              if cat5_key else raw)
+                rec["prediction_raw"] = raw
+                rec["prediction"] = prediction
+                rec["locomo_score"] = score_one(
+                    int(qa["category"]), prediction, str(qa.get("answer", "")))
+            # 问句留全文（是我们自己拼的，且 cat 5 的选项顺序必须可查），
+            # 上下文只留条数：上下文正文是数据集原文，产物会被引用进报告，
+            # 逐字回填等于二次分发（LoCoMo 是 CC BY-NC）。
+            rec["prediction_question"] = question
+            rec["prediction_context_count"] = len(results)
+
+        records.append(rec)
     adapter.close_case(sample_id)
     return records
 
@@ -409,8 +463,45 @@ def _recall_aggregate(records: list[dict]) -> dict:
     }
 
 
+def _locomo_aggregate(records: list[dict]) -> dict | None:
+    """汇总 LoCoMo 官方分数，并把**答题失败数摆在明面上**。
+
+    与 ``_recall_aggregate`` 的「N/A 不记 0.0」是同一条纪律，但方向相反，
+    所以处理方式也必须相反：
+
+    - 召回诊断里的 N/A 是**题目本身没有证据**可召回（对抗题），记 0.0 是
+      冤枉了检索，所以跳过。
+    - 答题失败是**我们这边没打通**（上游 5xx、超时）。这些题按难度是随机的
+      吗？不是——越长的上下文越容易超时，而长上下文题恰恰更难。悄悄跳过
+      失败题，等于优先丢掉难题，会**抬高**均值。
+
+    所以这里不做取舍，而是把三个数一起交出去：只在成功题上算的均值、成功
+    题数、失败题数。看数的人自己判断这个均值可不可信；如果 failures 不是 0，
+    这个均值就不是能对外宣称的成绩。``score_all`` 无条件读
+    ``rec["locomo_score"]``，失败题的 None 必须在进它之前就摘掉。
+    """
+    seen = [r for r in records if "locomo_score" in r]
+    if not seen:
+        return None
+    scored = [r for r in seen if r.get("locomo_score") is not None]
+    failed = len(seen) - len(scored)
+    out = score_all(scored) if scored else {
+        "total_questions": 0, "overall_mean": None, "by_category": {},
+        "note": "无一题作答成功。",
+    }
+    out["questions_seen"] = len(seen)
+    out["answer_failures"] = failed
+    out["failure_note"] = (
+        "答题失败题不计入均值。failures>0 时本均值只是「已答对象上的均值」，"
+        "不构成可对外宣称的成绩：失败与题目难度相关（长上下文更易超时），"
+        "跳过它们会系统性抬高数字。"
+    )
+    return out
+
+
 def run_smoke(base_url: str, dataset: str, *, top_k: int, out_dir: str,
-              deterministic: bool = False) -> dict:
+              deterministic: bool = False,
+              answerer: AnswerModel | None = None, seed: int = 0) -> dict:
     """合成 fixture 上的端到端自检。
 
     两档闸门（PROTOCOL.md §5，v20 修订）：
@@ -441,7 +532,8 @@ def run_smoke(base_url: str, dataset: str, *, top_k: int, out_dir: str,
         records = []
         for sample in samples:
             records.extend(run_locomo_sample(
-                adapter, sample, top_k=top_k, deterministic=deterministic))
+                adapter, sample, top_k=top_k, deterministic=deterministic,
+                answerer=answerer, seed=seed))
     else:
         raise ValueError(f"未知数据集: {dataset}")
 
@@ -456,6 +548,10 @@ def run_smoke(base_url: str, dataset: str, *, top_k: int, out_dir: str,
         "write_path": "deterministic_infer_false" if deterministic else "production_infer_true",
         "gate": "G3b" if deterministic else "G3a",
         "data_report": data_report,
+        # 答题侧进 config，config 进 digest：换模型/换网关/换温度都会改
+        # digest，「拿 A 模型的哈希冒充 B 模型跑过」这条路直接堵掉。
+        "answer_model": answerer.describe() if answerer else None,
+        "cat5_option_seed": seed,
     }
     digest = _stable_digest(records, config)
     summary = {
@@ -463,6 +559,8 @@ def run_smoke(base_url: str, dataset: str, *, top_k: int, out_dir: str,
         "digest": digest,
         "records_total": len(records),
         "recall_aggregate": _recall_aggregate(records),
+        "locomo_score_aggregate": _locomo_aggregate(records),
+        "answer_model_usage": answerer.usage() if answerer else None,
         "adapter_stats": dict(adapter.stats),
         "started_at": started_at,
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -573,8 +671,24 @@ def _load_formal_corrections(dataset: str, path: str | None, entry: dict,
 
 def run_formal(base_url: str, dataset: str, *, top_k: int, data_path: str,
                out_dir: str, corrections_path: str | None = None,
-               sensitivity_baseline: str | None = None) -> dict:
-    """正式运行：哈希闸门 → 严格 schema（500/10）→ 修正（可选）→ 全量执行 → 留证。"""
+               sensitivity_baseline: str | None = None,
+               answerer: AnswerModel | None = None, seed: int = 0,
+               mode: str = "formal", max_samples: int | None = None,
+               max_qa: int | None = None) -> dict:
+    """正式运行：哈希闸门 → 严格 schema（500/10）→ 修正（可选）→ 全量执行 → 留证。
+
+    ``mode="dry"``（试跑）与 formal 走**同一段代码**，只多两个上限参数。
+    共用代码是故意的：如果试跑走另一条路径，那试跑通过什么也证明不了。
+    区别只有两点，且都是硬约束：
+
+    1. formal **不接受**任何上限（下面 assert 死），抽样成绩不许叫正式成绩；
+    2. 产物文件名与 ``config.mode`` 都写 ``dry``，digest 也因此不同，
+       试跑的哈希永远不可能被当成 formal 的哈希。
+    """
+    if mode == "formal" and (max_samples is not None or max_qa is not None):
+        raise SystemExit("formal 拒绝抽样上限：正式成绩必须全量")
+    if mode not in ("formal", "dry"):
+        raise ValueError(f"未知模式: {mode}")
     entry = _check_formal_manifest(dataset, data_path)
     raw = _load_json(data_path)
 
@@ -600,11 +714,13 @@ def run_formal(base_url: str, dataset: str, *, top_k: int, data_path: str,
         ]
     else:
         records = []
-        for sample in instances:
-            records.extend(run_locomo_sample(adapter, sample, top_k=top_k))
+        for sample in (instances[:max_samples] if max_samples else instances):
+            records.extend(run_locomo_sample(
+                adapter, sample, top_k=top_k, max_qa=max_qa,
+                answerer=answerer, seed=seed))
 
     config = {
-        "mode": "formal",
+        "mode": mode,
         "dataset": dataset,
         "top_k": top_k,
         "data_path": os.path.basename(data_path),
@@ -614,6 +730,10 @@ def run_formal(base_url: str, dataset: str, *, top_k: int, data_path: str,
         # （infer=true，LLM 抽取在环）。这里写死，不接受参数。
         "write_path": "production_infer_true",
         "data_report": data_report,
+        "answer_model": answerer.describe() if answerer else None,
+        "cat5_option_seed": seed,
+        # 抽样上限也进 config：一眼能看出这个数是全量还是抽样出来的。
+        "sampling": {"max_samples": max_samples, "max_qa_per_sample": max_qa},
         # 修正块进 config，而 config 进 digest：**修正永远不可能被悄悄应用**。
         # 零修正时也照样写进来——键缺失和「没改过」是两件事，不能靠猜。
         "corrections": {
@@ -632,21 +752,27 @@ def run_formal(base_url: str, dataset: str, *, top_k: int, data_path: str,
         "digest": digest,
         "records_total": len(records),
         "recall_aggregate": _recall_aggregate(records),
+        "locomo_score_aggregate": _locomo_aggregate(records),
+        "answer_model_usage": answerer.usage() if answerer else None,
         "adapter_stats": dict(adapter.stats),
         "note": (
-            "本 JSONL 只含检索证据链与诊断召回；官方 QA 指标须走官方 "
-            "evaluator（LongMemEval evaluate_qa.py / LoCoMo 官方评分），"
-            "judge 模型与温度见 PROTOCOL.md。"
+            ("试跑（抽样）：本数字不得作为成绩宣称，只用于验证管线与估算成本。"
+             if mode == "dry" else "")
+            + ("LoCoMo 分数由 benchmarks/locomo_official.py 按官方口径"
+               "（normalize_answer + PorterStemmer F1，逐题型路由）就地计算；"
+               "LongMemEval 需 judge 模型，本管线不产出其官方指标。"
+               if answerer else
+               "本 JSONL 只含检索证据链与诊断召回，不含任何官方 QA 指标。")
         ),
     }
     os.makedirs(out_dir, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
-    jsonl_path = os.path.join(out_dir, f"formal_{dataset}_{stamp}.jsonl")
+    jsonl_path = os.path.join(out_dir, f"{mode}_{dataset}_{stamp}.jsonl")
     with open(jsonl_path, "w", encoding="utf-8") as f:
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
     summary["jsonl"] = jsonl_path
-    with open(os.path.join(out_dir, f"formal_{dataset}_{stamp}_summary.json"),
+    with open(os.path.join(out_dir, f"{mode}_{dataset}_{stamp}_summary.json"),
               "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2, sort_keys=True)
     return summary
@@ -655,10 +781,14 @@ def run_formal(base_url: str, dataset: str, *, top_k: int, data_path: str,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="benchmarks.run",
-        description="aiduMEI 评测管线（smoke 自检 / formal 正式运行）",
+        description="aiduMEI 评测管线（smoke 自检 / dry 抽样试跑 / formal 正式运行）",
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--smoke", action="store_true", help="合成 fixture 自检")
+    mode.add_argument("--dry-run", action="store_true",
+                      help=("真实数据抽样试跑（同样过哈希闸门，但可用 "
+                            "--max-samples / --max-qa 限量）。产物与 digest "
+                            "都标 dry，**抽样结果不是成绩**"))
     mode.add_argument("--formal", action="store_true", help="正式运行（需哈希闸门）")
     parser.add_argument("--dataset", required=True,
                         choices=("longmemeval", "locomo"))
@@ -678,6 +808,22 @@ def main(argv: list[str] | None = None) -> int:
               "修正清单非空时必填——否则修正后的数字就成了唯一公布的数字"),
     )
     parser.add_argument(
+        "--answer-model", metavar="MODEL", choices=sorted(ROUTES),
+        help=("答题模型（LoCoMo 专用）。**网关是按模型 id 白名单路由的**，"
+              "不做前缀猜测：写错就报错，不会把请求发到错误的通道上去烧"
+              "别人的额度。可选：" + " / ".join(sorted(ROUTES))),
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0,
+        help=("category 5 选项 (a)/(b) 排布的随机种子（官方代码用的是无种子"
+              "全局 random，导致选项顺序不可复现）。按 sample_id 派生，"
+              "增删样本不会挪动其它样本已定的顺序"),
+    )
+    parser.add_argument("--max-samples", type=int, metavar="N",
+                        help="仅 --dry-run：只灌注前 N 个样本")
+    parser.add_argument("--max-qa", type=int, metavar="N",
+                        help="仅 --dry-run：每个样本只答前 N 题")
+    parser.add_argument(
         "--deterministic", action="store_true",
         help=("仅 smoke：以 infer=false 灌注（LLM 出环），用于 G3b "
               "bit 级复现性自检。此模式的召回数字不代表生产表现，"
@@ -685,27 +831,45 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.smoke and (args.corrections or args.sensitivity_baseline):
+    if not args.formal and (args.corrections or args.sensitivity_baseline):
         # smoke 跑的是合成 fixture，没有上游标注可修——在这里放行只会让人
         # 误以为「修正已生效」，而 fixture 里根本没有对应的题。
         parser.error("--corrections / --sensitivity-baseline 只用于 --formal")
+    if not args.dry_run and (args.max_samples or args.max_qa):
+        # 抽样上限只属于 dry。放到 formal 上就是「全量」二字作废。
+        parser.error("--max-samples / --max-qa 只用于 --dry-run")
+    if args.answer_model and args.dataset != "locomo":
+        # LongMemEval 的官方指标要 judge 模型，本管线不产出——放行一个
+        # --answer-model 会让人以为跑出来的是 LongMemEval 成绩。
+        parser.error("--answer-model 目前只支持 --dataset locomo")
+
+    answerer = AnswerModel(args.answer_model) if args.answer_model else None
 
     try:
         if args.smoke:
             summary = run_smoke(args.base_url, args.dataset,
                                 top_k=args.top_k, out_dir=args.out_dir,
-                                deterministic=args.deterministic)
+                                deterministic=args.deterministic,
+                                answerer=answerer, seed=args.seed)
         else:
+            label = "--dry-run" if args.dry_run else "--formal"
             if not args.data_path:
-                parser.error("--formal 需要 --data-path")
+                parser.error(f"{label} 需要 --data-path")
             if args.deterministic:
                 # 正式成绩绝不许走免抽取通路：那是另一个系统的成绩。
-                parser.error("--formal 不接受 --deterministic（正式跑分必须与生产同路）")
+                parser.error(f"{label} 不接受 --deterministic（跑分必须与生产同路）")
             summary = run_formal(args.base_url, args.dataset,
                                  top_k=args.top_k, data_path=args.data_path,
                                  out_dir=args.out_dir,
                                  corrections_path=args.corrections,
-                                 sensitivity_baseline=args.sensitivity_baseline)
+                                 sensitivity_baseline=args.sensitivity_baseline,
+                                 answerer=answerer, seed=args.seed,
+                                 mode="dry" if args.dry_run else "formal",
+                                 max_samples=args.max_samples,
+                                 max_qa=args.max_qa)
+    except AnswerError as e:
+        print(f"答题模型不可用: {e}", file=sys.stderr)
+        return 2
     except AdapterError as e:
         print(f"运行失败（{e.kind}）: {e}", file=sys.stderr)
         return 2
@@ -721,6 +885,9 @@ def main(argv: list[str] | None = None) -> int:
          "digest": summary["digest"],
          "records_total": summary["records_total"],
          "recall_aggregate": summary["recall_aggregate"],
+         "locomo_score_aggregate": summary.get("locomo_score_aggregate"),
+         "answer_model": summary["config"].get("answer_model"),
+         "answer_model_usage": summary.get("answer_model_usage"),
          "adapter_stats": summary["adapter_stats"],
          "jsonl": summary["jsonl"]},
         ensure_ascii=False, indent=2,

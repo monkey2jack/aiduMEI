@@ -9,7 +9,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  # v20 · P2-1：发布之前先跑测试。
+  # 这一段不是装饰 —— 在它存在之前，一个从未跑过测试的提交可以直接变成
+  # ghcr.io/…:latest（k3 高-2 ＝ fable5 H2）。`needs:` 只在同一个工作流内生效，
+  # 所以测试流水线以 `workflow_call` 形态被复用进来，而不是两个工作流各自碰巧都绿。
+  tests:
+    uses: ./.github/workflows/test.yml
+
   build-and-push:
+    needs: tests
     runs-on: ubuntu-latest
     permissions:
       contents: read

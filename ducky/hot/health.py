@@ -203,14 +203,131 @@ def register_health_routes(app: FastAPI) -> None:
             ek = entity_keywords_status()
             probes["entity_keywords"] = ek["count"]
             probes["entity_keywords_ok"] = ek["configured"]
+            # v20 P0-3：来源也要暴露。「22 个词」这个数字本身不能证明配置是对的 ——
+            # 它可能来自一个我们以为已经删掉的 systemd drop-in（那份 drop-in 会静默
+            # 压过 .env，见 memory_gate.entity_keywords_source 的注释）。
+            probes["entity_keywords_source"] = ek.get("source", "unknown")
             if not ek["configured"]:
                 warnings.append(
                     f"{ek['env_var']} 未配置：涉及自定义人名/项目代号的查询会零召回，"
                     "参考 .env.example 配置后重启服务"
                 )
+            elif ek.get("source") == "overridden":
+                warnings.append(
+                    f"{ek['env_var']} 生效值与 .env 声明值不一致：有东西在覆盖唯一真相源"
+                    "（多半是 systemd drop-in 的 Environment= 排在 EnvironmentFile= 之后）。"
+                    "改 .env 不会生效，配置与现实是两半"
+                )
+            elif ek.get("source") == "outside_env_file":
+                warnings.append(
+                    f"{ek['env_var']} 有生效值，但 .env 里没有这一行：来源不在唯一真相源里。"
+                    "下一次照 .env 重建部署时它会静默消失，而 /health 在那之前一直是绿的"
+                )
+            elif ek.get("source") == "declared_not_effective":
+                warnings.append(
+                    f"{ek['env_var']} 在 .env 里声明了但没有生效：配置写了不等于配置生效"
+                )
         except Exception as e:
             probes["entity_keywords_ok"] = False
             probes["entity_keywords_error"] = str(e)[:120]
+
+        # HTTP 结局探针（v20 P1-9）
+        #
+        # 整改前 `/health` 只探活：服务 active、探针全 ok，而三分之一的请求在报 500 ——
+        # 「195 次 500 / 13 分钟」那次事故就是这个形态，事后没有任何可复现的监控路径。
+        try:
+            from ducky import http_metrics
+            hm = http_metrics.snapshot()
+            probes["http_error_rate_5m"] = hm["error_rate_5m"]
+            probes["http_requests_5m"] = hm["total"]
+            probes["http_server_errors_5m"] = hm["server_errors"]
+            probes["http_client_errors_5m"] = hm["client_errors"]
+            rate = hm["error_rate_5m"]
+            if rate is not None and rate > 0:
+                warnings.append(
+                    f"近 {hm['window_s']}s 内 5xx 占比 {rate:.1%}"
+                    f"（{hm['server_errors']}/{hm['total']}）：服务在出错，而探活是绿的"
+                )
+        except Exception as e:
+            probes["http_error_rate_5m"] = None
+            probes["http_metrics_error"] = str(e)[:120]
+
+        # 进程资源占用（v20：部署方指定为产品级指标）
+        #
+        # 一个记忆引擎如果内存单调上涨、fd 只增不减、线程越跑越多，那不是「性能差」，
+        # 是迟早会把用户的记忆一起带走。所以它和召回准确度是同一级别的指标，
+        # 该常驻在 /health 上，而不是等出事了再上机器手测一次。
+        # 字段语义严格区分「当前 rss」与「历史峰值 max_rss」—— 混成一个字段会让
+        # 一次早已结束的尖峰永远挂在监控上（详见 ducky/resource_probe.py）。
+        try:
+            from ducky.resource_probe import snapshot as _res_snapshot
+            res = _res_snapshot()
+            probes["process_rss_mb"] = res["rss_mb"]
+            probes["process_max_rss_mb"] = res["max_rss_mb"]
+            probes["process_cpu_seconds"] = res["cpu_seconds"]
+            probes["process_threads"] = res["threads"]
+            probes["process_open_fds"] = res["open_fds"]
+        except Exception as e:
+            probes["process_rss_mb"] = None
+            probes["process_resource_error"] = str(e)[:120]
+
+        # 特性级失败计数（v20 P1-8）
+        #
+        # AST 普查实测：ducky/ + 三个服务入口共 489 处宽捕获，其中 251 处在生产
+        # 默认日志级别下**等于无声**。全改会用噪声淹掉真信号，所以只改「挂在写入／
+        # 读取主链路上、失败后有持久用户可见后果」的那些：索引没建（搜不到）、
+        # 原文没存（永久丢失）、自编辑没跑（去重从未执行）、重排没跑（排序降级）。
+        # 每一处都要能回答铁律 8 那句「如果这里真失败了，谁会知道？」——
+        # 下面这两行就是那个「谁」。
+        try:
+            from ducky.failure_ledger import snapshot as _fl_snapshot
+            fl = _fl_snapshot()
+            probes["feature_failures"] = fl["total"]
+            probes["feature_failures_by_name"] = fl["by_feature"]
+            if fl["total"]:
+                top = sorted(fl["by_feature"].items(), key=lambda kv: -kv[1])[:3]
+                warnings.append(
+                    "本进程有特性级失败 %d 次（%s）：主链路都降级继续了，"
+                    "但这些事情没有发生 —— 记忆可能搜不到、原文可能没存下"
+                    % (fl["total"], "，".join(f"{k}×{v}" for k, v in top))
+                )
+        except Exception as e:
+            probes["feature_failures"] = None
+            probes["feature_failures_error"] = str(e)[:120]
+
+        # 核心记忆陈旧度探针（v20 P0-4）
+        #
+        # 为什么这条必须在运维面上：`inject_context()` 早就会给超期 block 打 ⚠️，
+        # 但那条信息只出现在**注入给模型的上下文里**。也就是说「核心记忆一个月没更新」
+        # 这件事，此前只有人正好去读一次注入内容才会发现 —— 没有任何自动化手段。
+        # 而它的症状偏偏是最难自己暴露的那种：东西在，只是旧的，答案语气照样自信。
+        try:
+            from ducky.core_memory import staleness_status
+            cm = staleness_status()
+            probes["core_memory_blocks"] = cm["blocks"]
+            probes["core_memory_stale"] = cm["stale"]
+            probes["core_memory_stale_blocks"] = cm["stale_blocks"]
+            probes["core_memory_oldest_age_days"] = cm["oldest_age_days"]
+            probes["core_memory_unfilled_blocks"] = cm["unfilled_blocks"]
+            if cm["stale"]:
+                warnings.append(
+                    f"核心记忆有 {cm['stale_blocks']}/{cm['blocks']} 块超过 "
+                    f"{cm['threshold_days']} 天未更新（最旧 {cm['oldest_age_days']} 天）："
+                    "问「现在在做什么」会拿到过期答案，且语气与新鲜答案毫无区别"
+                )
+            if cm["unfilled_blocks"]:
+                warnings.append(
+                    f"核心记忆有 {cm['unfilled_blocks']} 块仍是出厂占位文本（从未填写）："
+                    "这不是「旧」，是「空」，两者要做的事不同 —— 前者去核对，后者去填"
+                )
+            if cm["unparsable_blocks"]:
+                warnings.append(
+                    f"核心记忆有 {cm['unparsable_blocks']} 块的时间戳解析不了，"
+                    "已按超期计入 —— 时间戳坏掉和真的很旧在判据上不许混为「正常」"
+                )
+        except Exception as e:
+            probes["core_memory_stale"] = None
+            probes["core_memory_error"] = str(e)[:120]
 
         # 事实库与容量水位探针
         facts_count = 0

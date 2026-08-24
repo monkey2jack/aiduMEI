@@ -1,0 +1,66 @@
+# aiduMEI 测试流水线（v20 · P2-1）
+#
+# 为什么这个文件必须存在
+# ──────────────────────
+# k3 高-2 ＝ fable5 H2，两份独立审计罕见地完全同调：本仓 78 个测试文件、上千条
+# 断言、一整套「反假绿灯」方法论 —— **一条都没在 CI 里跑过**。
+# `.github/workflows/` 从前只有 `docker.yml`，全 `.github/` 搜 `pytest` = 0 命中。
+# 也就是说：**一个没跑过测试的提交，可以直接变成 `latest` 镜像。**
+#
+# 这个仓最大的资产是测试纪律，而那份纪律此前完全依赖人肉执行。执行人状态一波动，
+# 防线整体失效 —— 这不是假设，这是本仓 CHANGELOG 里已经记过的翻车模式。
+#
+# 两个设计选择
+# ──────────
+# 1. `workflow_call`：本工作流同时是**可复用工作流**。`docker.yml` 通过
+#    `uses: ./.github/workflows/test.yml` 调它，并让发布 job `needs:` 它 ——
+#    于是「先绿后发」是 GitHub 的调度保证，不是一句口头约定。
+#    （`needs:` 只在同一个工作流内有效，所以必须走 `workflow_call`，
+#    不能靠两个各自独立的工作流「碰巧都绿」。）
+# 2. `HERMES_SRC: "off"` 显式关掉宿主自动发现：让跳过行为**双向可复现**。
+#    不写这一句，CI 机器上有没有宿主源码就成了一个隐式变量，跳过条数飘忽不定，
+#    而 README 里那几个数字是按轴对得上号的。
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12']
+    env:
+      # 宿主自动发现显式关掉 —— 见文件头第 2 条
+      HERMES_SRC: "off"
+      # 数据目录隔离：conftest.py 本就会重定向，这里再加一道，
+      # 保证任何绕过 conftest 的子进程也落不到仓库 data/ 里
+      AIDUMEM_DATA_DIR: ${{ runner.temp }}/aidumei-ci-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -e .
+
+      - name: Pytest
+        run: pytest tests/ -q -rs
+
+      - name: 跳过项必须可解释
+        # 跳过不是「差不多绿了」。这一步把跳过条数打出来，让每次运行的跳过面
+        # 都留在日志里 —— 哪天某条轴悄悄多吃掉几十条用例，翻日志就能看见。
+        if: always()
+        run: pytest tests/ -q -rs 2>&1 | tail -20

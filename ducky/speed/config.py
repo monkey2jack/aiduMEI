@@ -88,7 +88,16 @@ _DEFAULT_SPEED = {
     "fastpath_enabled": True,
     "long_text_chars": 2500,
     "force_max_tokens_on_reasoning": True,
-    "force_reasoning_effort": "none",
+    # v20 · P1-4：默认**不设**。原先默认 "none"，于是每个部署都在无声地往请求里
+    # 塞一个 reasoning_effort=none —— 而 v19.4.0 生产实测已经写明（见
+    # ducky/llm_client.py 的 🔴-B 注释）：**上游网关无视请求级
+    # reasoning_effort/enable_thinking**。塞进去不生效，日志却打 ✅，这就是
+    # 「设了没用但报成功」的第三态。
+    #
+    # 为什么不是直接把这个键删掉：开源用户可能把 base_url 指向**别的**供应商
+    # （OpenAI o 系列就认这个字段）。所以保留能力、去掉默认：显式设了才发，
+    # 没设就一个字都不提 —— 不替上游承诺任何效果，也不替用户做决定。
+    "force_reasoning_effort": None,
 }
 
 _speed_cfg_cache: Optional[dict] = None

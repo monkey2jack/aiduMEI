@@ -17,6 +17,7 @@ import sqlite3
 
 from ducky.utils import DEFAULT_USER_ID, get_text_conn
 from ducky.bank_contract import DEFAULT_BANK_ID, make_scope, raw_storage_key, scoped_storage_key
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.text_fts")
 
@@ -466,5 +467,6 @@ def _hybrid_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID,
         results = hybrid_search(get_memory(), query, user_id, top_k, bank_id=bank_id)
         return results
     except Exception as e:
+        feature_failed("hybrid_search", e)
         logger.debug(f"hybrid 委托失败，降级 BM25: {e}")
         return _bm25_keyword_search(query, top_k, user_id, bank_id)

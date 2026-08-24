@@ -29,6 +29,7 @@ from ducky.mem0_runtime import (
     reset_memory_singleton,
 )
 from ducky.wal_engine import cascade_delete_memory, cascade_delete_all
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -404,6 +405,7 @@ def register_crud_routes(app: FastAPI) -> None:
                 from ducky.text_fts import _index_memory
                 _index_memory(req.memory_id, content, user_id=user_id, bank_id=scope.bank_id)
             except Exception as fe:
+                feature_failed("index_memory", fe)
                 logger.debug(f"FTS index on update 跳过: {fe}")
 
             # 同步更新 facts.db 事实内容与更新时间
@@ -432,6 +434,7 @@ def register_crud_routes(app: FastAPI) -> None:
         except HTTPException:
             raise
         except Exception as e:
+            feature_failed("index_memory", e)
             logger.error(f"update 失败: {e}")
             raise HTTPException(500, str(e))
 

@@ -9,7 +9,14 @@ v20.0 之前，README 里写着一句绝对话：
 它错了，而且是**被它自己引用的那次生产实跑**证伪的：部署树上宿主明明在场，
 跑出来是 `832 passed, 1 skipped`。根因不是数字手滑，是**模型缺了三条轴** ——
 当时以为「跳过」只有宿主 Hermes 源码这一条成因，于是把「装上宿主」等同于「全绿」。
-实际有四条互不相干的轴，两台机器各缺一条，`833` 从来没有任何一台机器跑出来过。
+实际有八条互不相干的轴（v20.0 跑分管线带进来三条：LoCoMo 数据集、`regex`、`numpy`；
+`.gitignore` 守卫又带进来第八条：`git` 可执行文件），两台机器各缺一条，
+`833` 从来没有任何一台机器跑出来过。
+
+第八条那条轴顺带示范了一件事：**换轴不等于消轴**。`test_v20_gitignore_guard.py` 本来
+要靠「本仓有 `.git`」才跑得动（生产沙箱和 sdist 都没有，那是必然跳过），改成 `/tmp`
+一次性仓之后，依赖降级成「本机有 `git` 命令」—— 概率小了两个数量级，但它还是一条轴，
+还是得登记。轴不登记，README 那句「全轴齐备」就是拿一个不完整的模型算出来的数。
 
 更难堪的是：证伪它的记录**早就躺在自己仓库里**。CHANGELOG 和 version.py 白纸黑字
 写着「生产 1 skipped」，README 同期宣称「0 skipped」，两句话隔着几百行互相矛盾，
@@ -35,6 +42,7 @@ import functools
 import io
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tokenize
@@ -50,10 +58,13 @@ _SKIP_MECHANISM = re.compile(
     r"unittest\.skipIf|@skipIf|skipif\("
 )
 
-# ── 四条轴的登记表 ────────────────────────────────────────────────────────
+# ── 八条轴的登记表 ────────────────────────────────────────────────────────
 # scope="file"     整份文件被跳过（模块级 pytestmark / 类级 skipIf）
 # scope="callsite" 只跳所在的那个测试函数
 # doc_zh / doc_en  README 里那张轴表的行首标签，用来把文档数字钉到实测值上
+# match            可选：同一个文件里可以住着好几条互不相干的轴（LoCoMo 那份
+#                  就住着三条），这个正则对跳过点所在的**原始行**做匹配，
+#                  把「轴」从「按文件」拆成「按原因」。不给就认领全文件。
 _AXES = (
     {
         "key": "hermes_host",
@@ -82,6 +93,51 @@ _AXES = (
         "scope": "callsite",
         "doc_zh": "`qdrant_client` 已安装",
         "doc_en": "`qdrant_client` installed",
+    },
+    {
+        "key": "locomo_dataset",
+        "file": "test_v20_locomo_official.py",
+        "scope": "callsite",
+        "match": r"locomo10\.json",
+        "doc_zh": "LoCoMo 数据集已就位",
+        "doc_en": "LoCoMo dataset present",
+    },
+    {
+        "key": "bench_dep_regex",
+        "file": "test_v20_locomo_official.py",
+        "scope": "callsite",
+        "match": r'importorskip\("regex"\)',
+        "doc_zh": "`regex` 已安装",
+        "doc_en": "`regex` installed",
+    },
+    {
+        "key": "bench_dep_numpy",
+        "file": "test_v20_locomo_official.py",
+        "scope": "callsite",
+        "match": r'importorskip\("numpy"\)',
+        "doc_zh": "`numpy` 已安装",
+        "doc_en": "`numpy` installed",
+    },
+    {
+        # v20：nltk 此前**一处未声明**，靠「本机碰巧装过」才跑得通 —— 生产实机
+        # 实测 13 条用例集体变红，而那些红看着和真缺陷一模一样。现在与同族的
+        # regex/numpy 一个待遇：缺它是跳过，不是失败。
+        "key": "bench_dep_nltk",
+        # 这条轴**跨两个文件** —— 官方 F1 的用例分布在打分实现与跑分管线两处。
+        # 登记表原先是一轴一文件；硬拆成两条轴会把「同一个依赖」说成两件事，
+        # 所以这里扩成 files 列表，`file` 仍兼容单文件写法。
+        "files": ["test_v20_locomo_official.py", "test_v20_benchmarks.py"],
+        "scope": "callsite",
+        "match": r'importorskip\("nltk"',   # 单行形态：匹配是按**原始行**做的
+        "doc_zh": "`nltk` 已安装",
+        "doc_en": "`nltk` installed",
+    },
+    {
+        "key": "git_binary",
+        "file": "test_v20_gitignore_guard.py",
+        "scope": "file",
+        "doc_zh": "`git` 可执行文件在场",
+        "doc_en": "`git` executable present",
     },
 )
 
@@ -151,11 +207,26 @@ def _skip_sites(fname):
             if _SKIP_MECHANISM.search(ln)]
 
 
-def _callsite_gated_cases(fname):
+def _matched_sites(fname, match=None):
+    """这条轴认领了该文件里哪些跳过点（行号集合）。`match=None` 表示认领全部。
+
+    🔴v20.0：`match` 必须对**原始行**匹配，不能用 `_code_only_lines` 的结果 ——
+    那里字符串字面量已被抹白，而「哪条轴」恰恰写在字面量里
+    （`importorskip("regex")` 里的 `regex`、`pytest.skip("…locomo10.json")`）。
+    跳过点本身仍由抹白后的代码认定，所以「在一句话里提到它」照旧不算数。
+    """
+    sites = _skip_sites(fname)
+    if match is None:
+        return set(sites)
+    raw = pathlib.Path(_TESTS_DIR, fname).read_text(encoding="utf-8").split("\n")
+    return {s for s in sites if re.search(match, raw[s - 1])}
+
+
+def _callsite_gated_cases(fname, match=None):
     """调用点跳过：数「包含跳过语句的测试函数」有几个（AST 实测，不数行）。"""
     path = pathlib.Path(_TESTS_DIR, fname)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    sites = set(_skip_sites(fname))
+    sites = _matched_sites(fname, match)
     gated = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -172,23 +243,25 @@ def _measured_axis_counts():
     """每条轴实际门控了几条用例 —— 全部现场测，登记表里不放数字。"""
     out = {}
     for axis in _AXES:
+        files = axis.get("files") or [axis["file"]]
         if axis["scope"] == "file":
-            out[axis["key"]] = _cases_in_file(axis["file"])
+            out[axis["key"]] = sum(_cases_in_file(f) for f in files)
         else:
-            out[axis["key"]] = _callsite_gated_cases(axis["file"])
+            out[axis["key"]] = sum(
+                _callsite_gated_cases(f, axis.get("match")) for f in files)
     return out
 
 
 def test_skip_axis_census_matches_registry():
     """tests/ 里出现跳过机制的文件，必须与登记表完全一致。
 
-    多一个 → 有人加了第五条轴却没写进 README，「全绿」的含义又变了没人知道；
+    多一个 → 有人又加了一条轴却没写进 README，「全绿」的含义又变了没人知道；
     少一个 → 某条轴被删了，README 上那一行成了描述不存在之物的死文案。
     两个方向都必须红。
     """
     found = {p.name for p in sorted(_TESTS_DIR.glob("*.py"))
              if any(_SKIP_MECHANISM.search(ln) for ln in _code_only_lines(str(p)))}
-    registered = {axis["file"] for axis in _AXES}
+    registered = {f for axis in _AXES for f in (axis.get("files") or [axis["file"]])}
 
     unregistered = found - registered
     assert not unregistered, (
@@ -200,6 +273,38 @@ def test_skip_axis_census_matches_registry():
         f"登记表里这些轴在源码里已经找不到了：{sorted(vanished)} —— "
         "README 上对应的行成了死文案"
     )
+
+
+def test_every_skip_site_is_claimed_by_exactly_one_axis():
+    """每一个跳过点都必须被**恰好一条**轴认领。
+
+    🔴v20.0：允许一个文件登记多条轴（各带 `match`）之后，冒出了一个新的藏身处 ——
+    `test_skip_axis_census_matches_registry` 只比**文件名集合**，所以往一个已登记
+    的文件里再加一个跳过点，它一声不响。而那正是这次踩到的坑的形状：
+    以为 `test_v20_locomo_official.py` 只有一条轴，实际住着三条。
+    这条守卫把每个跳过点点名分配到轴上：没人认领要红，两条轴抢一个也要红。
+    """
+    for fname in sorted({f for axis in _AXES for f in (axis.get("files") or [axis["file"]])}):
+        sites = _skip_sites(fname)
+        assert sites, f"{fname} 登记在册，却一个跳过点都找不到 —— 登记表是死文案"
+        owners = {}
+        for axis in _AXES:
+            if fname not in (axis.get("files") or [axis["file"]]):
+                continue
+            for site in _matched_sites(fname, axis.get("match")):
+                owners.setdefault(site, []).append(axis["key"])
+
+        orphan = sorted(s for s in sites if s not in owners)
+        assert not orphan, (
+            f"{fname} 第 {orphan} 行的跳过点没有任何一条轴认领 —— "
+            "这个文件已经在登记表里，文件名比对逮不到它，"
+            "README 轴表的门控条数会连带算错。请给它登记一条轴（带 `match`）"
+        )
+        shared = {s: ks for s, ks in owners.items() if len(ks) > 1}
+        assert not shared, (
+            f"{fname} 这些跳过点被多条轴同时认领：{shared} —— "
+            "`match` 写得太宽，门控条数会被重复计入"
+        )
 
 
 def test_every_axis_actually_gates_at_least_one_case():
@@ -262,12 +367,16 @@ def test_all_axes_number_is_labelled_as_derived_not_measured():
             )
 
 
-def test_no_machine_here_satisfies_all_four_axes():
-    """自证：本机也不是那台「四轴齐备」的机器，全绿数字依旧只能是推导的。
+def test_no_machine_here_satisfies_every_axis():
+    """自证：本机也不是那台「全轴齐备」的机器，全绿数字依旧只能是推导的。
 
     这条不是行为测试，是**证据保全** —— 它把「我们手上没有那样一台机器」
     这句话变成一条会随环境变化而失效的断言，而不是 README 里一句无人复核的话。
-    真有一天四轴齐备了，这条会红，那时才有资格把「推导值」改成「实测」。
+    真有一天全轴齐备了，这条会红，那时才有资格把「推导值」改成「实测」。
+
+    🔴v20.0：探测器数目必须跟得上 `_AXES` —— 轴从四条长到九条时若不补探测器，
+    `len(present)` 永远小于 `len(_AXES)`，这条断言就成了永不触发的白护栏。
+    所以下面先断言「每条轴都有探测器」，再谈齐备与否。
     """
     present = []
     if pathlib.Path("/hermes/hermes-agent/agent/memory_provider.py").exists():
@@ -277,15 +386,34 @@ def test_no_machine_here_satisfies_all_four_axes():
     if (_REPO_ROOT / "scripts" / "backup_gate.sh").exists() and \
             not sys.platform.startswith("win"):
         present.append("backup_gate_posix")
-    try:
-        __import__("qdrant_client")
-        present.append("qdrant_client")
-    except ImportError:
-        pass
+    for mod, key in (("qdrant_client", "qdrant_client"),
+                     ("regex", "bench_dep_regex"),
+                     ("numpy", "bench_dep_numpy"),
+                     ("nltk", "bench_dep_nltk")):
+        try:
+            __import__(mod)
+        except ImportError:
+            continue
+        present.append(key)
+    from benchmarks import download as _bdl      # 走产品自己的解析器，不另立门户
+    if pathlib.Path(_bdl.data_dir(), "locomo10.json").exists():
+        present.append("locomo_dataset")
+
+    if shutil.which("git") is not None:
+        present.append("git_binary")
+
+    probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
+              "bench_dep_regex", "bench_dep_numpy", "bench_dep_nltk",
+              "locomo_dataset", "git_binary"}
+    unprobed = {axis["key"] for axis in _AXES} - probed
+    assert not unprobed, (
+        f"这些轴没有探测器：{sorted(unprobed)} —— 少一个探测器，"
+        "下面那句「本机不齐备」就永远成立，这条证据保全变成白护栏"
+    )
 
     if len(present) == len(_AXES):
         pytest.fail(
-            "本机四条跳过轴全部齐备 —— 这是好事：现在可以真跑一次全量，"
+            f"本机 {len(_AXES)} 条跳过轴全部齐备 —— 这是好事：现在可以真跑一次全量，"
             "把 README 里「推导值，从未实测」改成实测值，并删掉这条断言。"
             f"（齐备的轴：{present}）"
         )

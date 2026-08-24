@@ -13,7 +13,7 @@ JSONL + digest）的正式运行。
 | 适配器（真实 HTTP 契约） | ✅ `benchmarks/adapter.py`，失败分类计数，无占位返回 |
 | schema 校验 | ✅ LongMemEval / LoCoMo 装载即校验，类别计数现场生成 |
 | smoke 自检 | ✅ 合成 fixture，端到端可跑，digest 可复现 |
-| 数据哈希锁定 | ⬜ PENDING——`download.py --register` 后写入 manifest |
+| 数据哈希锁定 | ✅ 已锁——LoCoMo `locomo10.json` / LongMemEval `longmemeval_s.json` 均已写入 `benchmarks/data_manifest.json`（含上游提交号）；LongMemEval 两文件的 sha256 与上游 `x-linked-etag` 自证值逐字节相符 |
 | LongMemEval S 正式运行 | ⬜ 未运行 |
 | LongMemEval M 正式运行 | ⬜ 未运行 |
 | LoCoMo 正式运行 | ⬜ 未运行 |

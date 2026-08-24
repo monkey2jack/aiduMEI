@@ -78,6 +78,7 @@ def validate_longmemeval(
     type_counts: Counter[str] = Counter()
     abstention = 0
     sessions_after_question = 0  # runner 必须排除，防时间泄漏
+    intraday_unordered = 0       # 日内时刻颠倒：上游常态，只记不拦
 
     for i, inst in enumerate(instances):
         where = f"instance[{i}]"
@@ -112,8 +113,16 @@ def validate_longmemeval(
             )
 
         parsed_dates = [_parse_lme_date(d) for d in dates]
+        # 上游只保证 haystack 按【天】升序，不保证日内时刻有序。实测官方
+        # longmemeval_s / longmemeval_oracle 各 500 实例：按天乱序 0/500，
+        # 按完整时间戳乱序 211/500、34/500，且 **全部** 只是日内时刻颠倒
+        # （211==211、34==34）。故结构断言下调到「天」，日内颠倒按本模块
+        # 既定分工计入 report，不抛异常。
+        parsed_days = [d.date() for d in parsed_dates]
+        if parsed_days != sorted(parsed_days):
+            raise SchemaError(f"{where} haystack_dates 未按日期升序")
         if parsed_dates != sorted(parsed_dates):
-            raise SchemaError(f"{where} haystack_dates 未按时间升序")
+            intraday_unordered += 1
         q_date = _parse_lme_date(inst["question_date"])
         sessions_after_question += sum(1 for d in parsed_dates if d > q_date)
 
@@ -139,6 +148,7 @@ def validate_longmemeval(
         "type_counts": dict(type_counts),
         "abstention": abstention,
         "sessions_after_question": sessions_after_question,
+        "intraday_unordered": intraday_unordered,
     }
 
 

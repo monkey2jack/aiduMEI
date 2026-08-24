@@ -165,7 +165,7 @@ def test_graduation_invalid_scope_raises_before_fetch():
 # ═══════════════ ④ graduate：skill 盖戳 + 只删本域 ═══════════════
 def test_graduation_skill_stamped_and_foreign_never_deleted(monkeypatch):
     monkeypatch.setattr(graduation, "_call_llm",
-                        lambda prompt, max_tokens=512: "蒸馏后的打卡技能")
+                        lambda prompt, max_tokens=None: "蒸馏后的打卡技能")
     mem = _FakeMem(_seed_items())
 
     out = graduation.graduate_to_skill(
@@ -190,7 +190,7 @@ def test_graduation_skill_stamped_and_foreign_never_deleted(monkeypatch):
 def test_graduation_default_domain_deletes_only_legacy(monkeypatch):
     """默认域毕业：只吃存量（无戳）记忆，skill 也按约定盖 default 戳。"""
     monkeypatch.setattr(graduation, "_call_llm",
-                        lambda prompt, max_tokens=512: "存量打卡技能")
+                        lambda prompt, max_tokens=None: "存量打卡技能")
     mem = _FakeMem(_seed_items())
 
     out = graduation.graduate_to_skill(
@@ -205,7 +205,7 @@ def test_graduation_default_domain_deletes_only_legacy(monkeypatch):
 # ═══════════════ ⑤ auto_graduate 端到端 ═══════════════
 def test_auto_graduate_threads_scope_end_to_end(monkeypatch):
     monkeypatch.setattr(graduation, "_call_llm",
-                        lambda prompt, max_tokens=512: "端到端技能")
+                        lambda prompt, max_tokens=None: "端到端技能")
     mem = _FakeMem(_seed_items())
 
     res = graduation.auto_graduate(mem, "user_x", bank_id="bank_b")

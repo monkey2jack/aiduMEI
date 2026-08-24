@@ -19,6 +19,7 @@ from .bank_contract import (
     vector_scope_filters,
 )
 from .utils import get_facts_conn, jaccard_sim
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.selfcheck")
 
@@ -218,6 +219,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
                     "details": details,
                 }
         except Exception as se:
+            feature_failed("self_edit", se)
             logger.debug(f"self-edit 跳过（降级）: {se}")
     else:
         details["self_edit_skipped"] = "infer=false"
@@ -297,6 +299,7 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
         from ducky.mem0_runtime import register_salience_for_add
         register_salience_for_add(add_result, user_id=user_id, bank_id=bank_id)
     except Exception as e:
+        feature_failed("salience_register", e)
         logger.debug(f"salience 登记跳过: {e}")
 
     results = (
@@ -314,6 +317,7 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
             from ducky.text_fts import _index_memory
             _index_memory(mid, content, user_id=user_id, category=category, bank_id=bank_id)
         except Exception as e:
+            feature_failed("index_memory", e)
             logger.debug(f"FTS index on add 跳过: {e}")
         _classify_memory_type_on_add(mid, content, user_id=user_id, bank_id=bank_id)
 
@@ -330,6 +334,7 @@ def _classify_memory_type_on_add(memory_id: str, content: str, *, user_id: str =
         from ducky.memory_types import classify_and_record
         classify_and_record(memory_id, content, use_llm=enabled, user_id=user_id, bank_id=bank_id)
     except Exception as e:
+        feature_failed("memory_type_classify", e)
         logger.debug(f"写时六型分类跳过: {e}")
 
 
@@ -349,6 +354,7 @@ def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: st
         on_memory_added(memory_id, content=content, preserve_heat=True,
                         user_id=user_id, bank_id=bank_id)
     except Exception as e:
+        feature_failed("evolve_on_added", e)
         logger.debug(f"self-edit 热度登记跳过: {e}")
     try:
         from ducky.text_fts import _index_memory
@@ -357,6 +363,7 @@ def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: st
         # 内容不改分类，不传 = 让 _index_memory 沿用行上既有分类。
         _index_memory(memory_id, content, user_id=user_id, bank_id=bank_id)
     except Exception as e:
+        feature_failed("index_memory", e)
         logger.debug(f"self-edit FTS 索引刷新跳过: {e}")
 
 

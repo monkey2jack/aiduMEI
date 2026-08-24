@@ -59,6 +59,33 @@ KIND_CLIENT = "client"             # 其他 4xx（如注入拦截 400）
 KIND_SERVER = "server"             # 5xx（有限重试后仍失败）
 KIND_TIMEOUT = "timeout"           # 连接/读取超时
 KIND_PROTOCOL = "protocol"         # 非 JSON / 响应形状不符
+
+# ── 说话人名不是 role ──────────────────────────────────────────────
+# OpenAI 的 role 只有 system/user/assistant 三个合法值。LoCoMo 把说话人名
+# （Melanie/Caroline）放在 speaker 字段，若直接当 role 传下去，服务端的
+# mem0 抽取层 parse_messages() 只认那三个分支、**没有 else 也没有告警**，
+# 整条消息静默落空 → 抽取提示词是空串 → 零事实入库，而 /add 照回 ok。
+# 实测（2026-08-23，四组对照见 FINDING_role_drop.md）：
+#   role=user 原句 Δ=+1 ／ role=Caroline Δ=0 ／ 同内容第一人称 Δ=0
+#   ／ role=assistant Δ=0
+# 即**只有 user 能产出语义记忆**。故此处把说话人名归一为 user，并把名字
+# 前缀进正文以保住「谁说的」这一归属（实测抽出的事实确实保留了人名）。
+# 已是合法 role 的原样透传 —— 不动确定性写入（G3b）的字节形态。
+_WIRE_ROLES = frozenset({"system", "user", "assistant"})
+
+
+def _normalize_turn(role: str, content: str) -> tuple[str, str, str]:
+    """把 (role, content) 归一成可上线的 (wire_role, wire_content, speaker)。
+
+    speaker 为空表示 role 本就合法、未做改写。
+    """
+    r = str(role).strip()
+    c = str(content)
+    if r.lower() in _WIRE_ROLES:
+        return r.lower(), c, ""
+    return "user", f"{r}: {c}", r
+
+
 KIND_COMPONENT = "component_failure"  # HTTP 200 但 body status=error
 KIND_JOB = "job_failed"            # 异步 job 以 error 收场或超时未完成
 KIND_USAGE = "usage"               # 调用方违反适配器契约（如未 reset_case）
@@ -273,8 +300,16 @@ class AiduMEIBenchmarkAdapter:
         }
         if dia_id:
             metadata["bench_dia_id"] = str(dia_id)
+        wire_role, wire_content, speaker = _normalize_turn(role, content)
+        msg = {"role": wire_role, "content": wire_content}
+        if speaker:
+            # OpenAI 规范里说话人身份的正确位置；抽取层不读它，但留着让
+            # 线上形态与已验证的探针逐字一致，也便于服务端日后利用。
+            msg["name"] = speaker
+            # 原始说话人名进元数据：逐字库与归属审计都靠它，不靠 role。
+            metadata["bench_speaker"] = speaker
         payload = {
-            "messages": [{"role": str(role), "content": str(content)}],
+            "messages": [msg],
             "user_id": user_id,
             "bank_id": bank_id,
             # 显式传，不靠服务端默认值：与 force_sync 同一个理由

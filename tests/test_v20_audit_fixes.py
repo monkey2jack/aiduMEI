@@ -50,30 +50,33 @@ def _fresh_db():
 
 
 def test_jia1a_put_block_never_rewrites_row_ownership():
-    """默认域里两个域撞同一个 ``block_key`` 时，**归属不许被改写**。
+    """默认域里两个租户写同一个 ``block_key``，**谁也别碰谁那一行**。
 
     ⚠️ 这条守的是一次静默的数据搬迁，不是一次报错。
 
     背景：默认域对任何租户都保留 v19 裸键（这是硬契约，见
     ``test_v20_bank_scope_core.py::
     test_default_bank_keeps_the_v19_key_shape_for_every_tenant`` —— 改它会让
-    升级前的存量行整体失踪）。代价是单列主键 ``block_key`` 比唯一索引
-    ``(user_id, bank_id, block_key_raw)`` 粗一档：默认域里两个不同的域写同一个
-    ``block_key``，会撞进同一行。
+    升级前的存量行整体失踪）。
 
-    旧代码的 upsert 写着 ``user_id=excluded.user_id, bank_id=excluded.bank_id``
-    —— 于是后写的那一方不只改了内容，**还把这一行的归属划到了自己名下**。
-    没有报错、没有日志、``status`` 照样是 ``ok``；从此原主人在自己的域里
-    再也查不到这一块，而它明明还在库里躺着。
+    v19 为这份兼容付的代价是单列主键 ``block_key`` 比
+    ``(user_id, bank_id, block_key_raw)`` 粗一档：默认域里两个不同租户写同一个
+    ``block_key`` 会撞进同一行。而旧代码的 upsert 还写着
+    ``user_id=excluded.user_id, bank_id=excluded.bank_id`` —— 于是后写的那一方
+    不只改了内容，**还把这一行的归属划到了自己名下**。没有报错、没有日志、
+    ``status`` 照样是 ``ok``；从此原主人在自己的域里再也查不到这一块，而它明明
+    还在库里躺着。
 
-    修法只动一处：把那两句从 ``DO UPDATE SET`` 里删掉。内容照旧更新（不改现
-    有行为、不打断生产机器上正在工作的写路径），但归属**只能由建行的那次写
-    决定**。真正的隔离（键形状改造 + 读侧回落 + 存量迁移，横跨 5 个模块）依赖
-    丙1 租户模型定论，且必须排在 丙9 数据对账**之后**。
+    ⚠️ **本条用例的断言在 v20.0pre 被改过一次，理由记在这里。** 上一版只做了
+    「不可能变坏」的半步：删掉那两句归属回写，撞键时留一条 warning 并把真实归属
+    回给调用方；于是它断言的是「只有一行、归属仍是 alice、返回值报 alice」。
+    甲1b 把主键换成三元组之后，「撞进同一行」这个**前提本身不存在了** —— 每个
+    ``(租户, bank)`` 各自一行，裸键的形状一个字节没变。断言只能跟着病情走：不再
+    断言「撞了但没被搬走」，改成断言「根本撞不上」。射程没有变短 —— 归属被搬走
+    的那一刻，②③ 一定红。
 
-    判据两条：① 库里那一行的 ``user_id/bank_id`` 一个字没变；② 返回值报的是
-    **真实归属**，不是调用方自己传进来的那个 —— 否则调用方会以为自己拿到了
-    这一块的所有权。
+    判据四条：① 两个租户各自一行；② alice 的内容**没被 bob 盖掉**（这才是这条
+    缺陷真正的伤害）；③ 各读各的；④ alice 自己更新自己的块照旧生效。
     """
     from ducky.core_memory import get_block, init_core_memory, put_block
 
@@ -87,43 +90,54 @@ def test_jia1a_put_block_never_rewrites_row_ownership():
     )
     assert first["user_id"] == "alice" and first["bank_id"] == "default"
 
-    # bob 在同一个默认域里写同一个 block_key —— 裸键，必然撞进 alice 那一行。
+    # bob 在同一个默认域里写同一个 block_key —— 裸键，v19 下必然撞进 alice 那一行。
     second = put_block(
         "core_current_project",
-        "bob 后写的内容，可以覆盖内容，但不许把这一行划到 bob 名下",
+        "bob 后写的内容，绝不许落到 alice 那一行上",
         "bob",
         "default",
     )
+    assert second["user_id"] == "bob" and second["bank_id"] == "default"
 
     conn = sqlite3.connect(_DB)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT user_id, bank_id, content FROM core_memory WHERE block_key_raw=?",
-        ("core_current_project",),
-    ).fetchall()
+    rows = {
+        r["user_id"]: r["content"]
+        for r in conn.execute(
+            "SELECT user_id, bank_id, content FROM core_memory WHERE block_key_raw=?",
+            ("core_current_project",),
+        ).fetchall()
+    }
     conn.close()
 
-    # ① 撞键只应撞出一行（裸键 + 单列主键的既有事实，这里顺手固化）。
-    assert len(rows) == 1, f"默认域裸键应只有一行，实得 {len(rows)} 行"
-
-    # ② 归属一个字没变 —— 这是本条的核心断言。
-    assert rows[0]["user_id"] == "alice", (
-        f"归属被静默改写成 {rows[0]['user_id']!r} —— "
-        "一次内容更新把这一行从 alice 搬到了别人名下，alice 从此在自己域里查不到它"
+    # ① 两个租户各自一行 —— 三元组主键之后「撞进同一行」不再可能。
+    assert set(rows) == {"alice", "bob"}, (
+        f"默认域裸键下两个租户应各占一行，实得 {sorted(rows)} —— "
+        "少了谁就意味着谁的那一行被另一个人吃掉了"
     )
-    assert rows[0]["bank_id"] == "default"
 
-    # ③ 返回值不许对调用方撒谎：报真实归属，不报调用方传进来的那个。
-    assert second["user_id"] == "alice", (
-        f"返回值报了 {second['user_id']!r}，而库里这一行仍属 alice —— "
-        "调用方会以为自己拿到了这一块的所有权"
+    # ② 核心断言：alice 的内容没被 bob 盖掉。
+    assert rows["alice"].startswith("alice 在默认域里建的"), (
+        f"alice 那一行现在是 {rows['alice']!r} —— bob 的写入落到了 alice 的行上"
     )
-    assert second["bank_id"] == "default"
+    assert rows["bob"].startswith("bob 后写的内容")
+
+    # ③ 各读各的。
+    assert get_block("core_current_project", "alice", "default")["content"].startswith(
+        "alice 在默认域里建的"
+    )
+    assert get_block("core_current_project", "bob", "default")["content"].startswith(
+        "bob 后写的内容"
+    )
 
     # ④ 正常路径不许被这道守卫打断：alice 自己更新自己的块，照旧生效。
-    again = put_block("core_current_project", "alice 自己更新自己的块，必须照旧生效", "alice", "default")
+    again = put_block(
+        "core_current_project", "alice 自己更新自己的块，必须照旧生效", "alice", "default"
+    )
     assert again["user_id"] == "alice"
-    assert get_block("core_current_project", "alice", "default")["content"].startswith("alice 自己更新")
+    assert get_block("core_current_project", "alice", "default")["content"].startswith(
+        "alice 自己更新"
+    )
 
 
 def test_jia1a_named_banks_stay_isolated_after_the_fix():
@@ -152,68 +166,114 @@ def test_jia1a_named_banks_stay_isolated_after_the_fix():
 # ── 甲16：播种被 INSERT OR IGNORE 静默拒绝，CoreMemory 整块失效 ─────────
 
 
-def test_jia16_seed_reports_when_it_was_silently_declined(caplog):
-    """播种撞上别的域占着的裸键时，**必须留下痕迹**。
+def test_jia16_renamed_default_identity_reads_its_legacy_blocks(caplog, monkeypatch):
+    """改过名的默认身份，必须读得到自己那三块**存量真实内容**。
 
-    ⚠️ 这条守的不是数据，是**可见性**。它复现的是生产机器上此刻正在发生的事。
+    ⚠️ 这条复现的是 v20.0 部署当天生产机器上真实发生的事，一字不差。
 
     链条（生产实测：``core_memory`` 3 行全部 ``user=default/bank=default``、
     全部裸键，运行时身份名下 **0** 行）：
 
-    1. v19 存量行被增量迁移 ``ALTER TABLE ... DEFAULT 'default'`` 打上
-       ``user_id='default'`` 的戳；
-    2. 生产 ``.env`` 把 ``AIDUMEM_DEFAULT_USER_ID`` 设成一个**非 default** 的
-       运行时身份；
-    3. 默认库对任何租户都用 v19 裸键（硬契约），于是播种时 ``scoped_storage_key``
-       算出的键**正是** default 那三行占着的裸键；
-    4. ``INSERT OR IGNORE`` 撞上冲突 —— 不报错、不写入、不吭声，三次全 IGNORE；
+    1. v19 存量行被增量迁移 ``ALTER TABLE ... ADD COLUMN user_id TEXT NOT NULL
+       DEFAULT 'default'`` 打上 ``user_id='default'`` 的戳；
+    2. 部署方把 ``AIDUMEM_DEFAULT_USER_ID`` 改成一个**非 default** 的名字，于是
+       运行时的默认身份不再是 ``'default'``；
+    3. 默认库对任何租户都用 v19 裸键（硬契约），播种时算出的键**正是** default
+       那三行占着的裸键；
+    4. ``INSERT OR IGNORE`` 撞上单列主键冲突 —— 不报错、不写入、不吭声；
     5. ``get_all_blocks(运行时身份, 'default')`` → 0 行；
-    6. ``inject_context()`` → ``""``。
+    6. ``inject_context()`` → ``""``，而 ``/health`` 照样报 ``ok``。
 
-    **CoreMemory 对这个域整块失效，日志上一个字都没有**，而
-    ``init_core_memory`` 还在打「3 个 block 就绪」。「静默拒绝」比「静默覆盖」
-    更难发现：覆盖至少留下一行被改坏的数据，拒绝什么都不留下，调用方拿到的是
-    「初始化完成」。
+    **CoreMemory 对这个域整块失效，日志上一个字都没有。**「静默拒绝」比「静默
+    覆盖」更难发现：覆盖至少留下一行被改坏的数据，拒绝什么都不留下，调用方拿到
+    的是「初始化完成」。
 
-    ⚠️ **本条不断言数据被修好了** —— 下面 ① ② 两条断言故意把「查不到、注入为空」
-    这个**当前仍然错误**的行为钉住。存量行归并属于 丙9 数据对账，键形状改造属于
-    甲1b（且必须排在 丙9 之后）。本轮交付的是 ③ ④：让它在日志里现形。
+    ⚠️ **本条用例的断言在 v20.0pre 被改过一次，理由记在这里。** 上一版**故意
+    断言这个错误行为**（「一块也读不到、注入为空、但日志里得有痕迹」），因为当时
+    判定存量行归并要等 丙9 数据对账、键形状改造要等 甲1b。它的 docstring 当时就
+    写明「甲1b/丙9 已落地？那这条用例的前提就变了，要连同 §1.3 一起重判」——
+    现在正是那一刻，所以整条重判为「必须读得到」。
+
+    修法是两件事合起来：甲1b 把主键换成 ``(user_id, bank_id, block_key_raw)``
+    三元组；读侧靠 ``bank_contract.visible_user_ids`` 放宽 —— 改过名的默认身份
+    同时看得见 ``'default'`` 名下的存量行。**一行数据都没有迁移、改写、删除**，
+    所以 丙9 那套「归属靠先到先得猜一个」的数据对账不必做。
+
+    ⚠️ 这条用例**必须** monkeypatch ``bank_contract.DEFAULT_USER_ID``：放宽只在
+    ``user_id == DEFAULT_USER_ID`` 时发生（这是刻意的 —— 放宽给任意名字就等于把
+    所有租户串成一个，见下面那条负向对照），而测试进程里它是 ``'default'``。随便
+    挑个名字来调**不会**放宽，那样这条用例会「证明」修复无效。本仓已有四处同样
+    的手法，见 ``test_v20_salience_bank_scope.py`` /
+    ``test_v20_ledger_evolve_bank_scope.py`` / ``test_v20_feedback_bank_scope.py``。
     """
-    from ducky.core_memory import get_all_blocks, init_core_memory, inject_context
+    import ducky.bank_contract as bank_contract
+    from ducky.core_memory import (
+        get_all_blocks,
+        init_core_memory,
+        inject_context,
+        put_block,
+    )
 
-    # v19 存量：三行裸键，挂在 default 名下。
+    # 第一步：造出 v19 存量 —— 三行裸键挂在 'default' 名下，内容是**真的**。
     init_core_memory(user_id="default", bank_id="default")
+    real = {
+        "core_user_profile": "存量真实内容：称呼、时区、沟通风格都在这里",
+        "core_current_project": "存量真实内容：当前项目的目标与下一步",
+        "core_key_decisions": "存量真实内容：架构选择与操作红线",
+    }
+    for key, content in real.items():
+        put_block(key, content, "default", "default")
+
+    # 第二步：部署方改名。放宽的开关就在这个常量上。
+    monkeypatch.setattr(bank_contract, "DEFAULT_USER_ID", "dudu")
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="aiduMEM.CoreMemory"):
-        # 运行时身份进同一个默认库 —— 撞上 default 占着的裸键。
-        init_core_memory(user_id="runtime_identity", bank_id="default")
+        init_core_memory(user_id="dudu", bank_id="default")
 
-    # ① 当前行为（**错的**，本轮不修，钉住防止悄悄漂移）：这个域一块也读不到。
-    assert get_all_blocks(user_id="runtime_identity", bank_id="default") == {}, (
-        "读到东西了 —— 说明存量行的归属被谁改动过，或者键形状改了（甲1b/丙9 已落地？"
-        "那这条用例的前提就变了，要连同 §1.3 一起重判）"
+    # ① 三块全部读得到，而且是**存量真实内容**，不是新播的「（尚未填写）」。
+    blocks = get_all_blocks(user_id="dudu", bank_id="default")
+    assert set(blocks) == set(real), (
+        f"改过名的默认身份只读到 {sorted(blocks)} —— 存量行对它失明了（甲16）"
     )
-    # ② 用户能感知到的症状：注入上下文是空的。
-    assert inject_context(user_id="runtime_identity", bank_id="default") == ""
+    for key, content in real.items():
+        assert blocks[key]["content"] == content, (
+            f"{key} 读出来是 {blocks[key]['content']!r} —— "
+            "存量真实内容被新播的占位符盖掉了（甲1b 反噬）"
+        )
 
-    # ③ 本轮的交付：这件事必须在日志里现形。
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert warnings, (
-        "播种被静默拒绝，却没有任何 WARNING —— "
-        "CoreMemory 对这个域整块失效，运维在日志里看不到一个字（甲16）"
+    # ② 用户能感知到的症状必须消失：注入的上下文里有真东西。
+    ctx = inject_context(user_id="dudu", bank_id="default")
+    assert ctx, "inject_context 仍然是空的 —— 用户侧看不到任何核心记忆"
+    for content in real.values():
+        assert content in ctx, f"注入上下文里少了这一块：{content!r}"
+
+    # ③ 一行数据都不许动：库里仍然只有那三行，仍然挂在 'default' 名下。
+    conn = sqlite3.connect(_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT user_id, block_key_raw FROM core_memory").fetchall()
+    conn.close()
+    assert {r["user_id"] for r in rows} == {"default"}, (
+        f"存量行的归属被动过了：{sorted({r['user_id'] for r in rows})} —— "
+        "读侧放宽绝不允许伴随任何写入（迁移、改写、搬家都不行）"
     )
-    blob = "\n".join(r.getMessage() for r in warnings)
-    assert "甲16" in blob, f"警告没标明缺陷编号，运维无从查证：{blob!r}"
-    for key in ("core_user_profile", "core_current_project", "core_key_decisions"):
-        assert key in blob, f"警告没点名受影响的 block {key}：{blob!r}"
+    assert len(rows) == len(real), (
+        f"库里变成了 {len(rows)} 行 —— 播种给自己插了新的占位符，"
+        "它们会按「精确归属优先」排在存量真实内容前面（甲1b 反噬）"
+    )
 
-    # ④ 初始化日志不许再撒谎：0 块就绪时不能报「3 个 block 就绪」。
-    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
-    init_lines = [m for m in infos if "初始化完成" in m]
-    assert init_lines, "初始化日志不见了"
-    assert "0/3" in init_lines[-1], (
-        f"一块都没就绪，日志却报 {init_lines[-1]!r} —— 日志本身在撒谎，比没有日志更糟"
+    # ④ 修好之后这条路径是干净的，不许再有 WARNING（假红灯一样害人）。
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not warnings, f"这已经是一条修好的路径，却仍在报警：{warnings!r}"
+
+    # ⑤ 初始化日志必须说真话：三块都读得到，就报 3/3。
+    init_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.INFO and "初始化完成" in r.getMessage()
+    ]
+    assert init_lines and "3/3" in init_lines[-1], (
+        f"三块都读得到，日志却报 {init_lines!r} —— 日志本身在撒谎，比没有日志更糟"
     )
 
 
@@ -243,6 +303,476 @@ def test_jia16_seed_stays_quiet_when_nothing_is_blocked(caplog):
         assert init_lines and "3/3" in init_lines[-1], (
             f"干净路径应报 3/3，实得 {init_lines!r}"
         )
+
+
+# ── 甲1b：主键换成 (user_id, bank_id, block_key_raw) 三元组 ───────────────────
+#
+# 这一节是 甲1a 和 甲16 共同的**根治**，也是 v20.0pre 唯一动了表结构的地方。
+# v19 的单列主键 block_key 比「谁的、哪个 bank 的、哪一块」粗一档，两个后果：
+#   · 写：默认域里两个租户写同一个裸键会撞进同一行（甲1a）；
+#   · 播种：撞上冲突的 INSERT OR IGNORE 一声不吭地拒绝（甲16）。
+# 换主键把这两个后果同时拿掉，而裸键的形状一个字节没变。
+#
+# 方案文档 §1.4-② 明确要求「不接受只用 rg 命中或源码字符串守卫代替运行时证明」，
+# 所以这一节全是行为断言：PRAGMA 读真表、hand-build 一张真 v19 表跑真迁移。
+
+
+def _make_v19_table(rows):
+    """按 v19 的**原样**建一张 core_memory（单列主键、没有 scope 三列），塞进 rows。
+
+    这是生产存量的真实形状。之后 ``_ensure_table`` 会用
+    ``ALTER TABLE ... ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'``
+    给这些行打上 ``user_id='default'`` 的戳 —— 那一句正是 甲16 的第一环，
+    所以测试必须走这条真路径，不能自己 INSERT 一张「已经是 v20 形状」的表。
+    """
+    conn = sqlite3.connect(_DB)
+    conn.execute("DROP TABLE IF EXISTS core_memory")
+    conn.execute(
+        """
+        CREATE TABLE core_memory (
+            block_key        TEXT PRIMARY KEY,
+            content          TEXT NOT NULL,
+            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    for key, content in rows.items():
+        conn.execute(
+            "INSERT INTO core_memory (block_key, content) VALUES (?, ?)", (key, content)
+        )
+    conn.commit()
+    conn.close()
+
+
+def _pk_columns():
+    """当前 core_memory 的主键列集合（运行时读真表，不看源码）。"""
+    conn = sqlite3.connect(_DB)
+    conn.row_factory = sqlite3.Row
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(core_memory)") if r["pk"]}
+    conn.close()
+    return cols
+
+
+def test_jia1b_primary_key_is_the_scope_triple():
+    """建完表，主键必须是三元组 —— 用 PRAGMA 问数据库，不问源码。"""
+    from ducky.core_memory import init_core_memory
+
+    init_core_memory(user_id="alice", bank_id="default")
+    assert _pk_columns() == {"user_id", "bank_id", "block_key_raw"}, (
+        f"主键实为 {sorted(_pk_columns())} —— 还是 v19 的单列主键，"
+        "甲1a 的静默覆盖和 甲16 的静默拒绝都还在"
+    )
+
+
+def test_jia1b_v19_shaped_table_migrates_without_losing_a_row(monkeypatch):
+    """v19 存量表 → 重建主键 → **一行不丢、一字不改、归属不动**。
+
+    这条是升级路径的总闸。表重建（建新表→拷数据→删旧表→改名）是这轮唯一的
+    破坏性操作，它出问题的方式是「悄悄少几行」——所以这里把三件事一起钉住：
+    行数、内容、归属。
+
+    另外顺手钉住 甲4 的教训：重建刻意**没有**放进
+    ``schema_bootstrap.apply_migrations``（那个函数整体裹在
+    ``except Exception: logger.error("...服务继续启动...")`` 里，一次失败的表重建
+    会被降级成一行日志、服务照常起来、记忆照常空），而是放在
+    ``core_memory._ensure_table`` 里、失败就往上抛。
+    """
+    import ducky.bank_contract as bank_contract
+    from ducky.core_memory import get_all_blocks, init_core_memory
+
+    legacy = {
+        "core_user_profile": "v19 存量：用户画像的真实内容",
+        "core_current_project": "v19 存量：当前项目的真实内容",
+        "core_key_decisions": "v19 存量：关键决策的真实内容",
+    }
+    _make_v19_table(legacy)
+    assert _pk_columns() == {"block_key"}, "前置条件没造对：这应该是一张 v19 表"
+
+    monkeypatch.setattr(bank_contract, "DEFAULT_USER_ID", "dudu")
+    init_core_memory(user_id="dudu", bank_id="default")
+
+    # ① 主键真的重建了。
+    assert _pk_columns() == {"user_id", "bank_id", "block_key_raw"}
+
+    # ② 一行不丢、一字不改、归属还是迁移时打的那个戳。
+    conn = sqlite3.connect(_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT user_id, bank_id, block_key, block_key_raw, content FROM core_memory"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == len(legacy), (
+        f"迁移前 {len(legacy)} 行，迁移后 {len(rows)} 行 —— 表重建吃掉了数据"
+    )
+    for r in rows:
+        assert r["user_id"] == "default", f"存量行的归属被改成了 {r['user_id']!r}"
+        assert r["bank_id"] == "default"
+        assert r["block_key_raw"] == r["block_key"], "裸键的形状被动过了"
+        assert r["content"] == legacy[r["block_key"]], "内容被改写了"
+
+    # ③ 用户侧的效果：改过名的默认身份读得到这三块真内容。
+    blocks = get_all_blocks(user_id="dudu", bank_id="default")
+    assert {k: v["content"] for k, v in blocks.items()} == legacy
+
+
+def test_jia1b_seed_still_fills_the_blocks_that_are_genuinely_missing(monkeypatch):
+    """播种守卫必须**精确**：挡住已能读到的，照旧补上真缺的。
+
+    守卫（``_seed_defaults`` 里 ``if key in visible: continue``）是为了防甲1b 的
+    反噬 —— 主键换成三元组之后 ``INSERT OR IGNORE`` 不再被拒，播种会给改过名的
+    默认身份插三条崭新的「（尚未填写）」，而它们按「精确归属优先」排在存量真实
+    内容**前面**，等于修完 甲16 又亲手把内容盖掉一次。
+
+    但「一刀切不播种」同样是错的：真缺的块必须补上，否则新用户拿到一个空壳。
+    这条用例造一个**半缺**的存量（只有一块），要求：那一块读到存量真内容，另外
+    两块正常播种。
+    """
+    import ducky.bank_contract as bank_contract
+    from ducky.core_memory import DEFAULT_BLOCKS, get_all_blocks, init_core_memory
+
+    _make_v19_table({"core_user_profile": "v19 存量：只有这一块留了下来"})
+    monkeypatch.setattr(bank_contract, "DEFAULT_USER_ID", "dudu")
+    init_core_memory(user_id="dudu", bank_id="default")
+
+    blocks = get_all_blocks(user_id="dudu", bank_id="default")
+    assert set(blocks) == set(DEFAULT_BLOCKS), (
+        f"三块没凑齐：{sorted(blocks)} —— 守卫把该播的也挡了"
+    )
+    # 存量那一块：真内容，没被占位符盖掉。
+    assert blocks["core_user_profile"]["content"] == "v19 存量：只有这一块留了下来"
+    # 真缺的两块：正常播种。
+    for key in ("core_current_project", "core_key_decisions"):
+        assert blocks[key]["content"] == DEFAULT_BLOCKS[key]
+
+    # 库里应当是 1 行存量（归属 default）+ 2 行新播（归属 dudu），不多不少。
+    conn = sqlite3.connect(_DB)
+    conn.row_factory = sqlite3.Row
+    owners = {
+        r["block_key_raw"]: r["user_id"]
+        for r in conn.execute("SELECT block_key_raw, user_id FROM core_memory")
+    }
+    conn.close()
+    assert owners == {
+        "core_user_profile": "default",
+        "core_current_project": "dudu",
+        "core_key_decisions": "dudu",
+    }, f"实得 {owners} —— 存量行被搬家，或者播种落错了归属"
+
+
+def test_jia1b_named_tenant_never_sees_the_legacy_placeholder_rows(monkeypatch):
+    """**负向对照**：放宽只给「改过名的默认身份」，普通租户一个字也不许看见。
+
+    这条是整节里最重要的一条。读侧放宽（``visible_user_clause``）如果放宽给任意
+    ``user_id``，就等于把所有租户串成一个大池子 —— 那是比 甲16 严重得多的越权，
+    而且症状是「大家都能读到东西」，看起来像修好了。
+
+    所以：存量行挂在 ``'default'`` 名下，运行时默认身份被改名成 ``dudu``，此时
+    另一个**普通**租户 ``alice`` 必须只看得到自己的播种占位符，一个存量字符串都
+    不许出现在她的注入上下文里。
+    """
+    import ducky.bank_contract as bank_contract
+    from ducky.core_memory import (
+        DEFAULT_BLOCKS,
+        get_all_blocks,
+        init_core_memory,
+        inject_context,
+    )
+
+    legacy = {
+        "core_user_profile": "别人的私事：这行绝不许被 alice 看见",
+        "core_current_project": "别人的项目：这行绝不许被 alice 看见",
+        "core_key_decisions": "别人的决策：这行绝不许被 alice 看见",
+    }
+    _make_v19_table(legacy)
+    monkeypatch.setattr(bank_contract, "DEFAULT_USER_ID", "dudu")
+
+    init_core_memory(user_id="alice", bank_id="default")
+    blocks = get_all_blocks(user_id="alice", bank_id="default")
+    assert set(blocks) == set(DEFAULT_BLOCKS)
+    for key, content in blocks.items():
+        assert content["content"] == DEFAULT_BLOCKS[key], (
+            f"alice 的 {key} 读出来是 {content['content']!r} —— "
+            "读侧放宽漏给了普通租户，这是越权"
+        )
+
+    ctx = inject_context(user_id="alice", bank_id="default")
+    for leaked in legacy.values():
+        assert leaked not in ctx, f"存量内容漏进了 alice 的上下文：{leaked!r}"
+
+
+def test_jia1b_explicit_write_by_renamed_default_wins_over_the_legacy_shadow(monkeypatch):
+    """显式写入盖过存量影子行 —— 这是**设计如此**，把它钉住免得被当成 bug 修掉。
+
+    三元组主键之后，改过名的默认身份显式 ``put_block``，会在自己名下**新建**一行
+    （跟 ``'default'`` 那行不撞主键）；之后「精确归属优先」让新行胜出，存量行变成
+    一条休眠的影子。
+
+    这是对的：用户亲手写下的那一版就该赢，而影子行原地留着、一个字节没动 ——
+    「放宽读，绝不放宽写」。写下来是因为它看起来很像「重复行」，容易被后来人当成
+    脏数据顺手合并掉；合并就等于替用户扔掉一份他自己写的内容。
+    """
+    import ducky.bank_contract as bank_contract
+    from ducky.core_memory import get_block, init_core_memory, put_block
+
+    legacy = {
+        "core_user_profile": "存量：这一块没人动过",
+        "core_key_decisions": "存量：这一块马上要被显式覆盖",
+    }
+    _make_v19_table(legacy)
+    monkeypatch.setattr(bank_contract, "DEFAULT_USER_ID", "dudu")
+    init_core_memory(user_id="dudu", bank_id="default")
+
+    put_block("core_key_decisions", "dudu 亲手写的新版本", "dudu", "default")
+
+    # ① 显式写入胜出。
+    assert (
+        get_block("core_key_decisions", "dudu", "default")["content"]
+        == "dudu 亲手写的新版本"
+    )
+    # ② 没碰过的那一块，照旧读到存量真内容。
+    assert (
+        get_block("core_user_profile", "dudu", "default")["content"]
+        == "存量：这一块没人动过"
+    )
+
+    # ③ 影子行原地不动：那个裸键下应当是两行，存量那行内容一个字没变。
+    conn = sqlite3.connect(_DB)
+    conn.row_factory = sqlite3.Row
+    shadow = {
+        r["user_id"]: r["content"]
+        for r in conn.execute(
+            "SELECT user_id, content FROM core_memory WHERE block_key_raw=?",
+            ("core_key_decisions",),
+        )
+    }
+    conn.close()
+    assert shadow == {
+        "default": "存量：这一块马上要被显式覆盖",
+        "dudu": "dudu 亲手写的新版本",
+    }, f"实得 {shadow} —— 存量影子行被改写或删除了（放宽读不许伴随任何写）"
+
+
+def test_jia1b_migration_refuses_to_merge_colliding_rows():
+    """两行撞进同一个三元组时，迁移必须**说清楚是哪一块、有几行**，然后拒绝动手。
+
+    自动合并等于替用户扔掉一份他自己写的内容，所以只能拒绝。但拒绝的方式很重要：
+    裸 INSERT 撞主键只会抛一句 ``UNIQUE constraint failed: ...``，不告诉你是哪一
+    块、属于谁、有几行 —— 这个函数要在别人的生产库上跑，**起不来是可以接受的，
+    起不来又说不清为什么不行**。所以撞键要自己先查、报文要点名。
+
+    这里造的是一个混版本残留态：同一个裸键，一行存的是裸键、一行存的是带前缀的
+    scoped 键（v19 单列主键放得过），但迁移后它们的三元组完全相同。
+    """
+    from ducky.core_memory import _migrate_pk_to_scope_triple
+
+    conn = sqlite3.connect(_DB)
+    conn.row_factory = sqlite3.Row
+    conn.execute("DROP TABLE IF EXISTS core_memory")
+    conn.execute(
+        """
+        CREATE TABLE core_memory (
+            block_key        TEXT PRIMARY KEY,
+            content          TEXT NOT NULL,
+            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_id          TEXT NOT NULL DEFAULT 'default',
+            bank_id          TEXT NOT NULL DEFAULT 'default',
+            block_key_raw    TEXT
+        )
+        """
+    )
+    for block_key, content in (
+        ("core_user_profile", "先来的那一份"),
+        ("default::core_user_profile", "后来的那一份"),
+    ):
+        conn.execute(
+            "INSERT INTO core_memory (block_key, content, user_id, bank_id, block_key_raw) "
+            "VALUES (?, ?, 'default', 'default', 'core_user_profile')",
+            (block_key, content),
+        )
+    conn.commit()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _migrate_pk_to_scope_triple(conn)
+
+    msg = str(excinfo.value)
+    assert "core_user_profile" in msg, f"报文没点名是哪一块：{msg!r}"
+    assert "2" in msg, f"报文没说有几行：{msg!r}"
+
+    # 拒绝就是拒绝：两行都还在，一行都没动。
+    kept = conn.execute("SELECT COUNT(*) FROM core_memory").fetchone()[0]
+    conn.close()
+    assert kept == 2, f"拒绝迁移却动了数据：只剩 {kept} 行"
+
+
+# ── 缺陷#13：写入失败后没人回滚，线程本地连接被永久卡住 ──────────────
+#
+# 这一节故意不叫 test_jia*：#13 不在那两份审计清单里，是 v20.0pre 给甲1b 做
+# 负向对照时新发现的 —— 那几轮跑测里冒出来的 ``database is locked`` 和
+# 「9 errors in 46.87s」（≈ 9 × sqlite 默认 5 秒锁超时）不是测试环境抖动，
+# 是产品代码自己的漏洞在冒烟。
+#
+# 成因要三件事凑齐，单看哪一件都不像问题：
+#   ① sqlite3 默认 isolation_level 会在 DML 之前隐式 BEGIN；
+#   ② 写入语句失败时事务是**开着**的，而原来没人 rollback；
+#   ③ finally 里的 conn.close() 是 no-op（见 utils._ConnProxy
+#      「close() 变 no-op，防止线程本地连接被意外关闭」），这条线程本地连接
+#      会一直活到进程结束。
+# 三件凑齐 = 一次失败的写入让这条连接永久持有写事务，之后这个库上每一个写入
+# 方都要先等满锁超时、再收 database is locked。而日志里只有第一次那条报错，
+# 线上表现就是「CoreMemory 从某一刻起再也写不进去了」。
+#
+# ⚠️ 炸点必须落在 **commit**，不能落在 execute。
+#    在 execute 上就抛的话，语句根本没到 sqlite —— 锁没拿到、事务没开，
+#    这样写出来的用例**把 rollback 删掉照样是绿的**，是个假绿灯。
+#    必须让一条真的 DML 先拿到写锁，再让紧接着的那次 commit 失败。
+#
+# ⚠️ 如实说明：_ensure_table 里那两句 UPDATE 也补了 rollback（第四处），但它
+#    **做不成单独的用例** —— 它唯一的开事务窗口紧接着就被
+#    _migrate_pk_to_scope_triple 里那句 ``if conn.in_transaction: conn.commit()``
+#    关掉了。没法单独引爆就不假造一条，宁可在这里写清楚。
+
+
+class _CommitBomb:
+    """线程本地连接的外壳：看到目标写语句就上膛，紧接着的那次 commit 炸掉。
+
+    刻意只拦 ``execute`` 和 ``commit`` 两个方法，其余（rollback / in_transaction
+    / cursor …）一律转发给真连接 —— 被测的正是产品代码有没有调 rollback，
+    这层壳绝不能替它做这件事。``close()`` 也照 utils._ConnProxy 的样子做成
+    no-op，因为「连接不会真的关掉」正是本缺陷的第三个前提。
+    """
+
+    def __init__(self, conn, arm_sql: str):
+        self._conn = conn
+        self._arm_sql = arm_sql
+        self.armed = False
+        self.fired = False
+
+    def execute(self, sql, *args, **kwargs):
+        cur = self._conn.execute(sql, *args, **kwargs)   # 真执行、真拿锁
+        # 只上一次膛：炸完之后要用同一条连接验「下一次正常写入还能成功」，
+        # 再上膛就会把自己的验证步骤也炸掉。
+        if not self.fired and self._arm_sql in " ".join(str(sql).split()):
+            self.armed = True
+        return cur
+
+    def commit(self):
+        if self.armed:
+            self.armed = False
+            self.fired = True
+            raise sqlite3.OperationalError("disk I/O error（注入：模拟提交失败）")
+        return self._conn.commit()
+
+    def close(self):
+        pass            # 和 utils._ConnProxy 一致：线程本地连接不可关闭
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _install_bomb(monkeypatch, cm, arm_sql: str) -> "_CommitBomb":
+    """把 cm._get_conn 换成「同一条真连接 + 一层炸弹壳」。"""
+    real = cm._get_conn()
+    bomb = _CommitBomb(real, arm_sql)
+    monkeypatch.setattr(cm, "_get_conn", lambda: bomb)
+    return bomb
+
+
+def _outsider_write_probe() -> tuple:
+    """另开一条连接去写同一个库 —— 这就是线上那条 database is locked 的复现。
+
+    用真的 INSERT/DELETE，不用「UPDATE 成自己」：后者可能一页都不脏，
+    未必去拿写锁，探针会变成假绿灯。
+    """
+    stamp = str(time.time())
+    other = sqlite3.connect(_DB, timeout=1.0)
+    try:
+        other.execute(
+            "INSERT INTO core_memory (block_key, content, updated_at, "
+            "last_verified_at, user_id, bank_id, block_key_raw) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("__lock_probe__", "lock probe", stamp, stamp,
+             "__probe__", "__probe__", "__lock_probe__"),
+        )
+        other.commit()
+        other.execute("DELETE FROM core_memory WHERE user_id = '__probe__'")
+        other.commit()
+        return True, ""
+    except sqlite3.OperationalError as exc:
+        return False, str(exc)
+    finally:
+        other.close()
+
+
+def test_bug13_put_block_failure_does_not_wedge_the_connection(monkeypatch):
+    """put_block 写失败之后，这个库还能被别人写 —— 不许把连接卡在开着的事务里。"""
+    import ducky.core_memory as cm
+
+    cm.init_core_memory(user_id="dudu", bank_id="default")
+    before = cm.get_block("core_key_decisions", user_id="dudu", bank_id="default")
+
+    bomb = _install_bomb(monkeypatch, cm, "INSERT INTO core_memory (block_key")
+    with pytest.raises(sqlite3.OperationalError):
+        cm.put_block("core_key_decisions", "写到一半提交失败的内容", "dudu", "default")
+    assert bomb.fired, "炸弹没响，这条用例什么都没验到"
+
+    # ① 事务必须已经关掉（rollback 生效）
+    assert bomb._conn.in_transaction is False, (
+        "写失败后事务还开着 —— 缺 conn.rollback()，这条线程本地连接已经废了"
+    )
+    # ② 别人还能写（线上那条 database is locked 的直接复现）
+    ok, err = _outsider_write_probe()
+    assert ok, f"另一条连接写不进去了：{err}"
+    # ③ 失败的那次写入没留下痕迹
+    after = cm.get_block("core_key_decisions", user_id="dudu", bank_id="default")
+    assert after["content"] == before["content"], "回滚没干净，脏数据留下来了"
+    # ④ 下一次正常写入还能成功
+    cm.put_block("core_key_decisions", "回滚之后仍然写得进去", "dudu", "default")
+    again = cm.get_block("core_key_decisions", user_id="dudu", bank_id="default")
+    assert again["content"] == "回滚之后仍然写得进去"
+
+
+def test_bug13_verify_block_failure_does_not_wedge_the_connection(monkeypatch):
+    """verify_block 只刷时间戳，一样会开事务；它失败后也不许卡住连接。"""
+    import ducky.core_memory as cm
+
+    cm.init_core_memory(user_id="dudu", bank_id="default")
+
+    bomb = _install_bomb(monkeypatch, cm, "UPDATE core_memory SET last_verified_at = ?")
+    with pytest.raises(sqlite3.OperationalError):
+        cm.verify_block("core_user_profile", user_id="dudu", bank_id="default")
+    assert bomb.fired, "炸弹没响，这条用例什么都没验到"
+
+    assert bomb._conn.in_transaction is False, (
+        "verify_block 失败后事务还开着 —— 缺 conn.rollback()"
+    )
+    ok, err = _outsider_write_probe()
+    assert ok, f"另一条连接写不进去了：{err}"
+
+    result = cm.verify_block("core_user_profile", user_id="dudu", bank_id="default")
+    assert result.get("status") != "not_found"
+
+
+def test_bug13_seed_failure_does_not_wedge_the_connection(monkeypatch):
+    """播种（进程启动第一件事）失败时最要命：卡住了就等于整个服务写不进 CoreMemory。"""
+    import ducky.core_memory as cm
+
+    bomb = _install_bomb(monkeypatch, cm, "INSERT OR IGNORE INTO core_memory")
+    with pytest.raises(sqlite3.OperationalError):
+        cm.init_core_memory(user_id="dudu", bank_id="default")
+    assert bomb.fired, "炸弹没响，这条用例什么都没验到"
+
+    assert bomb._conn.in_transaction is False, (
+        "播种失败后事务还开着 —— 这正是线上「CoreMemory 从此写不进去」的成因"
+    )
+    ok, err = _outsider_write_probe()
+    assert ok, f"另一条连接写不进去了：{err}"
+
+    # 重试必须能把三块补齐（播种本身是幂等的）
+    cm.init_core_memory(user_id="dudu", bank_id="default")
+    blocks = cm.get_all_blocks(user_id="dudu", bank_id="default")
+    assert len(blocks) == 3, f"重试后没能补齐三块：{sorted(blocks)}"
 
 
 # ── 甲17：显著性只是排序加成，缺表不该杀掉整次检索 ─────────────────────

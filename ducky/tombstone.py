@@ -48,6 +48,7 @@ from ducky.bank_contract import (
     scoped_storage_key,
     table_columns,
 )
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.tombstone")
 
@@ -330,6 +331,7 @@ def restore_tombstone(
                 )
                 restored_cols.append("fts")
             except Exception as ie:
+                feature_failed("index_memory", ie)
                 logger.debug("tombstone FTS 重建跳过: %s", ie)
 
         # 3. 标记已恢复
@@ -354,6 +356,7 @@ def restore_tombstone(
         logger.info("🪦→♻️ tombstone #%s 恢复 (target=%s via %s)", tombstone_id, target_id, result["detail"])
         return result
     except Exception as exc:
+        feature_failed("index_memory", exc)
         logger.warning("tombstone 恢复失败: %s", exc)
         result["detail"] = str(exc)[:120]
         return result
