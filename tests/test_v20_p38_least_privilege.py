@@ -359,3 +359,140 @@ def test_compose_drops_capabilities_and_blocks_privilege_gain():
         "缺 no-new-privileges:true"
     )
     assert not svc.get("privileged"), "docker-compose.yml 出现了 privileged —— 这会把上面两条全部作废"
+
+
+# ══════════════════════════════════════════════════
+# 生产实测打回来的三条（v20.0 P3-8 上线当天）
+#
+# 这三条的来路和上面不一样：上面那些是「设计时想到的」，这三条是**在生产机身上
+# 真的踩了**才补的。第一版模板通过了上面全部 15 条守卫，然后在生产上
+# ① 让向量库带着绿灯静默失能、② 让同步守护启动即崩溃循环、
+# ③ 撞上一个「root 写不进自己机器上的目录」的反直觉权限问题。
+#
+# 守卫的射程小于缺陷的分布 —— 又一次。所以补在这里。
+# ══════════════════════════════════════════════════
+
+def test_api_unit_gives_the_service_a_writable_home():
+    """API 单元必须配 StateDirectory + HOME（生产实测：缺了会带着绿灯失能）。
+
+    `useradd --no-create-home` 之后 `$HOME` 指向一个不存在的目录，而 mem0 SDK
+    在 import 期要往 `$HOME` 下写缓存。缺这两行在生产上的真实表现是：
+
+        systemctl is-active  → active          （服务确实活着）
+        curl /health         → status=ok       （健康检查是绿的）
+        但 degraded=['vector_backend']，向量检索静默零召回
+        journal 里只有一行 `mem0 SDK 加载失败: [Errno 13]
+        Permission denied: '/home/aidumem'`
+
+    **不是崩溃，是带着绿灯失能** —— 这比崩溃难发现得多，因为按 failed
+    告警的监控一辈子等不到。这条守卫的存在就是为了不让人把这两行删掉。
+
+    刻意断言 `StateDirectory` 而不只是 `HOME`：手写一个 `Environment=HOME=`
+    指向的目录不会被自动创建、也不会自动进 ReadWritePaths，
+    在 `ProtectSystem=strict` 之下照样写不进。StateDirectory 才是完整答案。
+    """
+    d = _directives(_API_UNIT)
+    assert d.get("StateDirectory"), (
+        "aidumem-api.service 缺 StateDirectory —— mem0 SDK 需要可写 $HOME。"
+        "缺了不会崩，只会让 vector_backend 静默失能而 /health 仍报 ok。"
+    )
+    home = d.get("Environment", "")
+    envs = [v for k, v in _directives(_API_UNIT).items()]
+    raw_env = [ln for ln in _unit_sections(_API_UNIT).get("Service", [])
+               if ln.startswith("Environment=")]
+    assert any("HOME=" in ln for ln in raw_env), (
+        "aidumem-api.service 配了 StateDirectory 但没有 Environment=HOME= —— "
+        "systemd 不会自动把 $HOME 指过去，SDK 还是会去写 /home/<账号>。"
+    )
+    state = d["StateDirectory"].strip()
+    home_line = next(ln for ln in raw_env if "HOME=" in ln)
+    assert state in home_line, (
+        f"StateDirectory={state} 与 {home_line} 指的不是同一个地方 —— "
+        "HOME 指向的目录必须就是 systemd 替你创建并 chown 的那个，"
+        "否则 ProtectSystem=strict 之下依然写不进。"
+    )
+
+
+def test_sync_unit_can_write_the_data_dir_it_opens_at_import_time():
+    """sync 的 ReadWritePaths 必须含 data/（生产实测：缺了启动即崩溃循环）。
+
+    这条守的是一个非常容易被「讲道理」讲掉的结论：mem0_sync.py 确实**不写
+    任何数据库** —— 它只读 MEMORY.md 再 POST。所以第一版模板只给了 logs/。
+    结果启动即 `sqlite3.OperationalError: unable to open database file`。
+
+    完整 traceback 追下来的链条是：
+
+        mem0_sync.py  from ducky.utils import DEFAULT_USER_ID, api_auth_headers
+          → ducky/__init__.py      from .recall_funnel import funnel_search
+          → recall_funnel.py → scoring.py
+          → ducky/salience/__init__.py  _ensure_db()   ← 模块级，无 try/except
+          → 打开 data/salience.db
+
+    **import 两个常量会拽进整条召回栈。** 「这个进程不写库」是对业务逻辑的
+    正确描述，却是对进程行为的错误描述 —— 而沙箱管的是后者。
+
+    ★ 断言 data/ 而不是断言「和 API 一样」：两个单元的可写集合本就不同
+      （sync 还要写 ~/.hermes 下的状态文件），锚死相等会误报。
+    """
+    rw = _directives(_SYNC_UNIT).get("ReadWritePaths", "")
+    assert rw, "aidumem-sync.service 没有 ReadWritePaths"
+    assert any(seg.rstrip("/").endswith("/data") for seg in rw.split()), (
+        f"aidumem-sync.service 的 ReadWritePaths（{rw}）里没有 data/。"
+        "ducky/salience/__init__.py 在 import 期就 _ensure_db() 打开 "
+        "data/salience.db（模块级调用，没有 try/except），"
+        "所以哪怕本守护业务上不写库，进程也必须能写 data/ —— "
+        "否则启动即 unable to open database file，按 StartLimit 崩溃循环。"
+    )
+
+
+@pytest.mark.parametrize("unit", [_API_UNIT, _SYNC_UNIT], ids=lambda p: p.name)
+def test_unit_creates_group_writable_files_for_the_shared_data_dir(unit: pathlib.Path):
+    """两个单元都要 UMask=0007 —— data/ 是两个身份共写的目录。
+
+    API 以专用账号跑、sync 可能仍以 root 跑（它为什么不换 uid 见那个模板），
+    但它们写的是**同一批 SQLite 库**。默认 umask 022 会建出 644 的文件，
+    另一方就写不进 —— 而症状是「读得到、写不进」，不是启动失败：
+    只读查询全部正常、/health 也绿，直到第一次写入才炸。
+
+    UMask 必须与目录的 setgid 位配对才完整（模板头里写了 chmod 2770）：
+      · 只有 setgid，没有 UMask → 新文件 640，组不可写
+      · 只有 UMask，没有 setgid → 新文件属组是创建者主组，组根本对不上
+    两者缺一个都会重演混属主。这条只能守住配置里的那一半，
+    另一半（setgid）只能靠文件头的安装说明 —— 所以下一条守卫盯着那段说明。
+    """
+    umask = _directives(unit).get("UMask")
+    assert umask == "0007", (
+        f"{unit.name} 的 UMask 是 {umask!r}，期望 0007。"
+        "data/ 由 API 与 sync 两个身份共写，默认 022 建出的 644 文件对方写不进。"
+    )
+
+
+def test_templates_document_the_setgid_and_dac_override_traps():
+    """安装说明必须写清 setgid，以及「无能力 root 写不进」这件反直觉的事。
+
+    这两条都不是配置能表达的，只能靠文档，而它们各自都足以让部署失败：
+
+    ① **setgid**：模板头必须写 `chmod 2770` 而不是 750。少了开头那个 2，
+       新文件不继承目录组，UMask 那半就白配了。
+
+    ② **CAP_DAC_OVERRIDE**：sync 模板必须解释清楚 —— root 之所以能无视
+       权限位靠的就是这个 capability，而我们把 CapabilityBoundingSet 清空了。
+       于是「root 在自己机器上写不进一个目录」。不写下来的话，下一个人
+       百分之百会把 SupplementaryGroups 当成冗余删掉，然后重现崩溃循环。
+
+    只要求关键词共现，不锚死措辞 —— 否则重写注释就误报。
+    """
+    api = _API_UNIT.read_text(encoding="utf-8")
+    assert "2770" in api, (
+        "aidumem-api.service 的安装说明没写 chmod 2770 —— "
+        "少了 setgid，UMask=0007 那一半就失效，混属主会重演。"
+    )
+
+    sync = _SYNC_UNIT.read_text(encoding="utf-8")
+    assert "CAP_DAC_OVERRIDE" in sync, (
+        "aidumem-sync.service 没有解释 CAP_DAC_OVERRIDE。"
+        "清空 capability 之后 root 会失去无视权限位的能力，"
+        "这是 SupplementaryGroups 存在的唯一理由 —— "
+        "不写下来，下一个人一定会把它当冗余删掉。"
+    )
+    assert "SupplementaryGroups" in sync, "aidumem-sync.service 缺 SupplementaryGroups"
