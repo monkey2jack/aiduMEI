@@ -131,6 +131,26 @@ def original(func_name: str) -> Callable | None:
     return _ORIGINALS.get(func_name)
 
 
+#: 补丁 id → 它接管的函数名。幂等分支要靠它现取覆盖状态。
+_PID_FUNC = {"role_drop": "parse_messages", "code_block": "remove_code_blocks"}
+
+
+def _bound_namespaces(func_name: str) -> list[str]:
+    """这个名字现在绑着我们这一份的命名空间有哪些 —— 报**状态**，不报增量。
+
+    v20 生产实机踩到：幂等分支原先只记一句「已在位」，`namespaces` 留空。
+    于是同进程里第二次调用之后台账显示覆盖为 `[]`，而补丁完全生效 ——
+    守卫读到「覆盖不全」，报的是一件根本没发生的事。
+    """
+    import sys
+    out = []
+    for m in _UTILS_CONSUMERS:
+        f = getattr(sys.modules.get(m), func_name, None)
+        if f is not None and getattr(f, _PATCH_MARKER, None):
+            out.append(m)
+    return out
+
+
 def _rebind(func_name: str, new_func: Callable) -> list[str]:
     """把 new_func 绑到所有持有该名字的模块上，返回实际替换到的命名空间列表。"""
     import importlib
@@ -157,6 +177,14 @@ def _rebind(func_name: str, new_func: Callable) -> list[str]:
                 continue
         if hasattr(mod, func_name):
             setattr(mod, func_name, new_func)
+        # ⚠️ 记「现在绑在哪」，不是「这次换了几处」。
+        #
+        # v20 生产实机踩到：同进程里补丁被打第二次时，第一次已经把两个命名空间
+        # 都换好了，于是这一轮一处都没「换」，`namespaces` 报 `[]` —— 而补丁其实
+        # 完全生效（同一轮里前两条断言都过了）。台账报的是**增量**，读者当它是
+        # **状态**，于是「覆盖不全」这条红灯说的是一件根本没发生的事。
+        # 判据改成现取现看：这个名字现在是不是绑着我们这一份。
+        if getattr(mod, func_name, None) is new_func:
             hit.append(modname)
     return hit
 
@@ -178,7 +206,8 @@ def _patch_role_drop() -> None:
             _record(pid, "drift", "mem0.memory.utils.parse_messages 不存在")
             return
         if getattr(orig, _PATCH_MARKER, None) == pid:
-            _record(pid, "applied", "已在位（幂等跳过）")
+            _record(pid, "applied", "已在位（幂等跳过）",
+                    namespaces=_bound_namespaces(_PID_FUNC.get(pid, "")))
             return
 
         # 探针：喂一条非标准 role，看 content 会不会被丢
@@ -241,7 +270,8 @@ def _patch_code_block_hardening() -> None:
             _record(pid, "drift", "mem0.memory.utils.remove_code_blocks 不存在")
             return
         if getattr(orig, _PATCH_MARKER, None) == pid:
-            _record(pid, "applied", "已在位（幂等跳过）")
+            _record(pid, "applied", "已在位（幂等跳过）",
+                    namespaces=_bound_namespaces(_PID_FUNC.get(pid, "")))
             return
 
         # 探针①：list 形态会不会炸
