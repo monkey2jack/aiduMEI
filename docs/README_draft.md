@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="aidumem-banner.jpg" alt="aiduMEI⚕爱嘟优忆思" width="100%">
+  <img src="../assets/aidumei-v20-banner.svg" alt="aiduMEI v20.0" width="100%">
 </p>
 
 # aiduMEI⚕爱嘟优忆思——智能体通用思想系统
