@@ -194,7 +194,8 @@ def test_legacy_schema_migration_is_additive_and_idempotent():
     「还剩 3 条」和「还是原来那 3 条」是两回事，v19.4.1 的幽灵 id
     连环案（日志漂亮报「成功删除 25/25」而向量库分毫未变）就栽在前者上。
     """
-    from ducky.bank_contract import DEFAULT_BANK_ID, ensure_memory_banks_schema
+    from ducky.bank_contract import (DEFAULT_BANK_ID, LEGACY_PLACEHOLDER_USER_ID,
+                                      ensure_memory_banks_schema)
     from ducky.utils import DEFAULT_USER_ID
 
     legacy_rows = [
@@ -238,7 +239,25 @@ def test_legacy_schema_migration_is_additive_and_idempotent():
     assert not (after - before), f"迁移凭空多出了行: {sorted(after - before)}"
 
     # 老行一律落进默认域，且**只**落进默认域。
-    assert scopes == [(DEFAULT_USER_ID, DEFAULT_BANK_ID)], (
+    # ⚠️ 期望值是 LEGACY_PLACEHOLDER_USER_ID，不是 DEFAULT_USER_ID。
+    #
+    # 迁移故意把存量行回填成**存量占位身份**（见 bank_contract 的 ADD COLUMN
+    # DEFAULT 子句）——「渠道标记不等于所有权」，迁移期不重新解释归属。
+    # 而 `DEFAULT_USER_ID` 读的是 env/.env，是**这个部署的显示身份**，可以被改名。
+    #
+    # 本条初版写的是 DEFAULT_USER_ID，在开发机上一直绿 —— 因为那儿两个常量
+    # 恰好都等于 "default"，错误期望完全隐形。**只有在身份改过名的那台机器上
+    # 才现形**（v20 生产实机实测：expected ('dudu','default')、actual
+    # ('default','default')）。这正是「改名默认身份失明」那个坑长在测试里的样子。
+    assert LEGACY_PLACEHOLDER_USER_ID == "default", (
+        "存量占位身份变了，本条的语义要重新论证：它守的是「迁移不重新解释归属」"
+    )
+    if DEFAULT_USER_ID == LEGACY_PLACEHOLDER_USER_ID:
+        # 两个常量重合时本条判据没有区分力 —— 说出来，别让它冒充成已验证。
+        import warnings as _w
+        _w.warn("本机 DEFAULT_USER_ID 与存量占位身份重合，本条无法区分两者；"
+                "身份改过名的机器上才有区分力", stacklevel=2)
+    assert scopes == [(LEGACY_PLACEHOLDER_USER_ID, DEFAULT_BANK_ID)], (
         f"存量行被分配到了非默认作用域: {scopes} —— 渠道标记不等于所有权，"
         "迁移期不得把 source/agent_id 重新解释成归属"
     )
