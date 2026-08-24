@@ -115,8 +115,37 @@ RestrictSUIDSGID=yes
 
 # 文件系统面
 ProtectSystem=strict
-ReadWritePaths=/opt/aidumem/logs
+# ★ data/ 必须在这里，哪怕本守护「不写任何数据库」——这是 v20.0 P3-8 的生产实测坑，
+#   原来这一行只写 logs，结果启动即崩溃循环。完整 traceback 追下来的链条是：
+#     mem0_sync.py `from ducky.utils import DEFAULT_USER_ID, api_auth_headers`
+#       → ducky/__init__.py  from .recall_funnel import funnel_search
+#       → recall_funnel.py → scoring.py
+#       → ducky/salience/__init__.py  `_ensure_db()`   ← 模块级调用，**没有** try/except
+#       → 打开 data/salience.db
+#   也就是说：**import 两个常量会拽进整条召回栈**，并在 import 期就要求 data/ 可写。
+#   漏掉它的症状是 `sqlite3.OperationalError: unable to open database file`
+#   —— 错误信息完全不提「只读挂载」，看着像数据库文件损坏，能查很久。
+ReadWritePaths=/opt/aidumem/data /opt/aidumem/logs
 PrivateTmp=yes
+
+# ── 与 API 共享 data/ 的两行（v20.0 P3-8 生产实测补丁）──
+# ★ 只有在你**没有**取消上面 User= 注释（即本单元仍以 root 运行）时，
+#   SupplementaryGroups 这行才是必需的 —— 而它必需的理由非常反直觉：
+#
+#     root 之所以能无视文件权限位，靠的是 CAP_DAC_OVERRIDE。
+#     上面 `CapabilityBoundingSet=` 把它连带清掉了。
+#     于是「root」在一个 750 aidumem:aidumem 的目录上**确实写不进**。
+#
+#   生产实测负向对照（值得自己复现一遍）：
+#     systemd-run -p CapabilityBoundingSet= -- touch <data>/x   → Permission denied
+#     systemd-run -- touch <data>/x                             → 成功
+#   （它仍读得到 600 root:root 的 MEMORY.md —— 那是它**自己的**文件，
+#     属主权限不需要 DAC override。两件事别混起来。）
+#
+#   解法刻意**不是**把 CAP_DAC_OVERRIDE 加回来（那等于用特权绕过权限），
+#   而是让 root 正经加入 aidumem 组，配合 data/ 的 setgid + UMask 共享写。
+SupplementaryGroups=aidumem
+UMask=0007
 #   ↑ ★ 若 AIDUMEM_SYNC_STATE（默认 ~/.hermes/memories/.sync_state.json）
 #     指向 ReadWritePaths 之外的路径，同步会在**写状态文件**时失败 ——
 #     而它的表现是每次都从头重算、反复重推同一批记忆（不是报错退出）。

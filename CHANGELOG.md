@@ -586,7 +586,7 @@
   整个 `/app`，于是代码目录保持 root 属主、进程只读，免费拿到「运行期改不了自己代码」；
   代价只是 `__pycache__` 写不进（Python 静默降级，不报错）。
 
-  新增 `tests/test_v20_p38_least_privilege.py`（**15** 条）。守卫一律走 unit 的**段落解析器**
+  新增 `tests/test_v20_p38_least_privilege.py`（首版 **15** 条，生产打回后 **20** 条）。守卫一律走 unit 的**段落解析器**
   （复用 v19.4.2 那个）而不是 `grep` —— 本轮注释里恰好反复出现 `User=root`、`ProtectHome=yes`
   这些串，`grep` 分不清代码和注释。其中三条是**反向**守卫，拦的是「照抄」和「把暴露分刷满」
   这两个很自然的动作：sync 不许配 `ProtectHome`（会把它要读的家目录藏起来，报
@@ -594,7 +594,49 @@
   `SystemCallFilter` 不许比 `@system-service` 更窄（`resource_probe` 的 `lsof` 退路会以
   `EPERM` 失败，有兜底不至于崩，但 `open_fds` 这个指标会永久丢掉）。
   负向对照：把四个文件换回改动前的版本，**15 条全红**；换回新版 15 条全绿 —— 没有一条是同义反复。
-  用例总数 1091 → **1106**（本机 1094 passed + 12 skipped，实测）；两份 README 各 13/14 处数字同步。
+
+  **上线当天生产打回三条 —— 第一版模板通过了上面全部 15 条守卫，然后在真机上出了三个新坑。
+  守卫的射程小于缺陷的分布，又一次。** 三条各配一条新守卫（共 20 条），逐条记下来：
+
+  ① **带着绿灯失能**：`useradd --no-create-home` 之后 `$HOME` 指向一个不存在的目录，
+  而 mem0 SDK 在 import 期要往 `$HOME` 下写缓存。表现是 `systemctl is-active` → **active**、
+  `/health` → **status=ok**，但 `degraded=['vector_backend']`、向量检索静默零召回，
+  journal 里只有一行 `mem0 SDK 加载失败: [Errno 13] Permission denied: '/home/aidumem'`。
+  **不是崩溃，是带着绿灯失能** —— 按 failed 告警的监控一辈子等不到。
+  修法是 `StateDirectory=aidumem` + `Environment=HOME=/var/lib/aidumem`（由 systemd 负责
+  创建并 chown，且自动纳入可写集合 —— 手写一个 `Environment=HOME=` 在 `ProtectSystem=strict`
+  之下照样写不进）。
+
+  ② **「这个进程不写库」是对业务逻辑的正确描述，却是对进程行为的错误描述** ——
+  而沙箱管的是后者。`mem0_sync.py` 业务上确实只读 `MEMORY.md` 再 POST，所以第一版只给了
+  `ReadWritePaths=logs`，结果启动即 `sqlite3.OperationalError: unable to open database file`
+  并按 StartLimit 崩溃循环。完整 traceback 追下来：`from ducky.utils import` 两个常量
+  → `ducky/__init__.py` → `recall_funnel` → `scoring` → `ducky/salience/__init__.py`
+  的模块级 `_ensure_db()`（**没有** try/except）→ 打开 `data/salience.db`。
+  **import 两个常量会拽进整条召回栈。**
+
+  ③ **root 在自己机器上写不进一个目录** —— 最反直觉的一条。root 之所以能无视文件权限位，
+  靠的就是 `CAP_DAC_OVERRIDE`，而 `CapabilityBoundingSet=` 把它一起清了。于是仍以 root
+  运行的 sync 在 `750 aidumem:aidumem` 的 `data/` 上确实写不进。负向对照实测：
+  `systemd-run -p CapabilityBoundingSet= -- touch <data>/x` → **Permission denied**，
+  不带该参数 → **成功**；而它仍读得到 `600 root:root` 的 `MEMORY.md`，因为那是它**自己的**
+  文件，属主权限不需要 DAC override。解法刻意**不是**把 `CAP_DAC_OVERRIDE` 加回来
+  （那等于用特权绕过权限），而是让 `data/` 变成两个身份都能正常写的共享目录：
+  目录 `chmod 2770`（setgid → 新文件继承组）+ 两个单元都配 `UMask=0007`（→ 新文件 660 组可写）
+  + sync 加 `SupplementaryGroups=aidumem`。**setgid 与 UMask 缺一不可**：只有 setgid 时
+  新文件是 640 组不可写，只有 UMask 时新文件属组是创建者主组、组根本对不上。
+  安装说明里那行 `chmod 750` 因此改成 `chmod 2770`，并补 `find … -exec chmod g+w` 处理存量文件。
+
+  生产实机验收（前后对照，都由 systemd 自己算）：暴露分 **9.6 UNSAFE → API 1.7 OK / sync 2.0 OK**，
+  capability **41 项 → 0 项**；`/health` `status=ok`、`degraded=[]`、`vector_backend_ok=true`、
+  `mem0_singleton=true`、`feature_failures=0`；`POST /search` 200（3 条命中，证明 embed+rerank
+  出站未被沙箱掐死）、`POST /add` 200；交叉写实测双向通过（一方建的文件另一方写得进）；
+  全量 **1090 passed**，唯一红灯是 `test_no_machine_here_satisfies_every_axis` —— 那是设计上的
+  绊线（该机九轴齐备），改动前就在红，非回归。资源占用：API `RSS=249MB/11 线程/38 fd`（身份
+  `aidumem`）、sync `RSS=23MB/1 线程/10 fd`；整机内存 48%、负载 0.48、磁盘 38%。
+  最后一个 root 写手（cron 的 `consolidator.py`）同批降权为 `runuser -u aidumem`。
+
+  用例总数 1091 → **1111**（本机 1099 passed + 12 skipped，实测）；两份 README 各 13/14 处数字同步。
   ★ 本条只证明**模板写对了**；生效值必须在机器上用 `systemd-analyze security` 与
   `systemctl show -p CapabilityBoundingSet` 验 —— **配置写了不等于配置生效**，
   这笔学费 v19.4.2 的 `StartLimit*` 已经付过。
