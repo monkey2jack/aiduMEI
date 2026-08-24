@@ -115,10 +115,36 @@ def reset_for_test() -> None:
 _UTILS_CONSUMERS = ("mem0.memory.utils", "mem0.memory.main")
 
 
+#: 打补丁前的原函数留底。**不是为了回滚** —— 是为了让「基线缺陷仍在吗」这类
+#: 断言有一个不随执行顺序漂移的判据。
+#:
+#: v20 生产实机踩到的：三条 `test_baseline_*_defect_is_present_before_patching`
+#: 读的是**当前绑定**的 `mem0.memory.utils.parse_messages`。补丁一旦在同进程里
+#: 打过（顺序取决于哪个测试先 import 了运行时），基线用例看到的就是打过补丁的
+#: 版本，于是报「基座已经修好了，补丁可以退役」—— 一条**说反了**的红灯。
+#: 本地全绿、实机三条红，差别只是收集顺序。
+_ORIGINALS: dict[str, Callable] = {}
+
+
+def original(func_name: str) -> Callable | None:
+    """取打补丁前的那一份；没打过补丁时返回 None（调用方自行取当前绑定）。"""
+    return _ORIGINALS.get(func_name)
+
+
 def _rebind(func_name: str, new_func: Callable) -> list[str]:
     """把 new_func 绑到所有持有该名字的模块上，返回实际替换到的命名空间列表。"""
     import importlib
     import sys
+
+    # 先留底（只留第一次的那一份 —— 重复打补丁不许把留底覆盖成已打补丁的版本）
+    if func_name not in _ORIGINALS:
+        try:
+            mu = importlib.import_module("mem0.memory.utils")
+            cur = getattr(mu, func_name, None)
+            if cur is not None:
+                _ORIGINALS[func_name] = cur
+        except Exception:
+            pass
 
     hit = []
     for modname in _UTILS_CONSUMERS:
