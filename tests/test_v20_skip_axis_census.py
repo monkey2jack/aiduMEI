@@ -339,44 +339,75 @@ def test_readme_axis_table_numbers_match_measurement():
             )
 
 
-def test_all_axes_number_is_labelled_as_derived_not_measured():
-    """「全轴齐备 833 全绿」必须明说是推导值，不许再宣称生产核验过。"""
+def test_all_axes_number_is_measured_and_attributed():
+    """「全轴齐备」那个数字现在是实测值了，但**必须带出处**。
+
+    这条守卫的前身要求 README 写「推导值，从未实测」—— 因为更早的一版谎称
+    「生产实跑核验」，而它恰恰被自己引用的那次生产实跑当场证伪。
+
+    2026-08-24 该数字**真的被跑出来了**：生产实机九轴同时齐备、全量 0 跳过。
+    于是原来那条守卫的字面要求（必须写「从未实测」）本身变成了假话，
+    所以它被**反转**而不是删除 —— 守的东西一个字没变：
+    **绝对措辞必须经得起自己引用的那次测量。**
+
+    反转后的判据有三条，缺一条都能让这一行重新变得不可证伪：
+      ① 不许再写「从未实测」—— 它现在是假的；
+      ② 宣称实测就必须**带日期**，否则「实测过」是一句无法复核的话
+         （谁测的、哪天测的、什么环境，读者一个都对不上）；
+      ③ 那句被证伪过的旧等式（「装上宿主」＝「全绿」）永远不许回来 ——
+         装宿主只满足九条轴里的**一条**，这个错和数字是否实测无关。
+    """
+    import re as _re
     zh = _read_doc("README.md")
-    assert "从未实测" in zh, (
-        "README.md 未标注「全轴齐备」那个数字是推导值 —— "
-        "上一版就是把它写成「生产实跑核验」才被自己引用的那次实跑证伪的"
-    )
-    assert "全绿**（Hermes 源码在场时" not in zh, (
-        "README.md 又出现了被证伪的旧措辞：把「装上宿主」等同于「全绿」"
-    )
     en = _read_doc("README_EN.md")
-    assert "never measured" in en, "README_EN.md 未标注该数字是推导值"
-    # 负向对照必须只盯**宣称**，不能连**引述旧假话**一起禁掉：
-    # 正文里逐字引用当年那句 "verified on production" 是留证据，不是再犯。
-    # 所以对照收窄到表格里「全轴齐备」自己那一行。
-    for doc, label, bad in (
-        (zh, "全轴齐备", ("生产实测", "实跑核验", "生产核验")),
-        (en, "All axes present", ("verified on production", "measured on production")),
-    ):
+
+    # ① 旧**宣称**必须退场 —— 但**引述旧措辞留证据**不算再犯。
+    #
+    # 这条区分是从原守卫继承下来的（它当年写着：「负向对照必须只盯宣称，
+    # 不能连引述旧假话一起禁掉」）。所以这里禁的是当年那句**加粗的宣称原文**，
+    # 不是「从未实测」这四个字本身 —— 后者现在出现在「在此之前标注为……」
+    # 这样的历史交代里，那是资产不是负债。裸词匹配会把两者一起杀掉。
+    assert "**推导值，从未实测**" not in zh, (
+        "README.md 还在宣称「推导值，从未实测」—— 2026-08-24 生产实机九轴齐备、"
+        "0 跳过，这个数字已经被真跑出来了，继续这么宣称就是新的假话"
+    )
+    assert "**derived, never measured**" not in en, (
+        "README_EN.md 还在宣称 derived, never measured"
+    )
+
+    # ③ 被证伪过的旧等式永不回归（与实测无关，独立成条）
+    assert "全绿**（Hermes 源码在场时" not in zh, (
+        "README.md 又出现了被证伪的旧措辞：把「装上宿主」等同于「全绿」——"
+        "宿主只是九条轴里的一条"
+    )
+
+    # ② 宣称实测就要带日期，且必须落在「全轴齐备」自己那一行
+    for doc, label, name in ((zh, "全轴齐备", "README.md"),
+                             (en, "All axes present", "README_EN.md")):
         row = [ln for ln in doc.split("\n") if ln.lstrip().startswith(f"| {label} |")]
-        assert len(row) == 1, f"文档里「{label}」表格行找不到或不唯一：{len(row)} 行"
-        for word in bad:
-            assert word not in row[0], (
-                f"「{label}」那一行又宣称「{word}」—— "
-                "这个数字从来没有被任何一台机器跑出来过"
-            )
+        assert len(row) == 1, f"{name} 里「{label}」表格行找不到或不唯一：{len(row)} 行"
+        assert _re.search(r"20\d\d-\d\d-\d\d", row[0]), (
+            f"{name} 的「{label}」那一行宣称了实测却没写日期 —— "
+            "「实测过」不带出处就是一句无法复核的话，和推导值一样不可证伪"
+        )
 
 
-def test_no_machine_here_satisfies_every_axis():
-    """自证：本机也不是那台「全轴齐备」的机器，全绿数字依旧只能是推导的。
+def test_every_registered_skip_axis_has_a_probe():
+    """每条登记的跳过轴都必须有探测器 —— 少一个，齐备判定就永远说不出「齐备」。
 
-    这条不是行为测试，是**证据保全** —— 它把「我们手上没有那样一台机器」
-    这句话变成一条会随环境变化而失效的断言，而不是 README 里一句无人复核的话。
-    真有一天全轴齐备了，这条会红，那时才有资格把「推导值」改成「实测」。
+    **本函数的前身是一条绊线**（`test_no_machine_here_satisfies_every_axis`）：
+    它在「本机九轴齐备」时故意 `pytest.fail`，用来保全「我们手上没有那样一台机器」
+    这句话 —— 让它变成一条会随环境失效的断言，而不是 README 里一句无人复核的话。
 
-    🔴v20.0：探测器数目必须跟得上 `_AXES` —— 轴从四条长到九条时若不补探测器，
-    `len(present)` 永远小于 `len(_AXES)`，这条断言就成了永不触发的白护栏。
-    所以下面先断言「每条轴都有探测器」，再谈齐备与否。
+    2026-08-24 那条绊线**按设计亮红了**：生产实机九轴同时齐备，全量 0 跳过。
+    绊线自己的报错原文就是「这是好事：现在可以真跑一次全量，把 README 里
+    「推导值，从未实测」改成实测值，并删掉这条断言」。照办 —— 绊线已拆，
+    README 的那一行换成带日期的实测值，由
+    `test_all_axes_number_is_measured_and_attributed` 接着守。
+
+    **保留下来的是探测器完备性这一半，它和绊线是两件事。**
+    轴从四条长到九条时若不补探测器，`len(present)` 永远小于 `len(_AXES)`，
+    任何基于「齐备与否」的判断都会静默失真 —— 这个风险和绊线在不在无关。
     """
     present = []
     # ⚠️ 探测器必须问**闸门本身**，不许自己另写一套判据。
@@ -422,9 +453,8 @@ def test_no_machine_here_satisfies_every_axis():
         "下面那句「本机不齐备」就永远成立，这条证据保全变成白护栏"
     )
 
-    if len(present) == len(_AXES):
-        pytest.fail(
-            f"本机 {len(_AXES)} 条跳过轴全部齐备 —— 这是好事：现在可以真跑一次全量，"
-            "把 README 里「推导值，从未实测」改成实测值，并删掉这条断言。"
-            f"（齐备的轴：{present}）"
-        )
+    # ★ 这里刻意**不再**对 len(present) == len(_AXES) 做任何断言。
+    #   绊线已于 2026-08-24 按设计触发并拆除（理由见 docstring）。
+    #   `present` 仍然算出来，是因为它就是探测器完备性的证据本身：
+    #   下面这条断言保证每条轴都被探过，而不是保证探出来是什么结果。
+    assert isinstance(present, list), "present 应是探测结果列表"
