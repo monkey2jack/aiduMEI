@@ -76,15 +76,32 @@ def _restore_mem0_namespaces():
 # ═══════════════════════════════════════════════
 # 一、基座缺陷现存性（负向对照：补丁前缺陷必须在）
 # ═══════════════════════════════════════════════
+def _pristine(func_name: str):
+    """取**打补丁前**的那一份 mem0 函数。
+
+    ⚠️ 这个助手是生产实机踩出来的。两条基线用例原先直接读
+    `mem0.memory.utils.<name>` 的**当前绑定** —— 而补丁层一旦在同进程里打过
+    （谁先 import 了运行时，取决于收集顺序），它们看到的就是打过补丁的版本，
+    于是报「基座已经修好了、补丁可以退役」。**那是一条说反了的红灯**：
+    本地全绿、生产实机三条红，代码一个字没差，差的只是执行顺序。
+
+    改用补丁层留的底之后，判据不再随顺序漂移，而「上游修好了就该红」这层
+    到期提醒的语义原样保留 —— 因为留的底就是上游那一份。
+    """
+    import mem0.memory.utils as mu
+    from ducky.mem0_patches import original
+    return original(func_name) or getattr(mu, func_name)
+
+
 def test_baseline_role_drop_defect_is_present_before_patching():
     """双向复现的「前」半段：不打补丁时，非标准 role 的 content 必须是丢的。
 
     这条断言有意会随基座升级而变红 —— 上游哪天修了 Role Drop，它就该红，提醒
     我们去掉本地补丁。红了不是坏事，是到期提醒。
     """
-    import mem0.memory.utils as mu
+    fn = _pristine("parse_messages")
 
-    out = mu.parse_messages([{"role": PROBE_ROLE, "content": PROBE_TEXT}])
+    out = fn([{"role": PROBE_ROLE, "content": PROBE_TEXT}])
     assert PROBE_TEXT not in out, (
         "基座已经不丢非标准 role 了 —— 说明 mem0 升级后修了 Role Drop，"
         "本地 role_drop 补丁可以退役了，请一并更新本用例。"
@@ -96,10 +113,10 @@ def test_baseline_list_content_defect_is_present_before_patching():
 
     同上，这条断言随基座升级而变红即为到期提醒。
     """
-    import mem0.memory.utils as mu
+    fn = _pristine("remove_code_blocks")
 
     with pytest.raises(AttributeError):
-        mu.remove_code_blocks([{"type": "text", "text": PROBE_TEXT}])
+        fn([{"type": "text", "text": PROBE_TEXT}])
 
 
 # ═══════════════════════════════════════════════

@@ -407,7 +407,21 @@ def test_no_shipped_file_on_disk_is_ignored():
         f"走盘只找到 {len(walked)} 个该发布的文件，太少了 —— 剪枝判据大概率把真源码"
         "也剪掉了。一个什么都没扫到的守卫换来一行绿色，是本仓反复吃过的亏。"
     )
-    hit = sorted(_ignored(walked))
+    # 部署机上会有**本地配置正本**（`.env` / `mem0_config_local.json`）与它们
+    # 已提交的 `.example` 模板并存。正本被忽略是**设计如此**，不是「该发布却被挡」。
+    #
+    # v20 生产实机实测踩到：这条守卫在部署树上把 `mem0_config_local.json` 报成红灯 ——
+    # 判据默认「这棵树 = 一次干净检出」，而部署机从来不是。
+    #
+    # 豁免规则不写死文件名，而是问一个结构性问题：**它有没有一个同名的
+    # `.example` 模板躺在旁边**。有 → 它是本地实例；没有 → 照旧报红。
+    # 这样新增一种本地配置不需要回来改这张表，而随手忽略一个真源码文件仍然会红。
+    on_disk = set(walked)
+    def _has_template(rel):
+        return (rel + ".example") in on_disk
+    hit = sorted(h for h in _ignored(walked) if not _has_template(h))
+    waived = sorted(h for h in _ignored(walked) if _has_template(h))
+    assert all(_has_template(w) for w in waived), "豁免判据自相矛盾"
     assert not hit, (
         f"磁盘上有 {len(hit)} 个该发布的文件被 .gitignore 挡着：\n"
         + "\n".join(f"  · {h}" for h in hit[:40])
