@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumem-banner.jpg" alt="aiduMEI" width="100%">
+  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.0" width="100%">
 </p>
 
 # 🤔 aiduMEI — AI Wisdom Engine
@@ -23,18 +23,6 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. Named after the Greek gods, it embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-> **v20.0 · Memory-bank isolation · Reproducible evaluation · Backend contract & data lifeline.** An architecture release. From this version on, version numbers return to two segments and the runtime carries no mythological codename — the gods stay in the pantheon as history. Before v20, the whole memory pipeline effectively had **one implicit memory pool**: "whose memory is this, and which domain does it belong to" was expressed part-time by channel markers like `source`/`agent_id`. But **a channel is not ownership** — the moment two unrelated memory domains collide on the same key, the later write silently overwrites the earlier one, **neither side errors**, and the earlier record is simply gone. So the theme of v20 is not "add a bank field" but turning scope from a **convention** into a **contract**: the new `ducky/bank_contract.py` establishes a two-dimensional `(user_id, bank_id)` scope, and every **online read/write** path (three areas are explicitly out of scope — see *Known Limitations & Not Covered*) — write, query, delete, restore, statistics, feedback, background tasks, the event ledger, the Instinct→Skill graduation chain, the persona profile — must state explicitly which scope it operates in; an invalid scope raises **before any data is fetched**, never silently degrading into a whole-store scan. The read side follows one uniform shape: **named banks push the filter down and re-screen; the default bank keeps the v19 filter shape but re-screens out named-bank items** (legacy vectors carry no bank field — not pushing down in the default bank exists precisely for them). The migration is additive throughout: **not one row of existing data is modified or deleted**; legacy data lands in the `default` bank with key shapes identical to v19. The same release adds `benchmarks/`, freezing evaluation into a **reproducible protocol** (datasets, judge, seed, and file hashes all locked and evidenced; the adapter speaks the real HTTP contract instead of in-process shortcuts; the oracle serves only as a retrieval-ceiling diagnostic and never enters the headline), and `ducky/vector_backend.py`, turning the vector backend from hardcoded into a **contract** (Qdrant remains the default; sqlite-vec is only a revertible shadow POC — **an irreversible backend switch and a data-domain migration are never bound to the same release**); `/health`, `/metrics`, and `/search` traces now carry bank / backend / degradation evidence, and component failures go into degraded / trace — **never disguised as empty results**: "nothing found" and "the search broke" look identical, a failure mode this project has paid tuition for repeatedly.
-
-> **v19.5.0 · Athena — The Redaction Gate: turning an iron rule into a program that cannot be bypassed.** A discipline release: no runtime behaviour changes, what changes is **the condition under which publishing is allowed at all**. Two consecutive releases tripped over the same thing — the redaction was done, but whether it was done *completely* rested on human memory and diligence. An iron rule written in prose gets missed, and **when it is missed, nothing turns red**. Worse, this class of tool fails *silently*: leave one word out of the list and the scan still runs, the report is still all green, and a dirty distribution reaches a public index — discovered only afterwards. It does not error, it does not crash; it quietly issues a certificate that says "this has been checked." **A broken scanner and a clean project produce exactly the same output: zero.** So the real question this release answers is not "can it find the dirty thing" but **"when the scanner breaks, does it fail honestly?"** The new `scripts/release_scan.py` covers seven public surfaces (newly including **the package index's rendered page** — prose rendered from metadata, **visible without downloading anything**), under three hard constraints: **the wordlist lives outside the repository, always** (the list contains precisely the things being hidden; committing it would manufacture a leak in the name of preventing one); **an empty wordlist refuses to run rather than passing** (exit code 2 — it will not emit the zero that is indistinguishable from genuinely clean); and **the negative control is welded into the code** — before every real scan it verifies itself three ways on built-in synthetic samples (the dirty sample must fire, the clean sample must not, and a waiver must not bleed past its own line), and any mismatch voids the entire run. The accompanying `tests/test_release_hygiene.py` puts 18 guards on the gate itself; the central one breaks the scan logic into three classic failure modes — **blind** (reports nothing), **manic** (reports everything), **sieve** (a waiver leaks across the whole file) — and requires the self-check to catch every one, because **a self-check that always passes is identical to having none**. The waiver exit is deliberately narrow: **it applies only to the line the hit is on** — no file-level and certainly no directory-level exemptions — and waived hits still appear in the report item by item. They disappear from the **failure count**, never from **view**.
-
-> **v19.4.3 · Athena — Release Hygiene: a distribution is a public surface too.** An equivalent release to v19.4.2 with **zero behavioural change**: the executable logic is identical, and the only differences are comments, docstrings, and the version string itself — upgrading requires no adaptation whatsoever. There is exactly one reason this release exists: v19.4.2's source comments and docstrings still carried descriptive text about the internal deployment environment, and **a version number already published to a package index can never be overwritten or edited**. Among the surfaces visible to the outside world, commit messages can be rewritten, tags can be re-cut, release notes can be edited — **only an uploaded distribution cannot**. The ordering is therefore not advice but a constraint: **the scan must happen before the upload.** This release writes that gate into the process: the distribution must be unpacked and scanned for real, and the scanner itself must first be proven to fire on a **known-dirty object** (a negative control) before its "0 hits" counts for anything — **a scanner that has never reported a single hit offers a zero that is not evidence.**
-
-> **v19.4.2 · Athena — Guard Coverage & Integration Credential Wiring.** A close-out release for v19.4.1; no new features. The post-deploy re-audit (which included a Hermes Agent upgrade) found that the gate itself was built correctly, but **the list of "who needs a key" was incomplete**. v19.4.1 had shipped a guard test to stop callers from omitting credentials — except that guard scanned only `scripts/`, while the actual defects lived in the repo root, `integrations/`, and `mcp_server.py`. It caught none of them. **A guard whose range is smaller than the defect distribution is worse than no guard at all**, because it manufactures the illusion of protection. So the core of this release is not "fix a few more files" but **welding the guard's own range shut with a meta-test**: it asserts that the guard's coverage set ⊇ the set of every file in the repo that actually issues an HTTP request to this service. Narrow the range and it goes red immediately. That meta-test caught two entry points I had miscounted on its very first run, and a third after the widening — the plan named 5, reality had **9**. Credential wiring now covers 8 entry points (the Hermes injection hook, `mem0_sync`/`seed_demo`/`seed_facts`, `mcp_server`, the Cursor on-save hook, the Claude Code hook, and the Hermes plugin), all converged onto the single source of truth `ducky.utils.api_auth_headers()` and one shared `.env` fallback chain. The Hermes plugin is the textbook **"looks fixed"** case: the code plainly carried an `Authorization` header, but read the token from environment variables only — and the gateway launches plugins with a nearly empty environment, so every request went out with an empty token. Three silent failures were also fixed: the sync unit lacked `StartLimitIntervalSec`, so a crashloop stays in `activating` forever and never reaches `failed` (monitoring that alerts on `failed` waits forever); logrotate's rename-based rotation silently vanishes logs for a `StandardOutput=append:` unit (now `copytruncate`); and the sync daemon's dependency had never been declared in any manifest. On branding, the wordmark residue left by v19.4.1 is cleared (the tag-split form `aidu<b>MEM</b>` is invisible to a global sed), and the hardcoded version string in `ducky/__init__.py` — two releases stale — is removed rather than merely reset. Two closing rounds followed the deploy. The **audit-remediation round** (user-perspective audit plus self-inspection during the fixes) sent back findings that all pointed at the same thing again: the guard written *in this very release* still had a range smaller than the defect distribution. `frontend/dev_server.py` escaped the scan twice over — by **directory** and by **signal** (directory-level exemptions are the fastest way to accumulate blind spots: the reason for the exemption expires as the directory grows things, while the exemption itself never does). The README number guard watched a single row of the Chinese table and let the prose on the same page — and the entire English file — walk free. The worst finding came from self-inspection: the `StartLimit*` keys "fixed" above had been written into the `[Service]` section, and systemd parses them **only in `[Unit]`** — in the file in plain sight, greppable, review-approved, and behaviourally identical to not having fixed it at all. **Configuration written is not configuration in effect**; the only valid acceptance test is to ask systemd for the value it computed. The **close-out round** supplies the other half of the "12 skipped" number: host auto-discovery hits `/hermes/hermes-agent`, so on any machine that has that tree (production does) the README's repro command prints `403 passed, 0 skipped` — the reader **cannot reproduce the skip count we claim**. **Reproducible in both directions is what makes it falsifiable**: a "skip" you cannot make skip is exactly as untrustworthy as a "pass" you cannot make pass. The root cause was a resolver that stuffed the environment variable and the hardcoded paths into **one ordered candidate list**, so `HERMES_SRC=/typo` fell **silently** through to the auto-discovered path — you point at A, you test B, and it stays green. **An implicit fallback will quietly overrule an explicit intent.** It is now three-state, with **explicit always beating implicit**: unset → auto-discovery; `none/no/off/0/false/empty` → forced host-absent, not a single fallback attempted; explicit path invalid → raise, naming the bad path.
-
-> **v19.4.1 · Athena — Audit Patch · Auth Unification & Tenant Closure.** No new features in this release; it closes the gaps between what the docs claimed and what the code actually did. The audit method shifted from line-by-line review to **probe-driven verification**: for every claim in the README, write a minimal runnable program that tries to *disprove* it. Four claims fell and were fixed one by one: **auth unification** (previously setting only the UI password left every endpoint wide open, while setting only the API token bricked the console — now it is one gate with two keys: login issues an HttpOnly session cookie, and either that or a Bearer token grants access), **tenant closure** (visibility scoping now covers the facts layer, plus a fix for silent cross-tenant overwrites where two tenants writing the same key would destroy each other's value), **deletion rights honored** (cascade delete now covers the Verbatim Vault; the verbatim handle returned by `/search` previously could not delete itself — a "searchable but undeletable orphan"), and **idempotency & index alignment** (the dedup key contained a timestamp so production payloads never collided; Chinese text was tokenized as 2-grams against a trigram index, meaning Chinese queries *never* hit the index and always fell back to full scans — 32.8ms → 0.05ms on 200k rows). Three "silent failure that covers its own tracks" cases were also fixed: a compatibility-facade gap that had killed the consolidation job silently for three weeks, two auxiliary stores whose cascade cleanup had *never* executed since introduction (leaving 252 ghost records that in turn made deletion logs look perfect while doing nothing), and a SkillCrystallizer SQL dialect error swallowed into a fake "no patterns found yet". The backup gate's "verification invalidates its own baseline" flaw is fixed too. 107 new tests, all following the **anti-false-green rule**: payload/credential/query shapes are tested across *every* shape, and index assertions verify `_recall_path` rather than merely counting hits.
-
-> **v19.4.0 · Athena — Project Mirror Phase 1 · Verbatim Vault + Production Audit Fix Release.** Building on the v19.3 architectural unification, v19.4.0 opens "Project Mirror": using public memory-evaluation leaderboards as a mirror to see our own gaps — no competition, just craft. **Every word you said is kept** — the new Verbatim Vault stores verbatim conversation turns in parallel with mem0's fact extraction (per-tenant visibility scoping + idempotent dedup + trigram full-text index), and fuses verbatim evidence into recall results, so memory keeps not only the distilled skeleton but the warmth of the original words. After a full production audit (2🔴5🟡), every finding is fixed and shipped with this release: the B4 injection frame is now enforced at the server-side recall exit (production is self-defending with or without the hook), call_llm is hardened against the gateway's fake-SSE responses and auto-retries with a bigger budget on reasoning-model truncation so the governance evaluator is alive again, noise rules catch keyboard-mash junk, backup_gate is wired into the upgrade flow as a hard gate, ledger target_id queries expand aliases so one parameter retrieves the whole history, and secondary write paths (federation/refine/ai-self) get governance and ledger coverage. Full suite at the time of v19.4.0: 244 passed. (Latest figures: see "Testing & Quality" below.) v19.3.3 · Athena — Architectural Unification & Audit-Driven Hardening. Building on v19.2.0 production hardening, the v19.3 series delivers **single-source-of-truth unification of the recall pipeline and scoring engine**: funnel stages fully delegate to the unified 5-dimension scoring, singleton and lazy-import lifecycle hardened with double-checked locking, the 800+ line legacy module decoupled, and a unified injection-defense gate placed before final persistence. v19.3.1–v19.3.3 are consecutive audit-driven fixes: silent-exception observability, reranker placeholder removal, legacy route import completion (fixing /facts/add 500), nested exception-handler regression fix, and test assertion alignment.
-
 Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
 | Layer | Codename | What it does | Key Feature |
@@ -53,124 +41,156 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ---
 
-## Pantheon of Gods
+## Why v20.0 Is a Major Release
 
-> Major versions of aiduMEI were named after Greek deities — the god's domain reflects the architecture. From v20.0 on, versions return to plain two-segment numbers with no codename; the gods remain here as history.
+v19.5.0 and this release do **not** change the same layer.
 
-| Version | Codename | Deity | Core Mission |
-|---------|----------|-------|-------------|
-| **v20.0** | — (no codename) | Memory-bank isolation · Scope as contract | **A `(user_id, bank_id)` two-dimensional scope contract across the online read/write paths (write / query / delete / restore / stats / feedback / ledger / graduation) · invalid scope rejected before any fetch · additive migration with zero change to existing data · `benchmarks/` reproducible evaluation protocol · `vector_backend` contract with shadow POC · observability carries bank / backend / degradation evidence** |
-| **v19.5.0** | **Athena** | Goddess of Wisdom · The Redaction Gate | **A seven-surface scanner welded into the release chain (index-rendered page added) · the wordlist never enters the repo · an empty wordlist refuses to run rather than passing · the negative control is welded in, so the self-check is itself falsifiable · waivers bind to one line and stay in the report** |
-| **v19.4.3** | **Athena** | Goddess of Wisdom · Release Hygiene | **Behaviourally identical to v19.4.2 (comments and version string only) · unpacking and scanning the distribution becomes a mandatory pre-upload gate · a scanner counts only after a negative control** |
-| **v19.4.2** | **Athena** | Goddess of Wisdom · Guard Coverage & Credential Wiring | **Meta-test welds the guard's range · 8 credential entry points on one source of truth · `.env` fallback chain through standalone integrations · crashloops become visible · rotation stops losing logs · wordmark residue cleared · configuration written ≠ configuration in effect (`StartLimit*` section) · reproducible both ways is what makes it falsifiable (`HERMES_SRC` three-state)** |
-| **v19.4.1** | **Athena** | Goddess of Wisdom · Audit Patch | **One gate, two keys · tenant visibility scoping & cross-tenant overwrite fix · cascade delete covers the Verbatim Vault · idempotency key & Chinese index alignment** |
-| **v19.4.0** | **Athena** | Goddess of Wisdom · Project Mirror · Audit Fix | **Verbatim Vault · Verbatim-evidence fused recall · Server-side injection frame · LLM hardening · Noise rule upgrade · Backup hard gate · Ledger alias expansion · Secondary-path governance & ledger** |
-| **v19.3.3** | **Athena** | Goddess of Wisdom · Architectural Unification | **Single-source scoring · Singleton concurrency hardening · Unified injection gate · Silent-exception observability · Legacy decoupling** |
-| **v19.2.0** | **Athena** | Goddess of Wisdom · Production Hardening | **Prompt injection defense · Multi-store cascade delete & WAL · Unified scoring · Dynamic health** |
-| **v19.0** | **Athena** | Goddess of Wisdom · From Memory to Wisdom | **Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer** |
-| **v18.3** | **Zeus** | King of the Gods · Multimodal | Lossless fast-update · multimodal vision memory · Obsidian bi-directional links · console password change |
-| **v18.2** | **Zeus** | King of the Gods · Insight | Built-in aiduMEI console · EvolveMem feedback loop · quality audit |
-| **v18.1** | **Zeus** | King of the Gods · Self-Evolving | EvolveMem feedback loop · 38 MCP tools · quality audit |
-| **v18.0** | **Zeus** | King of the Gods · Power Absorption | Raw Drawer · Code Graph · 5 competitors精华 fusion · MCP×36 · IDE hooks |
-| **v17.0** | **Themis** | Goddess of Order | Event ledger · sensitivity tiers · governance rules |
-| **v16.0** | **Opus Octopod** | Deep-sea Sage | Conflict resolution · tree memory · skill crystallization |
-| **v15.0** | **Iris** | Rainbow Messenger | Official MemoryProvider channel · lazy hot-reload |
-| **v14.0** | **Aegis** | Divine Shield | Zero hardcoding · privacy shield · deploy anywhere |
-| **v13.0** | **Pantheon** | Hall of Gods | Multi-agent federation · MoE gating |
-| **v12.0** | **Chronos** | God of Time | Dual timeline validity |
-| **v11.0** | **Hyperion** | Titan of Light | Thread-local connection pool · performance era |
-| **v9.1** | **Mnemosyne** | Goddess of Memory | Tidal coalescing · dual-strategy tiering |
+| | v19.5.0 | **v20.0** |
+|---|---|---|
+| Character | **Discipline release** | **Architecture release** |
+| What changed | The release process — **zero runtime behaviour change** | The **ownership model** of memory (a data-plane contract) |
+| One-line theme | Don't let out what shouldn't be said | Don't let mix what shouldn't be mixed |
+| Should you upgrade | Optional; nothing functional depends on it | **Recommended** — it fixes a class of silent data loss |
+| Total test cases | ~700 | **1111** |
 
-[Full version history →](CHANGELOG.md)
+Three reasons, each harder than the last:
 
----
+**① Memory is no longer one big pool — and this is not "adding a field".**
 
-## 🖥️ aiduMEI Console
+Before v19, "who does this memory belong to, and to which domain" was expressed as a *side job* of channel markers like `source` / `agent_id`. But a channel is not ownership. The moment two unrelated memory domains collide on the same key, **the later write silently destroys the earlier one — no error on either side, no log line, no counter moves.**
 
-> **Ships with a visual console since v18.2** — not just an API service, but an engine where you can *watch a memory being recalled*.
+v20 turns scope from a *convention* into a *contract*: write, query, delete, restore, aggregate, feedback, background jobs, the event ledger, the graduation chain, persona profiles — **every online read/write path must state which domain it operates on**, and an invalid scope raises *before* any data is fetched rather than silently degrading into a full-table scan.
 
-aiduMEI serves a lightweight web console straight from the backend at `/ui`. No separate frontend deployment, no build step — plain static HTML/CSS/JS, with ECharts (CDN) used only by the MAP panel. Six panels cover the full lifecycle of the memory engine:
+The migration is fully additive: **not one existing row is modified or removed**, legacy data lands in the `default` domain, and key shapes stay byte-identical to v19.
 
-| Panel | Codename | What it shows |
-|-------|----------|---------------|
-| 💗 **PULSE** | Service + storage tiers | Version/codename, per-module probes, four-tier memory volume and capacity |
-| 🗄️ **VAULT** | Search + category ledger | Semantic search (vector + rerank), 6-domain category inventory, recent fact stream |
-| 🗺️ **MAP** | Knowledge starfield | ECharts force graph: core / domain / category / entity nodes, drag and zoom |
-| 🔍 **RECALL** | Recall funnel trace | Candidate pool → ignition → dedup → time decay → final, with per-stage latency and hit counts |
-| 🧬 **EVOLVE** | Retrieval quality board | 7-day queries / hits / scores / zero-hits, evolution cycle log, feedback signals |
-| ⚙️ **SETTINGS** | Models + modules + federation | LLM/Embedding/Reranker config (read-only, `api_key` masked), reasoning mode, tunables, module probes, federation members |
+**② Benchmarking moves from "trust us" to a reproducible protocol.**
 
-> This repository **ships no UI screenshots** — screenshots go stale with every release and tend to turn demo data into an implied product promise. Each panel is described in prose below; start the service and open `/ui` to verify for yourself. `tools/shot.js` (the CDP-driven, scroll-aware capture script we use ourselves) is included if you need to produce your own.
+New `benchmarks/`: dataset, model, judge, prompt, seed and file hashes are all pinned and evidenced; the adapter goes through the **real HTTP contract** rather than an in-process shortcut — otherwise you are testing your own functions, not this service. The oracle is a retrieval-ceiling diagnostic only and **never enters the headline**.
 
-### PULSE — Vitals
+**③ Shipped deployment artifacts no longer run as root by default.**
 
-Service health and version codename; **per-module** probes across 11 core modules (online / degraded / offline — a degraded probe names the specific module, rather than going green just because the process is alive); volume and capacity watermarks for each of the four memory tiers.
-
-### VAULT — Memory Bank
-
-Semantic search (vector recall + rerank scoring, results carry both score and source domain); category inventory across 6 knowledge domains with real per-domain counts; a recent fact stream in reverse chronological order, filterable by domain.
-
-### MAP — Knowledge Starfield
-
-An ECharts force-directed graph. Core / domain / category / entity nodes are sized from actual inventory; scroll to zoom, drag nodes, hover to see how many facts hang off a node and a sample of them.
-
-### RECALL — Recall Funnel
-
-> This is the panel aiduMEI cares most about: other memory dashboards tell you *what was stored*; this one tells you *why it was recalled*.
-
-Candidate pool → 🔥 ignition → dedup → time decay → final. **Every stage reports its own latency and in/out counts**: what came in, what dropped it, what survived, and why the final set is what it is. Zero-hit queries render too — an empty result is still a result, and you can see exactly which stage it went empty at.
-
-### EVOLVE — Self-Evolving Retrieval
-
-A 7-day retrieval quality board: query count, average hits, average score, zero-hit count; below it, the evolution cycle log (what was tuned each round and on what evidence) and user feedback signals.
-
-### SETTINGS — Model Configuration
-
-LLM / Embedding / Reranker configuration is displayed **read-only** with `api_key` masked. The panel deliberately exposes no way to change a key — configuration flows only through server-side files and environment variables. Also shows reasoning-mode status, tunable parameters, core module probes, and the federation member list.
+Both systemd units and the container image ran as root — that was the status quo. This release drops the units to a dedicated account with an empty capability set, a read-only filesystem and a syscall filter. Measured before/after on a production box (both computed by `systemd-analyze` itself): **exposure 9.6 UNSAFE → 1.7 OK, capabilities 41 → 0**.
 
 ---
 
-## 🛡️ v19.2.0 Production Hardening Highlights
+## Why We Retired the Greek-God Codenames
 
-> Verified in real-world production environments (1,000+ active production facts) and comprehensive security audits, v19.2.0 delivers 6 key production-grade hardenings:
+From v9 through v19 every major release carried a god: Mnemosyne, Chronos, Aegis, Pantheon, Zeus, Athena. Godhead-as-architecture helped us explain the design. **It was not a mistake — it simply outgrew its usefulness.**
 
-1. **3-Layer Prompt Injection Defense & Context Sandboxing** (`ducky/security/injection_guard.py`)
-   - **Multi-layer Filter**: Layer 1 regex pattern filter (jailbreaks / prompt overrides), Layer 2 normalization filter (strips punctuations/spaces to defeat obfuscation bypasses), and Layer 3 repetition/overflow rate-limiter.
-   - **Benign Whitelist**: Whitelists legitimate DevOps phrases and common natural language patterns to prevent false positives.
-   - **Context Sandboxing**: Recalled memories injected into System Prompts are strictly wrapped with `[DATA: MEMORY CONTEXT ...]` boundary tags, declaring them as pure data.
-2. **Tenant Ownership Checks & Exact-Match Deletion (P0)** (`ducky/hot/crud.py` & `ducky/wal_engine.py`)
-   - **Strict Tenant Scoping**: `/delete` and `/update` enforce tenant ownership (`user_id`), eliminating cross-tenant access.
-   - **Exact Matching**: Replaced substring SQL `LIKE '%...%'` queries with exact `id=? OR fact_key=?` matching, preventing accidental substring deletions.
-   - **Scope, not a security boundary (please do not over-read)**: aiduMEI is a **single-machine self-hosted** engine. The tenant dimension separates different agents/identities inside one deployment; it is **not** equivalent to the security boundary of a multi-tenant SaaS. Recall-side scoping covers the facts layer as of v19.4.1 (`AIDUMEM_STRICT_TENANT` switches to strict mode — see [`.env.example`](.env.example)). To host mutually untrusted parties, isolate by deployment instance rather than relying on this layer.
-3. **Anti-Accidental Clear Guard (P0)**
-   - `/delete_all` strictly rejects empty payloads with HTTP 400.
-   - Purging the `default` tenant requires explicit `confirm: true` to prevent accidental wipeouts.
-4. **Multi-Store Cascade Atomic Deletion & Application WAL (P0)** (`ducky/wal_engine.py`)
-   - Single deletion and tenant wipeouts synchronously purge **Qdrant vector store, SQLite FTS5 full-text index, facts.db, salience.db, evolve_mem.db**, and — as of v19.4.1 — the **Verbatim Vault** (`verbatim_turns` + `verbatim_fts_map`), leaving zero orphan records.
-   - Lightweight `wal_journal.jsonl` with `fsync` logging; automatically reconciles and self-heals orphaned records via `reconcile_startup()` on boot.
-   - Recursive refinement soft-archives vector points and unindexes FTS5 records, eliminating ghost memory recalls.
-5. **Unified 5-Dimension Scoring Engine & Zero N+1 Queries (P1)** (`ducky/scoring.py`)
-   - Standardized scoring across Vector + BM25 + Time Decay + Reliability + Heat with a single truth decay constant `AIDUMEM_RECENCY_LAMBDA`.
-   - **Zero N+1 Query Overhead**: `get_batch_memory_types` loads 6-type classifications via a single SQL batch query.
-6. **Network / Credential Hardening & Live Degradation Telemetry (P1)** (`ducky/degradation.py` & `api_server.py`)
-   - Binding to public interfaces (`0.0.0.0`) without `AIDUMEM_API_TOKEN` raises a fatal error on boot to prevent unprotected exposure.
-   - Eliminates default weak passwords; automatically generates a strong random password, persisted as a hash in `data/.ui_password_hash` (as of v19.4.1: PBKDF2-HMAC-SHA256 with 200k rounds, file mode 0600, legacy hashes auto-upgraded on first successful login).
-   - **Unified auth gate (v19.4.1)**: after console login the server issues an HttpOnly session cookie, which together with `Authorization: Bearer <AIDUMEM_API_TOKEN>` forms one gate with two keys — either grants access. Previously the console password was a frontend-only marker with no effect on REST endpoints. See `probes.auth_gate_enabled` in `/health`.
-   - `/health` exposes live `degraded_components` and memory high-watermark capacity warnings (>800 facts).
+Three concrete reasons, none of them aesthetic:
+
+**1. The codenames crept into machine contracts.** A codename should be poetry for humans, but ours leaked into module names, log prefixes and health-probe keys. Renaming stopped being a copy edit and became **a change to a machine contract** — production log collection filters on a prefix, so after a rename the service still starts and still logs, it just **stops being collected**. The cost of such a change is wildly out of proportion to its benefit.
+
+**2. Version numbers stopped conveying weight.** `v19.4.2` plus a codename gives the reader no way to tell a major release from a patch — which is a version number's first job.
+
+**3. A godhead is a promise, and stacking them writes cheques you can't cash.** With a dozen gods side by side, each one implies "there is a complete capability here". Real software is thick in places and thin in others; using a god's name on the thin parts is **overclaiming that's hard to notice**.
+
+So from v20.0 on: **two-segment version numbers, and no runtime codename.**
+
+This is not a disavowal of the history — the full *Pantheon* table below stays, because **not one of those capabilities was deleted; they are all still running**. They simply move from "runtime identity" to "landmarks in the evolution history", which is where they belong.
 
 ---
 
-## 🦉 What's New in v19.0 · Athena — From Memory to Wisdom
+## How We Compare — Where We're Strong, Where We're Not
 
-> Zeus solved *what to remember, how to store it, how to retrieve it*. Athena closes the second half of the cognitive loop: **once a memory is stored, how does the Agent actively review, self-correct, refine over time, grow experience into skills, and hold a stable persona?** Memory no longer only grows — it reflects, converges, and evolves.
+Up front: we and the "zero-dependency, purely local" class are **not the same kind of product**, and neither is chasing the other. They optimise for "one pip install, no network, sub-millisecond". We optimise for "multi-tenant, governable, every change on the ledger".
 
-- **🔮 Active Reflect (P0-3 · inspired by Hindsight)** — Periodic/triggered review distills patterns, relations, predictions, contradictions and knowledge gaps into first-class `reflections`. Auto-runs every 6h (configurable) and on `/session/end`; degradation-friendly. New: `POST /reflect`, `GET /reflect/list`, `GET /reflect/context`.
-- **✏️ Memory Self-Editing (P0-2 · inspired by Mem0)** — Before writing, an LLM judges *duplicate / conflict / novel* against existing memory — merge instead of append, keep both on conflict with confidence. Jaccard fallback when LLM is down; every edit snapshotted to `memory_edits`, one-click rollback.
-- **🧬 Recursive Refinement (P1-3 · inspired by SimpleMem)** — Background clustering compresses many fragment memories into higher-level abstractions. Products land in `refined_memories`; originals soft-superseded (never physically deleted), fully reversible.
-- **🌱 Autonomous Skill Growth + Pruning (P1-2 · inspired by ReMe/MemU)** — Task trace → step extraction → LLM-drafted SKILL.md → **human approval** → archived skill. Reuse scoring; low-utility skills (success rate < 34%) auto-flagged for retirement without deletion. LLM can only draft, never auto-commit.
-- **🎭 Persona Memory Layer (inspired by MemoryForge)** — Expands a one-line persona into a full context-retrievable autobiographical memory bank (L/G/E three tiers), replacing a static persona card injected every turn. Dual modes: `synthesis` (fictional characters) / `grounded` (real users, from existing memory, no fabrication). Versioned & reversible.
-- **🕰️ Dual-Timeline Memory + Time-Aware Retrieval (P0-1 / P0-4)** — Every memory carries `valid_from` / `valid_to` / `recorded_at`; hybrid retrieval fuses vector + BM25 + time decay + reliability + heat, with a tunable decay rate.
-- **🗂️ Memory Type Separation (P1-1 · inspired by Hindsight's four networks)** — Six explicit cognitive types: FACTS · PREFERENCES · EXPERIENCES · OBSERVATIONS · REFLECTIONS · DECISIONS.
+### Capabilities (qualitative)
+
+| Capability | aiduMEI | Zero-dep local class | Hosted cloud class |
+|---|:---:|:---:|:---:|
+| Multi-tenant / memory-domain isolation | **✅ `(user_id, bank_id)` contract** | ✗ explicitly designed for single agent, single machine | partial |
+| Dual timeline (memory **expires** instead of being deleted) | **✅ `valid_from` / `valid_to`** | ✗ | ✗ |
+| Write governance + human review | **✅ sync rules + async LLM second pass** | ✗ | ✗ |
+| Event ledger (who changed what, when) | **✅ across all paths** | ✗ | partial |
+| Verbatim fidelity (exact wording kept, not only the distillate) | **✅ Verbatim Vault** | ✗ | ✗ |
+| Cross-machine federation (many agents, one memory) | **✅ federated identity + MoE gating** | ✗ | partial |
+| Reranking (true cross-encoder) | **✅ bge-reranker-v2-m3** | ✗ weighted fusion only | partial |
+| Embedding model | **bge-m3 · 1024-dim · multilingual** | small local model | varies |
+| Zero dependencies / fully offline | ✗ **needs embedding + rerank services** | **✅ their strength** | ✗ |
+| Sub-millisecond latency | ✗ | **✅ their strength** | ✗ |
+| Free / self-hosted | ✅ MIT, self-hosted | ✅ | mostly paid |
+
+> ⚠️ **One boundary we must state plainly: multi-tenant ≠ a SaaS security boundary.**
+> aiduMEI is a **single-machine self-hosted** engine. The tenant dimension separates memory ownership
+> between different agents/identities **inside one deployment**; it is **not** an isolation layer for
+> putting mutually untrusted external customers on one box. For that, run one deployment per customer.
+> We spell this out because "tenant" is easy to over-read — and over-reading it causes real security misjudgement.
+
+### What connecting to external models buys us
+
+This is a **trade-off**, not a shortcoming, and it deserves to be stated:
+
+- **Reranking ≠ weighted fusion.** Fusion adds up scores you already have; a cross-encoder **re-reads the query and the document together** and scores them. On long-document retrieval that step is typically worth 10–20 points.
+- **The embedding tier gap is real.** To fit inside "zero dependencies and sub-millisecond", the embedding model has to be small. We use bge-m3 (1024-dim, multilingual, particularly strong on Chinese).
+- **The LLM buys extraction quality.** Zero dependencies means no LLM, so "auto-consolidation/summarisation" can only be rules or truncation. Our fact extraction, conflict resolution and governance evaluation are all LLM-driven.
+
+**And the cost, stated plainly: we need the network, we have latency, we have API cost.** For fully offline, sub-millisecond use cases that class genuinely fits better — we won't pretend otherwise.
+
+### On reading other people's numbers
+
+Not aimed at any one project; this is endemic to self-published benchmarks. **Both rows below simply hold two numbers from the same vendor's own page against each other:**
+
+| Headline number | Another number on the same page |
+|---|---|
+| "**<1ms** query latency" | their own speed table: search **45ms**, vector search **15ms** — and that is at **1,000 entries** |
+| "**98.9%** LongMemEval" | that is **Recall@All@5** (is the answer in the top 5?); the same page reports **end-to-end QA at 65.2%** |
+
+Two conclusions:
+
+1. **1ms is a bare database row read, not a semantic search.** You cannot run a cross-encoder rerank or an LLM extraction in 1ms — **that number is itself the receipt for having skipped them.**
+2. **`Recall@k` (can it be found) and end-to-end accuracy (is the answer right) are different metrics**, and published material often shows a gap of 30+ points. A metric sitting near 99% is usually **saturated and has lost its discriminating power** — making a saturated metric your headline is a choice.
+
+---
+
+## On Benchmarks: Where We Stand
+
+**This release has not been benchmarked, so this page claims no score.**
+
+We are actively preparing our own benchmark run, working at it like other vendors do — the difference being that we intend to **hand over the reproduction method along with the number**.
+
+The protocol is already in place (`benchmarks/`): dataset, model, judge, prompt, seed and file hashes are pinned and evidenced, and the adapter goes through the real HTTP contract. Which means that on the day we publish a score, the same protocol should give you the same number — **that is the only form in which we think a score means anything.**
+
+Why we would rather hand in a blank page than a placeholder figure:
+
+- **This release's whole rule is "a claim is a commitment".** We even removed an assertion over a single phrase: the line "all axes present: derived, never measured" became false the moment we actually measured it, so it was changed to a dated, measured value the same day. Putting a guessed score on the same page would undo exactly that.
+- **The value of a first benchmark run is exposing problems, not scoring points.** During development we repeatedly hit "looks fine, actually idling": a reasoning model returning empty for every question under a token cap while the scoreboard reported zero failures; an embedding-dimension parameter shipped wrong from the factory template. A real run will most likely surface a few of those first, and the first number will be visibly lower than the second — as it should be.
+
+**The formal run lands soon, published with the full reproducible record — including the failures, not just the flattering parts.**
+
+---
+
+## Get Started in 30 Seconds
+
+### Method 1: Run via Docker (GitHub Packages / GHCR)
+
+```bash
+docker pull ghcr.io/monkey2jack/aidumei:latest
+docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
+```
+
+### Method 2: Clone & Run from Source
+
+```bash
+# 1. Clone
+git clone https://github.com/monkey2jack/aiduMEI.git
+cd aiduMEI
+
+# 2. Create virtual environment
+python3.12 -m venv venv
+source venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure (copy and edit)
+cp mem0_config_local.json.example mem0_config_local.json
+# Edit mem0_config_local.json with your LLM and embedding API keys
+
+# 5. Start
+python api_server.py
+# API runs on http://localhost:8767
+```
 
 ---
 
@@ -226,37 +246,56 @@ LLM / Embedding / Reranker configuration is displayed **read-only** with `api_ke
 
 ---
 
-## Quick Start
+## What Makes aiduMEI Unique
 
-### Method 1: Run via Docker (GitHub Packages / GHCR)
+### 🔮 Relevance Gate (Tahoe-Gate)
+Most RAG systems search memory for every single message. aiduMEI's **Relevance Gate** (`GET /gate`) uses heuristics + dynamic entity matching to determine if the current message actually needs memory retrieval. Casual chat skips retrieval entirely → saves tokens and compute. Hosts call the gate before injecting memory context.
+
+### 🌊 Tidal Coalescing (Mnemosyne Tidal)
+Short messages don't trigger individual LLM calls. They're buffered asynchronously by session, then batched into a single LLM call. Three-tier strategy: Tech / Intimate / Default — fast for code, deep for personal.
+
+### ⏳ Three-Lane Ebbinghaus Decay
+Memories have expiration dates. Identity and Preference are permanent lanes (zero decay), Emotion decays 1.5× faster, general facts follow the standard forgetting curve. **Teach AI to forget what doesn't matter.**
+
+### 🕰️ Chronos Dual Timeline
+`valid_from` / `valid_to` time windows: expired facts are deprioritized but never deleted, future facts are sorted behind. All governance-type memories (identity/preference lane) never expire.
+
+### ⚡ Raw Drawer (Zeus v18.0)
+Inspired by MemPalace's (58k⭐) Verbatim Storage. Zero-LLM raw text storage — code snippets, full conversations, raw logs bypass LLM summarization entirely. FTS5 full-text index + Qdrant vector + facts registration, three pipelines in parallel.
+
+### 🔍 Code Graph (Zeus v18.0)
+Inspired by code-review-graph's (29k⭐) AST blast radius analysis. Uses Python's standard `ast` library to parse project dependencies. Change one file, instantly see the impact. 724 functions · 936 imports, full-graph scan in 468ms.
+
+### 📈 EvolveMem Self-Evolving Retrieval (Zeus v18.1)
+Inspired by SimpleMem's (3.7k⭐) evolution concept. Users rate each retrieval result (useful / useless / correction). Background thread runs every 6 hours to auto-compute decay/boost. High-quality frequent entries auto-consolidate, low-quality ones gently deprioritize. **Closed-loop feedback — gets smarter with use.**
+
+### 🏛️ Pantheon Federation
+Inspired by MoE (Mixture-of-Experts): a complete multi-agent federation infrastructure underneath, with only the current agent's hot channel active day-to-day.
+
+- **Federated Identity**: Every memory carries `agent_id` / `profile` / `shared` — multiple agents share one database without cross-contamination
+- **MoE Gating**: Default hot channel (single SQL, 5ms level); other agents only awakened on explicit request
+- **Four-Tier Graceful Degradation**: L1 local → L2 tiered-weight → L3 same-profile federation → L4 cross-profile global
+- **Write Dedup**: Jaccard three-state — ≥0.85 merge, ≥0.70 update, <0.70 insert
+
+### 🐙 Conflict Resolution & Skill Crystallization (Opus Octopod — v16.0)
+
+- **ConflictResolver**: Domain migrations, name changes auto-detected + old values deprioritized. Dual timeline invalidation instead of deletion
+- **TreeMemory**: `node_path` hierarchical tracing, facts mounted to tree nodes, ancestor traversal supported
+- **SkillCrystallizer**: Background auto-detection of high-frequency repeated facts,提炼ed into Skill candidates. **LLM can only suggest — human approval required to activate**
+
+### 🛡️ Aegis Shield (v14.0)
+Zero hardcoded identities, absolute paths, server addresses, or secrets in the repository. Everything configurable goes through environment variables. Clone to any directory, any machine — `python api_server.py` just works.
+
+### 🌈 Iris Rainbow Bridge (v15.0)
+aiduMEI provides an **official Hermes Agent MemoryProvider plugin** with full lifecycle hooks — turn-start injection of persistent blocks & relevant retrieval, background archiving every turn, **pre-compress rescue of about-to-be-discarded conversations into long-term memory**, mirroring of the host's built-in MEMORY.md writes, and three directly callable tools.
 
 ```bash
-docker pull ghcr.io/monkey2jack/aidumei:latest
-docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
+cp -r integrations/hermes-plugin/aidumei ~/.hermes/plugins/
+hermes config set memory.provider aidumei
 ```
 
-### Method 2: Clone & Run from Source
-
-```bash
-# 1. Clone
-git clone https://github.com/monkey2jack/aiduMEI.git
-cd aiduMEI
-
-# 2. Create virtual environment
-python3.12 -m venv venv
-source venv/bin/activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure (copy and edit)
-cp mem0_config_local.json.example mem0_config_local.json
-# Edit mem0_config_local.json with your LLM and embedding API keys
-
-# 5. Start
-python api_server.py
-# API runs on http://localhost:8767
-```
+### 🔧 Zero-Config Hybrid Search
+BM25 trigram (zero-latency fallback) + vector embedding vectors + Reranker + recall funnel relevance ranking. Vector service timeout triggers automatic hot-switch to local full-text search.
 
 ---
 
@@ -364,59 +403,6 @@ curl -s -X POST http://localhost:8767/evolve/feedback \
 
 ---
 
-## What Makes aiduMEI Unique
-
-### 🔮 Relevance Gate (Tahoe-Gate)
-Most RAG systems search memory for every single message. aiduMEI's **Relevance Gate** (`GET /gate`) uses heuristics + dynamic entity matching to determine if the current message actually needs memory retrieval. Casual chat skips retrieval entirely → saves tokens and compute. Hosts call the gate before injecting memory context.
-
-### 🌊 Tidal Coalescing (Mnemosyne Tidal)
-Short messages don't trigger individual LLM calls. They're buffered asynchronously by session, then batched into a single LLM call. Three-tier strategy: Tech / Intimate / Default — fast for code, deep for personal.
-
-### ⏳ Three-Lane Ebbinghaus Decay
-Memories have expiration dates. Identity and Preference are permanent lanes (zero decay), Emotion decays 1.5× faster, general facts follow the standard forgetting curve. **Teach AI to forget what doesn't matter.**
-
-### 🕰️ Chronos Dual Timeline
-`valid_from` / `valid_to` time windows: expired facts are deprioritized but never deleted, future facts are sorted behind. All governance-type memories (identity/preference lane) never expire.
-
-### ⚡ Raw Drawer (Zeus v18.0)
-Inspired by MemPalace's (58k⭐) Verbatim Storage. Zero-LLM raw text storage — code snippets, full conversations, raw logs bypass LLM summarization entirely. FTS5 full-text index + Qdrant vector + facts registration, three pipelines in parallel.
-
-### 🔍 Code Graph (Zeus v18.0)
-Inspired by code-review-graph's (29k⭐) AST blast radius analysis. Uses Python's standard `ast` library to parse project dependencies. Change one file, instantly see the impact. 724 functions · 936 imports, full-graph scan in 468ms.
-
-### 📈 EvolveMem Self-Evolving Retrieval (Zeus v18.1)
-Inspired by SimpleMem's (3.7k⭐) evolution concept. Users rate each retrieval result (useful / useless / correction). Background thread runs every 6 hours to auto-compute decay/boost. High-quality frequent entries auto-consolidate, low-quality ones gently deprioritize. **Closed-loop feedback — gets smarter with use.**
-
-### 🏛️ Pantheon Federation
-Inspired by MoE (Mixture-of-Experts): a complete multi-agent federation infrastructure underneath, with only the current agent's hot channel active day-to-day.
-
-- **Federated Identity**: Every memory carries `agent_id` / `profile` / `shared` — multiple agents share one database without cross-contamination
-- **MoE Gating**: Default hot channel (single SQL, 5ms level); other agents only awakened on explicit request
-- **Four-Tier Graceful Degradation**: L1 local → L2 tiered-weight → L3 same-profile federation → L4 cross-profile global
-- **Write Dedup**: Jaccard three-state — ≥0.85 merge, ≥0.70 update, <0.70 insert
-
-### 🐙 Conflict Resolution & Skill Crystallization (Opus Octopod — v16.0)
-
-- **ConflictResolver**: Domain migrations, name changes auto-detected + old values deprioritized. Dual timeline invalidation instead of deletion
-- **TreeMemory**: `node_path` hierarchical tracing, facts mounted to tree nodes, ancestor traversal supported
-- **SkillCrystallizer**: Background auto-detection of high-frequency repeated facts,提炼ed into Skill candidates. **LLM can only suggest — human approval required to activate**
-
-### 🛡️ Aegis Shield (v14.0)
-Zero hardcoded identities, absolute paths, server addresses, or secrets in the repository. Everything configurable goes through environment variables. Clone to any directory, any machine — `python api_server.py` just works.
-
-### 🌈 Iris Rainbow Bridge (v15.0)
-aiduMEI provides an **official Hermes Agent MemoryProvider plugin** with full lifecycle hooks — turn-start injection of persistent blocks & relevant retrieval, background archiving every turn, **pre-compress rescue of about-to-be-discarded conversations into long-term memory**, mirroring of the host's built-in MEMORY.md writes, and three directly callable tools.
-
-```bash
-cp -r integrations/hermes-plugin/aidumei ~/.hermes/plugins/
-hermes config set memory.provider aidumei
-```
-
-### 🔧 Zero-Config Hybrid Search
-BM25 trigram (zero-latency fallback) + vector embedding vectors + Reranker + recall funnel relevance ranking. Vector service timeout triggers automatic hot-switch to local full-text search.
-
----
-
 ## Hermes Agent Integration
 
 | Method | Capabilities | When to Use |
@@ -488,6 +474,90 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 - **MCP**: fastmcp stdio + HTTP dual-mode
 
 ---
+
+## Security Model (v19.4.1)
+
+**One gate, two keys.** Both are accepted; either one grants access:
+
+| Key | Who uses it | How |
+|-----|-------------|-----|
+| Session cookie | Browser console | `POST /login` with the console password; the server issues an HttpOnly, SameSite=Lax session cookie |
+| Bearer token | Scripts, MCP, CI | `Authorization: Bearer <AIDUMEM_API_TOKEN>` |
+
+The gate activates when **either** `AIDUMEM_API_TOKEN` is set **or** the console password is set explicitly
+(via env var, or by changing it through the console). A password auto-generated at first boot guards the console
+login only — it deliberately does **not** activate the REST gate, so existing loopback callers (Hermes plugin,
+MCP, cron) keep working across an upgrade. Check `probes.auth_gate_enabled` in `/health` to see the current state.
+
+**Tenant scoping is not a SaaS security boundary.** aiduMEI is a single-machine self-hosted engine; the tenant
+dimension separates different agents/identities within one deployment. Recall-side scoping covers the facts layer
+as of v19.4.1, and `AIDUMEM_STRICT_TENANT=1` switches to strict mode (no fallback for unlabeled historical rows).
+If you need to host mutually untrusted parties, isolate by deployment instance rather than relying on this layer.
+
+**Passwords** are stored as PBKDF2-HMAC-SHA256 (200k rounds) in `data/.ui_password_hash` with mode 0600;
+pre-v19.4.1 single-round SHA-256 hashes are upgraded automatically on first successful login.
+
+---
+
+## Configuration
+
+aiduMEI reads configuration from `mem0_config_local.json`. Key fields:
+
+```json
+{
+  "llm": {
+    "provider": "openai",
+    "config": {
+      "model": "your-model",
+      "api_key": "your-key",
+      "base_url": "your-endpoint"
+    }
+  },
+  "embedder": {
+    "provider": "openai",
+    "config": {
+      "model": "your-embedding-model",
+      "api_key": "your-key",
+      "base_url": "your-embedding-endpoint"
+    }
+  },
+  "vector_store": {
+    "provider": "qdrant",
+    "config": {
+      "collection_name": "aidu_mem",
+      "host": "localhost",
+      "port": 6333
+    }
+  }
+}
+```
+
+---
+
+## Environment Variables
+
+Since v14 Aegis, all deployment-specific settings are injected via environment variables — **all optional**, safe defaults when unset.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AIDUMEM_HOME` | Repo root (auto-detected) | Override repository root |
+| `AIDUMEM_DATA_DIR` | `<repo>/data` | Database & vector store location |
+| `AIDUMEM_LOG_DIR` | `<repo>/logs` | Log directory |
+| `AIDUMEM_CONFIG_FILE` | `<repo>/mem0_config_local.json` | mem0 config file path |
+| `AIDUMEM_DEFAULT_USER_ID` | `default` | Default user_id |
+| `AIDUMEM_DEFAULT_AGENT_ID` | `default` | Federation default agent_id |
+| `AIDUMEM_ENTITY_KEYWORDS` | empty | Custom entity keywords for relevance gate, `\|` separated |
+| `AIDUMEM_URL` | `http://127.0.0.1:8767` | Hermes plugin / hook service URL |
+| `AIDUMEM_USER_ID` | `default` | Hermes plugin / hook memory namespace |
+| `AIDUMEM_MIN_HISTORY` | `6` | shell hook: skip injection when session history below this |
+
+Full list with comments: [`.env.example`](.env.example). Start with `cp .env.example .env`.
+
+---
+
+<p align="center">
+  <sub>AI Wisdom Engine | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
+</p>
 
 ## Testing & Quality
 
@@ -605,86 +675,79 @@ exception 3 is "the bank label is inaccurate", not "banks leak into each other".
 
 ---
 
-## Security Model (v19.4.1)
+## 🖥️ aiduMEI Console
 
-**One gate, two keys.** Both are accepted; either one grants access:
+> **Ships with a visual console since v18.2** — not just an API service, but an engine where you can *watch a memory being recalled*.
 
-| Key | Who uses it | How |
-|-----|-------------|-----|
-| Session cookie | Browser console | `POST /login` with the console password; the server issues an HttpOnly, SameSite=Lax session cookie |
-| Bearer token | Scripts, MCP, CI | `Authorization: Bearer <AIDUMEM_API_TOKEN>` |
+aiduMEI serves a lightweight web console straight from the backend at `/ui`. No separate frontend deployment, no build step — plain static HTML/CSS/JS, with ECharts (CDN) used only by the MAP panel. Six panels cover the full lifecycle of the memory engine:
 
-The gate activates when **either** `AIDUMEM_API_TOKEN` is set **or** the console password is set explicitly
-(via env var, or by changing it through the console). A password auto-generated at first boot guards the console
-login only — it deliberately does **not** activate the REST gate, so existing loopback callers (Hermes plugin,
-MCP, cron) keep working across an upgrade. Check `probes.auth_gate_enabled` in `/health` to see the current state.
+| Panel | Codename | What it shows |
+|-------|----------|---------------|
+| 💗 **PULSE** | Service + storage tiers | Version/codename, per-module probes, four-tier memory volume and capacity |
+| 🗄️ **VAULT** | Search + category ledger | Semantic search (vector + rerank), 6-domain category inventory, recent fact stream |
+| 🗺️ **MAP** | Knowledge starfield | ECharts force graph: core / domain / category / entity nodes, drag and zoom |
+| 🔍 **RECALL** | Recall funnel trace | Candidate pool → ignition → dedup → time decay → final, with per-stage latency and hit counts |
+| 🧬 **EVOLVE** | Retrieval quality board | 7-day queries / hits / scores / zero-hits, evolution cycle log, feedback signals |
+| ⚙️ **SETTINGS** | Models + modules + federation | LLM/Embedding/Reranker config (read-only, `api_key` masked), reasoning mode, tunables, module probes, federation members |
 
-**Tenant scoping is not a SaaS security boundary.** aiduMEI is a single-machine self-hosted engine; the tenant
-dimension separates different agents/identities within one deployment. Recall-side scoping covers the facts layer
-as of v19.4.1, and `AIDUMEM_STRICT_TENANT=1` switches to strict mode (no fallback for unlabeled historical rows).
-If you need to host mutually untrusted parties, isolate by deployment instance rather than relying on this layer.
+> This repository **ships no UI screenshots** — screenshots go stale with every release and tend to turn demo data into an implied product promise. Each panel is described in prose below; start the service and open `/ui` to verify for yourself. `tools/shot.js` (the CDP-driven, scroll-aware capture script we use ourselves) is included if you need to produce your own.
 
-**Passwords** are stored as PBKDF2-HMAC-SHA256 (200k rounds) in `data/.ui_password_hash` with mode 0600;
-pre-v19.4.1 single-round SHA-256 hashes are upgraded automatically on first successful login.
+### PULSE — Vitals
 
----
+Service health and version codename; **per-module** probes across 11 core modules (online / degraded / offline — a degraded probe names the specific module, rather than going green just because the process is alive); volume and capacity watermarks for each of the four memory tiers.
 
-## Configuration
+### VAULT — Memory Bank
 
-aiduMEI reads configuration from `mem0_config_local.json`. Key fields:
+Semantic search (vector recall + rerank scoring, results carry both score and source domain); category inventory across 6 knowledge domains with real per-domain counts; a recent fact stream in reverse chronological order, filterable by domain.
 
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "config": {
-      "model": "your-model",
-      "api_key": "your-key",
-      "base_url": "your-endpoint"
-    }
-  },
-  "embedder": {
-    "provider": "openai",
-    "config": {
-      "model": "your-embedding-model",
-      "api_key": "your-key",
-      "base_url": "your-embedding-endpoint"
-    }
-  },
-  "vector_store": {
-    "provider": "qdrant",
-    "config": {
-      "collection_name": "aidu_mem",
-      "host": "localhost",
-      "port": 6333
-    }
-  }
-}
-```
+### MAP — Knowledge Starfield
+
+An ECharts force-directed graph. Core / domain / category / entity nodes are sized from actual inventory; scroll to zoom, drag nodes, hover to see how many facts hang off a node and a sample of them.
+
+### RECALL — Recall Funnel
+
+> This is the panel aiduMEI cares most about: other memory dashboards tell you *what was stored*; this one tells you *why it was recalled*.
+
+Candidate pool → 🔥 ignition → dedup → time decay → final. **Every stage reports its own latency and in/out counts**: what came in, what dropped it, what survived, and why the final set is what it is. Zero-hit queries render too — an empty result is still a result, and you can see exactly which stage it went empty at.
+
+### EVOLVE — Self-Evolving Retrieval
+
+A 7-day retrieval quality board: query count, average hits, average score, zero-hit count; below it, the evolution cycle log (what was tuned each round and on what evidence) and user feedback signals.
+
+### SETTINGS — Model Configuration
+
+LLM / Embedding / Reranker configuration is displayed **read-only** with `api_key` masked. The panel deliberately exposes no way to change a key — configuration flows only through server-side files and environment variables. Also shows reasoning-mode status, tunable parameters, core module probes, and the federation member list.
 
 ---
 
-## Environment Variables
+## Pantheon of Gods
 
-Since v14 Aegis, all deployment-specific settings are injected via environment variables — **all optional**, safe defaults when unset.
+> Major versions of aiduMEI were named after Greek deities — the god's domain reflects the architecture. From v20.0 on, versions return to plain two-segment numbers with no codename; the gods remain here as history.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AIDUMEM_HOME` | Repo root (auto-detected) | Override repository root |
-| `AIDUMEM_DATA_DIR` | `<repo>/data` | Database & vector store location |
-| `AIDUMEM_LOG_DIR` | `<repo>/logs` | Log directory |
-| `AIDUMEM_CONFIG_FILE` | `<repo>/mem0_config_local.json` | mem0 config file path |
-| `AIDUMEM_DEFAULT_USER_ID` | `default` | Default user_id |
-| `AIDUMEM_DEFAULT_AGENT_ID` | `default` | Federation default agent_id |
-| `AIDUMEM_ENTITY_KEYWORDS` | empty | Custom entity keywords for relevance gate, `\|` separated |
-| `AIDUMEM_URL` | `http://127.0.0.1:8767` | Hermes plugin / hook service URL |
-| `AIDUMEM_USER_ID` | `default` | Hermes plugin / hook memory namespace |
-| `AIDUMEM_MIN_HISTORY` | `6` | shell hook: skip injection when session history below this |
+| Version | Codename | Deity | Core Mission |
+|---------|----------|-------|-------------|
+| **v20.0** | — (no codename) | Memory-bank isolation · Scope as contract | **A `(user_id, bank_id)` two-dimensional scope contract across the online read/write paths (write / query / delete / restore / stats / feedback / ledger / graduation) · invalid scope rejected before any fetch · additive migration with zero change to existing data · `benchmarks/` reproducible evaluation protocol · `vector_backend` contract with shadow POC · observability carries bank / backend / degradation evidence** |
+| **v19.5.0** | **Athena** | Goddess of Wisdom · The Redaction Gate | **A seven-surface scanner welded into the release chain (index-rendered page added) · the wordlist never enters the repo · an empty wordlist refuses to run rather than passing · the negative control is welded in, so the self-check is itself falsifiable · waivers bind to one line and stay in the report** |
+| **v19.4.3** | **Athena** | Goddess of Wisdom · Release Hygiene | **Behaviourally identical to v19.4.2 (comments and version string only) · unpacking and scanning the distribution becomes a mandatory pre-upload gate · a scanner counts only after a negative control** |
+| **v19.4.2** | **Athena** | Goddess of Wisdom · Guard Coverage & Credential Wiring | **Meta-test welds the guard's range · 8 credential entry points on one source of truth · `.env` fallback chain through standalone integrations · crashloops become visible · rotation stops losing logs · wordmark residue cleared · configuration written ≠ configuration in effect (`StartLimit*` section) · reproducible both ways is what makes it falsifiable (`HERMES_SRC` three-state)** |
+| **v19.4.1** | **Athena** | Goddess of Wisdom · Audit Patch | **One gate, two keys · tenant visibility scoping & cross-tenant overwrite fix · cascade delete covers the Verbatim Vault · idempotency key & Chinese index alignment** |
+| **v19.4.0** | **Athena** | Goddess of Wisdom · Project Mirror · Audit Fix | **Verbatim Vault · Verbatim-evidence fused recall · Server-side injection frame · LLM hardening · Noise rule upgrade · Backup hard gate · Ledger alias expansion · Secondary-path governance & ledger** |
+| **v19.3.3** | **Athena** | Goddess of Wisdom · Architectural Unification | **Single-source scoring · Singleton concurrency hardening · Unified injection gate · Silent-exception observability · Legacy decoupling** |
+| **v19.2.0** | **Athena** | Goddess of Wisdom · Production Hardening | **Prompt injection defense · Multi-store cascade delete & WAL · Unified scoring · Dynamic health** |
+| **v19.0** | **Athena** | Goddess of Wisdom · From Memory to Wisdom | **Active Reflect · memory self-editing · recursive refinement · skill growth · persona memory layer** |
+| **v18.3** | **Zeus** | King of the Gods · Multimodal | Lossless fast-update · multimodal vision memory · Obsidian bi-directional links · console password change |
+| **v18.2** | **Zeus** | King of the Gods · Insight | Built-in aiduMEI console · EvolveMem feedback loop · quality audit |
+| **v18.1** | **Zeus** | King of the Gods · Self-Evolving | EvolveMem feedback loop · 38 MCP tools · quality audit |
+| **v18.0** | **Zeus** | King of the Gods · Power Absorption | Raw Drawer · Code Graph · 5 competitors精华 fusion · MCP×36 · IDE hooks |
+| **v17.0** | **Themis** | Goddess of Order | Event ledger · sensitivity tiers · governance rules |
+| **v16.0** | **Opus Octopod** | Deep-sea Sage | Conflict resolution · tree memory · skill crystallization |
+| **v15.0** | **Iris** | Rainbow Messenger | Official MemoryProvider channel · lazy hot-reload |
+| **v14.0** | **Aegis** | Divine Shield | Zero hardcoding · privacy shield · deploy anywhere |
+| **v13.0** | **Pantheon** | Hall of Gods | Multi-agent federation · MoE gating |
+| **v12.0** | **Chronos** | God of Time | Dual timeline validity |
+| **v11.0** | **Hyperion** | Titan of Light | Thread-local connection pool · performance era |
+| **v9.1** | **Mnemosyne** | Goddess of Memory | Tidal coalescing · dual-strategy tiering |
 
-Full list with comments: [`.env.example`](.env.example). Start with `cp .env.example .env`.
+[Full version history →](CHANGELOG.md)
 
 ---
-
-<p align="center">
-  <sub>AI Wisdom Engine | Built by <a href="https://github.com/monkey2jack">aiduMEI Team</a></sub>
-</p>
