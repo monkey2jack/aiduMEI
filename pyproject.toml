@@ -51,7 +51,16 @@ full = [
 #（tests/test_v20_dev_deps_declaration.py 盯着）。
 # pytest 下限 7：subTest 失败在 7 和 9 上都会红，只是 9 起才逐条报
 # （subtests 是 pytest 9 的内置插件，不是第三方依赖 —— 别再往清单里加）。
-dev = ["pytest>=7.0.0"]
+dev = ["pytest>=7.0.0", "pyyaml>=6.0"]
+
+# bench: 跑分管线用。三个都曾经**一处未声明**，靠「本机碰巧装过」才跑得通 ——
+# 与 v19.4.2 的 inotify_simple 是同一个形态：声明的一半指着空气，
+# 换一台干净机器就现原形（v20 实机实测：nltk 缺失 → 13 条用例集体变红，
+# 而那些红看着和真缺陷一模一样）。
+#   · nltk  —— LoCoMo 官方 F1 的 PorterStemmer，换实现就不是官方口径了
+#   · regex —— 官方归一化用的 \p{...} 类，标准库 re 不支持
+#   · numpy —— 多答案 F1 求均值时的对拍基准
+bench = ["nltk>=3.8", "regex>=2023.0.0", "numpy>=1.24"]
 
 [project.scripts]
 aidumem = "api_server:main"

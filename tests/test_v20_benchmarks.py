@@ -110,6 +110,35 @@ def test_longmemeval_rejects_misaligned_haystack_columns():
         ])])
 
 
+def test_longmemeval_tolerates_intraday_unordered_haystack():
+    """日内时刻颠倒是上游常态（官方 s 文件 211/500）：必须放行，并计入 report。"""
+    inst = _lme_instance(
+        haystack_dates=["2023/05/01 (Mon) 15:24",
+                        "2023/05/01 (Mon) 01:34",
+                        "2023/05/02 (Tue) 09:00"],
+        haystack_session_ids=["s1", "s2", "s3"],
+        haystack_sessions=[[{"role": "user", "content": "甲"}],
+                           [{"role": "user", "content": "乙"}],
+                           [{"role": "user", "content": "丙"}]],
+        answer_session_ids=["s1"],
+    )
+    report = validate_longmemeval([inst])
+    assert report["intraday_unordered"] == 1
+
+
+def test_longmemeval_still_rejects_cross_day_unordered_haystack():
+    """负向对照：按【天】乱序仍必须抛——放宽的是粒度，不是把守卫删了。"""
+    inst = _lme_instance(
+        haystack_dates=["2023/05/09 (Tue) 09:00", "2023/05/01 (Mon) 09:00"],
+        haystack_session_ids=["s1", "s2"],
+        haystack_sessions=[[{"role": "user", "content": "甲"}],
+                           [{"role": "user", "content": "乙"}]],
+        answer_session_ids=["s1"],
+    )
+    with pytest.raises(SchemaError, match="未按日期升序"):
+        validate_longmemeval([inst])
+
+
 def test_longmemeval_strict_total_for_formal_files():
     with pytest.raises(SchemaError, match="官方每文件 500"):
         validate_longmemeval([_lme_instance()], expect_total=500)
@@ -523,6 +552,87 @@ def test_adapter_deterministic_add_requests_infer_false(stub_server):
     assert add_req["payload"]["metadata"]["bench_dia_id"] == "D1:1"
     assert out["response"]["infer"] is False
     assert ad.stats["protocol_errors"] == 0
+
+
+def test_说话人名当role必须归一为user_否则语义层静默零入库(stub_server):
+    """★ 缺陷修复回归（2026-08-23，见 FINDING_role_drop.md）。
+
+    LoCoMo 把说话人名放 speaker 字段，此前被直接当 role 发出。服务端的
+    mem0 抽取层只认 system/user/assistant，**没有 else 也没有告警**，
+    整条消息静默落空 → 零事实入库，而 /add 照回 ok。实测灌 78 轮、
+    烧掉 77 次抽取 + 316 次嵌入，语义库仍是 0 点。
+
+    这条用例守的是「线上 role 必须合法」，不是守某种写法。
+    """
+    state, base_url = stub_server
+    ad = _adapter(base_url)
+    ad.reset_case("locomo", "case-role")
+    ad.add_turn("case-role", "s1", 0, "Caroline",
+                "I finished a painting of the ocean.", "2023/05/01 09:00")
+    add_req = next(r for r in state.requests if r["path"] == "/add")
+    msg = add_req["payload"]["messages"][0]
+    assert msg["role"] == "user", "说话人名绝不许当 role 发出"
+    # 归属不能丢：名字既进正文（抽取层唯一读得到的地方），也进元数据
+    assert msg["content"] == "Caroline: I finished a painting of the ocean."
+    assert msg["name"] == "Caroline"
+    assert add_req["payload"]["metadata"]["bench_speaker"] == "Caroline"
+
+
+def test_合法role原样透传_不动确定性写入的字节形态(stub_server):
+    """负向对照：本就合法的 role 一个字都不许改。
+
+    G3b 的 bit 复现建立在字节形态稳定上；归一若顺手改了合法 role 的
+    正文，确定性断言就成了空话。
+    """
+    state, base_url = stub_server
+    ad = _adapter(base_url)
+    ad.reset_case("locomo", "case-role-passthru")
+    ad.add_turn("case-role-passthru", "s1", 0, "user", "原句不许动",
+                "2023/05/01 09:00")
+    msg = next(r for r in state.requests
+               if r["path"] == "/add")["payload"]["messages"][0]
+    assert msg["role"] == "user"
+    assert msg["content"] == "原句不许动", "合法 role 的正文不许加前缀"
+    assert "name" not in msg
+    assert "bench_speaker" not in next(
+        r for r in state.requests if r["path"] == "/add"
+    )["payload"]["metadata"]
+
+
+def test_assistant也是合法role_同样原样透传(stub_server):
+    """负向对照之二：白名单三个值都得透传，不能只放过 user。"""
+    state, base_url = stub_server
+    ad = _adapter(base_url)
+    ad.reset_case("locomo", "case-role-asst")
+    ad.add_turn("case-role-asst", "s1", 0, "assistant", "助手原句",
+                "2023/05/01 09:00")
+    msg = next(r for r in state.requests
+               if r["path"] == "/add")["payload"]["messages"][0]
+    assert msg["role"] == "assistant"
+    assert msg["content"] == "助手原句"
+
+
+def test_两个说话人归一后仍可区分_归属不许被抹平(stub_server):
+    """LoCoMo 是两方对话；都归一成 user 后，谁说的必须还认得出来。
+
+    否则「Melanie 说的」和「Caroline 说的」会糊成一团，问答阶段
+    根本没法答对归属类问题——那是另一种假成绩。
+    """
+    state, base_url = stub_server
+    ad = _adapter(base_url)
+    ad.reset_case("locomo", "case-two-speakers")
+    ad.add_turn("case-two-speakers", "s1", 0, "Melanie", "我买了新相机。",
+                "2023/05/01 09:00")
+    ad.add_turn("case-two-speakers", "s1", 1, "Caroline", "我在画海。",
+                "2023/05/01 09:05")
+    adds = [r for r in state.requests if r["path"] == "/add"]
+    assert len(adds) == 2
+    speakers = [r["payload"]["metadata"]["bench_speaker"] for r in adds]
+    assert speakers == ["Melanie", "Caroline"]
+    contents = [r["payload"]["messages"][0]["content"] for r in adds]
+    assert contents[0].startswith("Melanie: ")
+    assert contents[1].startswith("Caroline: ")
+    assert all(r["payload"]["messages"][0]["role"] == "user" for r in adds)
 
 
 def test_adapter_rejects_unconfirmed_determinism(stub_server):
@@ -1498,3 +1608,356 @@ def test_correction_ops_are_documented_in_protocol():
     # 敏感性分析与哈希钉这两条硬约束必须留在纸面上
     assert "--sensitivity-baseline" in protocol
     assert "applies_to_sha256" in protocol
+
+
+# ── v20.0 答题侧接线（--answer-model / dry 档 / 成绩汇总）──────────────
+
+#
+# 全部离线：假答题器只需要一个 .complete(prompt)（run.py 里 answerer 是
+# 鸭子类型用的，AnswerModel|None 只是类型提示）。不出网、不碰钥匙串、
+# 不花钱——所以这些用例能天天跑，而不是「跑分那天才知道坏了」。
+
+class _FakeAnswerer:
+    """记录收到的 prompt，按关键词决定回什么或抛什么。"""
+
+    def __init__(self, replies=None, fail_on=()):
+        self.replies = dict(replies or {})
+        self.fail_on = tuple(fail_on)
+        self.prompts: list[str] = []
+
+    def complete(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        for needle in self.fail_on:
+            if needle in prompt:
+                from benchmarks.answerer import AnswerError
+
+                raise AnswerError("上游 521（假的）")
+        for needle, reply in self.replies.items():
+            if needle in prompt:
+                return reply
+        return "A"
+
+    def describe(self) -> dict:
+        return {"model": "fake", "gateway": "test", "temperature": 0}
+
+    def usage(self) -> dict:
+        return {"calls": len(self.prompts), "retries": 0}
+
+
+def _answer_state(state) -> None:
+    """让 /search 回一条能被 evidence D1:1 命中的结果。"""
+    state.search_response = {
+        "status": "ok",
+        "results": [{
+            "id": "m1", "memory": "你好",
+            "metadata": {"bench_dia_id": "D1:1",
+                         "bench_session_id": "session_1",
+                         "recorded_at": "1:56 pm on 8 May, 2023"},
+        }],
+    }
+
+
+def test_没有答题器时不产出成绩字段(stub_server):
+    """向后兼容契约：不给 --answer-model 就只跑召回诊断，一个分数都不写。
+
+    这条护着既有 70 条管线用例——它们全是不带答题器调用的。
+    """
+    import benchmarks.run as brun
+    state, base_url = stub_server
+    _answer_state(state)
+    adapter = _adapter(base_url)
+    recs = brun.run_locomo_sample(adapter, json.loads(json.dumps(_corr_sample())),
+                                  top_k=3)
+    assert len(recs) == 2
+    for rec in recs:
+        assert "locomo_score" not in rec
+        assert "prediction" not in rec
+        assert "prediction_question" not in rec
+
+
+def test_单字母金标A按官方口径恒得0分():
+    """官方 normalize_answer 删掉 a/an/the/and，所以金标 "A" 归一化成空串。
+
+    这不是我们的 bug，是官方口径。钉住它，免得有人拿夹具里那道金标为
+    "A" 的题去验「答对得 1 分」，然后误判成打分坏了（我自己刚踩过）。
+    """
+    pytest.importorskip("nltk", reason=(
+        "LoCoMo 官方 F1 依赖 nltk 的 PorterStemmer（换实现就不是官方口径）。"
+        "缺它是「没装 bench 可选依赖」，不是缺陷 —— 与 regex/numpy 一个待遇。"))
+    from benchmarks import locomo_official as lo
+
+    assert lo.normalize_answer("A") == ""
+    assert lo.score_one(4, "A", "A") == 0.0
+    assert lo.score_one(4, "Alice", "Alice") == pytest.approx(1.0)
+
+
+def test_给了答题器就按官方口径就地打分(stub_server):
+    """cat4 题答对金标 → 官方 F1 = 1.0，且原文上下文只留条数不留正文。"""
+    pytest.importorskip("nltk", reason=(
+        "LoCoMo 官方 F1 依赖 nltk 的 PorterStemmer（换实现就不是官方口径）。"
+        "缺它是「没装 bench 可选依赖」，不是缺陷 —— 与 regex/numpy 一个待遇。"))
+    import benchmarks.run as brun
+    state, base_url = stub_server
+    _answer_state(state)
+    adapter = _adapter(base_url)
+    sample = _locomo_sample(qa=[
+        {"question": "谁先打招呼？", "answer": "Alice", "category": 4,
+         "evidence": ["D1:1"]},
+    ])
+    fake = _FakeAnswerer(replies={"谁先打招呼": "Alice"})
+    recs = brun.run_locomo_sample(
+        adapter, json.loads(json.dumps(sample)), top_k=3,
+        answerer=fake, seed=7)
+
+    r0 = recs[0]
+    assert r0["prediction_raw"] == "Alice"
+    assert r0["prediction"] == "Alice"
+    assert r0["locomo_score"] == pytest.approx(1.0)
+    # 问句留全文（cat 5 的选项顺序得可查）
+    assert "谁先打招呼" in r0["prediction_question"]
+    # 上下文只留条数：正文是数据集原文，逐字回填等于二次分发（CC BY-NC）
+    assert r0["prediction_context_count"] == 1
+    assert "prediction_context" not in r0
+    blob = json.dumps(r0, ensure_ascii=False)
+    assert blob.count("你好") <= 1, "上下文正文不该被复制进产物"
+
+
+def test_cat2带日期指令_cat5带ab选项(stub_server):
+    """两处官方口径漏一件分数就不可比，所以逐条点名验。"""
+    pytest.importorskip("nltk", reason=(
+        "LoCoMo 官方 F1 依赖 nltk 的 PorterStemmer（换实现就不是官方口径）。"
+        "缺它是「没装 bench 可选依赖」，不是缺陷 —— 与 regex/numpy 一个待遇。"))
+    import benchmarks.run as brun
+    state, base_url = stub_server
+    _answer_state(state)
+    adapter = _adapter(base_url)
+    sample = _locomo_sample(qa=[
+        {"question": "他们何时见面", "answer": "5 May 2023", "category": 2,
+         "evidence": ["D1:1"]},
+        {"question": "她的车是什么", "adversarial_answer": "a red Volvo",
+         "category": 5, "evidence": ["D1:1"]},
+    ])
+    fake = _FakeAnswerer()
+    recs = brun.run_locomo_sample(adapter, json.loads(json.dumps(sample)),
+                                  top_k=3, answerer=fake, seed=1)
+
+    from benchmarks import locomo_official as lo
+
+    assert recs[0]["prediction_question"].endswith(lo.CAT2_SUFFIX)
+    q5 = recs[1]["prediction_question"]
+    assert "(a)" in q5 and "(b)" in q5
+    assert "a red Volvo" in q5 and lo.CAT5_ABSTAIN_OPTION in q5
+    # 假答题器回 "A" → 官方松判据还原成 (a) 那个选项
+    assert recs[1]["prediction"] in {"a red Volvo", lo.CAT5_ABSTAIN_OPTION}
+
+
+def test_单题答题失败不中断后续题并留痕(stub_server):
+    """负向对照：一题炸掉要写 answer_error + score=None，后面的题照跑。
+
+    一次全量 1986 题，为一题重跑全部不合算；但失败绝不能被吞掉。
+    """
+    import benchmarks.run as brun
+    state, base_url = stub_server
+    _answer_state(state)
+    adapter = _adapter(base_url)
+    fake = _FakeAnswerer(fail_on=("谁先打招呼",))
+    recs = brun.run_locomo_sample(adapter, json.loads(json.dumps(_corr_sample())),
+                                  top_k=3, answerer=fake, seed=3)
+
+    assert len(recs) == 2, "第一题失败后必须继续答第二题"
+    assert "上游 521" in recs[0]["answer_error"]
+    assert recs[0]["locomo_score"] is None
+    assert "prediction" not in recs[0]
+    # 第二题正常出分
+    assert recs[1]["locomo_score"] is not None
+    assert "answer_error" not in recs[1]
+
+
+def test_cat5选项顺序按种子可复现且不受别的样本影响(stub_server):
+    """官方用无种子全局 random，两次跑分选项顺序不同 → 不可复现。
+
+    我们按 sha256(seed:sample_id) 派生，所以：同种子必同序；且换了
+    **别的** sample_id 不会挪动本样本已定的顺序。
+    """
+    import benchmarks.run as brun
+    state, base_url = stub_server
+    _answer_state(state)
+    adapter = _adapter(base_url)
+    sample = _locomo_sample(qa=[
+        {"question": "她的车是什么", "adversarial_answer": "a red Volvo",
+         "category": 5, "evidence": ["D1:1"]},
+    ])
+
+    def order(seed, sample_id):
+        s = json.loads(json.dumps(sample))
+        s["sample_id"] = sample_id
+        recs = brun.run_locomo_sample(adapter, s, top_k=3,
+                                      answerer=_FakeAnswerer(), seed=seed)
+        return recs[0]["prediction_question"]
+
+    a1 = order(11, "conv-x")
+    a2 = order(11, "conv-x")
+    assert a1 == a2, "同种子同样本必须同序"
+    # 同种子换样本：顺序由 sample_id 派生，互不牵连（两次各自稳定）
+    b1 = order(11, "conv-y")
+    assert b1 == order(11, "conv-y")
+    assert order(11, "conv-x") == a1, "跑过别的样本不该改变本样本的顺序"
+    # 换种子应当能改到顺序（不同种子全同序说明种子没接上）
+    flips = {order(k, "conv-x") for k in range(12, 24)}
+    assert len(flips) == 2, "12 个种子应当能同时出现两种选项排布"
+
+
+def test_成绩汇总把失败题计入分母而不是悄悄丢掉():
+    """台账 75：score_all 无条件读 locomo_score，失败题若被静默跳过会抬高均值。
+
+    所以汇总必须同时报「看了多少题」和「多少题失败」。
+    """
+    import benchmarks.run as brun
+    recs = [
+        {"category": 4, "locomo_score": 1.0},
+        {"category": 4, "locomo_score": 0.0},
+        {"category": 4, "locomo_score": None, "answer_error": "521"},
+    ]
+    out = brun._locomo_aggregate(recs)
+    assert out["questions_seen"] == 3
+    assert out["answer_failures"] == 1
+    # 均值只在成功题上取（1.0 与 0.0）
+    assert out["total_questions"] == 2
+    assert out["overall_mean"] == pytest.approx(0.5)
+    assert out["by_category"]["4"]["n"] == 2
+    assert out["failure_note"]
+
+
+def test_一题分数都没有时汇总返回None而不是0分():
+    """负向对照：没有分数就说没有，不许拿 0.0 冒充「跑过了」。"""
+    import benchmarks.run as brun
+    assert brun._locomo_aggregate([{"category": 4}]) is None
+    assert brun._locomo_aggregate([]) is None
+    allfail = brun._locomo_aggregate(
+        [{"category": 4, "locomo_score": None, "answer_error": "x"}])
+    assert allfail is not None
+    assert allfail["total_questions"] == 0
+    assert allfail["answer_failures"] == 1
+    assert allfail["overall_mean"] is None
+    assert allfail["by_category"] == {}
+
+
+# ── formal / dry 的硬约束 ──────────────────────────────────────────
+
+def test_formal拒绝抽样上限():
+    """抽样出来的数字不许叫正式成绩——在跑之前就拦，不靠事后自觉。"""
+    import benchmarks.run as brun
+    for kw in ({"max_samples": 2}, {"max_qa": 5}, {"max_samples": 1, "max_qa": 1}):
+        with pytest.raises(SystemExit, match="formal 拒绝抽样上限"):
+            brun.run_formal("http://127.0.0.1:1", "locomo", top_k=3,
+                            data_path="/nonexistent.json", out_dir="/tmp",
+                            mode="formal", **kw)
+
+
+def test_未知模式直接报错():
+    import benchmarks.run as brun
+    with pytest.raises(ValueError, match="未知模式"):
+        brun.run_formal("http://127.0.0.1:1", "locomo", top_k=3,
+                        data_path="/nonexistent.json", out_dir="/tmp",
+                        mode="semi-formal")
+
+
+# ── CLI 闸门：写错模型/写错档位必须在灌注之前就死 ─────────────────────
+
+def _cli(argv, monkeypatch):
+    """跑 main()，但把 run_formal / AnswerModel 换成录音机（不出网）。"""
+    import benchmarks.run as brun
+    seen: dict = {}
+
+    def fake_formal(base_url, dataset, **kw):
+        seen.update(kw)
+        seen["dataset"] = dataset
+        # main() 会逐键读这份 summary，缺一个就 KeyError；照它读的样子给全，
+        # 这样这几条 CLI 用例验的是参数传递，而不是我 stub 写漏了。
+        return {
+            "config": {"mode": kw.get("mode"), "gate": kw.get("mode"),
+                       "write_path": "/tmp/fake", "answer_model": None},
+            "digest": "d", "records_total": 0, "recall_aggregate": None,
+            "adapter_stats": {}, "jsonl": "/tmp/fake.jsonl",
+        }
+
+    class FakeAnswerModel:
+        def __init__(self, model_id):
+            seen["answer_model_id"] = model_id
+
+        def describe(self):
+            return {"model": "fake"}
+
+        def usage(self):
+            return {}
+
+    monkeypatch.setattr(brun, "run_formal", fake_formal)
+    monkeypatch.setattr(brun, "AnswerModel", FakeAnswerModel)
+    return brun.main(argv), seen
+
+
+def test_cli写错模型名在argparse就死(capsys):
+    """负向对照：不做前缀猜测。写错模型不能把请求发到别人的通道上去烧额度。"""
+    import benchmarks.run as brun
+    with pytest.raises(SystemExit) as e:
+        brun.main(["--dry-run", "--dataset", "locomo",
+                   "--answer-model", "gpt-4o-mini"])
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert "invalid choice" in err
+    from benchmarks.answerer import ROUTES
+
+    for legal in ROUTES:
+        assert legal in err, "报错里必须列出全部合法模型，否则没法改对"
+
+
+def test_cli抽样上限只属于dry(capsys):
+    import benchmarks.run as brun
+    for argv in (["--formal", "--dataset", "locomo", "--max-qa", "5"],
+                 ["--smoke", "--dataset", "locomo", "--max-samples", "2"]):
+        with pytest.raises(SystemExit) as e:
+            brun.main(argv)
+        assert e.value.code == 2
+        assert "只用于 --dry-run" in capsys.readouterr().err
+
+
+def test_cli答题模型只支持locomo(capsys):
+    """LongMemEval 官方指标要 judge 模型，本管线不产出——放行会误导读数。"""
+    import benchmarks.run as brun
+    with pytest.raises(SystemExit) as e:
+        brun.main(["--dry-run", "--dataset", "longmemeval",
+                   "--answer-model", "gpt-4o-by-openai"])
+    assert e.value.code == 2
+    assert "只支持 --dataset locomo" in capsys.readouterr().err
+
+
+def test_cli_dry档不接受deterministic(capsys):
+    import benchmarks.run as brun
+    with pytest.raises(SystemExit) as e:
+        brun.main(["--dry-run", "--dataset", "locomo",
+                   "--data-path", "/x.json", "--deterministic"])
+    assert e.value.code == 2
+    assert "不接受 --deterministic" in capsys.readouterr().err
+
+
+def test_cli_dry档把模式与上限一路传到run_formal(monkeypatch):
+    """正向对照：--dry-run 必须真的以 mode='dry' 落到 run_formal 上。"""
+    rc, seen = _cli(["--dry-run", "--dataset", "locomo",
+                     "--data-path", "/x.json", "--answer-model", "qwen3.8-max",
+                     "--max-samples", "2", "--max-qa", "25", "--seed", "9"],
+                    monkeypatch)
+    assert rc == 0
+    assert seen["mode"] == "dry"
+    assert seen["max_samples"] == 2 and seen["max_qa"] == 25
+    assert seen["seed"] == 9
+    assert seen["answer_model_id"] == "qwen3.8-max"
+    assert seen["answerer"] is not None
+
+
+def test_cli_formal档不带上限且mode为formal(monkeypatch):
+    rc, seen = _cli(["--formal", "--dataset", "locomo",
+                     "--data-path", "/x.json"], monkeypatch)
+    assert rc == 0
+    assert seen["mode"] == "formal"
+    assert seen["max_samples"] is None and seen["max_qa"] is None
+    assert seen["answerer"] is None

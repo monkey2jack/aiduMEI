@@ -1,0 +1,59 @@
+{
+  "_base_dir": {
+    "env_var": "AIDUMEI_BENCH_DATA_DIR",
+    "default": "~/.aidumem/bench_data",
+    "_why": "v20 P0-8：此前清单只有 filename，落地目录只写在 download.py 的代码里 —— 机器读不到。于是「数据到底在不在」这个问题，没有任何自动化手段能回答，而报告里却写着「已下载 + 已锁哈希」。声明在这里，verify_data 才有据可依。"
+  },
+  "locomo": {
+    "filename": "locomo10.json",
+    "registered_at": "2026-08-23T08:07:25Z",
+    "schema_report": {
+      "anomalies": [
+        "sample[0].qa[37]: evidence 引用不存在的 dia_id 'D8:6; D9:17'",
+        "sample[3].qa[58]: evidence 引用不存在的 dia_id 'D10:19'",
+        "sample[3].qa[88]: evidence 引用不存在的 dia_id 'D'",
+        "sample[4].qa[18]: evidence 引用不存在的 dia_id 'D:11:26'",
+        "sample[6].qa[38]: evidence 引用不存在的 dia_id 'D4:36'",
+        "sample[8].qa[31]: evidence 引用不存在的 dia_id 'D9:1 D4:4 D4:6'",
+        "sample[8].qa[38]: evidence 引用不存在的 dia_id 'D22:1 D22:2 D9:10 D9:11'",
+        "sample[8].qa[46]: evidence 引用不存在的 dia_id 'D21:18 D21:22 D11:15 D11:19'",
+        "sample[9].qa[69]: evidence 引用不存在的 dia_id 'D30:05'"
+      ],
+      "category_counts": {
+        "1": 282,
+        "2": 321,
+        "3": 96,
+        "4": 841,
+        "5": 446
+      },
+      "dataset": "locomo",
+      "qa_total": 1986,
+      "samples": 10
+    },
+    "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "size_bytes": 2805274,
+    "source_commit": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
+  },
+  "longmemeval": {
+    "filename": "longmemeval_s.json",
+    "registered_at": "2026-08-23T16:21:13Z",
+    "schema_report": {
+      "abstention": 30,
+      "dataset": "longmemeval",
+      "intraday_unordered": 211,
+      "sessions_after_question": 1550,
+      "total": 500,
+      "type_counts": {
+        "knowledge-update": 78,
+        "multi-session": 133,
+        "single-session-assistant": 56,
+        "single-session-preference": 30,
+        "single-session-user": 70,
+        "temporal-reasoning": 133
+      }
+    },
+    "sha256": "08d8dad4be43ee2049a22ff5674eb86725d0ce5ff434cde2627e5e8e7e117894",
+    "size_bytes": 278025796,
+    "source_commit": "2ec2a557f339b6c0369619b1ed5793734cc87533"
+  }
+}

@@ -1341,7 +1341,10 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         # （「守卫的射程小于缺陷的分布」）第二次长在守卫自己身上，这次长在注释里：
         # 一个硬编码常数被论证成了测量结果。
         # 生产实跑的真值是 832 passed, 1 skipped：跳过不止宿主一条轴，还有 git 工作区、
-        # backup_gate.sh+POSIX、qdrant_client，共四条互不相干的轴。拷贝部署没有 `.git`，
+        # backup_gate.sh+POSIX、qdrant_client，以及 v20.0 跑分管线带进来的三条
+        # （LoCoMo 数据集、`regex`、`numpy`），再加上 `.gitignore` 守卫带进来的
+        # 「`git` 可执行文件在场」，共八条互不相干的轴。
+        # 拷贝部署没有 `.git`，
         # 于是 tests/test_v20_brand_policy.py 里那条永远跳。
         # 更难堪的是，证伪它的记录早就躺在自己仓里：CHANGELOG 和 version.py 写着
         # 「生产 1 skipped」，README 同期宣称「0 skipped」，跨了好几个版本没红过 ——

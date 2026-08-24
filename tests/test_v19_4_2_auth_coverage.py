@@ -97,9 +97,10 @@ _OUTBOUND_THIRD_PARTY = {
         "出站打多模态供应商的 {base_url}/chat/completions（:81 requests.post；:54 的 Bearer "
         "来自 cfg 的 api_key，未配置时 :47-48 直接返回错误串而不发请求）。"
         "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
-    "ducky/instinct_graduation.py":
-        "出站打 LLM 供应商的 /chat/completions（:71-73 requests.post；Bearer 来自 cfg "
-        "或本地 key 文件，即供应商 key）。"
+    "benchmarks/answerer.py":
+        "出站打跑分答题用的 OpenAI 兼容网关 /chat/completions（:199 urllib.request.urlopen；"
+        ":186 的 Bearer 是网关侧的供应商 key，地址来自 :191 的 gateway.base_url，"
+        "网关只能取自 ROUTES 白名单，本服务不在其中）。"
         "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
 }
 
