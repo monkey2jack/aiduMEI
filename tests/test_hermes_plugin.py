@@ -54,9 +54,37 @@ _DISABLED = {"", "none", "no", "off", "0", "false"}
 _AUTO_CANDIDATES = ("/hermes/hermes-agent", str(Path.home() / "hermes-agent"))
 
 
+#: 本文件真正 import 的宿主模块。准入判据必须**逐个点名它们**，
+#: 而不是只认其中一个 —— 见 `_is_host` 的注释。
+_HOST_REQUIRED = ("agent/memory_provider.py",
+                  "agent/memory_manager.py",
+                  "agent/skill_commands.py")
+
+
+def _missing_host_parts(path):
+    """这棵树缺哪些本文件会 import 的模块（缺得越少越像宿主）。"""
+    if not path:
+        return list(_HOST_REQUIRED)
+    return [rel for rel in _HOST_REQUIRED if not Path(path, *rel.split("/")).is_file()]
+
+
 def _is_host(path):
-    """这条路径下是不是一棵能用的宿主源码树。"""
-    return bool(path) and Path(path, "agent", "memory_provider.py").is_file()
+    """这条路径下是不是一棵**能用的**宿主源码树。
+
+    ⚠️ 判据原先只认一个文件 `agent/memory_provider.py`。v20 生产实机踩到：
+    机器上有一棵 `/root/memory_eval`，它是宿主的**记忆子集**（解包自
+    hermes-memory-src 的 tarball），有 `memory_provider.py`、也有
+    `memory_manager.py`，唯独没有 `skill_commands.py`。
+
+    于是它**通过了准入**，然后在 setUpClass 里炸出 12 个
+    `ModuleNotFoundError: No module named 'agent.skill_commands'` ——
+    12 条看不懂的错误，而不是一句「这不是一棵完整宿主树」。
+
+    本文件顶部那条口径写着「显式指定但无效 → 响，绝不静默回落」。它确实没有
+    静默回落，但它**放行了一棵无效的树** —— 判据的射程比它要守的东西窄
+    （铁律 12）。现在逐个点名本文件真正会 import 的模块。
+    """
+    return not _missing_host_parts(path)
 
 
 def _resolve_host(env=None):
@@ -68,7 +96,8 @@ def _resolve_host(env=None):
         return None
     if not _is_host(raw):                           # ③ 显式指定但无效 → 响
         raise RuntimeError(
-            f"HERMES_SRC={raw!r} 下找不到 agent/memory_provider.py。"
+            f"HERMES_SRC={raw!r} 不是一棵完整的宿主源码树，缺："
+            + "、".join(_missing_host_parts(raw)) + "。"
             "既然已显式指定宿主，就不会回退到自动发现的路径（那会让你以为"
             "测的是这棵树，其实测的是另一棵）—— 请修正路径，或用 "
             "HERMES_SRC=none 显式声明「本机不带宿主」。"
