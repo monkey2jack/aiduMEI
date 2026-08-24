@@ -252,6 +252,23 @@ def register_health_routes(app: FastAPI) -> None:
             probes["http_error_rate_5m"] = None
             probes["http_metrics_error"] = str(e)[:120]
 
+        # WAL 水位（v20）：生产实测三个库的 WAL 都胀到 4MB 长期未 checkpoint。
+        # 不影响正确性，但崩溃恢复时间随它线性增长，而且主库 mtime 会因此骗人。
+        try:
+            from ducky.wal_watermark import snapshot as _wal_snap
+            w = _wal_snap()
+            probes["wal_total_bytes"] = w["total_wal_bytes"]
+            probes["wal_alert_dbs"] = w["alerts"]
+            if w["alerts"]:
+                warnings.append(
+                    "以下库的 WAL 已超过主库体积、长期未 checkpoint：%s —— "
+                    "崩溃恢复时间随它增长，且主库 mtime 会因此失真"
+                    % "、".join(w["alerts"])
+                )
+        except Exception as e:
+            probes["wal_total_bytes"] = None
+            probes["wal_watermark_error"] = str(e)[:120]
+
         # 进程资源占用（v20：部署方指定为产品级指标）
         #
         # 一个记忆引擎如果内存单调上涨、fd 只增不减、线程越跑越多，那不是「性能差」，
