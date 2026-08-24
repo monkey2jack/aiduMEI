@@ -19,8 +19,19 @@
 #
 #     sudo useradd --system --no-create-home --shell /usr/sbin/nologin aidumem
 #     sudo chown -R aidumem:aidumem /opt/aidumem/data /opt/aidumem/logs
-#     sudo chmod 750 /opt/aidumem/data /opt/aidumem/logs
+#     sudo chmod 2770 /opt/aidumem/data /opt/aidumem/logs
+#     sudo find /opt/aidumem/data /opt/aidumem/logs -type f -exec chmod g+w {} +
 #     sudo chown root:aidumem /opt/aidumem/.env && sudo chmod 640 /opt/aidumem/.env
+#     sudo chown root:aidumem /opt/aidumem/mem0_config_local.json \
+#       && sudo chmod 640 /opt/aidumem/mem0_config_local.json
+#
+#   ★ 为什么是 **2770** 而不是 750（生产实测补的，原来这里写 750 是错的）：
+#     开头的 2 是 setgid。data/ 有可能被**两个身份**写：本服务（aidumem），
+#     以及仍以 root 运行的 aidumem-sync（它为什么不换 uid 见那个模板）。
+#     setgid 让新文件继承目录组 aidumem，配合下面的 UMask=0007 建出 660 的文件，
+#     于是谁建的对方都写得进。缺 setgid 时新文件是 root:root，
+#     缺 UMask 时新文件是 640 组不可写 —— 两者缺一个都会重演混属主。
+#     `find ... chmod g+w` 那行是补**存量**文件：新规则只管新文件。
 #
 #   为什么 data/ 要**整棵** chown：SQLite 的 WAL 模式不是只写主库文件。
 #   写事务要在同目录建 `-wal` 和 `-shm`，checkpoint 之后还要删掉重建。
@@ -95,6 +106,26 @@ Environment=MEM0_TELEMETRY=false
 ExecStart=/opt/aidumem/venv/bin/python3 /opt/aidumem/api_server.py
 Restart=always
 RestartSec=5
+
+# ── 可写 HOME（v20.0 P3-8 生产实测补丁）──
+# ★ 这是降权最阴的一脚，务必留着这两行。
+#   `useradd --no-create-home` 之后 $HOME 指向一个**不存在**的目录，
+#   而 mem0 SDK 在 import 期要往 $HOME 下写缓存。缺这两行的症状是：
+#     · systemctl is-active  → active（服务确实活着）
+#     · curl /health         → status=ok
+#     · 但 degraded=['vector_backend']，向量检索静默零召回
+#     · journal 里只有一行 `mem0 SDK 加载失败: [Errno 13]
+#       Permission denied: '/home/aidumem'`
+#   —— 不是崩溃，是**带着绿灯失能**。按 failed 告警的监控一辈子等不到。
+# StateDirectory 由 systemd 创建 /var/lib/aidumem 并 chown 给 User=，
+# 自动纳入可写集合（不必手写进 ReadWritePaths），重启与升级后都还在。
+StateDirectory=aidumem
+Environment=HOME=/var/lib/aidumem
+
+# 新建文件组可写 —— data/ 是与 aidumem-sync 共享的 setgid 目录（见文件头）。
+# 默认 umask 022 会建出 644 的库文件，对方就写不进，而症状是
+# 「读得到、写不进」而不是启动失败。
+UMask=0007
 
 StandardOutput=append:/opt/aidumem/logs/api_server.log
 StandardError=append:/opt/aidumem/logs/api_server.log
