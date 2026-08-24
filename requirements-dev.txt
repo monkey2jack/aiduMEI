@@ -10,3 +10,11 @@
 # 实测 pytest 7.4.4 上 subTest 失败照样红（只是不分条报），所以下限 7 是安全的，
 # 不存在「少装一个插件就假绿」的洞。
 pytest>=7.0.0
+#
+# pyyaml：v20 P2-1 的 CI 守卫（tests/test_v20_ci_pipeline.py）要读
+# .github/workflows/*.yml 才能断言「发布 job 挂着测试依赖」。
+# 用 YAML 解析器而不是正则，是因为判据是**结构**（哪个 job needs 哪个 job），
+# 正则读 YAML 迟早给出一个看着像结论的非结论。
+# 它此前在本机是 mem0ai 的传递依赖，能 import 纯属运气 —— 而「靠运气能 import」
+# 正是 v19.4.2 inotify_simple 那次崩溃循环的同一个形态，所以在此显式声明。
+pyyaml>=6.0
