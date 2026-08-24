@@ -34,6 +34,18 @@ _KEY_FALLBACKS = {
 _config_cache: Optional[dict] = None
 _config_lock = threading.Lock()
 
+# ── 认知类调用的首试输出预算（v20 · P1-5 根因整改）────────────────────────────
+# 推理模型的「思考」和「输出」共享同一个 max_tokens：预算给小了，思考先把它
+# 吃光，content 回空 + finish_reason=length（v19.4.0 生产实测 🔴-B）。
+#
+# 为什么从 512 抬到 1024，不是拍的：`call_llm` 的截断重试按 ×4 放大且封顶 4096，
+# 512 的重试上限只到 2048 —— 而实测过的空串悬崖就在 2000 附近，也就是说旧值连
+# 「兜底那一次」都还踩在悬崖里侧。1024 让兜底一次直接顶到 4096，越过悬崖。
+#
+# 评估（governance）／自编辑（self_edit）／蒸馏（instinct_graduation）三处认知
+# 调用全部指向这一个常量：预算是一个决定，不是三份抄写。
+COGNITIVE_MAX_TOKENS = 1024
+
 
 def get_llm_config() -> dict:
     """读取 mem0_config 的 llm 段，解析密钥占位符。结果缓存，进程内只读一次。
