@@ -379,8 +379,19 @@ def test_no_machine_here_satisfies_every_axis():
     所以下面先断言「每条轴都有探测器」，再谈齐备与否。
     """
     present = []
-    if pathlib.Path("/hermes/hermes-agent/agent/memory_provider.py").exists():
-        present.append("hermes_host")
+    # ⚠️ 探测器必须问**闸门本身**，不许自己另写一套判据。
+    #
+    # 原先这里硬查一个写死的路径 `/hermes/hermes-agent/agent/memory_provider.py`。
+    # v20 生产实机踩到：真实闸门（test_hermes_plugin._is_host）已经收紧成「三个
+    # 模块都得在」，而探测器还在按老判据点头 —— 于是它报「hermes_host 齐备」，
+    # 同一轮里那条轴却实实在在门控掉了 12 条用例。**判据与被判之物不是同一个射程**，
+    # 结论就必然自相矛盾。现在直接读闸门解析出来的 HOST。
+    try:
+        import test_hermes_plugin as _hp
+        if _hp.HOST is not None:
+            present.append("hermes_host")
+    except Exception:
+        pass  # 导不进来 = 这条轴无从判定，按不齐备处理（宁可少报齐备）
     if (_REPO_ROOT / ".git").exists():
         present.append("git_worktree")
     if (_REPO_ROOT / "scripts" / "backup_gate.sh").exists() and \
