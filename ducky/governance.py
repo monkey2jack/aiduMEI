@@ -283,14 +283,15 @@ def _parse_eval_json(raw: str) -> dict | None:
 def _llm_evaluate(category: str, fact_key: str, fact_value: str) -> dict | None:
     """默认评估器：独立 LLM 调用，硬超时；失败/垃圾 JSON 返回 None。"""
     try:
-        from ducky.llm_client import call_llm
+        from ducky.llm_client import COGNITIVE_MAX_TOKENS, call_llm
         raw = call_llm(
             _EVAL_PROMPT.format(category=category, fact_key=fact_key, fact_value=fact_value),
             system=_EVAL_SYSTEM,
             # 🔴-B 补强：推理模型思考与输出共享预算，200 会被思考耗尽
-            # （content 空 + finish_reason=length）；512 首试即够，
-            # call_llm 另有推理截断自动放大重试兜底。
-            max_tokens=512,
+            # （content 空 + finish_reason=length）。预算不在这里定：
+            # 见 llm_client.COGNITIVE_MAX_TOKENS（P1-5 已把 512 抬到 1024，
+            # 因为 512 的 ×4 兜底只到 2048，仍在实测悬崖里侧）。
+            max_tokens=COGNITIVE_MAX_TOKENS,
             temperature=0.0,
             timeout=EVAL_TIMEOUT_S,
         )

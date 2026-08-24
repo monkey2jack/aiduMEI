@@ -21,6 +21,7 @@ from typing import Any, Optional
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 from ducky.bank_contract import DEFAULT_BANK_ID, table_columns
 from ducky.security.injection_guard import wrap_memory_context_sandbox
+from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.refine_memory")
 
@@ -277,6 +278,7 @@ def apply_refinement(refine_id: int) -> dict:
                 _unindex_memory(f"fact:{fid}")
                 _unindex_memory(str(fid))
             except Exception as fe:
+                feature_failed("unindex_memory", fe)
                 logger.debug("FTS unindex for archived fact %s skip: %s", fid, fe)
 
         # 写入高阶精炼摘要到 facts 表
@@ -325,10 +327,13 @@ def apply_refinement(refine_id: int) -> dict:
             from ducky.text_fts import _index_memory
             _index_memory(f"refined:{refine_id}", summary_val, category=cat)
         except Exception as fe:
+            feature_failed("index_memory", fe)
             logger.debug("FTS index for refined summary skip: %s", fe)
 
         return {"status": "ok", "refine_id": refine_id, "archived": len(ids)}
     except Exception as e:
+        feature_failed("index_memory", e)
+        feature_failed("unindex_memory", e)
         logger.warning(f"应用精炼失败: {e}")
         return {"status": "error", "detail": str(e)}
     finally:
@@ -355,6 +360,7 @@ def rollback_refinement(refine_id: int) -> dict:
                     from ducky.text_fts import _index_memory
                     _index_memory(f"fact:{fid}", f"{frow['fact_key']}: {frow['fact_value']}", category=frow["category"])
                 except Exception as fe:
+                    feature_failed("index_memory", fe)
                     logger.debug("FTS re-index skip: %s", fe)
 
         # 移除或软归档对应的 refined 摘要
@@ -363,12 +369,15 @@ def rollback_refinement(refine_id: int) -> dict:
             from ducky.text_fts import _unindex_memory
             _unindex_memory(f"refined:{refine_id}")
         except Exception as e:
+            feature_failed("unindex_memory", e)
             logger.debug(f"rollback_refinement: suppressed exception: {e}")
 
         conn.execute("UPDATE refined_memories SET state='rolled_back' WHERE refine_id=?", (refine_id,))
         conn.commit()
         return {"status": "ok", "refine_id": refine_id, "restored": len(ids)}
     except Exception as e:
+        feature_failed("index_memory", e)
+        feature_failed("unindex_memory", e)
         logger.warning(f"回滚精炼失败: {e}")
         return {"status": "error", "detail": str(e)}
     finally:

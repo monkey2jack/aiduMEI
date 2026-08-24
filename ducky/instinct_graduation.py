@@ -8,11 +8,9 @@ Aion Memory 设计哲学：
 - 元数据追踪 source_ids 溯源链
 """
 
-import json, logging, os, base64, time
+import logging, time
 from typing import Optional
-import requests
 
-from ducky.utils import BASE_DIR as _BASE_DIR
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,
     make_scope,
@@ -25,7 +23,6 @@ logger = logging.getLogger("aiduMEM.graduation")
 
 # ── 配置 ──
 MIN_GROUP_SIZE = 3          # 触发毕业的最小同组条数
-LLM_CONFIG_FILE = os.path.join(_BASE_DIR, "mem0_config_local.json")
 GRADUATION_PROMPT = """你是一个记忆蒸馏专家。以下是一组关于「{category}」的记忆碎片：
 
 {memories}
@@ -37,55 +34,29 @@ GRADUATION_PROMPT = """你是一个记忆蒸馏专家。以下是一组关于「
 4. 只输出归纳后的文本，不要加任何前缀或说明"""
 
 
-def _get_llm_config() -> dict:
-    """读取 LLM 配置"""
-    try:
-        with open(LLM_CONFIG_FILE) as f:
-            cfg = json.load(f)
-        llm_cfg = cfg.get("llm", {}).get("config", {})
-        api_key = llm_cfg.get("api_key", "")
-        if api_key == "__SF_KEY__" or not api_key:
-            for kf in [os.path.join(_BASE_DIR, ".llm_key"),
-                       os.path.join(_BASE_DIR, ".sensenova_key")]:
-                if os.path.exists(kf):
-                    with open(kf) as f:
-                        api_key = f.read().strip()
-                        break
-        return {
-            "model": llm_cfg.get("model", "flash-lite"),
-            "base_url": llm_cfg.get("openai_base_url", "https://provider.example.cn/v1"),
-            "api_key": api_key,
-        }
-    except Exception as e:
-        logger.error(f"LLM配置读取失败: {e}")
-        return {}
+def _call_llm(prompt: str, max_tokens: int | None = None) -> Optional[str]:
+    """蒸馏用的 LLM 调用 —— 转交 `ducky.llm_client.call_llm`（v20 · P1-5 根因整改）。
 
+    这里原先自己手搓了一份 `requests.post` 直发 OpenAI 兼容补全端点，
+    连带一份自己的配置读取和一个写死的 512 预算。它和 `llm_client` 读的是**同一份**
+    `mem0_config_local.json`、**同一条**密钥回退链（`__SF_KEY__` → `.llm_key`
+    → `.sensenova_key`），唯一的实质差别是：**它没有推理截断重试**。
 
-def _call_llm(prompt: str, max_tokens: int = 512) -> Optional[str]:
-    """调用 LLM"""
-    cfg = _get_llm_config()
-    if not cfg.get("api_key"):
-        logger.error("LLM API key 不可用")
-        return None
-    try:
-        r = requests.post(
-            f"{cfg['base_url'].rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"},
-            json={
-                "model": cfg["model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": 0.3,
-            },
-            timeout=30
-        )
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"].strip()
-        logger.warning(f"LLM 调用失败: HTTP {r.status_code}")
-        return None
-    except Exception as e:
-        logger.warning(f"LLM 调用异常: {e}")
-        return None
+    于是推理模型下就成了这样一条无声链路：思考吃光 512 预算 → `content` 回空串
+    → `.strip()` 还是空串 → HTTP 仍是 200，所以一行日志都不打 → 上游
+    `if not distilled: return None`（本文件 :174 附近）当成「没什么可毕业的」
+    → 整条毕业静默不发生。这不是「调用失败」，是**假绿灯**：绿灯亮着，活没干。
+
+    转交之后，截断检测和 ×4 放大重试直接继承（见 `llm_client._post_completion`
+    的 `reasoning_truncated`），预算也不再由本文件私藏 —— 统一取
+    `COGNITIVE_MAX_TOKENS`。
+
+    函数名和签名故意保持不变：`tests/test_v20_graduation_persona_bank_scope.py`
+    有三处 `monkeypatch.setattr(graduation, "_call_llm", …)` 挂在这个名字上，
+    改名会让那三条用例挂到一个空气上还照样变绿。
+    """
+    from ducky.llm_client import COGNITIVE_MAX_TOKENS, call_llm
+    return call_llm(prompt, max_tokens=max_tokens or COGNITIVE_MAX_TOKENS)
 
 
 def _extract_category(memory: dict) -> str:
@@ -173,6 +144,13 @@ def graduate_to_skill(memory, user_id: str, group: dict,
         # LLM 蒸馏
         distilled = _call_llm(prompt)
         if not distilled:
+            # P1-5：这里过去是一句光秃秃的 return None —— 「LLM 回了空」和
+            # 「本来就没什么可毕业」在日志里长得一模一样。铁律 8 那句问话
+            # 「如果这里真失败了，谁会知道？」在这条路径上原本没有答案。
+            logger.warning(
+                "Instinct 毕业中止：蒸馏返回空（category=%s, 待毕业 %d 条）。"
+                "推理模型预算被思考吃光时就是这个形态，看 llm_client 的截断重试日志",
+                cat, len(source_ids))
             return None
 
         # 写入新记忆

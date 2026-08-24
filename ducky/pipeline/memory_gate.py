@@ -111,6 +111,68 @@ def get_self_reference() -> re.Pattern:
     return _SELF_REF_CACHE["pattern"]
 
 
+#: `.env` 里这个键的声明值 —— 唯一真相源（v20 P0-2 把它从 systemd drop-in 搬进来）
+_ENV_FILE_NAME = ".env"
+
+
+def _declared_in_env_file() -> tuple[str | None, str]:
+    """读 `.env` 里声明的实体词表值，返回 (值 或 None, 状态)。
+
+    状态取值：`present` / `absent`（文件在但没这一行）/ `no_file` / `unreadable`。
+    只读不写，任何异常都降级成一个状态字符串，绝不让 /health 因为读配置而挂掉。
+    """
+    from ducky.utils import BASE_DIR
+    path = os.path.join(BASE_DIR, _ENV_FILE_NAME)
+    if not os.path.exists(path):
+        return None, "no_file"
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln.startswith("#") or "=" not in ln:
+                    continue
+                k, v = ln.split("=", 1)
+                if k.strip() == "AIDUMEM_ENTITY_KEYWORDS":
+                    return v.strip().strip('"').strip("'"), "present"
+    except OSError:
+        return None, "unreadable"
+    return None, "absent"
+
+
+def entity_keywords_source() -> str:
+    """活值是不是来自那个唯一真相源 —— 「配置写了不等于配置生效」的探针（铁律 13）。
+
+    v20 P0-2 之前，这个键住在 systemd drop-in `entity-keywords.conf` 里。而合并后的
+    unit 中 drop-in 的 `Environment=` 排在 `EnvironmentFile=` **之后** —— 也就是说
+    drop-in 永远压过 `.env`。迁移时如果只往 `.env` 加一行而不删 drop-in，`.env` 就
+    成了纯装饰：改它没有任何效果，而且**没有任何东西会因此变红**。
+
+    进程侧看不见值来自哪一个 systemd 层（环境变量只有值，没有出身）。但看得见一件
+    等价有用的事：**活值和 `.env` 声明的那一份一致吗**。不一致就说明有别的东西在
+    覆盖它，那正是要报出来的形态。
+
+    返回值：
+      · `env_file`      —— 活值 == `.env` 声明值（正常）
+      · `overridden`    —— 两边都有值但**不相等**：有东西在压 `.env`（🔴 静默失配）
+      · `outside_env_file` —— 活值有、`.env` 没声明：来源不在唯一真相源里
+      · `declared_not_effective` —— `.env` 声明了但活值为空：声明没生效
+      · `unset`         —— 两边都没有
+      · `no_env_file` / `env_file_unreadable` —— 读不到那份文件，无法判定
+    """
+    live = _entity_keywords()
+    declared, state = _declared_in_env_file()
+    if state in ("no_file", "unreadable"):
+        return "no_env_file" if state == "no_file" else "env_file_unreadable"
+    declared_norm = (declared or "").strip().strip("|")
+    if live and declared_norm:
+        return "env_file" if live == declared_norm else "overridden"
+    if live and not declared_norm:
+        return "outside_env_file"
+    if declared_norm and not live:
+        return "declared_not_effective"
+    return "unset"
+
+
 def entity_keywords_status() -> dict:
     """供 /health 与启动自检使用的实体词表状态。"""
     key = _entity_keywords()
@@ -119,6 +181,9 @@ def entity_keywords_status() -> dict:
         "configured": bool(words),
         "count": len(words),
         "env_var": "AIDUMEM_ENTITY_KEYWORDS",
+        # v20 P0-3：光报「配了几个词」不够 —— 22 个词可能来自一个我们以为已经
+        # 删掉的 drop-in。这个字段回答的是「它来自唯一真相源吗」。
+        "source": entity_keywords_source(),
     }
 
 

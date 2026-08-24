@@ -123,7 +123,7 @@ def _code_files():
 # 生产侧日志采集按 aiduMEM.* / aiduMEM-v* 过滤。一次「顺手清理品牌残留」的全局替换
 # 会把这些一起改掉：服务照常起、日志照常写，只是再也进不了采集管道。
 # 数字放在这里，少一处就红。
-_LOGGER_SITES = 85
+_LOGGER_SITES = 86
 
 # ══ 二、机器契约：AIDUMEM_* 环境变量冻结集 ══════════════════════════════
 # 这些键名已经写在客户的 .env 里。改前缀不会报错，只会让配置静默回落到默认值 ——
@@ -172,6 +172,7 @@ _FROZEN_ENV_KEYS = {
     "AIDUMEM_PERSONA_MAX_MEMORIES",
     "AIDUMEM_PUBLIC_DOCS",
     "AIDUMEM_PYTHON",
+    "AIDUMEM_RECALL_SCORE_FLOOR",
     "AIDUMEM_RECENCY_LAMBDA",
     "AIDUMEM_REFINE_ENABLED",
     "AIDUMEM_REFLECT_ENABLED",
@@ -350,8 +351,8 @@ def test_guard_tables_are_not_empty_and_point_at_real_files():
     assert {k for k, _ in _CRITICAL_ENV_READS} <= _FROZEN_ENV_KEYS, (
         "高危键表里有键不在冻结集里 —— 两张表对不上，说明其中一张已经过期"
     )
-    assert len(_FROZEN_ENV_KEYS) == 72, (
-        "冻结集条数从 72 变成了 %d —— 请确认这是有意增删，"
+    assert len(_FROZEN_ENV_KEYS) == 73, (
+        "冻结集条数从 73 变成了 %d —— 请确认这是有意增删，"
         "而不是被一次批量改名带过去的。" % len(_FROZEN_ENV_KEYS)
     )
     rels = (
