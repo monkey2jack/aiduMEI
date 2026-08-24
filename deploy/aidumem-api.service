@@ -12,6 +12,28 @@
 #   AIDUMEM_ENTITY_KEYWORDS，否则涉及你自己人名/项目代号的查询会
 #   静默零召回。装完用 `curl -s localhost:8767/health | jq .warnings`
 #   确认没有告警。
+#
+# ★ 降权前置（v20.0 P3-8）—— 装单元之前必须先建账号并交接数据目录，
+#   否则服务会以 `status=200/CHDIR` 或 `sqlite3.OperationalError: unable to
+#   open database file` 起不来（**且不会告诉你是权限问题**）：
+#
+#     sudo useradd --system --no-create-home --shell /usr/sbin/nologin aidumem
+#     sudo chown -R aidumem:aidumem /opt/aidumem/data /opt/aidumem/logs
+#     sudo chmod 750 /opt/aidumem/data /opt/aidumem/logs
+#     sudo chown root:aidumem /opt/aidumem/.env && sudo chmod 640 /opt/aidumem/.env
+#
+#   为什么 data/ 要**整棵** chown：SQLite 的 WAL 模式不是只写主库文件。
+#   写事务要在同目录建 `-wal` 和 `-shm`，checkpoint 之后还要删掉重建。
+#   只 chown 主库文件、目录仍归 root，表现是「读得到、写不进」——
+#   而只读查询全部正常，`/health` 也绿，直到第一次写入才炸。
+#
+#   ★ 附带前提：cron 里跑的 scripts/*.py 也要一起降权（同一批库）。
+#     `ducky.utils` 在 **import 时**就会 `ensure_evolution_tables()` 建连，
+#     所以哪怕脚本本身只是个 HTTP 客户端（如 consolidator.py），
+#     只要 import 了它就会以当前身份打开 facts.db 并可能建出 root 属主的
+#     `-wal`/`-shm`。留一个 root 写手，就会周期性地把整棵目录重新污染成
+#     混属主，然后降权后的服务在下一次写入时失败。cron 行改成：
+#         30 2 * * * runuser -u aidumem -- /opt/aidumem/venv/bin/python3 ...
 
 [Unit]
 Description=aiduMEI Memory Engine REST API
@@ -54,7 +76,15 @@ StartLimitBurst=30
 
 [Service]
 Type=simple
-User=root
+
+# ── 身份（v20.0 P3-8）──
+# 在此之前这里是 User=root。一个只做「本机回环上的记忆读写」的服务，
+# 拿着 CAP_SYS_ADMIN / CAP_NET_RAW / CAP_SYS_PTRACE 这类能力没有任何用途，
+# 只是把一次反序列化或依赖链上的 RCE 从「丢记忆」放大成「丢整机」。
+# 建账号见文件头。数据目录没交接好就改这行 = 服务起不来，顺序不能颠倒。
+User=aidumem
+Group=aidumem
+
 WorkingDirectory=/opt/aidumem
 
 # 环境变量集中放在 .env，`-` 前缀表示文件缺失不阻止启动
@@ -68,6 +98,73 @@ RestartSec=5
 
 StandardOutput=append:/opt/aidumem/logs/api_server.log
 StandardError=append:/opt/aidumem/logs/api_server.log
+
+# ══ 沙箱加固（v20.0 P3-8）══
+# 每一行都按「这个服务实际用到什么」裁的，不是抄模板。
+# 验收只认 `systemd-analyze security aidumem-api`（看 systemd 自己算的暴露分），
+# 不是 grep 本文件 —— 写了不等于生效。
+#
+# 提权面
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+#   ↑ CapabilityBoundingSet 留空 = 一个 capability 都不给。
+#     本服务只监听 8767（>1024），不需要 CAP_NET_BIND_SERVICE。
+#     若你把端口改到 1024 以下，这里要补 CAP_NET_BIND_SERVICE，否则起不来。
+
+# 文件系统面
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/aidumem/data /opt/aidumem/logs
+PrivateTmp=yes
+#   ↑ ProtectSystem=strict 把整个文件系统挂成只读，再用 ReadWritePaths 开两个洞。
+#     ★ 这两个洞必须**同时**开：只开 data/ 会让 StandardOutput 的 append 失败，
+#       而 systemd 对此的表现是单元直接 failed，日志里只有一句
+#       `Failed to open ... Read-only file system` —— 很容易误判成磁盘故障。
+#     ★ 若你换了 AIDUMEM_DATA_DIR / AIDUMEM_LOG_DIR，这里要跟着改。
+#       忘了改的症状同样是「读得到、写不进」。
+#     ★ ProtectHome=yes 会让 /home 与 /root 不可见。API 不读任何家目录，
+#       所以安全；但 aidumem-sync 要读 ~/.hermes/memories/MEMORY.md，
+#       那个单元里**不能**照抄这一行（见 aidumem-sync.service 的说明）。
+
+# 内核与设备面
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+PrivateDevices=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+#   ↑ ProcSubset=pid 故意**没有**启用：/health 的资源探针读 /proc/self/status
+#     取 RSS，ProcSubset=pid 之下 /proc/self 仍可读，但探针在部分内核上
+#     会退化。宁可少一分硬化，也不要让唯一的可观测入口变哑。
+
+# 网络面
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressAllow=localhost
+IPAddressDeny=any
+#   ↑ 默认只允许回环：本服务的出站需求（嵌入/重排/LLM）走的是**上游网关**，
+#     而网关地址由部署方自己配。
+#     ★ 如果你的 embedder / reranker / LLM 直连公网 API，
+#       上面两行会让所有出站被静默丢弃 —— 表现是超时，不是拒绝，
+#       排查起来极其费时。此时请把 IPAddressAllow 补成你的上游网段，
+#       或整块注释掉这两行。宁可先注释掉，也不要留着半通不通。
+
+# 系统调用面
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+#   ↑ @system-service 是 systemd 给「普通服务」的预置集合，
+#     覆盖 sqlite / httpx / uvicorn 的全部需求（生产实测通过）。
+#     ★ 不要收得比这更窄：resource_probe 在 /proc 读不到时会退到
+#       `subprocess.run(["lsof", ...])`，@system-service 之外的过滤器
+#       会让这条退路以 EPERM 失败。它有 try/except 兜底，不至于崩，
+#       但你会永久丢掉 open_fds 这个指标。
 
 [Install]
 WantedBy=multi-user.target

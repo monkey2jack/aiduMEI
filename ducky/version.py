@@ -414,6 +414,41 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         射程（那要联网，不该混进单元测试）。配了 md 数与引用数双地板，防止有人把遍历
         收窄成「全绿但什么都没查」。用例总数 851 → 856（本机 844 passed + 12 skipped；
         生产机沙箱 855 passed + 1 skipped，两个数都是实测），两份 README 各 17 处数字同步。
+    45. P3-8 最小权限: 发货的部署物不再默认以 root 运行 —— deploy/aidumem-api.service 与
+        deploy/aidumem-sync.service 此前都写着 User=root，Dockerfile 连 USER 指令都没有。
+        生产 systemctl show 实测确认不是纸面问题: NoNewPrivileges=no、ProtectSystem=no、
+        CapabilityBoundingSet 是全集 41 项 —— 一个只在回环上读写记忆的服务握着
+        CAP_SYS_ADMIN/CAP_SYS_PTRACE，只是把一次依赖链 RCE 从「丢记忆」放大成「丢整机」。
+        API 单元改专用账号（User= 与 Group= 都显式写，只写 User= 时 systemd 取主组，
+        而数据目录按组交接，主组不同名的症状是「读得到、写不进」），capability 全清、
+        ProtectSystem=strict + ReadWritePaths 只开 data/+logs/、SystemCallFilter=
+        @system-service、出站默认只放回环；docker-compose.yml 补 cap_drop ALL +
+        no-new-privileges。**aidumem-sync 刻意不换 uid**: 它读的 MEMORY.md 通常是真人
+        家目录里的 600 文件，换 uid 就得放宽那个文件的权限 —— 用「私有笔记可读面变宽」
+        换「守护不是 root」不划算，所以只加固能力面，User= 留给部署方决定。同样刻意不启用
+        ProcSubset=pid: ducky/resource_probe.py 读 /proc/self/status 取 RSS，那是 /health
+        上唯一的内存指标，不拿唯一的可观测入口换一分暴露分。**降权不是把每个数字调到最小，
+        是把每一项单独算清收益和代价。** 三个绊人的前提写进模板注释（装的人不会翻 CHANGELOG）:
+        ① data/ 要整棵 chown —— WAL 要在同目录建 -wal/-shm，只交接主库文件时只读查询全绿、
+        /health 也绿，直到第一次写入才炸；② logs/ 必须和 data/ 一起进 ReadWritePaths ——
+        StandardOutput=append: 落在只读挂载上时单元直接 failed，只留一句 Read-only
+        file system，极易误判成磁盘故障；③ cron 脚本要一起降权 —— ducky/utils.py 在
+        import 时就 ensure_evolution_tables() 建连，所以哪怕 scripts/consolidator.py
+        全文 sqlite3|.db 命中 0 行（纯 HTTP 客户端），import 了它就会以当前身份打开
+        facts.db 并可能建出 root 属主的 -wal，留一个 root 写手就会周期性把整棵目录重新
+        污染成混属主。容器 uid 写死 10001（bind mount 不做 uid 映射，uid 不固定则镜像重建
+        后宿主机 data/ 突然写不进），只 chown data/+logs/ 不 chown 整个 /app —— 代码目录
+        保持 root 属主只读，免费拿到「运行期改不了自己代码」，代价只是 __pycache__ 写不进
+        （Python 静默降级）。新增 tests/test_v20_p38_least_privilege.py（15 条）: 一律走
+        unit 段落解析器而不是 grep（本轮注释里恰好反复出现 User=root、ProtectHome=yes，
+        grep 分不清代码和注释）。三条是反向守卫，拦「照抄」和「刷暴露分」: sync 不许配
+        ProtectHome（会藏起它要读的家目录，报 FileNotFoundError，像路径配错其实是沙箱）、
+        两个单元都不许配 ProcSubset、SystemCallFilter 不许比 @system-service 更窄
+        （resource_probe 的 lsof 退路会 EPERM，有兜底不崩但永久丢掉 open_fds 指标）。
+        负向对照: 四个文件换回改动前版本 15 条全红，换回新版 15 条全绿。用例总数
+        1091 → 1106（本机 1094 passed + 12 skipped，实测）。★ 本条只证明模板写对了，
+        生效值必须在机器上用 systemd-analyze security 验 —— 配置写了不等于配置生效，
+        这笔学费 v19.4.2 的 StartLimit* 已经付过。
 
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)

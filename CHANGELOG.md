@@ -542,6 +542,63 @@
   各植一处坏链，都必须红且报出具体文件与路径。用例总数 851 → **856**（本机 844 passed + 12 skipped；
   生产机沙箱 855 passed + 1 skipped，**两个数都是实测**）；两份 README 各 17 处数字同步。
 
+- **P3-8 最小权限：发货的部署物不再默认以 root 运行**。此前 `deploy/aidumem-api.service` 与
+  `deploy/aidumem-sync.service` 都写着 `User=root`，`Dockerfile` 连 `USER` 指令都没有 ——
+  一个只在**回环**上读写记忆的服务，握着 `CAP_SYS_ADMIN` / `CAP_SYS_PTRACE` / `CAP_NET_RAW`
+  这类能力没有任何用途，只是把一次依赖链上的 RCE 从「丢记忆」放大成「丢整机」。
+  生产实测确认了这不是纸面问题：两个单元的 `systemctl show` 显示 `NoNewPrivileges=no`、
+  `ProtectSystem=no`、`ProtectHome=no`、`PrivateTmp=no`，`CapabilityBoundingSet` 是**全集 41 项**。
+
+  API 单元改配专用账号（`User=`+`Group=` 都显式写出 —— 只写 `User=` 时 systemd 取该账号主组，
+  而数据目录是按**组**交接的，部署方复用已有账号时主组未必同名，症状是「读得到、写不进」），
+  并按「这个服务实际用到什么」逐行裁出沙箱：capability 全清、`ProtectSystem=strict` +
+  `ReadWritePaths` 只开 `data/`+`logs/` 两个洞、`SystemCallFilter=@system-service`、
+  出站默认只放回环。`Dockerfile` 补 `USER`，`docker-compose.yml` 补 `cap_drop: ALL` +
+  `no-new-privileges`。
+
+  **`aidumem-sync` 刻意没有跟着换 uid**，这是本条最值得写下来的判断。该守护的全部工作是读一个
+  Markdown（默认 `~/.hermes/memories/MEMORY.md`）再 POST 给本机 API，它自己不写任何数据库。
+  而那个 `MEMORY.md` 通常是某个真人家目录里的 **600** 文件 —— 要让第二个 uid 读到它，就必须放宽那个
+  文件（或整个家目录）的权限。用「私有笔记的可读面变宽」去换「守护进程不是 root」，
+  多数情况下不划算，而且这笔交易极容易在 `chmod` 的那一刻就被忘掉。所以那个模板只加固**能力面**，
+  `User=` 留给部署方自己决定（两条路线都写在注释里）：一个 capability 全清、文件系统只读、
+  系统调用受限的 root，攻击面已远小于裸 root。**降权不是把每个数字都调到最小，是把每一项
+  单独算清收益和代价。**
+
+  同样刻意**没有**启用的是 `ProcSubset=pid`：`ducky/resource_probe.py` 读 `/proc/self/status`
+  取 RSS，那是 `/health` 上唯一的内存指标，而 `/health` 是事故当时唯一还能问的东西。
+  拿唯一的可观测入口去换一分 `systemd-analyze` 暴露分，不划算。
+
+  三个把人绊倒的前提写进了模板注释，因为装的人不会去翻 CHANGELOG：
+  ① **`data/` 要整棵 `chown`，不是只 chown 主库文件** —— SQLite 的 WAL 模式要在**同目录**建
+  `-wal`/`-shm`，checkpoint 后还要删掉重建；只交接主库文件的表现是只读查询全部正常、`/health`
+  也绿，**直到第一次写入才炸**。② **`logs/` 必须和 `data/` 一起进 `ReadWritePaths`** ——
+  `StandardOutput=append:` 由 systemd 打开，落在只读挂载上时单元直接 failed，日志里只有一句
+  `Read-only file system`，极易误判成磁盘故障。③ **cron 里的脚本要一起降权** ——
+  `ducky.utils` 在 **import 时**就执行 `ensure_evolution_tables()` 建连，所以哪怕脚本本身
+  只是个纯 HTTP 客户端（`scripts/consolidator.py` 全文 `sqlite3|.db` 命中 **0** 行），
+  只要 `import` 了它就会以当前身份打开 `facts.db` 并可能建出 root 属主的 `-wal`；
+  留一个 root 写手，就会周期性地把整棵目录重新污染成混属主，然后降权后的服务在下一次写入时失败。
+
+  容器侧 uid **写死 10001** 而不是让 `useradd` 自选：bind mount 不做 uid 映射，容器内的写入以
+  容器内 uid 落到宿主机文件上，uid 不固定则镜像重建后可能换号，宿主机那批 `data/` 就突然写不进 ——
+  症状同样是「读得到、写不进」，几乎不可能联想到 uid。只 `chown` `data/`+`logs/` 而**不** chown
+  整个 `/app`，于是代码目录保持 root 属主、进程只读，免费拿到「运行期改不了自己代码」；
+  代价只是 `__pycache__` 写不进（Python 静默降级，不报错）。
+
+  新增 `tests/test_v20_p38_least_privilege.py`（**15** 条）。守卫一律走 unit 的**段落解析器**
+  （复用 v19.4.2 那个）而不是 `grep` —— 本轮注释里恰好反复出现 `User=root`、`ProtectHome=yes`
+  这些串，`grep` 分不清代码和注释。其中三条是**反向**守卫，拦的是「照抄」和「把暴露分刷满」
+  这两个很自然的动作：sync 不许配 `ProtectHome`（会把它要读的家目录藏起来，报
+  `FileNotFoundError`，像路径配错其实是沙箱），两个单元都不许配 `ProcSubset`，
+  `SystemCallFilter` 不许比 `@system-service` 更窄（`resource_probe` 的 `lsof` 退路会以
+  `EPERM` 失败，有兜底不至于崩，但 `open_fds` 这个指标会永久丢掉）。
+  负向对照：把四个文件换回改动前的版本，**15 条全红**；换回新版 15 条全绿 —— 没有一条是同义反复。
+  用例总数 1091 → **1106**（本机 1094 passed + 12 skipped，实测）；两份 README 各 13/14 处数字同步。
+  ★ 本条只证明**模板写对了**；生效值必须在机器上用 `systemd-analyze security` 与
+  `systemctl show -p CapabilityBoundingSet` 验 —— **配置写了不等于配置生效**，
+  这笔学费 v19.4.2 的 `StartLimit*` 已经付过。
+
 ---
 
 ## v19.5.0 — 脱敏闸门 · 把铁律变成不可绕过的程序（2026-08-20）
