@@ -188,7 +188,8 @@ _MUST_SHIP = (
     ("scripts/backup_gate.sh", "备份闸门"),
     ("tests/test_v20_gitignore_guard.py", "本文件"),
     ("benchmarks/data_manifest.json", "manifest 是承诺，必须发（`benchmarks/runs/` 才是产物）"),
-    ("assets/aidumem-banner.jpg", "图片面也要发得出去"),
+    ("assets/aidumei-v20-banner.svg", "图片面也要发得出去（v20.0 起横幅改手写 SVG）"),
+    ("assets/aidumei-v20-banner.gen.py", "横幅的生成器 —— 图必须是可复现的，不是来历不明的二进制"),
     ("frontend/index.html", "前端资产"),
     ("docs/ARCHITECTURE.md", "文档"),
 )
