@@ -505,7 +505,7 @@ python -m compileall ducky api_server.py mcp_server.py
 | Total cases | **1111** (measured via `pytest --collect-only`) |
 | Clean dev machine | 1099 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
 | Sandbox on the production box | 1110 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1111 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
-| All axes present | 1111 all green — **derived, never measured**: skips have nine independent axes and no machine we have satisfies all nine at once |
+| All axes present | 1111 all green · 0 skipped — **measured on a production box, 2026-08-24**: all nine axes were present there at once (host source available, `.git` present, benchmark deps and dataset in place). Before that date this row was a derived number, labelled "never measured" for several releases |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
