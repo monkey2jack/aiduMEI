@@ -439,16 +439,46 @@ v20.0 (全量记忆域隔离 · 可复现评测 · 后端契约与数据生命�
         污染成混属主。容器 uid 写死 10001（bind mount 不做 uid 映射，uid 不固定则镜像重建
         后宿主机 data/ 突然写不进），只 chown data/+logs/ 不 chown 整个 /app —— 代码目录
         保持 root 属主只读，免费拿到「运行期改不了自己代码」，代价只是 __pycache__ 写不进
-        （Python 静默降级）。新增 tests/test_v20_p38_least_privilege.py（15 条）: 一律走
+        （Python 静默降级）。新增 tests/test_v20_p38_least_privilege.py（首版 15 条，生产打回后 20 条）: 一律走
         unit 段落解析器而不是 grep（本轮注释里恰好反复出现 User=root、ProtectHome=yes，
         grep 分不清代码和注释）。三条是反向守卫，拦「照抄」和「刷暴露分」: sync 不许配
         ProtectHome（会藏起它要读的家目录，报 FileNotFoundError，像路径配错其实是沙箱）、
         两个单元都不许配 ProcSubset、SystemCallFilter 不许比 @system-service 更窄
         （resource_probe 的 lsof 退路会 EPERM，有兜底不崩但永久丢掉 open_fds 指标）。
-        负向对照: 四个文件换回改动前版本 15 条全红，换回新版 15 条全绿。用例总数
-        1091 → 1106（本机 1094 passed + 12 skipped，实测）。★ 本条只证明模板写对了，
-        生效值必须在机器上用 systemd-analyze security 验 —— 配置写了不等于配置生效，
-        这笔学费 v19.4.2 的 StartLimit* 已经付过。
+        负向对照: 四个文件换回改动前版本 15 条全红，换回新版 15 条全绿。
+        上线当天生产又打回三条（第一版模板通过了全部 15 条守卫才出的），各补一条守卫，
+        共 20 条 —— 守卫射程小于缺陷分布，又一次:
+        ① 带着绿灯失能: useradd --no-create-home 之后 $HOME 指向不存在的目录，而 mem0
+        SDK 在 import 期要往 $HOME 写缓存。is-active=active、/health status=ok，但
+        degraded=['vector_backend'] 向量检索静默零召回，journal 只有一行 Permission
+        denied: '/home/aidumem' —— 不是崩溃，是带着绿灯失能，按 failed 告警的监控一辈子
+        等不到。修法 StateDirectory=aidumem + Environment=HOME=/var/lib/aidumem（手写
+        Environment=HOME 在 ProtectSystem=strict 下照样写不进，必须由 systemd 建并 chown）。
+        ② 「这个进程不写库」是对业务逻辑的正确描述、对进程行为的错误描述，而沙箱管后者:
+        mem0_sync 业务上只读 MEMORY.md 再 POST，第一版只给 ReadWritePaths=logs，结果启动即
+        sqlite3.OperationalError: unable to open database file 并崩溃循环。traceback:
+        from ducky.utils import 两个常量 → ducky/__init__.py → recall_funnel → scoring
+        → ducky/salience/__init__.py 模块级 _ensure_db()（无 try/except）→ 开
+        data/salience.db。import 两个常量会拽进整条召回栈。
+        ③ root 在自己机器上写不进一个目录: root 无视权限位靠的就是 CAP_DAC_OVERRIDE，
+        而 CapabilityBoundingSet= 把它一起清了。负向对照实测: systemd-run
+        -p CapabilityBoundingSet= -- touch <data>/x → Permission denied，不带该参数 → 成功;
+        而它仍读得到 600 root:root 的 MEMORY.md（那是它自己的文件，属主权限不需要 DAC
+        override）。解法刻意不是把 CAP_DAC_OVERRIDE 加回来（等于用特权绕过权限），而是
+        data/ chmod 2770（setgid）+ 两个单元 UMask=0007 + sync 加 SupplementaryGroups。
+        setgid 与 UMask 缺一不可: 只有 setgid 新文件 640 组不可写，只有 UMask 新文件属组
+        是创建者主组、组对不上。安装说明的 chmod 750 因此改成 2770 并补存量文件 chmod g+w。
+        生产实机验收（前后都由 systemd 自己算）: 暴露分 9.6 UNSAFE → API 1.7 OK /
+        sync 2.0 OK，capability 41 项 → 0 项; /health status=ok、degraded=[]、
+        vector_backend_ok=true、mem0_singleton=true、feature_failures=0; POST /search 200
+        （3 条命中，证明 embed+rerank 出站未被掐死）、POST /add 200; 交叉写双向通过;
+        全量 1090 passed，唯一红灯是设计绊线 test_no_machine_here_satisfies_every_axis
+        （该机九轴齐备），改动前就在红、非回归。资源: API RSS=249MB/11 线程/38 fd（身份
+        aidumem）、sync RSS=23MB/1 线程/10 fd; 整机内存 48%、负载 0.48、磁盘 38%。
+        cron 的 consolidator.py 同批降权为 runuser -u aidumem（最后一个 root 写手）。
+        用例总数 1091 → 1111（本机 1099 passed + 12 skipped，实测）。★ 本条只证明模板
+        写对了，生效值必须在机器上用 systemd-analyze security 验 —— 配置写了不等于配置
+        生效，这笔学费 v19.4.2 的 StartLimit* 已经付过。
 
 
 v19.5.0 (脱敏闸门 · 把铁律变成不可绕过的程序 · 2026-08-20)
