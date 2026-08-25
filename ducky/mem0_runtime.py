@@ -528,6 +528,36 @@ def _normalize_user_id(user_id: str) -> str:
     return DEFAULT_USER_ID if user_id.lower() in legacy else user_id
 
 
+def _assert_vector_store_inside_sandbox(cfg: dict) -> None:
+    """测试沙箱内禁止向量腿逃逸（v20.1 整改轮 R-17 · 外审 w P1-③）。
+
+    conftest 只重定向了 `AIDUMEM_DATA_DIR`（SQLite 面），而 mem0 配置里的
+    嵌入式 Qdrant `path` 是**绝对路径**，env 重定向盖不住它 —— 在沙箱里跑
+    带真 mem0 的用例，向量会直接写穿到配置指向的真实库。生产向量库里的
+    alice/bob/test_user 测试点（外审 w 实测）就是这么进去的。
+
+    判据：数据目录带测试沙箱前缀（conftest 的 DIR_PREFIX）时，本地向量库
+    路径必须在沙箱目录之内，否则**拒绝初始化并点名那条路径**。
+    生产/常规部署（无沙箱前缀）完全不受影响；远端 Qdrant（host/url 配置、
+    无本地 path）不属于本守卫射程 —— 那是部署方显式指定的外部服务。
+    """
+    data_dir = os.environ.get("AIDUMEM_DATA_DIR", "")
+    if "aidumei_test_data_" not in os.path.basename(data_dir.rstrip("/")):
+        return
+    vs_cfg = ((cfg.get("vector_store") or {}).get("config") or {})
+    path = vs_cfg.get("path")
+    if not path:
+        return
+    real_path = os.path.realpath(str(path))
+    real_dir = os.path.realpath(data_dir)
+    if not (real_path == real_dir or real_path.startswith(real_dir + os.sep)):
+        raise RuntimeError(
+            "测试沙箱内拒绝连接沙箱外的本地向量库："
+            f"vector_store.config.path={path!r} 不在 AIDUMEM_DATA_DIR 沙箱内。"
+            "带真 mem0 的用例请把向量库路径指进沙箱（否则测试点会写穿真实库）"
+        )
+
+
 def get_memory():
     """延迟初始化 mem0 单例，绑定到 sys 命名空间防止跨模块双重导入"""
     global m
@@ -543,6 +573,7 @@ def get_memory():
                 raise RuntimeError("mem0 SDK 未加载")
             cfg = json.loads(open(MEM0_CONFIG).read())
             cfg = _resolve_api_keys(cfg)
+            _assert_vector_store_inside_sandbox(cfg)
             # 启动时清理 Qdrant 锁（与生产环境对齐：先读配置再清理）
             _clear_qdrant_lock()
             m = Memory.from_config(cfg)

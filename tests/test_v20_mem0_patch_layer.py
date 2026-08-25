@@ -44,6 +44,10 @@ import os
 
 import pytest
 
+# v20.1 整改轮（R-12 附带 · 社区审计）：mem0 未安装的环境应当 skip 而非
+# 20 个 collection error —— error 会把「环境缺依赖」伪装成「产品坏了」。
+pytest.importorskip("mem0", reason="mem0ai 未安装：补丁层测试需要真实基座")
+
 PROBE_ROLE = "aidumem_test_role"
 PROBE_TEXT = "aidumem_test_payload_zzz"
 FENCED = '```json\n{"facts": ["a"]}\n```'

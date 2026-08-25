@@ -132,7 +132,17 @@ def register_health_routes(app: FastAPI) -> None:
         # 回退逻辑），不问环境变量原文。0.0 = 只有空结果才判 not_found。
         try:
             from ducky.hot.search import _verdict_threshold
-            probes["recall_verdict_threshold_effective"] = _verdict_threshold()
+            _vt = _verdict_threshold()
+            probes["recall_verdict_threshold_effective"] = _vt
+            # v20.1 整改轮（R-13 · 外审 y 变体 + w P1-④）：阈值 0.0 是合法
+            # 默认（只有空结果才判 not_found），但生产侧应基于真实查询
+            # 分布校准。提示走 probe 字段而非 warnings —— 常驻 warning
+            # 会制造新的告警疲劳，这是提示不是告警。
+            if _vt == 0.0:
+                probes["recall_verdict_threshold_hint"] = (
+                    "未配置显式置信下限：当前仅空结果判 not_found。"
+                    "生产建议按真实查询分布分位数校准 AIDUMEI_RECALL_VERDICT_THRESHOLD"
+                )
         except Exception as _vt_exc:
             probes["recall_verdict_threshold_error"] = str(_vt_exc)[:120]
 
@@ -360,6 +370,23 @@ def register_health_routes(app: FastAPI) -> None:
             probes["core_memory_unfilled_blocks"] = cm["unfilled_blocks"]
             # v20.1 WP-D2：分级阈值的生效值上探针 —— 验收问这里，不问配置文件。
             probes["core_memory_thresholds"] = cm.get("threshold_days_by_block", {})
+            # v20.1 整改轮（R-16 · 外审 w P1-② 机制 + y 覆盖度建议）：
+            # 三副本对账。三腿写入都是软失败设计，没有对账，缺腿的块
+            # 从此静默检索不到而绿灯依旧。只观测不自愈；占位块与影子行
+            # 已在 audit 内排除（把设计行为算成缺腿会制造新的告警疲劳）。
+            try:
+                from ducky.core_memory import audit_core_replicas
+                _rep = audit_core_replicas()
+                probes["core_replica_checked"] = _rep["checked"]
+                probes["core_replica_gaps"] = _rep["gaps"]
+                probes["core_replica_vector_checked"] = _rep["vector_checked"]
+                if any(g.get("vector") is False for g in _rep["gaps"]):
+                    probes["core_replica_hint"] = (
+                        "存量核心记忆未入向量池：获批后运行 "
+                        "scripts/backfill_core_vectors.py（dry-run 先行）"
+                    )
+            except Exception as _rep_exc:
+                probes["core_replica_error"] = str(_rep_exc)[:120]
             if cm["stale"]:
                 warnings.append(
                     f"核心记忆有 {cm['stale_blocks']}/{cm['blocks']} 块超过各自"
@@ -416,6 +443,11 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as e:
             probes["facts_active_count"] = -1
             probes["facts_error"] = str(e)[:120]
+            # v20.1 整改轮（R-07 · 外审 z P2-03）：facts 探测失败时水位
+            # 探针不许整体缺席 —— 读取方按键取值会 KeyError，且「没报」
+            # 和「没量」必须能区分开。显式 unknown，绝不冒充 False。
+            probes.setdefault("facts_watermark_effective", "unknown")
+            probes.setdefault("watermark_warning", None)
 
         # 📼 原文保真层探针（v19.4.0 明镜工程 Phase 1）
         try:
