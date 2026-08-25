@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.0" width="100%">
+  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.1" width="100%">
 </p>
 
 # aiduMEI⚕爱嘟优忆思——智能体通用智慧引擎
@@ -24,7 +24,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **当前私有预发布 v20.0.1 —— 基于 v20.0 的兼容与可靠性收口；公开正式版仍为 v20.0。**
+> **当前公开正式版 v20.1 —— 确定性兜底与诚实召回：LLM 不在场时记忆系统仍是完整的记忆系统；召回给不出可信结果时，宁可诚实说「没有」。五份外部评审的 17 项整改全部闭合后发布。**
 > 详细的逐版演进请看 [CHANGELOG](CHANGELOG.md)；这一页只讲**现在是什么**。
 
 <!-- distribution-policy: github-source-only -->
@@ -230,7 +230,7 @@ python api_server.py
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v20.0            │
+│           aiduMEI⚕爱嘟优忆思 v20.1            │
 │              FastAPI REST API :8767                       │
 │              控制台 /ui :8767（自带静态托管）              │
 │              MCP Server :8768 (41 tools)                  │
@@ -522,7 +522,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 ## 技术栈
 
 - **运行时**：Python 3.12+、FastAPI、Uvicorn
-- **记忆内核**：mem0 v2.0.19（v20.0.1-pre）
+- **记忆内核**：mem0 v2.0.19（v20.1）
 - **向量存储**：Qdrant（通过 qdrant-client）
 - **结构化数据**：SQLite（facts.db、observations.db、scenes.db、fact_events.db）
 - **全文搜索**：SQLite FTS5 + trigram 分词器
