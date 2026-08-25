@@ -158,8 +158,10 @@ _VERSION_RE = re.compile(
 _VERSION_CONTEXT_RE = re.compile(r"版本|version|升级|发布|装|install|upgrade|release", re.IGNORECASE)
 
 #: 数字 + 白名单单位。英文单位后不许紧跟字母（避免 "10 mst" 里的 ms）。
+#: 复合量词（个小时/个月/个星期）排在裸「个」之前 —— 否则「3.5 个小时」
+#: 会被截成「3.5个」，单位被孤儿化（v20.1 整改轮 R-04 · 外审 z P2-01 实例②）。
 _METRIC_RE = re.compile(
-    r"\d+(?:\.\d+)?\s*(?:TB|GB|MB|KB|ms|毫秒|秒|分钟|小时|天|周|个月|年|条|次|个|行|张|页|%|％|元|美元|倍)(?![A-Za-z])"
+    r"\d+(?:\.\d+)?\s*(?:TB|GB|MB|KB|ms|毫秒|秒|分钟|小时|天|周|个小时|个星期|个月|年|条|次|个|行|张|页|%|％|元|美元|倍)(?![A-Za-z])"
 )
 
 #: URL 与绝对路径。路径要求 ≥2 段，只认 Unix 形态（生产环境没有别的）。
@@ -174,6 +176,14 @@ _KV_SHI_RE = re.compile(r"([A-Za-z0-9_一-鿿.\-]{2,24})\s*(?:是|为)\s*([^，�
 #: 「X是Y」的键后缀护栏：键以这些字结尾时，那个「是/为」大概率是连词或
 #: 动词复合（但是/还是/就是/认为/以为/成为…），不是系动词。宁可漏。
 _BAD_KEY_SUFFIX = set("但还就只算而不倒像真也都才即便或若总老凡认以成作称视评变")
+
+#: 连词**整词**护栏（v20.1 整改轮 R-04 · 外审 z P2-01 实例①）：
+#: 「X但是Y是Z」形句式里，键候选是「X但是Y」——尾字是 Y 的尾字，
+#: 尾字护栏够不着中间的「但是」。整词出现在键内任意位置即拒。
+_BAD_KEY_SUBSTRINGS = (
+    "但是", "还是", "就是", "凡是", "总是", "老是", "算是", "倒是",
+    "像是", "真是", "也是", "都是", "才是", "而是", "或是", "即是", "便是",
+)
 
 #: 纯代词/指示词不当键。
 _STOP_KEYS = {
@@ -197,6 +207,8 @@ def _key_ok(key: str) -> bool:
     if len(key) < 2 or key in _STOP_KEYS:
         return False
     if key[-1] in _BAD_KEY_SUFFIX:
+        return False
+    if any(w in key for w in _BAD_KEY_SUBSTRINGS):
         return False
     return True
 
@@ -302,14 +314,24 @@ def extract_patterns(text: str, *, recorded_at: str | None = None) -> list[dict]
                 continue
             emit("link", m.group(1), sentence)
 
-        # ⑤ 键值断言（= / 行首冒号 / 是·为）
+        # ⑤ 键值断言（= / 行首冒号 / 是·为）。
+        # URL 占住的区间对 KV 规则做 span 屏蔽（v20.1 整改轮 R-04 ·
+        # 外审 z P2-01 实例③）：行首 URL 的「:」会被行首冒号规则当成
+        # 键值定义，抽出 kv(https → //…) 的噪音。
+        def _in_url(start: int, end: int) -> bool:
+            return any(not (end <= s or start >= e) for s, e in url_spans)
+
         for m in _KV_EQ_RE.finditer(sentence):
+            if _in_url(m.start(), m.end()):
+                continue
             if _key_ok(m.group(1)):
                 emit("kv", m.group(1), m.group(2))
         cm = _KV_COLON_RE.match(sentence)
-        if cm and _key_ok(cm.group(1)):
+        if cm and not _in_url(cm.start(1), cm.end(1)) and _key_ok(cm.group(1)):
             emit("kv", cm.group(1), cm.group(2))
         for m in _KV_SHI_RE.finditer(sentence):
+            if _in_url(m.start(), m.end()):
+                continue
             if _key_ok(m.group(1)):
                 emit("kv", m.group(1), m.group(2).strip())
 
@@ -347,9 +369,21 @@ def extract_and_store(
 
     if len(items) > MAX_FACTS_PER_ADD:
         # 沉默截断 = 把「覆盖了一部分」伪装成「全覆盖」，必须出声。
+        # v20.1 整改轮（R-05 · 外审 x REC-01 方向）：截断不再按抽取顺序
+        # 粗暴切片 —— 句内顺序是日期在前、指令/偏好在后，长文本里 20 个
+        # 日期会把 1 条关键指令挤出局。改按信息价值稳定排序后再切：
+        # 指令/偏好（丢了最心疼）> 键值 > 日期/版本 > 数量/链接。
+        # 稳定排序保证同输入同输出，确定性不破。
+        _KIND_PRIORITY = {"instruction": 0, "preference": 0, "kv": 1,
+                          "datetime": 2, "version": 2, "metric": 3, "link": 3}
+        items.sort(key=lambda it: _KIND_PRIORITY.get(it["kind"], 4))
+        dropped_kinds: dict[str, int] = {}
+        for it in items[MAX_FACTS_PER_ADD:]:
+            dropped_kinds[it["kind"]] = dropped_kinds.get(it["kind"], 0) + 1
         logger.warning(
-            "🧩 [PatternExtract] 单次抽取 %d 条超上限，截断至 %d（user=%s bank=%s）",
-            len(items), MAX_FACTS_PER_ADD, user_id, bank_id,
+            "🧩 [PatternExtract] 单次抽取 %d 条超上限，按重要性截断至 %d，"
+            "被丢分布=%s（user=%s bank=%s）",
+            len(items), MAX_FACTS_PER_ADD, dropped_kinds, user_id, bank_id,
         )
         _bump("truncated")
         items = items[:MAX_FACTS_PER_ADD]
