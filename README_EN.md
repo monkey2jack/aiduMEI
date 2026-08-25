@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.0" width="100%">
+  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.1" width="100%">
 </p>
 
 # 🤔 aiduMEI — AI Wisdom Engine
@@ -20,7 +20,7 @@
 
 ## What is aiduMEI?
 
-aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current private pre-release is **v20.0.1**, built on the public v20.0 architecture; the latest public release remains v20.0. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
+aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current public release is **v20.1** — deterministic fallbacks and honest recall: the memory system stays complete when no LLM is present, and honestly says "not found" when recall cannot be trusted. Published after all 17 remediation items from five external reviews were closed. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
 <!-- distribution-policy: github-source-only -->
 > **Distribution (GitHub-only):** aiduMEI no longer publishes or maintains packages on PyPI or GHCR. Get ongoing updates from the repository's `main` branch or formal versions from [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases). The `pip install -r requirements.txt` command below installs dependencies from a cloned source tree; it is not a package distribution method.
@@ -218,7 +218,7 @@ python api_server.py
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│        🦉 aiduMEI v20.0 · AI Wisdom Engine            │
+│        🦉 aiduMEI v20.1 · AI Wisdom Engine            │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8768 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
@@ -459,7 +459,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 ## Tech Stack
 
 - **Runtime**: Python 3.12+, FastAPI, Uvicorn
-- **Memory Kernel**: mem0 v2.0.19 (v20.0.1-pre)
+- **Memory Kernel**: mem0 v2.0.19 (v20.1)
 - **Vector Store**: Qdrant (via qdrant-client)
 - **Structured Data**: SQLite (facts.db, observations.db, scenes.db, fact_events.db)
 - **Full-Text Search**: SQLite FTS5 + trigram tokenizer
