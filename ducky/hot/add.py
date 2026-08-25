@@ -196,6 +196,21 @@ def register_add_routes(app: FastAPI) -> None:
             except Exception as _ce:
                 logger.warning(f"🐙 [ConflictResolver] 隐式检测异常: {_ce}")
 
+            # 🧩 v20.1 WP-A: 确定性抽取层 —— LLM 之外的第二事实来源。
+            # 放在路由层（异步分发之前）：同步 / async job / coalesce 三条
+            # 通路都必然经过这里，且看到的是合并前的原始请求文本。
+            # LLM 空返回时，日期/版本/指令/偏好等硬事实仍有确定性通路落
+            # facts 层（source='pattern_extract'，可按来源精确清除）。
+            # 失败进 failure_ledger，绝不阻断主链路。
+            try:
+                from ducky.pattern_extract import extract_and_store
+                extract_and_store(_full_text, user_id=req.user_id,
+                                  bank_id=req.bank_id,
+                                  recorded_at=md.get("recorded_at"))
+            except Exception as _pe:
+                feature_failed("pattern_extract", _pe)
+                logger.warning(f"🧩 [PatternExtract] 确定性抽取跳过: {_pe}")
+
             def _run_pipeline(uid, msgs, meta):
                 try:
                     return lazy_import_layer1()(

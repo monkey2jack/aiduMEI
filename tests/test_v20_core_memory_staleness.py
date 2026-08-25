@@ -102,15 +102,22 @@ def test_threshold_boundary_is_measured_not_assumed():
     """阈值两侧各测一次：刚过阈值 → stale，刚不到 → 不 stale。
 
     只测「远超阈值」的话，把判据从 `>` 写成 `>= 0` 也照样绿。
+
+    v20.1 WP-D2 起阈值按块分级 —— 边界值从生效函数取，不再假设 30：
+    core_key_decisions 是 semantic 档（默认 180 天），拿 30±1 测它等于
+    测一个不存在的契约。
     """
-    from ducky.core_memory import STALENESS_DAYS, init_core_memory, put_block, staleness_status
+    from ducky.core_memory import (
+        init_core_memory, put_block, staleness_status, staleness_threshold_days,
+    )
     init_core_memory()
     put_block("core_key_decisions", "关键决策与约定的占位内容一二三")
+    threshold = staleness_threshold_days("core_key_decisions")
 
-    _set_verified("core_key_decisions", _age(STALENESS_DAYS - 1))
+    _set_verified("core_key_decisions", _age(threshold - 1))
     assert staleness_status()["stale"] is False, "阈值内侧被判超期"
 
-    _set_verified("core_key_decisions", _age(STALENESS_DAYS + 1))
+    _set_verified("core_key_decisions", _age(threshold + 1))
     assert staleness_status()["stale"] is True, "阈值外侧没被判超期"
 
 

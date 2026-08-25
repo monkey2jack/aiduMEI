@@ -25,6 +25,28 @@ from ducky.scoring import (
 
 logger = logging.getLogger("aiduMEM.engine")
 
+# ── 召回腿遥测（v20.1 WP-C）──────────────────────────────────────────
+# 与 mem0_runtime 的 rerank 遥测同一模式：线程本地，路由层每请求 reset、
+# 请求末尾读取。存在的理由只有一个：向量腿的 except 会把「嵌入服务挂了」
+# 消化成空候选，没有这份遥测，「搜挂了」和「库里没有」在响应上无法区分。
+_recall_telemetry = threading.local()
+
+
+def reset_recall_telemetry() -> None:
+    _recall_telemetry.data = {}
+
+
+def last_recall_telemetry() -> dict:
+    return dict(getattr(_recall_telemetry, "data", {}) or {})
+
+
+def _set_recall_telemetry(**fields) -> None:
+    data = getattr(_recall_telemetry, "data", None)
+    if data is None:
+        data = {}
+        _recall_telemetry.data = data
+    data.update(fields)
+
 
 def _parse_time_boundary(val: Optional[str]) -> Optional[str]:
     """解析 before/after 时间边界为标准 ISO 前缀。"""
@@ -89,6 +111,7 @@ class RecallEngine:
 
         # 1. 向量初步候选召回（多取候选供加权和时效过滤）
         cand_limit = max(limit * 3, 30)
+        _set_recall_telemetry(vector_leg="ok")
         try:
             # 🔴v20：默认域**不能**把 bank_id 下推给 mem0 —— 存量向量 payload 里
             # 没这个字段，Qdrant 的 must 语义会把它们整批滤掉，且不报错只返回空。
@@ -105,6 +128,12 @@ class RecallEngine:
         except Exception as e:
             logger.warning("向量召回异常降级: %s", e)
             candidates = []
+            # v20.1 WP-C：向量腿失效必须让调用方看得见。此前这个 except 把
+            # 「嵌入服务挂了」消化成 candidates=[]，一路走完返回空列表 ——
+            # 与「库里确实没有」在响应上逐字节相同。/search 拿这份遥测判
+            # 三态：空结果 + 腿断 = degraded，绝不冒充 not_found。
+            # 与 rerank 遥测同一模式：线程本地、每请求由路由层 reset。
+            _set_recall_telemetry(vector_leg="failed", error=str(e)[:120])
 
         # 时间窗口粗过滤（before/after）
         b_prefix = _parse_time_boundary(before)

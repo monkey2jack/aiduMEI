@@ -117,6 +117,13 @@ _EXPECTED_FEATURES = {
     # v20 P0-6：核心记忆进检索索引。失败意味着那块记忆搜不到 ——
     # 正本还在（core_memory 表），但用户问起来会得到「没有相关记忆」。
     "core_memory_index",
+    # v20.1 WP-A：确定性抽取层。失败意味着 LLM 哑火时的兜底事实通路
+    # 也断了 —— 硬事实（日期/版本/指令/偏好）回到「只靠 LLM」的单点。
+    "pattern_extract",
+    # v20.1 WP-D1：核心记忆进向量召回池。与 core_memory_index（FTS 腿）
+    # 分开记名：两条腿坏法不同（FTS=本地库，向量=嵌入服务+向量库），
+    # 修法也不同，合并记账会把诊断线索抹掉。
+    "core_memory_vector_index",
 }
 
 

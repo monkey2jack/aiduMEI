@@ -3,6 +3,32 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.1.0 (私有验证线 20.1.0-dev.N · 确定性兜底与诚实召回 · 2026-08-25)
+    主题：LLM 不在场时，记忆系统仍然是完整的记忆系统；召回给不出可信结果时，
+    宁可诚实说「没有」。公开 Tag/Release 不随本迭代更新，正式 v20.1.0 须外部
+    审计通过并获授权后发布。预案与验收基准见飞书 Wiki /aiduPARK/aiduMEI/v20。
+    1. WP-A 确定性抽取层：ducky/pattern_extract.py 七类规则抽取（日期/版本/
+       数字/链接/键值/指令/偏好）挂 /add 路由层（ducky/hot/add.py），产物
+       source='pattern_extract' 落 facts 层 —— LLM 空抽取时硬事实不再丢失。
+       零 token、确定性、可按来源精确清除；开关 AIDUMEI_PATTERN_EXTRACT。
+    2. WP-B 无 LLM 整合升级：refine_memory 三档降级链 llm → extractive → rule，
+       提取式档保留具名实体与数字的要点清单；consolidation_basis 记账
+       （additive 迁移）；facts 水位阈值配置化（AIDUMEI_FACTS_WATERMARK）。
+    3. WP-C 召回弃答信号：ducky/hot/search.py 响应带 recall_verdict 三态
+       （found / not_found / degraded），故障先于缺失 —— ducky/engine.py 向量腿断
+       产生的空结果判 degraded，绝不冒充「查无此忆」；召回腿遥测随响应下发；
+       置信下限 AIDUMEI_RECALL_VERDICT_THRESHOLD（默认 0.0，校准属部署决策）。
+    4. WP-D CoreMemory 还账：D1 ducky/core_memory.py 新写/更新的块进向量召回池
+       （payload 对齐 mem0 装配契约，reliability=1.0，稳定点位 id）；存量回填
+       scripts/backfill_core_vectors.py dry-run 默认，生产执行须单独停点。
+       D2 陈旧告警按块分级（画像/决策 180 · 项目 30，依据联邦分层 TTL 语义），
+       env 可覆盖，生效值经 /health 可查 —— 分级是给依据，不是调大消音。
+    5. 守卫登记：新 env 全用 AIDUMEI_ 前缀；pattern_extract /
+       core_memory_vector_index 进特性账本清单；logger 处数 86→87；README
+       双语用例数同步 1200；test.yml 触发面守卫对齐噪音治理决策。
+    6. 测试：新增 4 个点名文件共 88 条用例（全含负向对照）；
+       test_v20_core_memory_staleness 边界用例随分级契约更新。
+
 v20.0.1 (私有预发布 · mem0ai 2.0.19 兼容与删除链收口 · 2026-08-25)
     这是 v20.0 的私有补丁迭代，不代表公开 Tag/Release/PyPI 已更新。
     1. mem0ai 2.0.19 兼容层：上游已修复 list content 时保留原生语义，Role Drop 继续由本地补丁处理。
@@ -884,7 +910,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.0.1"
+SERVICE_VERSION = "20.1.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -898,6 +924,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.1.0", "", "", "确定性兜底与诚实召回 · 私有验证线 20.1.0-dev.N"),
     ("20.0.1", "", "", "mem0ai 2.0.19 兼容 · 删除链孤儿清理 · 私有预发布"),
     ("20.0", "", "", "全量记忆域隔离 · 可复现评测 · 后端契约与数据生命线"),
     ("19.5.0", "Athena", "雅典娜", "脱敏闸门 · 七面扫描器焊入发布链 · 空词表拒绝运行 · 负向对照可证伪"),

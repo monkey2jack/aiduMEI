@@ -4,6 +4,85 @@
 
 ---
 
+## v20.1.0 — 私有验证线（20.1.0-dev.N）：确定性兜底与诚实召回（2026-08-25）
+
+> **性质：私有验证线迭代，公开 `v20.0` Tag 与 Release 不随本节更新。**
+> 正式 v20.1.0 须外部审计通过并获明确授权后另行发布。
+> 预案与验收基准：飞书 Wiki `/aiduPARK/aiduMEI/v20`《aiduMEI v20.1-pre 升级预案（确定性兜底 · 诚实召回）》。
+>
+> 主题一句话：**LLM 不在场时，记忆系统仍然是完整的记忆系统；召回给不出
+> 可信结果时，宁可诚实说「没有」。** 四个工作包全部瞄准同一件事：写入、
+> 整合、召回、核心记忆四条链路在最坏条件下（LLM 哑火、预算悬崖、组件故障）
+> **不丢东西、不空转、不装懂**。本迭代不以跑分为目的。
+
+- **WP-A 确定性抽取层**：新增 `ducky/pattern_extract.py` —— 纯规则（正则+词法）
+  的第二事实来源，零模型、零网络、零 token、确定性（同输入逐字节同输出，
+  相对日期只锚定 `recorded_at` 换算，绝不偷看当前时间）。七类硬事实：日期
+  时间、版本号、数字+单位、URL/路径、键值断言、指令句、偏好句；中文句式
+  优先，连词后缀护栏（「还是/但是/认为…」不当键）+ 代词停用集控噪。挂载在
+  `/add` 路由层（`ducky/hot/add.py`，异步分发之前），同步 / async job / coalesce 三条通路全覆盖；
+  产物经 `write_fact` 落 facts 层，`source='pattern_extract'` + `pattern_` 前缀
+  category，复用既有去重（≥0.85 merge / ≥0.70 update）与 bank 域戳 ——
+  **回滚 = 按来源精确清除**。LLM 空抽取（`empty_extraction` 计数 +1 的那一刻）
+  从「观测到丢失」变成「硬事实仍然落库」；负向对照双腿钉死区分力：mock LLM
+  空返回时 pattern facts 可检索，同场景关掉开关信息确实全丢。单次截断上限
+  20 条且**必须**出声计数。开关 `AIDUMEI_PATTERN_EXTRACT`（env 显式 >
+  `_features.pattern_extract` > 默认开；非法值报错点名不静默回退）；
+  `/health` 暴露 enabled + 六项计数。
+- **WP-B 无 LLM 整合升级**：`refine_memory` 降级链从两档改三档
+  **llm → extractive → rule**。新增提取式档：值包含去重（短值被长值吸收）+
+  硬实体（含数字要点）优先保留 + 显式截断标注（「另 N 条要点略」），生产
+  LLM 关闭时 20 条记忆不再只换来一句「涉及：A、B、C」的目录 —— 信息量对照
+  进测试：同一组候选，rule 档保留事实值 0 条，extractive 档全量保留。
+  `refined_memories` 表 additive 加列 `consolidation_basis`（llm/extractive/rule
+  三档记账，老行留空不冒充），`apply/rollback` 对三档产物全兼容。附带：facts
+  水位告警阈值从硬编码 800 改为 `AIDUMEI_FACTS_WATERMARK` 可配置（默认 800
+  行为逐字节不变），生效值进 `/health` 探针，非法值报警进探针后回退 ——
+  配置化是给依据的通道，不是调大消音的通道。
+- **WP-C 召回弃答信号**：`/search`（`ducky/hot/search.py`）响应新增三态判语 `recall_verdict ∈
+  {found, not_found, degraded}` + `verdict_basis` + `recall_confidence`（纯增量
+  字段，老客户端零感知）。判定顺序即契约：**故障先于缺失** —— 此前
+  `ducky/engine.py` 向量腿的 except 把「嵌入服务挂了」消化成空候选，一路走完返回
+  空列表，与「库里确实没有」逐字节相同；现在新增召回腿遥测（与 rerank 遥测
+  同一线程本地模式，每请求 reset），空结果 + 腿断 = degraded，绝不冒充
+  「查无此忆」。置信下限 `AIDUMEI_RECALL_VERDICT_THRESHOLD` 默认 0.0（只有
+  空结果才判 not_found）—— 本机没有查询分布去定生产阈值，拍脑袋常数会把真
+  记忆判成「没有」；校准值属部署配置决策，用生产侧沙箱真实查询分布算分位数后
+  再设。低分判 not_found 时**结果照常返回**（判语不越权丢数据）。生效值进
+  `/health`；MCP `mem_search` 工具描述同步教会上层 Agent 三态语义。
+- **WP-D CoreMemory 还账**（`ducky/core_memory.py`，两笔均为 v20.0.1 审计表登记事项）：
+  **D1** `put_block` 写路径同步进向量召回池 —— payload 逐键对齐 mem0 结果
+  装配契约（`data` 必填否则整条被丢 / `user_id` 提升 / 其余键落 metadata），
+  于是读侧零改动：bank 复筛认 `metadata.bank_id`，打分器 reliability 维度认
+  `metadata.reliability=1.0`（核心记忆吃满可靠性权重），`memory_class='core'`
+  可溯源。点位 id 确定性（uuid5，同块同域改十次只占一个点，异域同名块各占
+  各的点）。嵌入失败不拖垮正本写入，特性账本单独记名
+  `core_memory_vector_index`（与 FTS 腿分开：坏法不同修法不同）。存量回填
+  `scripts/backfill_core_vectors.py` dry-run 默认、`--apply` 才写、占位块跳过
+  且记账 —— **生产执行是数据变更停点，须单独点头**（遵 v20.0.1 登记）。
+  `verify_block` 只刷时间戳不动内容，无需重嵌，预案措辞按实现修正。
+  **D2** 陈旧告警按块分级：`STALENESS_DAYS_BY_BLOCK`（画像/决策 180 ·
+  当前项目 30），依据是联邦分层既有 TTL 语义（semantic 180 / episodic 30）——
+  **分级是给依据，不是调大消音**：最易过期的 current_project 一分没放松。
+  区分力对照进测试：同样 31 天，画像块不再告警（疲劳源关闭）、项目块照常
+  告警（该叫的一声不少）。env 覆盖（每块 > 全局），非法值出声降档；生效值
+  经 `staleness_status().threshold_days_by_block` 与 `/health`
+  `core_memory_thresholds` 可查；注入面与运维面同一判据函数。
+- **守卫登记**（每一处都是既有守卫抓着改的，不是顺手）：新 env 变量全部用
+  `AIDUMEI_` 前缀（`AIDUMEM_*` 冻结集守卫）；`pattern_extract` /
+  `core_memory_vector_index` 进特性账本许可清单；logger 处数契约 86→87；
+  README 双语用例数全量同步（1151 → 1200 collected），「全轴齐备」行按其
+  自有纪律从实测退回**按轴推导**（新增用例未全轴复测，最后一次全轴实测
+  1112 全绿 · 2026-08-24）。`test.yml` 触发面守卫与 v20.0.1 噪音治理决策
+  对齐（该守卫在本迭代前的基线上就红着 —— 断言的还是治理前的自动触发策略）：
+  改为双向钉死 `{workflow_dispatch, workflow_call}`，自动触发复活即红。
+- **测试**：新增 4 个点名测试文件共 88 条用例（`test_v20_1_pattern_extract`
+  39 · `test_v20_1_extractive_refine` 17 · `test_v20_1_recall_verdict` 19 ·
+  `test_v20_1_core_vector_staleness` 13），全部含负向对照；
+  `test_v20_core_memory_staleness` 边界用例随分级契约更新（边界值从生效
+  函数取，不再假设 30）。语义近义召回的端到端验收属生产实机阶段
+  （需真嵌入服务），本机只测写入契约，不冒充测了召回。
+
 ## v20.0.1 — 私有预发布：基座兼容与删除链收口（2026-08-25）
 
 > 本节属于私有验证线的内部预发布迭代；公开 `v20.0` Tag 与 Release 不随本次自动更新。aiduMEI 已退出 PyPI 与 GHCR 官方分发，后续以 GitHub 源码与 Release 为准。
