@@ -22,14 +22,14 @@ v20.0 守卫：mem0 运行时补丁层（``ducky/mem0_patches.py``）。
 
 * **Role Drop**：``parse_messages()`` 只认 system/user/assistant，其余 role 的
   content 被静默丢弃、零告警。上游 main 至今未修（实测 ``grep -c else`` = 0）。
-* **list content 崩**：``remove_code_blocks()`` 吃到多模态 list 形态的 content 会抛
-  ``AttributeError: 'list' object has no attribute 'strip'``。此函数在记忆抽取热路径
-  （``main.py:973``）上。上游 main 已修但尚未发版。
+* **list content 崩**：旧版 ``remove_code_blocks()`` 吃到多模态 list 形态的 content
+  会抛 ``AttributeError``；mem0ai 2.0.19 已修复，但本地补丁仍负责旧版兼容与空抽取
+  可观测性。
 
 **为什么断言必须是运行时探针而不是源码 grep：**
 基座是第三方包，我们不控制它的源码文本。版本号更靠不住 —— 上游 main 的
-``pyproject.toml`` 至今仍写 ``version = "2.0.18"``，装了 main 之后
-``pip show mem0ai`` 依然报 2.0.18，任何版本号守卫都会被骗。所以本文件里每一条
+上游开发分支的元数据版本可能落后于实际源码，任何只看版本号的守卫都会被骗。
+所以本文件里每一条
 断言都是「喂进去、看出来」，不看源码字符串、不看版本号。
 
 **为什么要分别断言两个命名空间：**
@@ -108,15 +108,38 @@ def test_baseline_role_drop_defect_is_present_before_patching():
     )
 
 
-def test_baseline_list_content_defect_is_present_before_patching():
-    """双向复现的「前」半段：不打补丁时，list 形态 content 必须炸。
+def test_baseline_list_content_contract_is_explicit():
+    """记录基座当前 list 契约，不把上游已经修好的问题误报成回归。
 
-    同上，这条断言随基座升级而变红即为到期提醒。
+    2.0.18 及更早版本会抛 ``AttributeError``；2.0.19 及以后应返回文本。
+    两种结果都必须是显式、可辨认的状态，不能静默吞掉异常。
     """
     fn = _pristine("remove_code_blocks")
-
-    with pytest.raises(AttributeError):
+    try:
         fn([{"type": "text", "text": PROBE_TEXT}])
+    except AttributeError as exc:
+        assert "strip" in str(exc), f"旧基座抛出了无法识别的错误：{exc}"
+
+
+def test_code_block_patch_preserves_native_list_semantics():
+    """上游已修复时，补丁不能重复插入换行或改变块拼接结果。"""
+    import mem0.memory.utils as mu
+
+    from ducky.mem0_patches import _patch_code_block_hardening, original, patch_status
+
+    pristine = original("remove_code_blocks") or mu.remove_code_blocks
+    blocks = [{"type": "text", "text": "alpha"}, {"type": "text", "text": "beta"}]
+    try:
+        expected = pristine(blocks)
+        native = True
+    except AttributeError:
+        expected = "alpha\nbeta"
+        native = False
+
+    _patch_code_block_hardening()
+    assert mu.remove_code_blocks(blocks) == expected
+    status = patch_status()["patches"]["code_block_hardening"]
+    assert status.get("upstream_list_bug_present") is (not native), status
 
 
 # ═══════════════════════════════════════════════

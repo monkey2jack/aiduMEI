@@ -4,6 +4,13 @@
 
 ---
 
+## v20.0.1 — 私有预发布：基座兼容与删除链收口（2026-08-25）
+
+> 本节属于私有验证线的内部预发布迭代；公开 `v20.0` Tag、Release 与 PyPI 不随本次自动更新。
+
+- **mem0ai 2.0.19 兼容**：更新 `ducky/mem0_patches.py`、`pyproject.toml`、`requirements.txt`；补丁层在上游已原生支持 list content 时保留原始拼接语义，同时继续覆盖 Role Drop 与空抽取可观测性；`tests/test_v20_mem0_patch_layer.py` 同时验证 2.0.18/2.0.19。
+- **删除链补全**：`ducky/wal_engine.py` 的 `delete_all` 现在按作用域清理 `memory_types`，修复 `infer=False` 写入后留下孤儿类型账本的问题；`tests/test_v20_delete_all_and_wal_replay.py` 增加跨域集合验证。
+
 ## v20.0 — 全量记忆域隔离 · 可复现评测 · 后端契约与数据生命线（2026-08-20）
 
 > **定性：架构版。** 版本号自本版起只用两段式 `20.0`，当前运行时不再设神话代号——
@@ -1950,4 +1957,3 @@ mem0 裸壳 (v0)
 | **EchoMind** | Ebbinghaus指数遗忘曲线 · 知识演化(replaces/enriches) · 用户纠错信号感知 |
 | **MoE (Mixture-of-Experts)** | 全量基建 + 稀疏激活的门控思想 → 热通道 / 联邦通道分流 |
 | **多 Agent 联邦记忆范式** | Agent 注册表 · profile 隔离 · 游标广播 · 分层记忆生命周期 |
-
