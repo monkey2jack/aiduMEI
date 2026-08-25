@@ -178,6 +178,14 @@ def mem_add_raw(content: str, source: str = "mcp", user_id: str = DEFAULT_USER_I
 def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5) -> str:
     """语义搜索记忆（内置相关性闸门 + 显著性 boost）。
 
+    响应带三态判语 `recall_verdict`（v20.1）：
+      · found     —— 有可信结果，可以引用；
+      · not_found —— 记忆库里确实没有（空结果 / 低于置信下限）。请如实
+                     承认「没有相关记忆」，不要拿低分结果编造；
+      · degraded  —— 召回组件故障，「没有」不可知。请报告记忆系统异常，
+                     而不是当成「查无此忆」。
+    `verdict_basis` 给出判定依据，`recall_confidence` 为本次最高融合分。
+
     Args:
         query:   搜索关键词或自然语言问题
         user_id: 用户标识
