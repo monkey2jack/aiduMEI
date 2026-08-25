@@ -81,6 +81,7 @@ def register_health_routes(app: FastAPI) -> None:
             "scoring_engine": _can_import("ducky.scoring"),
             "wal_engine":     _can_import("ducky.wal_engine"),
             "injection_guard": _can_import("ducky.security.injection_guard"),
+            "v20.1_pattern_extract": _can_import("ducky.pattern_extract"),
         })
 
         probes: dict[str, object] = {
@@ -112,6 +113,37 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as _bank_exc:
             probes["memory_banks_ok"] = False
             probes["memory_banks_error"] = str(_bank_exc)[:120]
+
+        # v20.1 WP-A：确定性抽取层 —— 生效开关问判定函数本身（不问配置
+        # 文件），计数随附。开关值非法时错误原文进探针：那是「显式配置
+        # 无效」的报警，不许被压成一个安静的 False。
+        try:
+            from ducky.pattern_extract import is_pattern_extract_enabled
+            from ducky.pattern_extract import stats as _pattern_stats
+            probes["pattern_extract"] = {
+                "enabled": is_pattern_extract_enabled(), **_pattern_stats(),
+            }
+        except Exception as _pe_exc:
+            probes["pattern_extract"] = {
+                "enabled": False, "error": str(_pe_exc)[:120],
+            }
+
+        # v20.1 WP-C：弃答判语的置信下限 —— 生效值问判定函数（它含非法值
+        # 回退逻辑），不问环境变量原文。0.0 = 只有空结果才判 not_found。
+        try:
+            from ducky.hot.search import _verdict_threshold
+            probes["recall_verdict_threshold_effective"] = _verdict_threshold()
+        except Exception as _vt_exc:
+            probes["recall_verdict_threshold_error"] = str(_vt_exc)[:120]
+
+        # v20.1 WP-D1：核心记忆向量索引开关生效值。值非法时错误原文进探针
+        # —— 那是「显式配置无效」的报警，不许压成一个安静的 False。
+        try:
+            from ducky.core_memory import is_core_vector_index_enabled
+            probes["core_vector_index_enabled"] = is_core_vector_index_enabled()
+        except Exception as _cv_exc:
+            probes["core_vector_index_enabled"] = False
+            probes["core_vector_index_error"] = str(_cv_exc)[:120]
 
         # v20 回归清单：schema_version 必须可读。
         # 只报代码里的常量是**假绿灯**——库还停在 v1 时它照样报 2。
@@ -326,10 +358,13 @@ def register_health_routes(app: FastAPI) -> None:
             probes["core_memory_stale_blocks"] = cm["stale_blocks"]
             probes["core_memory_oldest_age_days"] = cm["oldest_age_days"]
             probes["core_memory_unfilled_blocks"] = cm["unfilled_blocks"]
+            # v20.1 WP-D2：分级阈值的生效值上探针 —— 验收问这里，不问配置文件。
+            probes["core_memory_thresholds"] = cm.get("threshold_days_by_block", {})
             if cm["stale"]:
                 warnings.append(
-                    f"核心记忆有 {cm['stale_blocks']}/{cm['blocks']} 块超过 "
-                    f"{cm['threshold_days']} 天未更新（最旧 {cm['oldest_age_days']} 天）："
+                    f"核心记忆有 {cm['stale_blocks']}/{cm['blocks']} 块超过各自"
+                    f"陈旧阈值未更新（最旧 {cm['oldest_age_days']} 天，分级阈值见 "
+                    "core_memory_thresholds 探针）："
                     "问「现在在做什么」会拿到过期答案，且语气与新鲜答案毫无区别"
                 )
             if cm["unfilled_blocks"]:
@@ -354,9 +389,27 @@ def register_health_routes(app: FastAPI) -> None:
             facts_count = conn_f.execute("SELECT COUNT(*) FROM facts WHERE archived=0").fetchone()[0]
             conn_f.close()
             probes["facts_active_count"] = int(facts_count)
-            # 水位预警（默认 1000 条基准容量，>800 预警）
-            if facts_count > 800:
-                warnings.append(f"事实库水位较高（当前有效事实 {facts_count} 条），建议触发 refine_memory 归档精炼")
+            # 水位预警（v20.1 WP-B）：阈值从硬编码常数改为可配置，
+            # 默认 800 与 v20.0.1 行为逐字节一致 —— 配置化是给依据的通道，
+            # 不是调大消音的通道。生效值必须进探针：配置写了不等于生效，
+            # 让 /health 自己报出它真用的数，验收问它不问文件。
+            # /health 必须永远能应答，所以显式值非法时不抛 —— 报警进探针
+            # （facts_watermark_config_error）后回退默认，绝不安静吞掉。
+            _wm_raw = os.environ.get("AIDUMEI_FACTS_WATERMARK")
+            watermark_threshold = 800
+            if _wm_raw is not None:
+                try:
+                    _wm_val = int(_wm_raw)
+                    if _wm_val <= 0:
+                        raise ValueError("必须为正整数")
+                    watermark_threshold = _wm_val
+                except (ValueError, TypeError):
+                    probes["facts_watermark_config_error"] = (
+                        f"AIDUMEI_FACTS_WATERMARK 值无效: {_wm_raw!r}（需正整数），已回退默认 800"
+                    )
+            probes["facts_watermark_effective"] = watermark_threshold
+            if facts_count > watermark_threshold:
+                warnings.append(f"事实库水位较高（当前有效事实 {facts_count} 条，阈值 {watermark_threshold}），建议触发 refine_memory 归档精炼")
                 probes["watermark_warning"] = True
             else:
                 probes["watermark_warning"] = False
