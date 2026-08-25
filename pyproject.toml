@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "20.0"
+version = "20.0.1"
 description = "aiduMEI: self-hosted multi-tier AI wisdom engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
@@ -29,7 +29,7 @@ classifiers = [
 # 依赖树上 —— 前者可能装到 2023 年的 fastapi，行为与我们测过的完全不同。
 # 现在下限对齐实锁的主版本，上限拦住已知不兼容的下一个大版本。
 dependencies = [
-    "mem0ai==2.0.18",
+    "mem0ai==2.0.19",
     "fastapi>=0.115,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
     "pydantic>=2.9,<3.0",
@@ -82,3 +82,9 @@ benchmarks = ["fixtures/*.json", "*.md"]
 # /usr/local/bin/aidumem 入口点找不到 api_server。
 [tool.setuptools]
 py-modules = ["api_server", "mcp_server", "mem0_sync"]
+
+# 生产机采用保留式备份与并行候选目录；pytest 不应把这些运行期副本当成第二份
+# 测试套件收集，否则同名 test_*.py 会 import mismatch，或把备份里的旧代码当成
+# 当前产品扫描。真正的源码范围仍由各守卫自己的射程地板负责。
+[tool.pytest.ini_options]
+norecursedirs = [".*", "venv*", "backups", ".upgrade-artifacts", "data", "logs", "build", "dist"]

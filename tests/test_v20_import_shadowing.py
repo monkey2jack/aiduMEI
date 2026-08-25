@@ -46,7 +46,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 _SKIP_PARTS = frozenset({
     "__pycache__", ".venv", "venv", "node_modules", ".git",
-    "build", "dist", ".eggs", ".pytest_cache",
+    "build", "dist", ".eggs", ".pytest_cache", "backups", ".upgrade-artifacts",
 })
 
 # 射程地板。实测射程内 207 个 .py（ducky 112 / tests 70 / scripts 9 /
@@ -141,7 +141,10 @@ def shadowing_sites(source):
 def _iter_py_files():
     return sorted(
         p for p in _REPO_ROOT.rglob("*.py")
-        if not (_SKIP_PARTS & set(p.relative_to(_REPO_ROOT).parts))
+        if not any(
+            part in _SKIP_PARTS or part.startswith("venv-") or part.startswith("backup-")
+            for part in p.relative_to(_REPO_ROOT).parts
+        )
     )
 
 
