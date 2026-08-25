@@ -2,9 +2,10 @@
 
 k3 高-2 ＝ fable5 H2，两份独立审计罕见地完全同调，都把这条评为**全报告性价比最高**：
 
-    `.github/workflows/` 只有 `docker.yml`；全 `.github/` 搜 `pytest` = 0 命中。
+    `.github/workflows/` 曾只有 `docker.yml`；全 `.github/` 搜 `pytest` = 0 命中。
     78 个测试文件不在 CI 跑 = 测试纪律靠人肉。
-    也就是说：**一个没跑过测试的提交，可以直接变成 `ghcr.io/…:latest` 镜像。**
+    现在 aiduMEI 采用 GitHub 源码/Release 分发，不再发布 GHCR；本文件同时守住
+    「有发布 job 必须先测」和「明确无发布 job 时不能悄悄长回来」两种状态。
 
 这个仓最大的资产就是测试纪律。而在这条整改之前，那份资产的全部执行力来自
 「有人记得跑一遍」。执行人状态一波动，防线整体失效。
@@ -32,6 +33,7 @@ if _REPO_ROOT not in sys.path:
 
 _ROOT = pathlib.Path(_REPO_ROOT)
 _WF_DIR = _ROOT / ".github" / "workflows"
+_POLICY_MARKER = "distribution-policy: github-source-only"
 
 #: 「这个 job 会把东西发出去」的信号。发布动作一旦落地就收不回来，
 #: 所以它们全都必须挂在测试后面。
@@ -72,6 +74,12 @@ def _needs(job: dict) -> list[str]:
     if n is None:
         return []
     return [n] if isinstance(n, str) else list(n)
+
+
+def _source_only_policy() -> bool:
+    """明确的源码分发策略才允许仓库没有发布 job。"""
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    return _POLICY_MARKER in readme
 
 
 # ═══════════════ ① 流水线本体存在，而且真的跑 pytest ═══════════════
@@ -217,10 +225,14 @@ def test_the_publish_guard_is_actually_looking_at_a_publishing_job():
         for job_id, job in (wf.get("jobs") or {}).items():
             if any(m in _job_text(job) for m in _PUBLISH_MARKERS):
                 found.append(f"{name}:{job_id}")
-    assert found, (
-        "一个发布 job 都没识别出来 —— 要么本仓真的不发布任何东西（那 docker.yml "
-        f"是干什么的？），要么 _PUBLISH_MARKERS 已经和现实脱节：{_PUBLISH_MARKERS}"
-    )
+    if not found:
+        # 源码-only 是一种有意的发布策略，不是守卫失效；README 的显式标记
+        # 防止未来有人删掉发布 job 后又误以为 CI 仍然保护着某条发布路径。
+        assert _source_only_policy(), (
+            "没有识别到发布 job，但 README 没有声明 github-source-only 策略；"
+            f"请检查 _PUBLISH_MARKERS 是否过时：{_PUBLISH_MARKERS}"
+        )
+        return
 
 
 def test_docker_publish_job_specifically_needs_the_tests():
@@ -230,7 +242,11 @@ def test_docker_publish_job_specifically_needs_the_tests():
     通用判据万一哪天被改宽，这条还在原地咬着。
     """
     wf = _workflows().get("docker.yml")
-    assert wf, "docker.yml 不见了 —— 若发布方式变了，本用例要跟着改，不许直接删"
+    if not wf:
+        assert _source_only_policy(), (
+            "docker.yml 不见了，但 README 没有声明 github-source-only 策略"
+        )
+        return
     jobs = wf.get("jobs") or {}
     push_jobs = [jid for jid, j in jobs.items()
                  if "docker/build-push-action" in _job_text(j)]
