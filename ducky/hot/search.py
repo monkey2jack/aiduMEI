@@ -274,14 +274,21 @@ def register_search_routes(app: FastAPI) -> None:
                 ws_hits = ws_lookup(uid, req.query, bank_id=bank_id)
                 if ws_hits:
                     boost_salience_for_results(ws_hits)
+                    # v20.1 整改轮（R-06 · 外审 z P2-04）：本分支的三态字段集
+                    # 必须与 hybrid 分支一致 —— 上层按「有 confidence 才信」
+                    # 决策时，缺字段的 found 会被漏判或误判。
+                    ws_strength = annotate_recall_strength(ws_hits)
                     return {
                         "status": "ok", "results": ws_hits,
                         "_workspace_hit": True,
                         "_recall_path": "workspace",
                         "_rerank": {"status": "not_invoked"},
+                        "_recall_strength": ws_strength,
+                        "_recall_legs": {"workspace": "hit"},
                         # workspace 命中 = 热缓存里真有 —— found，无歧义。
                         "recall_verdict": "found",
                         "verdict_basis": "workspace_hit",
+                        "recall_confidence": ws_strength["top_score"],
                     }
             except ImportError:
                 pass

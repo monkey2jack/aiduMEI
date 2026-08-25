@@ -92,8 +92,10 @@ def staleness_threshold_days(block_key: str) -> int:
                 raise ValueError("必须为正整数")
             return v
         except (ValueError, TypeError):
-            logger.warning("核心记忆%s陈旧阈值配置无效: %r（需正整数），忽略此档",
-                           which, raw)
+            # v20.1 整改轮（R-15 · 外审 y P2）：点名到块 —— 排错时才知道
+            # 是哪个块的哪档配置写坏了。
+            logger.warning("核心记忆%s陈旧阈值配置无效: %r（需正整数，block=%s），忽略此档",
+                           which, raw, block_key)
     return STALENESS_DAYS_BY_BLOCK.get(block_key, STALENESS_DAYS)
 
 _init_lock = threading.Lock()
@@ -819,6 +821,81 @@ def _vector_index_core_block(block_key: str, content: str,
             pass
         logger.debug("核心记忆向量索引跳过 %s: %s", block_key, exc)
         return False
+
+
+def audit_core_replicas(user_id: str = DEFAULT_USER_ID,
+                        bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """三副本对账（v20.1 整改轮 R-16 · 外审 w P1-② 机制 + y 覆盖度建议）。
+
+    以**正本**（core_memory 表）为基准，逐块核对 FTS 第二副本与向量第三
+    副本是否在场。三腿写入都是「失败不抛、只记账」的软失败设计 —— 没有
+    对账，缺腿的块从此静默检索不到而绿灯依旧。
+
+    纪律两条：
+      · **占位块必须排除**——占位文本不进索引是设计行为（backfill 同款
+        判据），把它算成缺腿会制造新的告警疲劳（外审 w 的例证正是栽在
+        这里：把 default 占位影子行当成了缺腿块）；
+      · 只观测不自愈——自动重索引留给显式回填工具（dry-run/apply 纪律），
+        巡检的职责是让缺腿可见，不是悄悄改状态。
+
+    返回 {"checked": n, "gaps": [{block, fts, vector}], "vector_checked": bool}。
+    向量腿核对需 mem0 就绪；不可用时 vector_checked=False 且不冒充齐全。
+    """
+    scope = make_scope(user_id, bank_id)
+    placeholders = {(v or "").strip() for v in DEFAULT_BLOCKS.values()}
+    # 对账按**精确归属**取行，不走读侧放宽：影子行（他域存量经放宽被
+    # 看见）的索引归属其真实 owner 域，按本域核对必然「缺」——那是假缺，
+    # 外审 w 的例证正是栽在这里。
+    _ensure_table()
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT block_key_raw, content FROM core_memory "
+            "WHERE user_id=? AND bank_id=?",
+            (scope.user_id, scope.bank_id),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    mem = None
+    vector_checked = True
+    try:
+        from ducky.mem0_runtime import get_memory
+        mem = get_memory()
+    except Exception:
+        vector_checked = False
+
+    checked = 0
+    gaps: list[dict] = []
+    for row in rows:
+        key = row["block_key_raw"]
+        body = (row["content"] or "").strip()
+        if not key or not body or body in placeholders:
+            continue
+        checked += 1
+        fts_ok = False
+        try:
+            from ducky.utils import get_text_conn
+            tconn = get_text_conn()
+            row = tconn.execute(
+                "SELECT 1 FROM memories WHERE id=? AND user_id=? AND bank_id=?",
+                (core_index_id(key), scope.user_id, scope.bank_id),
+            ).fetchone()
+            fts_ok = row is not None
+        except Exception:
+            fts_ok = False
+        vec_ok = None
+        if vector_checked and mem is not None:
+            try:
+                point = mem.vector_store.get(
+                    core_vector_point_id(key, scope.user_id, scope.bank_id))
+                vec_ok = point is not None
+            except Exception:
+                vec_ok = None
+                vector_checked = False
+        if not fts_ok or vec_ok is False:
+            gaps.append({"block": key, "fts": fts_ok, "vector": vec_ok})
+    return {"checked": checked, "gaps": gaps, "vector_checked": vector_checked}
 
 
 def backfill_core_vectors(user_id: str | None = None,

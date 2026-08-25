@@ -392,13 +392,34 @@ def ws_status(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict:
         }
 
 
-def ws_clear(user_id: str, bank_id: str = DEFAULT_BANK_ID):
-    """清空用户工作区（内存 + SQLite）"""
+def ws_clear(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> int:
+    """清空用户工作区（内存 + SQLite）。返回内存侧清掉的条数。
+
+    v20.1 整改轮（R-01）：本函数被接进 `cascade_delete_all` 删除链 ——
+    工作区存着记忆正文副本且会被 `/search` 优先命中，删除链不清它，
+    已删内容就会以 `found/workspace_hit` 复活（外审 z P1-01）。
+    """
     with _ws_lock:
         scope = make_scope(user_id, bank_id)
-        _workspace.pop(_scope_key(scope.user_id, scope.bank_id), None)
+        evicted = _workspace.pop(_scope_key(scope.user_id, scope.bank_id), None)
+        n = len(evicted) if evicted else 0
     _db_delete_user(scope.user_id, scope.bank_id)
-    logger.info(f"Workspace 清空: user={scope.user_id}, bank={scope.bank_id}")
+    logger.info(f"Workspace 清空: user={scope.user_id}, bank={scope.bank_id}, 内存条数={n}")
+    return n
+
+
+def ws_evict(user_id: str, memory_id: str, bank_id: str = DEFAULT_BANK_ID) -> bool:
+    """从工作区驱逐单条记忆（内存 + SQLite）。返回内存侧是否命中。
+
+    v20.1 整改轮（R-01）：单条删除（cascade_delete_memory）的配套 ——
+    只清全域不清单条，`/delete` 之后同一条还能从缓存里搜出来。
+    """
+    scope = make_scope(user_id, bank_id)
+    with _ws_lock:
+        ws = _workspace.get(_scope_key(scope.user_id, scope.bank_id))
+        hit = bool(ws and ws.pop(memory_id, None) is not None)
+    _db_delete(scope.user_id, memory_id, scope.bank_id)
+    return hit
 
 
 # ── 内部工具 ──

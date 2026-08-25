@@ -20,7 +20,7 @@ from .memory_ignition import (
     ignition_filter, ignition_boost_sort,
 )
 from .memory_workspace import (
-    ws_lookup, ws_push, ws_feed_from_results, ws_status, ws_clear,
+    ws_lookup, ws_push, ws_feed_from_results, ws_status, ws_clear, ws_evict,
 )
 from .memory_broadcast import (
     broadcast_chain, broadcast_expand,
@@ -47,7 +47,7 @@ __all__ = [
     # v8 — Ignition
     "ignition_filter", "ignition_boost_sort",
     # v8 — Workspace
-    "ws_lookup", "ws_push", "ws_feed_from_results", "ws_status", "ws_clear",
+    "ws_lookup", "ws_push", "ws_feed_from_results", "ws_status", "ws_clear", "ws_evict",
     # v8 — Broadcast
     "broadcast_chain", "broadcast_expand",
     # v8 — J-lens

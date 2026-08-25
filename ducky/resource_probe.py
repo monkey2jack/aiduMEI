@@ -26,9 +26,20 @@ aiduMEI 是一个**常驻**服务：它替用户记着东西，所以它必须�
 from __future__ import annotations
 
 import os
-import resource
 import sys
 import threading
+
+# v20.1 整改轮（R-12 · 社区审计）：`resource` 是 POSIX-only 标准库，
+# Windows 上不存在。此前顶层裸 import 让整套测试在 Windows 收集阶段即崩
+# （tests 顶层引本模块 → ModuleNotFoundError → 一个用例都跑不起来），
+# /health 资源指标恒 None 还带着 ImportError。docstring 里「其余平台退回
+# 标准库 resource」退回的是个不存在的模块。按本模块自己的哲学修：
+# **测不到的一律 None，绝不填 0，更不许崩** —— Windows 上 resource=None，
+# 依赖它的字段如实返回 None。
+try:
+    import resource  # POSIX-only
+except ImportError:  # pragma: no cover - Windows
+    resource = None
 
 _KB = 1024.0
 
@@ -67,6 +78,8 @@ def _max_rss_mb() -> float | None:
     这一条不是洁癖 —— 直接按 kB 算，macOS 上会把 100MB 报成 100GB，
     而那个数字看着就像一次内存泄漏，会让人去查一个不存在的故障。
     """
+    if resource is None:  # Windows：测不到 → None（R-12）
+        return None
     try:
         raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     except (OSError, ValueError):
@@ -81,6 +94,8 @@ def _max_rss_mb() -> float | None:
 def snapshot() -> dict:
     """当前进程的资源画像。字段语义见模块 docstring —— 每个 None 都是「测不到」。"""
     try:
+        if resource is None:  # Windows：测不到 → None（R-12）
+            raise OSError("resource module unavailable on this platform")
         ru = resource.getrusage(resource.RUSAGE_SELF)
         cpu = round(ru.ru_utime + ru.ru_stime, 2)
     except (OSError, ValueError):

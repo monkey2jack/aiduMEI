@@ -72,8 +72,8 @@
   `AIDUMEI_` 前缀（`AIDUMEM_*` 冻结集守卫）；`pattern_extract` /
   `core_memory_vector_index` 进特性账本许可清单；logger 处数契约 86→87；
   README 双语用例数全量同步（1151 → 1200 collected），「全轴齐备」行按其
-  自有纪律从实测退回**按轴推导**（新增用例未全轴复测，最后一次全轴实测
-  1112 全绿 · 2026-08-24）。`test.yml` 触发面守卫与 v20.0.1 噪音治理决策
+  自有纪律先退回**按轴推导**，随后 2026-08-25 生产机候选树九轴实测 1200
+  全绿、改回实测值（整改轮 +32 条后该行再次移回待实测目标，见整改条目）。`test.yml` 触发面守卫与 v20.0.1 噪音治理决策
   对齐（该守卫在本迭代前的基线上就红着 —— 断言的还是治理前的自动触发策略）：
   改为双向钉死 `{workflow_dispatch, workflow_call}`，自动触发复活即红。
 - **测试**：新增 4 个点名测试文件共 88 条用例（`test_v20_1_pattern_extract`
@@ -82,6 +82,52 @@
   `test_v20_core_memory_staleness` 边界用例随分级契约更新（边界值从生效
   函数取，不再假设 30）。语义近义召回的端到端验收属生产实机阶段
   （需真嵌入服务），本机只测写入契约，不冒充测了召回。
+- **外审收口整改轮（R-01~R-17）**：五份外审报告（四位受邀评审 + 一位社区
+  审计）逐条核验后形成《v20.1-pre 外审结论与收口计划（Rev.2）》，本条为其
+  代码面落地。
+  **R-01 删除链收口（外审共识最重）**：`ducky/wal_engine.py` 的
+  `cascade_delete_all` 补清五本漏网账本 —— workspace 热缓存（已删内容曾以
+  `found/workspace_hit` 复活）、core_memory 正本（删除后仍被上下文注入）、
+  refined_memories 精炼产物、tombstones 全文快照、candidate_facts 治理候选；
+  `cascade_delete_memory` 配套单条驱逐（`ducky/pipeline/memory_workspace.py`
+  新增 `ws_evict`，facade 同步导出）。根治方法论洞：新增 `DELETE_CHAIN_MATRIX`
+  覆盖矩阵 —— facts.db 每张实建表必须持显式 clean/exempt 裁决，元守卫枚举
+  sqlite_master 逐表对账，漏一张账本**结构性变红**（矩阵首跑即抓住
+  knowledge_evolution 漏网，方法先于我发现问题）。
+  **WP-A 护栏加固（R-04/R-05）**：`ducky/pattern_extract.py` 连词护栏从句首
+  白名单改为键内整词拦截（「X但是Y是Z」形零误抽）、复合单位「个小时/个星期」
+  整体成键不再截成「N个」、URL span 遮蔽行首链接的冒号 kv 误判 —— 评审对抗
+  样本三连全数钉死；`extract_and_store` 截断改按 kind 重要性稳定排序
+  （instruction/preference 最先保命），被丢分布出声计数。
+  **WP-B/C 诚实化（R-02/R-03/R-06/R-07/R-13）**：`ducky/refine_memory.py`
+  extractive 档长度回退按**完整要点**丢弃并入「另 N 条要点略」计数（此前
+  480 字符硬切会拦腰斩断且不出声）、LLM 档降级由 DEBUG 升 WARNING（与
+  extractive 档对称）、`consolidation_basis` 列进 CREATE TABLE（新库不再依赖
+  ALTER 兜底）；`ducky/hot/search.py` workspace 命中分支补齐三态全字段
+  （`_recall_strength`/`_recall_legs`/`recall_confidence`，此前该分支缺字段
+  致上层「有 confidence 才信」逻辑失效）；`ducky/hot/health.py` facts 库故障
+  时水位探针显式 `unknown` 而非整体缺席（读取方 KeyError），召回阈值 0.0 时
+  挂校准提示（配置后即撤，不做常驻噪音）。
+  **R-16 三副本对账**：`ducky/core_memory.py` 新增 `audit_core_replicas` ——
+  以正本为基准逐块核对 FTS 与向量两副本在场性，精确作用域（不放宽可见性，
+  免疫「把占位遮蔽当缺陷」的误判），结果进 `/health`（`core_replica_*` 探针
+  + 缺腿提示）。三腿写入都是软失败设计，没有对账，缺腿块将永久静默检索不到。
+  **R-17 测试隔离守卫**：`ducky/mem0_runtime.py` 在测试沙箱 DATA_DIR 内拒绝
+  连接沙箱外的本地向量库（评审实测曾发现测试进程可写到生产库路径）。
+  **R-12 跨平台（社区审计）**：`ducky/resource_probe.py` 顶层裸
+  `import resource` 改守卫式 try-import，非 POSIX 平台 CPU/RSS 诚实置 None
+  不崩收集；`tests/test_v20_mem0_patch_layer.py` 缺 mem0 基座由 20 条 ERROR
+  改为 `importorskip` 诚实跳过 —— 登记为第十条跳过轴（普查守卫、探测器、
+  双 README 轴表三处同步），README 增「平台前提」行。
+  **R-09**：`.env.example` 补齐 v20.1 全部新开关（含分块陈旧阈值五连）。
+  **测试**：新增 2 个点名文件共 32 条用例 ——
+  `tests/test_v20_1_delete_chain_closure.py` 8 条（覆盖矩阵元守卫 / 删后
+  不复活探针（先证命中再证清空，区分力成立才算数）/ 删除×回填组合拳
+  （单点各自全对、组合即病）/ 跨租户负向）；
+  `tests/test_v20_1_audit_remediation.py` 24 条（R-02~R-17 逐条点名 + R-11
+  写入→召回契约三连：fake-embedder 真余弦真过滤走真端点真引擎，两个变异
+  探针（掐过滤器 / 掐写入腿）双向证明区分力）。用例总数 1200 → 1232，
+  README 双语数字与轴表全量同步。
 
 ## v20.0.1 — 私有预发布：基座兼容与删除链收口（2026-08-25）
 

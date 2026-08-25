@@ -28,6 +28,19 @@ v20.1.0 (私有验证线 20.1.0-dev.N · 确定性兜底与诚实召回 · 2026-
        双语用例数同步 1200；test.yml 触发面守卫对齐噪音治理决策。
     6. 测试：新增 4 个点名文件共 88 条用例（全含负向对照）；
        test_v20_core_memory_staleness 边界用例随分级契约更新。
+    7. 外审收口整改轮 R-01~R-17：ducky/wal_engine.py 删除链补清 workspace /
+       core_memory / refined_memories / tombstones / candidate_facts 五本账，
+       DELETE_CHAIN_MATRIX 覆盖矩阵元守卫让漏账本结构性变红；
+       ducky/pipeline/memory_workspace.py 新增 ws_evict 单条驱逐；
+       ducky/pattern_extract.py 对抗样本护栏（键内整词连词/复合单位/URL 遮蔽）
+       与按重要性截断；ducky/refine_memory.py 整点丢弃出声 + LLM 降级 WARNING；
+       ducky/hot/search.py workspace 命中分支三态字段补齐；ducky/hot/health.py
+       探针故障显式 unknown + 阈值校准提示 + 三副本对账入口
+       （ducky/core_memory.py audit_core_replicas）；ducky/mem0_runtime.py
+       沙箱内拒连沙箱外向量库；ducky/resource_probe.py 跨平台守卫式导入；
+       tests/test_v20_mem0_patch_layer.py 缺 mem0 改跳过（第十条跳过轴）；
+       新增 32 条点名用例（tests/test_v20_1_delete_chain_closure.py +
+       tests/test_v20_1_audit_remediation.py），用例总数 1232。
 
 v20.0.1 (私有预发布 · mem0ai 2.0.19 兼容与删除链收口 · 2026-08-25)
     这是 v20.0 的私有补丁迭代，不代表公开 Tag/Release/PyPI 已更新。

@@ -3,7 +3,10 @@
 职责：
 1. 写操作前置 fsync 追加 WAL 日志，防进程崩溃产生孤儿数据；
 2. 服务启动自愈对账 (Reconcile)，检测并恢复未完成写入或清理孤儿；
-3. 多仓原子删除协调器 (Qdrant + SQLite facts/salience/evolve/workspace + FTS5)。
+3. 多仓原子删除协调器（清理面以 DELETE_CHAIN_MATRIX 为唯一真相源 ——
+   v20.1 整改轮之前这行 docstring 宣称清 workspace 而代码从未清过，
+   文档与代码的缝隙就是外审 z P1-01 的案发现场；矩阵 + 元测试让这类
+   缝隙从此结构性不可能：新账本出现而矩阵未裁决 → 测试红）。
 """
 from __future__ import annotations
 
@@ -497,12 +500,60 @@ def cascade_delete_memory(
         except Exception as ve:
             logger.debug("原文层清理跳过: %s", ve)
 
+        # 7. Workspace 单条驱逐（v20.1 整改轮 R-01 · 外审 z P1-01）。
+        #    只清全域不清单条的话，/delete 之后同一条还能从缓存里搜出来。
+        try:
+            from ducky.memory_workspace import ws_evict
+            res["workspace_evicted"] = bool(ws_evict(user_id, memory_id, bank_id=bank_id))
+        except Exception as we:
+            logger.warning("workspace 单条驱逐失败: %s", we)
+
         wal.mark_status(wal_id, "committed")
         return {"status": "ok", "details": res}
     except Exception as exc:
         wal.mark_status(wal_id, "failed", error=str(exc))
         logger.error("级联删除记忆失败: %s", exc)
         raise
+
+
+# ── 删除链覆盖矩阵（v20.1 整改轮 R-01，外审 z 的方法论）────────────────
+# 每一张会存租户内容的账本，必须在这里有一条**显式裁决**：
+#   ("clean", …)  —— cascade_delete_all 按作用域清理；
+#   ("exempt", …) —— 明确豁免并写明理由，绝不沉默。
+# 配套元测试（tests/test_v20_1_delete_chain_closure.py）会实建全部 schema
+# 后枚举 facts.db 的 sqlite_master，任何新表未在矩阵裁决即红 ——
+# 「漏一张账本不会红」正是本轮外审揪出两张漏网表（workspace/core_memory）
+# 的方法论根因。外部存储（向量库/FTS 库/工作区库等）按存储名列于下半段。
+DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
+    # ── facts.db 内的表 ──
+    "facts":            ("clean",  "作用域谓词删除（§3）"),
+    "memory_types":     ("clean",  "fact 引用 + 可见租户契约双路删除（§3/§3b）"),
+    "core_memory":      ("clean",  "可见租户契约删除（§8，v20.1 整改轮补齐；此前正本残留且被 inject_context 持续注入 —— 外审 w P0 / 自报 4.1）"),
+    "refined_memories": ("clean",  "user 轴删除（§9，v20.1 整改轮补齐）。该表无 bank 列（v20 已登记限制 9c）：清任一 bank 会清掉该租户全部整合账本，宁可域内多删不留隐私残留，已文档化"),
+    "checkpoints":      ("exempt", "会话轴（session_id）单租户遗产子系统，无租户列，读写 API 均无租户轴；随 MAX_SESSIONS=5 自然滚动 + /api/checkpoint/cleanup 管理端清理口。多租户化另立项（外审 w P0 的第三张表 —— 豁免是显式裁决，不是沉默）"),
+    "memory_banks":     ("exempt", "bank 注册表：行是「域存在过」的元数据不含记忆内容；删除域数据不注销域名，避免删除后同名域立刻复用造成审计断代"),
+    "entities":         ("exempt", "实体规范化词典（跨租户共享的无内容索引结构）"),
+    "fact_entities":    ("clean",  "随 facts 行经外键/引用清理（facts 删除后无悬挂引用即视为达成）"),
+    "fact_events":      ("exempt", "事件账本=审计履历：删除动作本身必须留痕，清账本等于销毁审计线索"),
+    "memory_states":    ("exempt", "生命周期状态账本（同上，审计履历）"),
+    "memory_events":    ("exempt", "B5 事件账本（哈希+动作+归因，无记忆正文）：审计履历，删除动作本身必须留痕"),
+    "knowledge_evolution": ("exempt", "知识演化关系账本（source_id/target_id/relation，无记忆正文）：id 级引用随对应记忆删除自然失效；本表首个裁决由矩阵元守卫逼出 —— 守卫上岗第一天就抓到一张没人数过的表"),
+    "tombstones":       ("clean",  "墓碑带 content_snapshot 全文快照（§10，v20.1 整改轮补齐）——留着它，delete_all 的擦除承诺就是空话；代价是全量清空后不可再 restore，这正是「清空一切」的语义"),
+    "candidate_facts":  ("clean",  "治理候选队列含被拒/待审全文（§11，v20.1 整改轮补齐），按 scope_user_id/bank_id 精确清理"),
+    "refine_wal":       ("exempt", "refine 操作 WAL（若存在）：操作流水，随 WAL 引擎自身生命周期管理"),
+    "wal_entries":      ("exempt", "WAL 引擎自身账本：删除操作的执行凭证，清掉等于销毁「删过」的证据"),
+    # ── facts.db 之外的存储 ──
+    "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
+    "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),
+    "store:salience":   ("clean",  "按本租户已删 memory_id 集合清理（§4，表无租户列）"),
+    "store:evolve":     ("clean",  "按本租户已删 memory_id 集合清理（§5，检索质量信号）"),
+    "store:verbatim":   ("clean",  "cascade_delete_verbatim（§6）"),
+    "store:workspace":  ("clean",  "ws_clear 内存+SQLite 双清（§7，v20.1 整改轮补齐 —— 外审 z P1-01：此前已删内容以 found/workspace_hit 复活）"),
+    # ── 显式申报的已知残留（申报不是沉默；沉默才是本矩阵要消灭的东西）──
+    "store:observations": ("exempt", "观察库含租户内容但无作用域删除接口 —— 已知残留，挂后续整改 R-18；此处先行曝光"),
+    "store:scenes":       ("exempt", "场景库同上（R-18）"),
+    "store:persona":      ("exempt", "人格记忆库同上（R-18）；persona_banks/persona_memories 需各自模块的作用域删除+负向对照后再纳入"),
+}
 
 
 def cascade_delete_all(
@@ -724,6 +775,93 @@ def cascade_delete_all(
             res["verbatim_deleted"] = cascade_delete_verbatim(user_id, bank_id=bank_id)
         except Exception as e:
             logger.debug("verbatim delete_all 跳过: %s", e)
+
+        # 7. Workspace 工作区缓存（v20.1 整改轮 R-01 · 外审 z P1-01）。
+        #    工作区存记忆正文副本且被 /search **优先**命中 —— 不清它，
+        #    已删内容会带着 found/workspace_hit 判语复活，重启后照样在
+        #    （SQLite 落盘 + 启动重载）。内存与库由 ws_clear 一并清。
+        try:
+            from ducky.memory_workspace import ws_clear
+            res["workspace_cleared"] = int(ws_clear(scope.user_id, bank_id=scope.bank_id) or 0)
+        except Exception as e:
+            logger.warning("workspace delete_all 清理失败: %s", e)
+
+        # 8. CoreMemory 正本（v20.1 整改轮 R-01 · 外审 w P0 / 自报 4.1）。
+        #    此前三副本里只有索引（FTS/向量）在删除链射程内，正本表残留，
+        #    inject_context 从正本直读 ——「清空全部记忆」后画像仍持续进
+        #    每一次对话上下文。谓词用与 memory_types §3b 相同的可见租户
+        #    契约：改名默认身份连它搁浅在 'default' 上的存量行一并清掉，
+        #    否则读侧放宽会让残留行继续被注入（w 的注入复活链①）。
+        try:
+            from ducky.bank_contract import visible_user_clause as _vuc
+            cconn = get_facts_conn()
+            try:
+                owner_sql, owner_params = _vuc(scope.user_id)
+                cur = cconn.execute(
+                    "DELETE FROM core_memory WHERE " + owner_sql + " AND bank_id=?",
+                    (*owner_params, scope.bank_id),
+                )
+                cconn.commit()
+                res["core_memory_deleted"] = int(cur.rowcount or 0)
+            finally:
+                cconn.close()
+        except Exception as e:
+            logger.warning("core_memory delete_all 清理失败: %s", e)
+
+        # 9. refined_memories 整合账本（v20.1 整改轮 R-01 · 外审 w P0）。
+        #    表无 bank 列（v20 登记限制 9c），按 user 轴清理：清任一 bank
+        #    会清掉该租户全部整合账本 —— 宁可域内多删不留隐私残留，
+        #    该取舍已写入 DELETE_CHAIN_MATRIX 与文档。facts 表里的
+        #    refined:N 摘要行由 §3 的 facts 作用域删除覆盖。
+        try:
+            from ducky.bank_contract import visible_user_clause as _vuc
+            rconn = get_facts_conn()
+            try:
+                owner_sql, owner_params = _vuc(scope.user_id)
+                cur = rconn.execute(
+                    "DELETE FROM refined_memories WHERE " + owner_sql,
+                    owner_params,
+                )
+                rconn.commit()
+                res["refined_deleted"] = int(cur.rowcount or 0)
+            finally:
+                rconn.close()
+        except Exception as e:
+            logger.warning("refined_memories delete_all 清理失败: %s", e)
+
+        # 10. 墓碑（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。墓碑行带
+        #     content_snapshot **全文快照** —— 不清它，被删内容以「可恢复
+        #     备份」的名义永久留存，擦除承诺落空。代价说在明面上：全量
+        #     清空后该域不可再 tombstone/restore，这正是「清空一切」的语义。
+        try:
+            tbconn = get_facts_conn()
+            try:
+                cur = tbconn.execute(
+                    "DELETE FROM tombstones WHERE user_id=? AND bank_id=?",
+                    (scope.user_id, scope.bank_id),
+                )
+                tbconn.commit()
+                res["tombstones_deleted"] = int(cur.rowcount or 0)
+            finally:
+                tbconn.close()
+        except Exception as e:
+            logger.warning("tombstones delete_all 清理失败: %s", e)
+
+        # 11. 治理候选队列（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。候选行含
+        #     被拒/待审的**全文**，按 v20 治理域戳精确清理。
+        try:
+            gconn = get_facts_conn()
+            try:
+                cur = gconn.execute(
+                    "DELETE FROM candidate_facts WHERE scope_user_id=? AND bank_id=?",
+                    (scope.user_id, scope.bank_id),
+                )
+                gconn.commit()
+                res["governance_candidates_deleted"] = int(cur.rowcount or 0)
+            finally:
+                gconn.close()
+        except Exception as e:
+            logger.warning("candidate_facts delete_all 清理失败: %s", e)
 
         wal.mark_status(wal_id, "committed")
         logger.info("🧹 多仓原子级联清空完成 user=%s: %s", user_id, res)

@@ -58,7 +58,7 @@ _SKIP_MECHANISM = re.compile(
     r"unittest\.skipIf|@skipIf|skipif\("
 )
 
-# ── 八条轴的登记表 ────────────────────────────────────────────────────────
+# ── 跳过轴登记表（v20.1 整改轮扩到十条：mem0 基座轴随补丁层 importorskip 进场） ────────────────────────────────────────────────────────
 # scope="file"     整份文件被跳过（模块级 pytestmark / 类级 skipIf）
 # scope="callsite" 只跳所在的那个测试函数
 # doc_zh / doc_en  README 里那张轴表的行首标签，用来把文档数字钉到实测值上
@@ -131,6 +131,17 @@ _AXES = (
         "match": r'importorskip\("nltk"',   # 单行形态：匹配是按**原始行**做的
         "doc_zh": "`nltk` 已安装",
         "doc_en": "`nltk` installed",
+    },
+    {
+        # v20.1 整改轮（R-12 附带）：补丁层疗法测试要真实 mem0 基座在场 ——
+        # 此前缺 mem0 是 20 条 ERROR（看着和真缺陷一模一样），现在是跳过。
+        # 开发机与生产沙箱都装了 mem0，所以这条轴平时隐形；它真正门控的是
+        # 「只装 aidumei 不装 mem0ai」的下游消费环境。
+        "key": "mem0_base",
+        "file": "test_v20_mem0_patch_layer.py",
+        "scope": "file",
+        "doc_zh": "`mem0ai` 已安装",
+        "doc_en": "`mem0ai` installed",
     },
     {
         "key": "git_binary",
@@ -431,7 +442,8 @@ def test_every_registered_skip_axis_has_a_probe():
     for mod, key in (("qdrant_client", "qdrant_client"),
                      ("regex", "bench_dep_regex"),
                      ("numpy", "bench_dep_numpy"),
-                     ("nltk", "bench_dep_nltk")):
+                     ("nltk", "bench_dep_nltk"),
+                     ("mem0", "mem0_base")):
         try:
             __import__(mod)
         except ImportError:
@@ -446,7 +458,7 @@ def test_every_registered_skip_axis_has_a_probe():
 
     probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
               "bench_dep_regex", "bench_dep_numpy", "bench_dep_nltk",
-              "locomo_dataset", "git_binary"}
+              "locomo_dataset", "git_binary", "mem0_base"}
     unprobed = {axis["key"] for axis in _AXES} - probed
     assert not unprobed, (
         f"这些轴没有探测器：{sorted(unprobed)} —— 少一个探测器，"
