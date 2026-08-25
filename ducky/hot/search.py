@@ -193,6 +193,61 @@ def annotate_recall_strength(results: list, floor: float | None = None) -> dict:
     }
 
 
+# ── 召回弃答信号（v20.1 WP-C）─────────────────────────────────────────
+# 「5 条 0.66」和「5 条 0.12」在响应里长得一样是 v20 修过的（_recall_strength），
+# 但「空结果」仍然是一个词说两件事：库里确实没有 vs 嵌入服务挂了召回空转。
+# recall_verdict 把它拆成三态，且**故障先于缺失** —— 组件坏了绝不冒充「查无此忆」。
+_VERDICT_THRESHOLD_ENV = "AIDUMEI_RECALL_VERDICT_THRESHOLD"
+
+
+def _verdict_threshold() -> float:
+    """not_found 的置信下限；未设置或非法一律 0.0（= 只有空结果才判 not_found）。
+
+    默认 0.0 不是偷懒，是纪律：本机没有足够查询分布去定一个生产阈值，
+    拍脑袋常数会把真记忆判成「没有」。校准值属于部署配置决策，用生产侧
+    沙箱的真实查询分布算分位数后再设。值非法时打 warning 不静默（铁律 13：
+    「设了一个打错的阈值」和「没设」行为一样、意图完全不同）。
+    """
+    raw = (os.environ.get(_VERDICT_THRESHOLD_ENV) or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        v = float(raw)
+    except ValueError:
+        logger.warning("%s=%r 不是数字，本次按 0.0 处理（只有空结果才判 not_found）",
+                       _VERDICT_THRESHOLD_ENV, raw[:20])
+        return 0.0
+    if not (0.0 <= v <= 1.0):
+        logger.warning("%s=%s 超出 [0,1]，本次按 0.0 处理", _VERDICT_THRESHOLD_ENV, v)
+        return 0.0
+    return v
+
+
+def compute_recall_verdict(
+    results: list,
+    top_score: float | None,
+    threshold: float,
+    *,
+    vector_leg_failed: bool = False,
+    recall_path: str = "hybrid",
+) -> tuple[str, str]:
+    """三态判定：(verdict, basis)。判定顺序就是契约 —— degraded 先于 not_found。
+
+    · degraded  —— 空结果由故障产生（向量腿断 / 混合召回整体降级后仍空）。
+                   这时「没有」是不可知，不是不存在。
+    · not_found —— 真空结果，或最高分低于显式配置的置信下限
+                   （结果照常返回，verdict 只是随行判语，不越权丢数据）。
+    · found     —— 有结果且过线。
+    """
+    if not results:
+        if vector_leg_failed or recall_path == "mem0_degraded":
+            return "degraded", "empty_after_leg_failure"
+        return "not_found", "empty_results"
+    if threshold > 0.0 and (top_score is None or top_score < threshold):
+        return "not_found", "below_threshold"
+    return "found", "scored"
+
+
 def register_search_routes(app: FastAPI) -> None:
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
@@ -203,6 +258,10 @@ def register_search_routes(app: FastAPI) -> None:
             # 会被误读成本次的重排序结局。
             from ducky.mem0_runtime import last_rerank_telemetry, reset_rerank_telemetry
             reset_rerank_telemetry()
+            # v20.1 WP-C：召回腿遥测与 rerank 同规矩——每请求重置，
+            # 线程复用时上一请求的腿断残留不许被读成本次的。
+            from ducky.engine import last_recall_telemetry, reset_recall_telemetry
+            reset_recall_telemetry()
             recall_path = "hybrid"
             mem = get_memory()
             scope = make_scope(req.user_id, req.bank_id)
@@ -220,6 +279,9 @@ def register_search_routes(app: FastAPI) -> None:
                         "_workspace_hit": True,
                         "_recall_path": "workspace",
                         "_rerank": {"status": "not_invoked"},
+                        # workspace 命中 = 热缓存里真有 —— found，无歧义。
+                        "recall_verdict": "found",
+                        "verdict_basis": "workspace_hit",
                     }
             except ImportError:
                 pass
@@ -275,11 +337,28 @@ def register_search_routes(app: FastAPI) -> None:
             if strength["dropped"]:
                 logger.info("召回下限过滤掉 %d 条（floor=%s, top=%s）",
                             strength["dropped"], strength["floor"], strength["top_score"])
+            # v20.1 WP-C：三态判语随响应下发。上层 Agent 据此决定「引用记忆 /
+            # 承认没有 / 报告记忆系统故障」—— 三种回应，不该由一个空列表通吃。
+            recall_telem = last_recall_telemetry()
+            verdict, verdict_basis = compute_recall_verdict(
+                results,
+                strength["top_score"],
+                _verdict_threshold(),
+                vector_leg_failed=(recall_telem.get("vector_leg") == "failed"),
+                recall_path=recall_path,
+            )
+            if verdict == "degraded":
+                logger.warning("召回判语 degraded：%s（vector_leg=%s）",
+                               verdict_basis, recall_telem.get("error", "-"))
             return {
                 "status": "ok", "results": results,
                 "_recall_path": recall_path,
                 "_rerank": rerank_telem,
                 "_recall_strength": strength,
+                "_recall_legs": recall_telem,
+                "recall_verdict": verdict,
+                "verdict_basis": verdict_basis,
+                "recall_confidence": strength["top_score"],
             }
         except Exception as e:
             logger.error(f"search 失败: {e}")

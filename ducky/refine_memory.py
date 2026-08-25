@@ -76,6 +76,17 @@ def ensure_refine_schema() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_refined_user ON refined_memories(user_id)"
         )
+        # v20.1 WP-B（additive migration，只加列不改行）：整合产物记账它的
+        # 生成通路 —— llm / extractive / rule。没有这一列，「LLM 关着时整合
+        # 到底在产出什么」这个问题只能靠猜；有了它，/health 和审计都能按
+        # basis 分桶看质量。老库上列不存在才加，默认空串 = 老行「不可知」，
+        # 不冒充任何一档。
+        cols = table_columns(conn, "refined_memories")
+        if "consolidation_basis" not in cols:
+            conn.execute(
+                "ALTER TABLE refined_memories "
+                "ADD COLUMN consolidation_basis TEXT DEFAULT ''"
+            )
         conn.commit()
         _checked = True
     except Exception as e:
@@ -137,7 +148,7 @@ def _parse_refine_json(raw: str) -> Optional[dict]:
 
 
 def _rule_summary(items: list[dict]) -> str:
-    """无 LLM 时的规则降级：拼接 fact_key + 去重。"""
+    """最后兜底的规则降级：拼接 fact_key + 去重（只有目录，没有内容）。"""
     keys = []
     for it in items:
         k = str(it.get("fact_key") or "").strip()
@@ -145,6 +156,74 @@ def _rule_summary(items: list[dict]) -> str:
             keys.append(k)
     prefix = str(items[0].get("category") or "memory")
     return f"{prefix} 相关的 {len(items)} 条记忆，涉及：{'、'.join(keys[:8])}"
+
+
+#: 提取式整合的边界：要点条数 / 单要点长度 / 正文总长。
+_EXTRACTIVE_MAX_POINTS = 12
+_EXTRACTIVE_POINT_LEN = 80
+_EXTRACTIVE_TOTAL_LEN = 480
+
+#: 「硬实体」的判定 —— 带数字的要点（版本号/日期/数量/端口…）信息密度最高，
+#: 截断时最后被舍弃。
+_HARD_TOKEN_RE = None  # 延迟编译，见 _extractive_summary
+
+
+def _extractive_summary(items: list[dict]) -> str:
+    """无 LLM 的提取式整合（v20.1 WP-B）。确定性：同输入永远同输出。
+
+    与 `_rule_summary` 的差别是本质的：rule 只留 fact_key（一句目录，
+    「涉及：A、B、C」——生产 LLM 关闭时 20 条记忆就换来这一句）；
+    这里 key 和 value 都留（要点清单），去重靠值的包含关系（短值被长值
+    吸收），截断显式标注 ——「另 N 条要点略」必须写出来，沉默截断会把
+    「合并了一部分」伪装成「全合并了」。
+
+    产出为空（所有候选值都是空串）时返回 ""，由调用方降级到 rule 档。
+    """
+    import re
+    global _HARD_TOKEN_RE
+    if _HARD_TOKEN_RE is None:
+        _HARD_TOKEN_RE = re.compile(r"\d")
+
+    # 1) 规范化 + 值包含去重：v 完整包含 pv 时替换（保长），反向则吸收。
+    points: list[tuple[str, str]] = []
+    for it in items:
+        k = str(it.get("fact_key") or "").strip()
+        v = str(it.get("fact_value") or "").strip()
+        if not v:
+            continue
+        v = v[:_EXTRACTIVE_POINT_LEN]
+        absorbed = False
+        for i, (pk, pv) in enumerate(points):
+            if v in pv:
+                absorbed = True
+                break
+            if pv in v:
+                points[i] = (k or pk, v)
+                absorbed = True
+                break
+        if not absorbed:
+            points.append((k, v))
+
+    if not points:
+        return ""
+
+    # 2) 稳定排序：带数字的硬实体要点排前（截断时最后被丢），
+    #    组内保持源顺序（_load_candidates 的 updated_at DESC）—— sort 稳定，
+    #    整个函数不看钟、不掷骰子，两遍运行逐字节一致。
+    points.sort(key=lambda p: 0 if (_HARD_TOKEN_RE.search(p[1]) or
+                                    _HARD_TOKEN_RE.search(p[0])) else 1)
+    dropped = max(0, len(points) - _EXTRACTIVE_MAX_POINTS)
+    points = points[:_EXTRACTIVE_MAX_POINTS]
+
+    body = "；".join(
+        f"{k}：{v}" if k and not v.startswith(k) else v for k, v in points
+    )
+    if len(body) > _EXTRACTIVE_TOTAL_LEN:
+        body = body[:_EXTRACTIVE_TOTAL_LEN] + "…"
+
+    category = str(items[0].get("category") or "memory")
+    tail = f"（另 {dropped} 条要点略）" if dropped else ""
+    return f"{category}要点（{len(items)} 条合并）：{body}{tail}"
 
 
 def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool = True) -> dict:
@@ -163,8 +242,13 @@ def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool 
             "category": category,
         }
 
+    # v20.1 WP-B：三档降级链 llm → extractive → rule。
+    # 生产实况是 REFINE LLM 长期关闭 —— 此前直接掉到 rule 档，20 条记忆
+    # 换一句「涉及：A、B、C」的目录。现在中间垫一档提取式：无 LLM 也能
+    # 产出保留具名实体与数字的要点清单。每档产物记账 basis，可分桶审计。
     summary: Optional[str] = None
     llm_used = False
+    basis = "rule"
 
     if use_llm and REFINE_ENABLED:
         try:
@@ -184,11 +268,23 @@ def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool 
             if parsed and str(parsed.get("summary") or "").strip():
                 summary = str(parsed["summary"]).strip()
                 llm_used = True
+                basis = "llm"
         except Exception as e:
-            logger.debug(f"LLM 精炼失败（降级规则）: {e}")
+            logger.debug(f"LLM 精炼失败（降级提取式）: {e}")
+
+    if summary is None:
+        try:
+            extracted = _extractive_summary(candidates)
+            if extracted:
+                summary = extracted
+                basis = "extractive"
+        except Exception as e:
+            # warning 不是 debug：这是真实降级 ——「谁会知道」的答案是这行日志。
+            logger.warning(f"提取式整合失败（降级 rule）: {e}")
 
     if summary is None:
         summary = _rule_summary(candidates)
+        basis = "rule"
 
     source_ids = [it["id"] for it in candidates]
     confidence = 0.5
@@ -206,9 +302,9 @@ def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool 
                 "category": category,
             }
         conn.execute(
-            "INSERT INTO refined_memories (user_id, category, source_ids, summary, reason, confidence, state) "
-            "VALUES (?,?,?,?,?,?, 'proposed')",
-            (user_id, category, json.dumps(source_ids), summary, f"recursive-refine:{sig[:8]}", confidence),
+            "INSERT INTO refined_memories (user_id, category, source_ids, summary, reason, confidence, state, consolidation_basis) "
+            "VALUES (?,?,?,?,?,?, 'proposed', ?)",
+            (user_id, category, json.dumps(source_ids), summary, f"recursive-refine:{sig[:8]}", confidence, basis),
         )
         conn.commit()
         refine_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
@@ -218,13 +314,14 @@ def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool 
     finally:
         conn.close()
 
-    logger.info("🧼 refine_memory: %s 类 %d 条 → refine_id=%d（llm=%s）", category, len(source_ids), refine_id, llm_used)
+    logger.info("🧼 refine_memory: %s 类 %d 条 → refine_id=%d（basis=%s）", category, len(source_ids), refine_id, basis)
     return {
         "status": "ok",
         "refine_id": refine_id,
         "summary": summary,
         "source_ids": source_ids,
         "llm_used": llm_used,
+        "consolidation_basis": basis,
         "state": "proposed",
     }
 
