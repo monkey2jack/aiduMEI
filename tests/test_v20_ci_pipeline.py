@@ -127,20 +127,32 @@ def test_a_workflow_actually_runs_the_test_suite():
 
 
 def test_test_workflow_is_reusable_and_triggers_on_push_and_pr():
-    """★ 三个触发面都要在：push、PR、以及 `workflow_call`（供发布流水线复用）。
+    """★ 触发面必须与**当前交付策略**逐字对齐：只留手动 + 可复用两个面。
 
-    `workflow_call` 不是可选项：`needs:` 只在同一个工作流内生效，两个各自独立的
-    工作流「碰巧都绿」不构成任何保证。发布必须**依赖**测试，而依赖只能靠复用建立。
+    v20.0.1-pre 噪音治理（2026-08-25，SOP 铁律 16）：对外分发面收缩后，
+    test.yml 经维护者授权改为「不随 main 推送自动运行」—— 只保留
+    `workflow_dispatch`（手动）与 `workflow_call`（供发布流水线复用）。
+    本守卫原先断言 push/pull_request 必须在，与已定策略相反，
+    改成双向钉死：该在的少一个红，不该在的多一个也红 ——
+    有人悄悄把自动触发加回来，失败邮件就会重新开始骚扰维护者。
+
+    `workflow_call` 仍不是可选项：`needs:` 只在同一个工作流内生效，
+    发布必须**依赖**测试，而依赖只能靠复用建立。
+
+    用例名保持原样不改：外部审计报告按这个名字引用过它，改名会让
+    历史引用变成死链；策略变更的事实记录在本 docstring 与 CHANGELOG。
     """
     wf = _workflows().get("test.yml")
     assert wf, f"缺少 .github/workflows/test.yml，现有：{sorted(_workflows())}"
     on = wf.get("on") or wf.get(True)  # YAML 会把裸 on 解析成布尔 True
-    assert isinstance(on, dict), f"test.yml 的 on: 段形状不对：{on!r}"
-    for trigger in ("push", "pull_request", "workflow_call"):
-        assert trigger in on, (
-            f"test.yml 的 on: 里没有 {trigger} —— 现有 {sorted(on)}。"
-            "缺 push/pull_request 则改动不被拦；缺 workflow_call 则发布流水线无法依赖它"
-        )
+    assert isinstance(on, (dict, list)), f"test.yml 的 on: 段形状不对：{on!r}"
+    triggers = set(on) if isinstance(on, dict) else set(on)
+    assert triggers == {"workflow_dispatch", "workflow_call"}, (
+        f"test.yml 触发面与噪音治理策略不符：现有 {sorted(triggers)}，"
+        "应恰为 {workflow_dispatch, workflow_call}。"
+        "多出 push/pull_request = 自动触发复活（Actions 邮件噪音回归）；"
+        "缺 workflow_call = 发布流水线无法依赖测试；缺 workflow_dispatch = 手动跑不了"
+    )
 
 
 def test_ci_pins_the_host_discovery_axis_so_skips_are_reproducible():

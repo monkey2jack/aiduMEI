@@ -8,6 +8,7 @@ v11.1 Opus 升级：30天验证失效机制，超期 block 注入时标注 [⚠�
 """
 import json
 import logging
+import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -50,7 +51,50 @@ DEFAULT_BLOCKS = {
 }
 
 # 验证失效天数：超过此天数未更新的 block 注入时标注为需验证
-STALENESS_DAYS = 30
+STALENESS_DAYS = 30  # 全局兜底（未知块 / 未分级配置），与 v20.0 逐字节一致
+
+# v20.1 WP-D2：陈旧阈值按块分级。三块共用一个 30 天常数是 v20.0.1 登记的
+# 告警疲劳源：用户画像和关键决策本来就是低频稳定信息，每 30 天例行告警一次，
+# 告警很快就没人看了 —— 而真正易过期的「当前项目」（审计实锤：写着三个版本
+# 以前的状态）淹没在同一种叫声里。
+#
+# 分级默认值的依据是联邦分层的既有 TTL 语义（ARCHITECTURE.md 分层生命周期：
+# semantic 180 天 / episodic 30 天）：画像与决策 ≈ semantic 档，当前项目 ≈
+# episodic 档。**分级是给依据，不是调大消音**：最易过期的 current_project
+# 保持 30 天，一分没放松。
+STALENESS_DAYS_BY_BLOCK = {
+    "core_user_profile": 180,      # 稳定身份信息 ≈ semantic 档
+    "core_current_project": 30,    # 高频易变 ≈ episodic 档，保持原阈值
+    "core_key_decisions": 180,     # 决策沉淀 ≈ semantic 档
+}
+
+#: 部署侧覆盖：每块 > 全局 > 分级默认 > 全局兜底。生效值经
+#: staleness_status() / /health 可查 —— 配置写了不等于生效。
+_STALENESS_ENV_GLOBAL = "AIDUMEI_CORE_STALENESS_DAYS"
+_STALENESS_ENV_PREFIX = "AIDUMEI_CORE_STALENESS_DAYS_"
+
+
+def staleness_threshold_days(block_key: str) -> int:
+    """块的生效陈旧阈值。
+
+    显式配置非法时打 warning 后落到下一档 —— 「设了打错的值」和「没设」
+    行为一样、意图完全不同（铁律 13），必须出声但不许让探针崩掉。
+    """
+    for raw, which in (
+        (os.environ.get(_STALENESS_ENV_PREFIX + block_key.upper()), "每块"),
+        (os.environ.get(_STALENESS_ENV_GLOBAL), "全局"),
+    ):
+        if raw is None:
+            continue
+        try:
+            v = int(raw)
+            if v <= 0:
+                raise ValueError("必须为正整数")
+            return v
+        except (ValueError, TypeError):
+            logger.warning("核心记忆%s陈旧阈值配置无效: %r（需正整数），忽略此档",
+                           which, raw)
+    return STALENESS_DAYS_BY_BLOCK.get(block_key, STALENESS_DAYS)
 
 _init_lock = threading.Lock()
 _initialized = False
@@ -555,6 +599,10 @@ def put_block(
     # 失败不阻断写入：核心记忆的**正本**在 core_memory 表里，索引只是副本。
     # 索引挂了要能看见（走 P1-8 的账本），但不能因此让一次正常的写入失败。
     _index_core_block(block_key, content, owner_user, owner_bank)
+    # v20.1 WP-D1：同一份内容进向量索引。FTS 归 FTS、向量归向量，
+    # 两腿各自失败各自记账，互不拖累。verify_block 只刷时间戳不动内容，
+    # 无需重嵌 —— 只有内容真变了（这里）才花一次嵌入调用。
+    _vector_index_core_block(block_key, content, owner_user, owner_bank)
 
     logger.info(
         "CoreMemory: %s 已更新+验证 user_id=%s bank_id=%s",
@@ -634,13 +682,18 @@ def verify_block(
     }
 
 
-def _is_stale(last_verified: str) -> bool:
-    """判断 block 是否超过 STALENESS_DAYS 未验证"""
+def _is_stale(last_verified: str, block_key: str | None = None) -> bool:
+    """判断 block 是否超过其生效阈值未验证。
+
+    v20.1 WP-D2：带 block_key 走分级阈值；不带（老调用方）退回全局兜底
+    STALENESS_DAYS —— 签名向后兼容，判据升级。
+    """
+    threshold = staleness_threshold_days(block_key) if block_key else STALENESS_DAYS
     if not last_verified:
         return True
     try:
         verified_dt = datetime.fromisoformat(last_verified)
-        return datetime.now() - verified_dt > timedelta(days=STALENESS_DAYS)
+        return datetime.now() - verified_dt > timedelta(days=threshold)
     except (ValueError, TypeError):
         return True
 
@@ -679,6 +732,136 @@ def _index_core_block(block_key: str, content: str, user_id: str, bank_id: str) 
             pass
         logger.debug("核心记忆索引写入跳过 %s: %s", block_key, exc)
         return False
+
+
+# ── 向量索引（v20.1 WP-D1）──────────────────────────────────────────
+# P0-6 把核心记忆接进了 FTS，但向量召回池里仍然没有它 —— 语义近义的问法
+# （不含 block 原文关键词）依旧召不回。这里把同一份内容写进 mem0 的向量库，
+# payload 按 mem0 的结果装配契约铺（data 必填、user_id 提升、其余进 metadata），
+# 于是读侧零改动：bank 复筛认 metadata.bank_id，打分器的 reliability 维度认
+# metadata.reliability —— 核心记忆天然吃满可靠性权重。
+
+#: 开关（env 显式，默认开）。关闭 = WP-D1 的回滚方式：新写不再进向量池。
+_CORE_VECTOR_ENV = "AIDUMEI_CORE_VECTOR_INDEX"
+
+
+def is_core_vector_index_enabled() -> bool:
+    """无效值报错点名（由 _vector_index_core_block 捕获并记账），不静默回退。"""
+    raw = os.environ.get(_CORE_VECTOR_ENV)
+    if raw is None:
+        return True
+    v = raw.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(
+        f"{_CORE_VECTOR_ENV} 值无效: {raw!r}（接受 1/0/true/false/yes/no/on/off）"
+    )
+
+
+def core_vector_point_id(block_key: str, user_id: str, bank_id: str) -> str:
+    """核心记忆块在向量库里的稳定点位 id。
+
+    与 FTS 侧 `core_index_id` 同一纪律：确定性 id，同一块改十次只占一个点
+    （Qdrant 同 id upsert 覆盖）。随机 id 会让向量库堆十个内容各异的同名块，
+    召回时随机命中一条旧的 —— 比搜不到更糟。id 带全三元组：不同域的同名块
+    各占各的点，互不覆盖。
+    """
+    import uuid
+    return str(uuid.uuid5(uuid.NAMESPACE_URL,
+                          f"aidumei:core::{block_key}::{user_id}::{bank_id}"))
+
+
+def _vector_index_core_block(block_key: str, content: str,
+                             user_id: str, bank_id: str) -> bool:
+    """把一块核心记忆写进向量索引；成功返回 True。
+
+    失败不抛 —— 正本在 core_memory 表、FTS 是第二副本、向量是第三副本，
+    任何一个副本失败都不许拖垮写入，但都要留痕（特性账本，与 FTS 腿分开
+    记名：core_memory_vector_index —— 两条腿坏法不同，修法也不同）。
+    """
+    try:
+        if not is_core_vector_index_enabled():
+            return False
+        import hashlib
+        from ducky.mem0_runtime import get_memory
+        mem = get_memory()
+        vec = mem.embedding_model.embed(content, "add")
+        now = datetime.now().isoformat()
+        # payload 契约对齐 mem0 结果装配：data → 结果的 memory 字段（缺了整条
+        # 被丢）；user_id 被提升并参与过滤；其余键落 metadata —— bank_id 供
+        # 域复筛，reliability 供打分器，memory_class/core_block_key 供溯源。
+        payload = {
+            "data": content,
+            "hash": hashlib.md5(content.encode("utf-8")).hexdigest(),
+            "created_at": now,
+            "updated_at": now,
+            "user_id": user_id,
+            "bank_id": bank_id,
+            "category": CORE_INDEX_CATEGORY,
+            "memory_class": "core",
+            "core_block_key": block_key,
+            "reliability": 1.0,
+            "recorded_at": now,
+        }
+        mem.vector_store.insert(
+            vectors=[vec],
+            payloads=[payload],
+            ids=[core_vector_point_id(block_key, user_id, bank_id)],
+        )
+        return True
+    except Exception as exc:
+        try:
+            from ducky.failure_ledger import feature_failed
+            feature_failed("core_memory_vector_index", exc)
+        except Exception:
+            pass
+        logger.debug("核心记忆向量索引跳过 %s: %s", block_key, exc)
+        return False
+
+
+def backfill_core_vectors(user_id: str | None = None,
+                          bank_id: str | None = None,
+                          apply: bool = False) -> dict:
+    """把**存量**核心记忆块补进向量索引。默认 dry-run，`apply=True` 才写。
+
+    ⚠️ **这个函数不会被自动调用，生产执行须单独停点获维护者批准**（v20.0.1
+    审计登记原文：存量回填会改变生产可见边界，属数据决策不是代码决策）。
+    与 FTS 侧 `backfill_core_index` 同一纪律，另加 dry-run 档：先报会动什么，
+    再决定动不动。占位文本一律跳过 —— 语义召回一条「（尚未填写）」毫无价值。
+    """
+    conn = _get_conn()
+    try:
+        if user_id is not None or bank_id is not None:
+            scopes = [(user_id or DEFAULT_USER_ID, bank_id or DEFAULT_BANK_ID)]
+        else:
+            scopes = [(r["user_id"], r["bank_id"]) for r in conn.execute(
+                "SELECT DISTINCT user_id, bank_id FROM core_memory").fetchall()]
+    finally:
+        conn.close()
+
+    placeholders = {(v or "").strip() for v in DEFAULT_BLOCKS.values()}
+    would, skipped, failed = [], [], []
+    for uid, bid in scopes:
+        blocks = get_all_blocks(user_id=uid, bank_id=bid)
+        for key, b in blocks.items():
+            body = (b.get("content") or "").strip()
+            tag = f"{uid}/{bid}/{key}"
+            if not body or body in placeholders:
+                skipped.append(tag)
+                continue
+            if not apply:
+                would.append(tag)
+                continue
+            (would if _vector_index_core_block(key, body, uid, bid)
+             else failed).append(tag)
+    logger.info("核心记忆向量回填（apply=%s）：%s %d，跳过 %d，失败 %d",
+                apply, "已写入" if apply else "将写入", len(would),
+                len(skipped), len(failed))
+    return {"apply": apply, "scopes": len(scopes),
+            ("indexed" if apply else "would_index"): would,
+            "skipped": skipped, "failed": failed}
 
 
 def backfill_core_index(user_id: str = DEFAULT_USER_ID,
@@ -742,7 +925,7 @@ def staleness_status(
       · `unfilled_blocks`   —— 内容仍是出厂占位文本的块数（**不计入 stale**）
     """
     blocks = get_all_blocks(user_id=user_id, bank_id=bank_id)
-    nonempty = [b for b in blocks.values() if (b.get("content") or "").strip()]
+    nonempty = [(k, b) for k, b in blocks.items() if (b.get("content") or "").strip()]
     # 「从来没填过」和「填过但很旧」是两件不同的事，要分开报。
     #
     # 变异轮发现的：`DEFAULT_BLOCKS` 播种的是「（尚未填写）…」这样的**占位文本**，
@@ -752,14 +935,16 @@ def staleness_status(
     #
     # 判据取自 `DEFAULT_BLOCKS` 本身，不硬编码那句前缀：播种文本一改，这里自动跟着改。
     placeholders = {(v or "").strip() for v in DEFAULT_BLOCKS.values()}
-    filled = [b for b in nonempty if (b.get("content") or "").strip() not in placeholders]
+    filled = [(k, b) for k, b in nonempty
+              if (b.get("content") or "").strip() not in placeholders]
     unfilled_n = len(nonempty) - len(filled)
     stale_n = 0
     unparsable = 0
     oldest: float | None = None
-    for b in filled:
+    for key, b in filled:
         ts = b.get("last_verified_at") or ""
-        if _is_stale(ts):
+        # v20.1 WP-D2：按块分级判据 —— 注入面（inject_context）用同一个函数。
+        if _is_stale(ts, key):
             stale_n += 1
         age = _age_days(ts)
         if age is None:
@@ -771,7 +956,12 @@ def staleness_status(
         "stale_blocks": stale_n,
         "stale": stale_n > 0,
         "oldest_age_days": round(oldest, 1) if oldest is not None else None,
+        # 全局兜底常量按旧名保留（老读者不断），分级生效值单列一份 ——
+        # 生效值问函数不问配置文件。
         "threshold_days": STALENESS_DAYS,
+        "threshold_days_by_block": {
+            k: staleness_threshold_days(k) for k in BLOCK_KEYS
+        },
         "unparsable_blocks": unparsable,
         # 仍是出厂占位文本的块数：不计入 stale，单独报
         "unfilled_blocks": unfilled_n,
@@ -792,14 +982,15 @@ def inject_context(
     for key, label in BLOCK_KEYS.items():
         b = blocks.get(key)
         if b and b["content"].strip():
-            stale = _is_stale(b.get("last_verified_at", ""))
+            # v20.1 WP-D2：注入面与运维面（staleness_status）用同一个分级判据。
+            stale = _is_stale(b.get("last_verified_at", ""), key)
             if stale:
                 stale_count += 1
-                lines.append(f"{label}: {b['content']} [⚠️ {STALENESS_DAYS}天+未验证]")
+                lines.append(f"{label}: {b['content']} [⚠️ {staleness_threshold_days(key)}天+未验证]")
             else:
                 lines.append(f"{label}: {b['content']}")
     if stale_count:
-        lines.append(f"⚠️ {stale_count} 个 block 超过 {STALENESS_DAYS} 天未验证，建议通过 API 更新或 verify")
+        lines.append(f"⚠️ {stale_count} 个 block 超过各自阈值未验证，建议通过 API 更新或 verify")
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
