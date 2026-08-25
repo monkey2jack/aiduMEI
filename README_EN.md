@@ -570,7 +570,7 @@ python -m compileall ducky api_server.py mcp_server.py
 | Total cases | **1200** (measured via `pytest --collect-only`) |
 | Clean dev machine | 1188 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
 | Sandbox on the production box | 1199 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1200 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
-| All axes present | 1200 all green · 0 skipped — **axis-derived** (new v20.1-dev cases have not been re-measured with all axes yet); the last full-axis measurement was **1112 all green · 0 skipped** (production box, 2026-08-24, all nine axes present: host source available, `.git` present, benchmark deps and dataset in place). Before that the row was a derived number, labelled "never measured" for several releases |
+| All axes present | 1200 all green · 0 skipped — **measured on the production box, 2026-08-25** (candidate tree cloned from a bundle, `.git` present, all nine axes available). The previous full-axis measurement was 1112 all green (2026-08-24, total 1112 then). Before that the row was a derived number, labelled "never measured" for several releases |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
@@ -630,8 +630,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
 > so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1200 passed` line in
-> the code block above requires *all nine* axes present at once; the last complete-axis measurement was
-> 1112 all green on the production machine on 2026-08-24 (total was 1112 then).
+> the code block above requires *all nine* axes present at once; that complete-axis result was measured on
+> the production box on 2026-08-25 (candidate tree, total 1200, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >
