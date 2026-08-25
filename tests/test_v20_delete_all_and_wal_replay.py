@@ -156,6 +156,19 @@ def test_delete_all_facts_and_fts_only_touch_requested_bank(monkeypatch):
         ("ah1", "alice home 文本", "alice", "home"),
         ("bank:work:bw1", "bob work 文本", "bob", "work"),
     ])
+    from ducky.memory_types import ensure_memory_types_schema
+    ensure_memory_types_schema()
+    conn = sqlite3.connect(_DB)
+    conn.executemany(
+        "INSERT INTO memory_types (memory_ref, memory_type, user_id, bank_id, memory_ref_raw) "
+        "VALUES (?,?,?,?,?)",
+        [
+            ("v-aw", "FACTS", "alice", "work", "v-aw"),
+            ("v-ah", "FACTS", "alice", "home", "v-ah"),
+            ("v-bw", "FACTS", "bob", "work", "v-bw"),
+        ],
+    )
+    conn.commit(); conn.close()
     fake = _FakeMem([
         {"id": "v-aw", "metadata": {"bank_id": "work", "user_id": "alice"}},
         {"id": "v-ah", "metadata": {"bank_id": "home", "user_id": "alice"}},
@@ -178,6 +191,17 @@ def test_delete_all_facts_and_fts_only_touch_requested_bank(monkeypatch):
     assert fts_survivors == {"ah1", "bank:work:bw1"}, (
         f"FTS 越界：存活集合={sorted(fts_survivors)}"
     )
+
+    conn = sqlite3.connect(_DB)
+    type_survivors = {
+        tuple(r)
+        for r in conn.execute("SELECT user_id, bank_id, memory_ref FROM memory_types")
+    }
+    conn.close()
+    assert type_survivors == {
+        ("alice", "home", "v-ah"),
+        ("bob", "work", "v-bw"),
+    }, f"memory_types 越界或留孤儿：存活集合={sorted(type_survivors)}"
 
 
 def test_delete_all_vector_side_is_scoped_enumeration_only(monkeypatch):
