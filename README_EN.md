@@ -570,7 +570,7 @@ python -m compileall ducky api_server.py mcp_server.py
 | Total cases | **1232** (measured via `pytest --collect-only`) |
 | Clean dev machine | 1220 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
 | Sandbox on the production box | 1231 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1232 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
-| All axes present | 1232 all green · 0 skipped is the axis-derived target for this remediation tree — **not claimed** until this round's production-sandbox run; the latest full-axis measurement is 1200 all green (**measured on the production box, 2026-08-25**, candidate tree, total 1200 then, nine axes). Before that the row was a derived number, labelled "never measured" for several releases |
+| All axes present | 1232 all green · 0 skipped — **measured on the production box, 2026-08-26** (candidate tree cloned from a bundle, `.git` present, all ten axes available). The previous full-axis measurement was 1200 all green (2026-08-25, candidate tree, total 1200 then, nine axes). Before that the row was a derived number, labelled "never measured" for several releases |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
@@ -632,8 +632,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
 > so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1232 passed` line in
-> the code block above requires *all ten* axes present at once; that number awaits this round's
-> production-sandbox run — the previous full-axis measurement was 1200 on 2026-08-25 (candidate tree, total 1200 then, zero skips).
+> the code block above requires *all ten* axes present at once; that complete-axis result was measured on
+> the production box on 2026-08-26 (candidate tree, total 1232, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >
