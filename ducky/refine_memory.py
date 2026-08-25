@@ -70,7 +70,11 @@ def ensure_refine_schema() -> None:
                 reason        TEXT DEFAULT '',
                 confidence    REAL DEFAULT 0.5,
                 state         TEXT DEFAULT 'proposed', -- proposed | applied | rolled_back
-                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                -- v20.1：整合产物的生成通路（llm/extractive/rule）。新库直含
+                -- 本列（外审 z P2-02：只靠 ALTER 追加=代码内 schema 与实际
+                -- 不同步）；老库仍走下方 additive ALTER。
+                consolidation_basis TEXT DEFAULT ''
             )
         """)
         conn.execute(
@@ -83,10 +87,19 @@ def ensure_refine_schema() -> None:
         # 不冒充任何一档。
         cols = table_columns(conn, "refined_memories")
         if "consolidation_basis" not in cols:
-            conn.execute(
-                "ALTER TABLE refined_memories "
-                "ADD COLUMN consolidation_basis TEXT DEFAULT ''"
-            )
+            try:
+                conn.execute(
+                    "ALTER TABLE refined_memories "
+                    "ADD COLUMN consolidation_basis TEXT DEFAULT ''"
+                )
+            except Exception as alter_exc:
+                # 点名报错（外审 z P2-02）：这里失败而不出声的话，
+                # 下游 INSERT 会以一句迷惑的 no such column 崩在别处。
+                logger.error(
+                    "refined_memories 追加 consolidation_basis 列失败，"
+                    "refine 写入将不可用: %s", alter_exc,
+                )
+                raise
         conn.commit()
         _checked = True
     except Exception as e:
@@ -215,11 +228,27 @@ def _extractive_summary(items: list[dict]) -> str:
     dropped = max(0, len(points) - _EXTRACTIVE_MAX_POINTS)
     points = points[:_EXTRACTIVE_MAX_POINTS]
 
-    body = "；".join(
-        f"{k}：{v}" if k and not v.startswith(k) else v for k, v in points
-    )
-    if len(body) > _EXTRACTIVE_TOTAL_LEN:
-        body = body[:_EXTRACTIVE_TOTAL_LEN] + "…"
+    # v20.1 整改轮（R-02 · 外审 z P1-03）：正文长度截断从「480 字符硬切 +
+    # 一个省略号」改为**按完整要点回退** —— 硬切会把尾部要点拦腰斩断且
+    # 不计入「另 N 条略」，静默丢失硬实体。现在超长时整条要点回退进
+    # dropped 计数，谁被丢进日志留名；硬实体在前的排序保证被回退的
+    # 永远是信息密度最低的尾部。
+    rendered: list[str] = []
+    lost_labels: list[str] = []
+    total = 0
+    for k, v in points:
+        piece = f"{k}：{v}" if k and not v.startswith(k) else v
+        cost = len(piece) + (1 if rendered else 0)  # 分隔符「；」
+        if total + cost > _EXTRACTIVE_TOTAL_LEN and rendered:
+            dropped += 1
+            lost_labels.append(k or v[:12])
+            continue
+        rendered.append(piece)
+        total += cost
+    if lost_labels:
+        logger.info("🧼 extractive 摘要长度回退丢弃 %d 条要点：%s",
+                    len(lost_labels), "、".join(lost_labels[:6]))
+    body = "；".join(rendered)
 
     category = str(items[0].get("category") or "memory")
     tail = f"（另 {dropped} 条要点略）" if dropped else ""
@@ -270,7 +299,10 @@ def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool 
                 llm_used = True
                 basis = "llm"
         except Exception as e:
-            logger.debug(f"LLM 精炼失败（降级提取式）: {e}")
+            # v20.1 整改轮（R-03 · 外审 z P1-04）：LLM 档失败与 extractive 档
+            # 失败同为「真实降级」，出声等级必须对称 —— debug 在生产默认
+            # 级别下不可见，降级就成了静默事件（铁律 8）。
+            logger.warning(f"LLM 精炼失败（降级提取式）: {e}")
 
     if summary is None:
         try:
