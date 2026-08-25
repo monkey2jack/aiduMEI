@@ -6,7 +6,7 @@
 
 ## v20.0.1 — 私有预发布：基座兼容与删除链收口（2026-08-25）
 
-> 本节属于私有验证线的内部预发布迭代；公开 `v20.0` Tag、Release 与 PyPI 不随本次自动更新。
+> 本节属于私有验证线的内部预发布迭代；公开 `v20.0` Tag 与 Release 不随本次自动更新。aiduMEI 已退出 PyPI 官方分发，后续以 GitHub 源码、Release 与 GHCR 为准。
 
 - **mem0ai 2.0.19 兼容**：更新 `ducky/mem0_patches.py`、`pyproject.toml`、`requirements.txt`；补丁层在上游已原生支持 list content 时保留原始拼接语义，同时继续覆盖 Role Drop 与空抽取可观测性；`tests/test_v20_mem0_patch_layer.py` 同时验证 2.0.18/2.0.19。
 - **删除链补全**：`ducky/wal_engine.py` 的 `delete_all` 现在按作用域清理 `memory_types`，修复 `infer=False` 写入后留下孤儿类型账本的问题；`tests/test_v20_delete_all_and_wal_replay.py` 增加跨域集合验证。
