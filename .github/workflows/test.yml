@@ -41,7 +41,10 @@ jobs:
       HERMES_SRC: "off"
       # 数据目录隔离：conftest.py 本就会重定向，这里再加一道，
       # 保证任何绕过 conftest 的子进程也落不到仓库 data/ 里
-      AIDUMEM_DATA_DIR: ${{ runner.temp }}/aidumei-ci-data
+      # `runner.temp` is only available in step expressions, not job-level env.
+      # Use the hosted runner's disposable /tmp area directly so the workflow
+      # parses before any job is created.
+      AIDUMEM_DATA_DIR: /tmp/aidumei-ci-data
     steps:
       - uses: actions/checkout@v4
 
