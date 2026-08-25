@@ -12,22 +12,16 @@
 #
 # 两个设计选择
 # ──────────
-# 1. `workflow_call`：本工作流同时是**可复用工作流**。`docker.yml` 通过
-#    `uses: ./.github/workflows/test.yml` 调它，并让发布 job `needs:` 它 ——
-#    于是「先绿后发」是 GitHub 的调度保证，不是一句口头约定。
-#    （`needs:` 只在同一个工作流内有效，所以必须走 `workflow_call`，
-#    不能靠两个各自独立的工作流「碰巧都绿」。）
+# 1. 本工作流保留为**可复用工作流**和手动触发；不再随 main 推送自动运行，
+#    避免对外分发面收缩后继续产生 Actions 邮件噪音。
 # 2. `HERMES_SRC: "off"` 显式关掉宿主自动发现：让跳过行为**双向可复现**。
 #    不写这一句，CI 机器上有没有宿主源码就成了一个隐式变量，跳过条数飘忽不定，
 #    而 README 里那几个数字是按轴对得上号的。
 name: Tests
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_call:
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   pytest:
