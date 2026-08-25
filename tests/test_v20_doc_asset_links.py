@@ -34,7 +34,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 _SKIP_PARTS = frozenset({
     "__pycache__", ".venv", "venv", "node_modules", ".git",
-    "build", "dist", ".eggs", ".pytest_cache",
+    "build", "dist", ".eggs", ".pytest_cache", "backups", ".upgrade-artifacts",
 })
 
 # 射程地板。当前实测：16 个 md、3 处本地引用。留出余量，但收窄到 0 必红。
@@ -66,7 +66,10 @@ def _strip_code(text: str) -> str:
 def _markdown_files() -> list[pathlib.Path]:
     return sorted(
         p for p in _REPO_ROOT.rglob("*.md")
-        if not any(part in _SKIP_PARTS for part in p.parts)
+        if not any(
+            part in _SKIP_PARTS or part.startswith("venv-") or part.startswith("backup-")
+            for part in p.parts
+        )
     )
 
 

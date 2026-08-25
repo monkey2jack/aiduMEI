@@ -9,10 +9,10 @@ mem0 运行时补丁层 —— v20.0pre
       content 被静默丢弃，全程零告警。
     · 空抽取零日志 —— LLM 返回空串时 extracted_memories 直接置空，不打日志，
       记忆静静地没写进去，调用方拿到 200。
-  B 类 · 上游 main 已修但未发版：
+  B 类 · 上游已修、但仍需兼容旧版：
     · remove_code_blocks() 不吃 list 形态的 content（多模态消息格式），
-      直接 AttributeError: 'list' object has no attribute 'strip'。此函数在
-      记忆抽取热路径上。
+      旧版直接 AttributeError: 'list' object has no attribute 'strip'。mem0ai
+      2.0.19 已原生修复；本层仍负责旧版兜底与空抽取可观测性。
   C 类 · 我们自己写错的：
     · 用量追踪原本打在 Memory.client 上 —— 该属性不存在，补丁常年空转。
 
@@ -21,7 +21,7 @@ mem0 运行时补丁层 —— v20.0pre
     每个补丁下手前先跑**运行时探针**，确认「这个缺陷此刻真的存在」。
     上游哪天修好了，探针会发现，补丁自动跳过并如实记账 —— 而不是盲目二次包装。
     副作用：本层对基座版本不敏感，看行为不看版本号。上游 main 的
-    pyproject.toml 至今仍写 version="2.0.18"，任何版本号守卫都会被骗。
+    上游开发分支的元数据版本可能落后于实际源码，任何只看版本号的守卫都不可靠。
 铁律 7 宣称即承诺
     不提供「已激活」这类无条件口号。只提供逐条状态，由 /health 对外暴露。
 铁律 8 静默失败
@@ -257,7 +257,7 @@ def _patch_role_drop() -> None:
 # ═══════════════════════════════════════════════
 # §4  补丁 code_block_hardening
 #     一处补两件事：
-#       ① 吃上游 main 的 list-content 修复（B 类，热路径）
+#       ① 兼容旧基座的 list-content 形状（2.0.19+ 直接委托上游）
 #       ② 空返回时打日志 —— 把 A1「空抽取零日志」变成可见、可计数
 # ═══════════════════════════════════════════════
 def _patch_code_block_hardening() -> None:
@@ -270,8 +270,10 @@ def _patch_code_block_hardening() -> None:
             _record(pid, "drift", "mem0.memory.utils.remove_code_blocks 不存在")
             return
         if getattr(orig, _PATCH_MARKER, None) == pid:
+            upstream_bug = getattr(orig, "_aidumem_upstream_list_bug_present", None)
             _record(pid, "applied", "已在位（幂等跳过）",
-                    namespaces=_bound_namespaces(_PID_FUNC.get(pid, "")))
+                    namespaces=_bound_namespaces(_PID_FUNC.get(pid, "")),
+                    upstream_list_bug_present=upstream_bug)
             return
 
         # 探针①：list 形态会不会炸
@@ -290,8 +292,8 @@ def _patch_code_block_hardening() -> None:
             _record(pid, "drift", f"基座 remove_code_blocks 连 str 都处理不了：{type(e).__name__}: {e}")
             return
 
-        def _flatten(content):  # noqa: ANN001, ANN202
-            """把多模态 list content 拍成文本。与上游 main 的修复同义。"""
+        def _flatten_legacy(content):  # noqa: ANN001, ANN202
+            """给仍会对 list 调用 ``.strip()`` 的旧基座提供兼容文本。"""
             if isinstance(content, list):
                 parts = []
                 for item in content:
@@ -305,31 +307,61 @@ def _patch_code_block_hardening() -> None:
                 return "\n".join(parts)
             return content
 
+        def _prepare_list(content):  # noqa: ANN001, ANN202
+            """只在必要时适配 list，不能覆盖上游已定义的拼接语义。
+
+            mem0ai 2.0.19 按 ``text`` 块无分隔符拼接。标准 list 直接交给它；
+            旧版则先拍成字符串。对 aiduMEI 历史上额外接受的 ``content`` 键，
+            只做形状转换，不自行插入换行。
+            """
+            if not isinstance(content, list):
+                return content
+            if list_broken:
+                return _flatten_legacy(content)
+            if not any(
+                isinstance(item, dict)
+                and "text" not in item
+                and isinstance(item.get("content"), str)
+                for item in content
+            ):
+                return content
+            normalized = []
+            for item in content:
+                if (
+                    isinstance(item, dict)
+                    and "text" not in item
+                    and isinstance(item.get("content"), str)
+                ):
+                    normalized.append({**item, "text": item["content"]})
+                else:
+                    normalized.append(item)
+            _bump("list_content_normalized")
+            return normalized
+
         def remove_code_blocks(content):  # noqa: ANN001, ANN201
-            content = _flatten(content)
-            if not isinstance(content, str):
-                # 上游 main 的兜底：非 str 一律空串，而不是 AttributeError
-                return ""
-            out = orig(content)
+            prepared = _prepare_list(content)
+            out = orig(prepared)
             if not out or not out.strip():
                 # ← A1 现场。原本这里一片寂静，调用方只看到「没抽出记忆」。
                 _bump("empty_extraction")
+                source_length = len(content) if isinstance(content, (str, list, tuple)) else 0
                 logger.warning(
                     "mem0 抽取返回空内容（原文 %d 字符，去壳后为空）—— "
                     "本次不会写入任何记忆。常见成因：推理模型 max_tokens 不足、"
                     "内容被模型侧拦截、prompt 触发空回。",
-                    len(content),
+                    source_length,
                 )
             return out
 
         setattr(remove_code_blocks, _PATCH_MARKER, pid)
+        setattr(remove_code_blocks, "_aidumem_upstream_list_bug_present", list_broken)
         hit = _rebind("remove_code_blocks", remove_code_blocks)
         if not hit:
             _record(pid, "drift", "没有任何命名空间持有 remove_code_blocks")
             return
         _record(
             pid, "applied",
-            f"list-content 拍平{'（基座确认会炸）' if list_broken else '（基座已能吃，仅保留计数）'}"
+            f"list-content {'兼容兜底' if list_broken else '使用基座原生处理'}"
             f" + 空抽取告警；命名空间={hit}",
             namespaces=hit, upstream_list_bug_present=list_broken,
         )
