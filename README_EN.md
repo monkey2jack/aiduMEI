@@ -23,6 +23,8 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current private pre-release is **v20.0.1**, built on the public v20.0 architecture; the latest public release remains v20.0. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
+> **Distribution (GitHub-only):** aiduMEI no longer publishes or maintains new packages on PyPI. Get ongoing updates from the repository's `main` branch, formal versions from [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases), or run the [GHCR image](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei). The `pip install -r requirements.txt` command below installs dependencies from a cloned source tree; it is not a PyPI installation method.
+
 Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
 | Layer | Codename | What it does | Key Feature |
@@ -169,7 +171,7 @@ docker pull ghcr.io/monkey2jack/aidumei:latest
 docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
 ```
 
-### Method 2: Clone & Run from Source
+### Method 2: Clone & Run from GitHub Source (official source channel)
 
 ```bash
 # 1. Clone

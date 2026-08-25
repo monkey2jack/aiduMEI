@@ -28,6 +28,11 @@
 > **当前私有预发布 v20.0.1 —— 基于 v20.0 的兼容与可靠性收口；公开正式版仍为 v20.0。**
 > 详细的逐版演进请看 [CHANGELOG](CHANGELOG.md)；这一页只讲**现在是什么**。
 
+> **分发说明（GitHub-only）**：aiduMEI 不再通过 PyPI 发布或维护新的安装包。请从本仓库的
+> `main` 分支获取持续更新，或从 [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases)
+> 获取正式版本；也可以直接使用 [GHCR 镜像](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)。
+> 下方的 `pip install -r requirements.txt` 仅表示在已克隆的源码目录中安装依赖，不是 PyPI 安装方式。
+
 > **品牌演进**：aiduMEM（优忆思）→ aiduMEI⚕爱嘟优忆思。从一个记忆中间件，升级为带可视化洞察的智能体通用智慧引擎。"爱嘟"是用户与 AI 助手的亲密呼唤，"优忆思"是记忆·思考·洞察的三重承诺。
 
 基于 [mem0](https://github.com/mem0ai/mem0) 构建，aiduMEI 在其之上搭建了逐版生长的认知体系：
@@ -175,7 +180,7 @@ docker pull ghcr.io/monkey2jack/aidumei:latest
 docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
 ```
 
-### 方式二：源码克隆运行（含控制台）
+### 方式二：GitHub 源码运行（官方源码渠道，含控制台）
 
 ```bash
 # 1. 克隆
