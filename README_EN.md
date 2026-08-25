@@ -10,7 +10,6 @@
 > *Memory is not note-taking, but never forgetting the details of the past;*
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
-[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
 [![Built on mem0](https://img.shields.io/badge/built%20on-mem0-orange.svg)](https://github.com/mem0ai/mem0)
@@ -23,7 +22,8 @@
 
 aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current private pre-release is **v20.0.1**, built on the public v20.0 architecture; the latest public release remains v20.0. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
-> **Distribution (GitHub-only):** aiduMEI no longer publishes or maintains new packages on PyPI. Get ongoing updates from the repository's `main` branch, formal versions from [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases), or run the [GHCR image](https://github.com/monkey2jack/aiduMEI/pkgs/container/aidumei). The `pip install -r requirements.txt` command below installs dependencies from a cloned source tree; it is not a PyPI installation method.
+<!-- distribution-policy: github-source-only -->
+> **Distribution (GitHub-only):** aiduMEI no longer publishes or maintains packages on PyPI or GHCR. Get ongoing updates from the repository's `main` branch or formal versions from [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases). The `pip install -r requirements.txt` command below installs dependencies from a cloned source tree; it is not a package distribution method.
 
 Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-by-version cognitive framework:
 
@@ -164,14 +164,7 @@ Why we would rather hand in a blank page than a placeholder figure:
 
 ## Get Started in 30 Seconds
 
-### Method 1: Run via Docker (GitHub Packages / GHCR)
-
-```bash
-docker pull ghcr.io/monkey2jack/aidumei:latest
-docker run -d -p 8767:8767 --name aidumei ghcr.io/monkey2jack/aidumei:latest
-```
-
-### Method 2: Clone & Run from GitHub Source (official source channel)
+### Method 1: Clone & Run from GitHub Source (official source channel)
 
 ```bash
 # 1. Clone
