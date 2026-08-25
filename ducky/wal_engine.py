@@ -548,6 +548,7 @@ def cascade_delete_all(
         "salience_deleted": 0,
         "evolve_deleted": 0,
         "verbatim_deleted": 0,
+        "memory_types_deleted": 0,
     }
 
     try:
@@ -668,6 +669,29 @@ def cascade_delete_all(
                 fconn.close()
         except Exception as e:
             logger.warning("facts 作用域清理失败: %s", e)
+
+        # 3b. memory_types 也可以由 infer=False 直接写入，未必有对应 facts
+        # 行（生产冒烟实测：/add 成功、向量已删，类型账本却留下孤儿行）。
+        # 不能只靠上面的 fact_ref_values 清理；按同一份可见租户契约精确删除，
+        # 默认身份改名时允许 legacy placeholder，但绝不碰具名租户。
+        try:
+            from ducky.bank_contract import visible_user_clause
+            from ducky.memory_types import ensure_memory_types_schema
+
+            ensure_memory_types_schema()
+            tconn = get_facts_conn()
+            try:
+                owner_sql, owner_params = visible_user_clause(scope.user_id)
+                cur = tconn.execute(
+                    "DELETE FROM memory_types WHERE " + owner_sql + " AND bank_id=?",
+                    (*owner_params, scope.bank_id),
+                )
+                tconn.commit()
+                res["memory_types_deleted"] = int(cur.rowcount or 0)
+            finally:
+                tconn.close()
+        except Exception as type_scope_exc:
+            logger.warning("memory_types 作用域清理失败: %s", type_scope_exc)
 
         # Fact keys are useful to old auxiliary records, but are not allowed
         # to widen a delete.  Only pass exact ids and scoped FTS/vector ids to

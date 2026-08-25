@@ -50,7 +50,7 @@ _ROOT = pathlib.Path(_REPO_ROOT)
 _SKIP_DIRS = {
     ".git", ".venv", "venv", "__pycache__", "node_modules",
     "data", "data_mock", "logs", "docs", "tests",
-    ".pytest_cache", ".mypy_cache", "build", "dist",
+    ".pytest_cache", ".mypy_cache", "build", "dist", "backups", ".upgrade-artifacts",
 }
 
 # `tests` 的豁免理由很窄：**单元测试**走 TestClient，不经过真实门禁，无凭据可谈。
@@ -114,7 +114,10 @@ def _is_in_scope(path: pathlib.Path) -> bool:
     parts = path.relative_to(_ROOT).parts
     if parts[:1] == ("tests",) and path.name.startswith(_TESTS_DIR_OPS_TOOLS):
         return True
-    return not any(part in _SKIP_DIRS for part in parts)
+    return not any(
+        part in _SKIP_DIRS or part.startswith("venv-") or part.startswith("backup-")
+        for part in parts
+    )
 
 
 def _iter_repo_http_makers():
@@ -604,7 +607,7 @@ def _current_version_records():
 
     version_py = (_ROOT / "ducky" / "version.py").read_text(encoding="utf-8")
     v = re.search(
-        r"^v%s \((.*?)(?=^v\d+\.\d+\.\d+ \()" % re.escape(SERVICE_VERSION),
+        r"^v%s \((.*?)(?=^v\d+\.\d+(?:\.\d+)? \()" % re.escape(SERVICE_VERSION),
         version_py, re.M | re.S,
     )
     assert v, f"ducky/version.py 找不到 v{SERVICE_VERSION} 说明块"

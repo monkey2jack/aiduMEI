@@ -38,7 +38,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 _SKIP_PARTS = frozenset({
     "__pycache__", ".venv", "venv", "node_modules", ".git",
-    "build", "dist", ".eggs", ".pytest_cache",
+    "build", "dist", ".eggs", ".pytest_cache", "backups", ".upgrade-artifacts",
 })
 
 # 射程地板。与 test_v20_import_shadowing.py 同一条理由：谁往 _SKIP_PARTS 多塞
@@ -79,7 +79,10 @@ def legacy_alias_sites(source):
 def _iter_py_files():
     return sorted(
         p for p in _REPO_ROOT.rglob("*.py")
-        if not (_SKIP_PARTS & set(p.relative_to(_REPO_ROOT).parts))
+        if not any(
+            part in _SKIP_PARTS or part.startswith("venv-") or part.startswith("backup-")
+            for part in p.relative_to(_REPO_ROOT).parts
+        )
     )
 
 

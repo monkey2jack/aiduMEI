@@ -66,7 +66,7 @@ def _readable(rel):
 _SKIP_DIRS = frozenset({
     ".git", ".idea", ".vscode", ".mypy_cache", ".ruff_cache", ".pytest_cache",
     "__pycache__", "venv", ".venv", "env", "node_modules", "dist", "build",
-    ".eggs", "data", "backups", "logs", "htmlcov", "tests",
+    ".eggs", "data", "backups", ".upgrade-artifacts", "logs", "htmlcov", "tests",
 })
 # 生产目录里混着未受版本控制的东西：真 .env、库文件、日志、备份包。
 # 它们既不该被品牌守卫扫（会误红），更不该被断言消息打印出来（会泄密）。
@@ -91,7 +91,10 @@ def _source_files():
     """
     found = []
     for cur, dirs, files in os.walk(_REPO_ROOT):
-        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in _SKIP_DIRS and not d.startswith("venv-") and not d.startswith("backup-")
+        )
         for name in sorted(files):
             if name.endswith(_SKIP_SUFFIXES) or _is_secret_env(name):
                 continue
@@ -425,7 +428,7 @@ def test_env_key_set_is_frozen_and_new_vars_use_current_prefix():
     found = set()
     for rel in _source_files():
         found |= set(_ENV_KEY.findall(_read(rel)))
-    added = sorted(found - _FROZEN_ENV_KEYS)
+    added = sorted(found - _FROZEN_ENV_KEYS - _TEST_ONLY_ENV_KEYS)
     removed = sorted(_FROZEN_ENV_KEYS - found)
     assert not added, (
         "新增了 AIDUMEM_* 前缀的变量：%s\n"
@@ -436,7 +439,16 @@ def test_env_key_set_is_frozen_and_new_vars_use_current_prefix():
         "  客户的 .env 里已经写着这些键。键不匹配不会报错，只会静默回落到默认值 —— "
         "鉴权、租户隔离、身份映射都在这条路上出过事。" % removed
     )
+    for key in _TEST_ONLY_ENV_KEYS:
+        locations = {rel for rel in _source_files() if key in _read(rel)}
+        assert locations <= {"conftest.py"}, (
+            f"测试专用环境变量 {key} 扩散到了非 conftest.py 文件：{sorted(locations)}"
+        )
 
+
+# 测试框架自己的显式逃生门不是部署配置，不应被误当成客户的旧键；
+# 它必须仍然只出现在根 conftest.py，不能扩散到产品代码或模板。
+_TEST_ONLY_ENV_KEYS = {"AIDUMEM_TEST_ALLOW_REAL_DATA_DIR"}
 
 @pytest.mark.parametrize(
     ("key", "consequence"), _CRITICAL_ENV_READS, ids=[k for k, _ in _CRITICAL_ENV_READS]

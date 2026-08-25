@@ -1,6 +1,6 @@
 """v20 写入侧盖戳：bank_id 必须进 mem0 metadata，否则向量侧的域隔离不存在。
 
-mem0 2.0.18 的 ``add(messages, *, user_id, agent_id, run_id, metadata, …)`` 里，
+mem0 2.x 的 ``add(messages, *, user_id, agent_id, run_id, metadata, …)`` 里，
 **metadata 是唯一能把自定义字段带进向量 payload 的通道**。不在写入时盖戳，
 命名域的向量和默认域的向量在 payload 上就完全一样 —— 读取侧无论怎么过滤都
 分不开它们。

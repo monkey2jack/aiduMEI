@@ -63,7 +63,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 _SKIP_PARTS = frozenset({
     "__pycache__", ".venv", "venv", "node_modules", ".git",
-    "build", "dist", ".eggs", ".pytest_cache",
+    "build", "dist", ".eggs", ".pytest_cache", "backups", ".upgrade-artifacts",
 })
 
 # 实测射程 209 个 .py（tests 72 / ducky 112 / scripts 9 / benchmarks 7 /
@@ -138,7 +138,10 @@ def legacy_literals(source):
 def _iter_py_files():
     return sorted(
         p for p in _REPO_ROOT.rglob("*.py")
-        if not (_SKIP_PARTS & set(p.relative_to(_REPO_ROOT).parts))
+        if not any(
+            part in _SKIP_PARTS or part.startswith("venv-") or part.startswith("backup-")
+            for part in p.relative_to(_REPO_ROOT).parts
+        )
     )
 
 
