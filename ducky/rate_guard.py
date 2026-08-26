@@ -15,17 +15,23 @@ delete_all，在配额烧穿或数据清空之前被 429 拦停。
     不静默——429 是显式信号，与三态判语同一哲学。
   - 计数按 (route, user_id) 分桶：一个租户超限不牵连别人。
   - env 覆盖：AIDUMEI_RATE_ADD_PER_MIN / AIDUMEI_RATE_DELETE_ALL_PER_MIN；
-    0 = 关闭该路限流；非法值**报错点名**不静默回退（配置生效三查纪律）。
+    0 = 关闭该路限流；非法值**回退默认并点名出声**（warning 一次 +
+    /health 探针常驻）——v20.2.1 外审 R1 同款：限流站在写路径入口，
+    在这里 raise 等于每次 /add 直接 500。不静默的纪律不变，出声方式
+    从「炸」改成「可观测」。
   - 生效值进 /health 探针，运维面可查。
   - 单进程内存实现是有意的：本服务是单进程部署形态；跨实例限流属于
     多实例路线图（v21），不在此处装样子。
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from typing import Dict, Optional, Tuple
+
+logger = logging.getLogger("aiduMEM.rate_guard")
 
 _ADD_ENV = "AIDUMEI_RATE_ADD_PER_MIN"
 _DELETE_ALL_ENV = "AIDUMEI_RATE_DELETE_ALL_PER_MIN"
@@ -36,19 +42,32 @@ _WINDOWS: Dict[Tuple[str, str], Tuple[int, int]] = {}
 _LOCK = threading.Lock()
 
 
+_config_errors: dict = {}
+
+
 def _limit_from_env(env_name: str, default: int) -> int:
+    """v20.2.1（外审 R1 同款）：限流站在写路径入口，非法 env 在这里 raise
+    会让每次 /add 直接 500 —— 回退默认 + 出声，不炸业务路径。"""
     raw = os.environ.get(env_name)
     if raw is None:
+        _config_errors.pop(env_name, None)
         return default
     try:
         v = int(raw.strip())
         if v < 0:
             raise ValueError
+        _config_errors.pop(env_name, None)
         return v
     except ValueError:
-        raise ValueError(
-            f"{env_name} 非法值 {raw!r}：需 >=0 的整数（0=关闭该路限流）"
-        )
+        msg = f"{env_name} 非法值 {raw!r}，已回退默认 {default}（0=关闭该路限流）"
+        if _config_errors.get(env_name) != msg:
+            logger.warning("🚧 %s", msg)
+        _config_errors[env_name] = msg
+        return default
+
+
+def rate_config_errors() -> dict:
+    return dict(_config_errors)
 
 
 def add_rate_limit() -> int:

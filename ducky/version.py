@@ -3,6 +3,50 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.2.1 (自动挡外审整改 · 2026-08-26)
+    主题：v20.2 公开后两份独立外审（生产侧敌对复审 + 外部结构性审计）的
+    采纳项落地——4 🔴 全修 + 2 🟡 + 残窗闭合。公开 Tag/Release 停在
+    v20.2，本版随 main 公开源码，版本号仅服务侧三段式推进（SOP 双轨）。
+    1. 拆配置雷（R1）：ducky/gear.py 三阈值与 ducky/rate_guard.py 限流的
+       非法 env 由 raise 改为**回退默认 + warning 一次 + 探针常驻**
+       （gear_status().config_errors / rate_config_errors()，
+       ducky/hot/health.py 探针换口径）——它们站在保命/写路径主干上，
+       raise 会把「断供保命」反转成「配置笔误即全站 500」；「非法值不
+       静默」纪律不变，出声方式从炸改为可观测。启动参数自检日志随
+       启动对账打印（ducky/wal_engine.py）。
+    2. 启动重放兜底（R2）：欠账重放此前只挂在升挡事件上，而重启把挡位
+       重置回 closed——升挡事件重启后永不再来，lite 期欠账成永久赖账。
+       ducky/dual_index.py 新增 spawn_replay_daemon（零欠账不起线程），
+       reconcile_startup 收尾兜底重放（两条返回路径共用），ducky/gear.py
+       升挡重放收编同一入口；/health 欠账水位旁新增 last_replay。
+    3. verbatim 本地点单删闭合（R3）：该类点 id 由 (原文, 域) 派生、
+       不与 memory_id 同源，单删钥匙够不着——降挡窗口已删内容会从备胎
+       复活。抽出纯函数 verbatim_local_pid（改派生公式=同时改写删两侧），
+       ducky/wal_engine.py §8b 搭车 §0a 正文重演派生精确删除；覆盖精度
+       与 §6 原文层同级（正文逐字一致才命中），delete_all 按域谓词删
+       仍是全量兜底。
+    4. 重放防自我复制（R4）：本地欠账重放失败时 upsert_local 内部再入
+       新账 + 外层回滚原行 = 每轮净增 1 条。ducky/dual_index.py
+       upsert_local 增 enqueue_on_fail 参数，重放路径置 False——失败
+       只回滚原行留账下轮。
+    5. 残窗闭合（外部审计建议）：claiming 抢占后、mem.add 完成前同租户
+       delete_all 交叉的秒级窗口，此前如实登记不冒充零；本版补偿闭合——
+       重放 add 完成后复核账本行仍在否，行没了即撤销刚写入的点
+       （ducky/dual_index.py _revoke_replayed_add：删除意愿 > 补算完整性）。
+    6. 备胎禁网强制化 + 熔断信号提纯（Y1/Y2）：ducky/local_embed.py
+       HF_HUB_OFFLINE 由 setdefault 改强制覆写（外部预置 0 不可再绕过
+       禁网纪律）；ducky/engine.py 外层 except 不再记云失败——云调用已
+       被内层 try 精确包住，复筛/装配等非云腿异常误记会让半开探测明明
+       成功却被装配 bug 打回 open，云「永远恢复不了」。
+    7. 测试：新增 11 条点名用例（重启还账端到端/单删够到备胎点/持续
+       故障欠账恒定/残窗撤销/装配异常不动熔断，均带区分力对照），两条
+       「非法 env 必抛」旧断言翻转为回退语义（tests/test_v20_2_autoshift.py
+       与 tests/test_v20_1_1_scope_hardening.py），5 处变异探针逐一验红；
+       logger 钉子 90→91（tests/test_v20_brand_policy.py，rate_guard 新增
+       告警 logger）。用例总数 1270 → 1281。
+    8. 文档：双 README 测试数字同步；lite 挡 add 响应（deferred_distillation）
+       字段形态注记——该分支无判语字段族，属写路径契约而非召回契约。
+
 v20.2.0 (智慧引擎自动挡 · 2026-08-26 正式发布)
     主题：外部服务失效时自动降挡无感续跑，恢复时自动升挡欠账回补，挡位
     永远诚实可见。「V20 就是双引擎、自动挡、市面独一份」（维护者定调）。
@@ -982,7 +1026,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.2.0"
+SERVICE_VERSION = "20.2.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -996,6 +1040,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.2.1", "", "", "自动挡外审整改 · 拆配置雷/启动重放兜底/verbatim 单删闭合/重放防自我复制"),
     ("20.2.0", "", "", "智慧引擎自动挡 · 双引擎/熔断切换/挡位诚实 · 断供演练实机验证后公开"),
     ("20.1.1", "", "", "公开后外审加固 · 限流护栏/metadata 白名单/R-18 删除链/守卫三连"),
     ("20.1.0", "", "", "确定性兜底与诚实召回 · 五份外审 R-01~R-17 闭合后公开"),
