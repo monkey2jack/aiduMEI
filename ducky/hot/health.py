@@ -146,6 +146,15 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as _vt_exc:
             probes["recall_verdict_threshold_error"] = str(_vt_exc)[:120]
 
+        # v20.1.1（N-1）：限流生效值可查——配置生效三查的运维面。非法
+        # env 的报错原文进探针，与阈值/开关探针同一纪律：不静默。
+        try:
+            from ducky.rate_guard import add_rate_limit, delete_all_rate_limit
+            probes["rate_add_per_min_effective"] = add_rate_limit()
+            probes["rate_delete_all_per_min_effective"] = delete_all_rate_limit()
+        except ValueError as _rl_exc:
+            probes["rate_limit_config_error"] = str(_rl_exc)[:160]
+
         # v20.1 WP-D1：核心记忆向量索引开关生效值。值非法时错误原文进探针
         # —— 那是「显式配置无效」的报警，不许压成一个安静的 False。
         try:

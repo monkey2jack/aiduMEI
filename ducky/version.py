@@ -3,6 +3,33 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.1.1 (公开后外审加固 · 2026-08-26)
+    主题：v20.1 公开发布后两份独立外审（生产侧复审 + 社区结构性审计）的
+    复核采纳项落地。公开 Tag/Release 停在 v20.1，本版随 main 公开源码，
+    版本号仅服务侧三段式推进（SOP 双轨）。
+    1. 限流护栏：新增 ducky/rate_guard.py（进程内固定窗口，按租户分桶），
+       ducky/hot/add.py 写路径默认 120/min、ducky/hot/crud.py delete_all
+       默认 3/min —— 默认值取自生产 14 天日志实测（分钟峰值 35 → 3.4 倍
+       余量），拦失控循环不拦正常流量；429 带 Retry-After；
+       AIDUMEI_RATE_ADD_PER_MIN / AIDUMEI_RATE_DELETE_ALL_PER_MIN 可调
+       （0=关闭，非法值报错点名）；生效值进 /health（ducky/hot/health.py）。
+    2. metadata 形态白名单：ducky/api_models.py 的 AddRequest.metadata
+       校验键名形态（中英数与 .-_，1-64 字符）、键数 ≤32、单值 ≤4KB、
+       总载荷 ≤16KB、嵌套深度 ≤2 —— 挡注入炸库，不伤正常键（含中文键）；
+       顶层 extra="allow" 的兼容语义保持不变。
+    3. R-18 删除链补齐：ducky/wal_engine.py cascade_delete_all 新增 §12
+       observations（user 轴——表无 bank 列，user 轴是其全部表达力；v7
+       无主存量行不动）与 §13 scenes（全轴谓词）；DELETE_CHAIN_MATRIX
+       两表改判 clean，persona 豁免理由经侦察改判为「租户轴正交」
+       （persona_key 与租户模型正交，作用域删除语义不成立）。
+    4. 源码守卫三连（tests/test_v20_1_1_source_guards.py）：前端
+       innerHTML 拼接守卫（未审计表达式直拼即红——外审 XSS 指控虽经
+       58 处全量审计驳回，但「安全靠人工纪律」是真的，守卫使其结构化）；
+       f-string SQL 插值登记（65 处基线人工核对，新插值不登记即红）；
+       schema 迁移点总账（60 位点，additive-only 纪律配上全景账）。
+    5. 行为测试 22 条（tests/test_v20_1_1_scope_hardening.py 与守卫文件，
+       含跨租户负向、v7 存量行保全、变异探针双向验证）；用例总数 1254。
+
 v20.1.0 (确定性兜底与诚实召回 · 2026-08-26 正式发布)
     主题：LLM 不在场时，记忆系统仍然是完整的记忆系统；召回给不出可信结果时，
     宁可诚实说「没有」。开发期以私有验证线 20.1.0-dev.N 迭代；五份外部评审
@@ -924,7 +951,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.1.0"
+SERVICE_VERSION = "20.1.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -938,6 +965,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.1.1", "", "", "公开后外审加固 · 限流护栏/metadata 白名单/R-18 删除链/守卫三连"),
     ("20.1.0", "", "", "确定性兜底与诚实召回 · 五份外审 R-01~R-17 闭合后公开"),
     ("20.0.1", "", "", "mem0ai 2.0.19 兼容 · 删除链孤儿清理 · 私有预发布"),
     ("20.0", "", "", "全量记忆域隔离 · 可复现评测 · 后端契约与数据生命线"),

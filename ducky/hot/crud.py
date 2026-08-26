@@ -172,6 +172,17 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "user_id 必须显式指定，拒绝空参数清库")
         scope = make_scope(req.user_id, req.bank_id)
         user_id = _normalize_user_id(scope.user_id)
+        # v20.1.1（N-1）：删除路径限流（默认 3/min）——生产 14 天 delete_all
+        # 共 7 次，正常操作打不到上限；循环误删在清空更多域之前被拦停。
+        from ducky.rate_guard import check_rate, delete_all_rate_limit
+        _retry = check_rate("delete_all", user_id, limit=delete_all_rate_limit())
+        if _retry is not None:
+            raise HTTPException(
+                status_code=429,
+                detail=f"delete_all 频率超限（租户 {user_id}）：{_retry}s 后重试；"
+                       f"上限可经 AIDUMEI_RATE_DELETE_ALL_PER_MIN 调整（0=关闭）",
+                headers={"Retry-After": str(_retry)},
+            )
         if user_id == DEFAULT_USER_ID and not getattr(req, "confirm", False):
             # v19.4.2：文案原先把默认身份写死成 "(default)"。部署方配了
             # AIDUMEM_DEFAULT_USER_ID 之后，报错里说的租户和实际要清的

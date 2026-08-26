@@ -4,9 +4,10 @@ ducky.api_models — FastAPI 请求/响应模型（C 档从 api_server 抽出）
 2026-08-13: /add 的 messages 兼容 str / list / dict 三种输入
 """
 
+import re
 from typing import Any, Dict, List, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ducky.utils import DEFAULT_USER_ID
 from ducky.bank_contract import DEFAULT_BANK_ID
@@ -21,6 +22,29 @@ from ducky.bank_contract import DEFAULT_BANK_ID
 Messages = Union[str, List[Dict[str, Any]], Dict[str, Any]]
 
 
+# v20.1.1（N-2，外审建议采纳）：metadata 形态白名单。
+# 顶层 extra="allow" 是**有意的兼容设计**（老调用方多传字段不炸，见
+# SearchRequest 的 top_k 教训），保持不动；收紧的是 metadata **内容形态**：
+# 它一路透传进 facts / 向量 payload，超长键、嵌套炸弹、二进制垃圾都会
+# 永久落库。键允许中英数与 . - _（含 CJK——生产存量有中文键的自由），
+# 上限的依据是承载面：qdrant payload 与 facts 列的合理载荷，不是拍脑袋
+# 的「看着差不多」——单值 4KB ≈ 一条 verbatim 原文的上限量级，总量 16KB
+# ≈ 单条记忆全部旁路元数据的 4 倍余量。
+_METADATA_KEY_RE = re.compile(r"^[\w\u4e00-\u9fff.\-]{1,64}$")
+_METADATA_MAX_KEYS = 32
+_METADATA_MAX_VALUE_CHARS = 4096
+_METADATA_MAX_TOTAL_CHARS = 16384
+_METADATA_MAX_DEPTH = 2
+
+
+def _metadata_depth(v: Any, depth: int = 0) -> int:
+    if isinstance(v, dict):
+        return max([depth + 1] + [_metadata_depth(x, depth + 1) for x in v.values()])
+    if isinstance(v, (list, tuple)):
+        return max([depth + 1] + [_metadata_depth(x, depth + 1) for x in v])
+    return depth
+
+
 class AddRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -28,6 +52,27 @@ class AddRequest(BaseModel):
     user_id: str = DEFAULT_USER_ID
     bank_id: str = DEFAULT_BANK_ID
     metadata: dict = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_shape(cls, v: dict) -> dict:
+        if not isinstance(v, dict):
+            raise ValueError("metadata 必须是对象")
+        if len(v) > _METADATA_MAX_KEYS:
+            raise ValueError(f"metadata 键数 {len(v)} 超上限 {_METADATA_MAX_KEYS}")
+        total = 0
+        for k, val in v.items():
+            if not isinstance(k, str) or not _METADATA_KEY_RE.match(k):
+                raise ValueError(f"metadata 键名不合法: {str(k)[:80]!r}（允许中英数与 . - _，长度 1-64）")
+            piece = str(val)
+            if len(piece) > _METADATA_MAX_VALUE_CHARS:
+                raise ValueError(f"metadata 键 {k!r} 的值长 {len(piece)} 超单值上限 {_METADATA_MAX_VALUE_CHARS}")
+            total += len(k) + len(piece)
+        if total > _METADATA_MAX_TOTAL_CHARS:
+            raise ValueError(f"metadata 总载荷 {total} 超上限 {_METADATA_MAX_TOTAL_CHARS}")
+        if _metadata_depth(v) > _METADATA_MAX_DEPTH:
+            raise ValueError(f"metadata 嵌套深度超上限 {_METADATA_MAX_DEPTH}")
+        return v
     # true=先回执后台落库；默认 false 保持同步语义（兼容旧调用方）
     async_mode: bool = False
     # v20：显式的免抽取写入开关（mem0 的 infer 参数）。
