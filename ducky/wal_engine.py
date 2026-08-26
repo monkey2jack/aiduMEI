@@ -550,9 +550,9 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "store:verbatim":   ("clean",  "cascade_delete_verbatim（§6）"),
     "store:workspace":  ("clean",  "ws_clear 内存+SQLite 双清（§7，v20.1 整改轮补齐 —— 外审 z P1-01：此前已删内容以 found/workspace_hit 复活）"),
     # ── 显式申报的已知残留（申报不是沉默；沉默才是本矩阵要消灭的东西）──
-    "store:observations": ("exempt", "观察库含租户内容但无作用域删除接口 —— 已知残留，挂后续整改 R-18；此处先行曝光"),
-    "store:scenes":       ("exempt", "场景库同上（R-18）"),
-    "store:persona":      ("exempt", "人格记忆库同上（R-18）；persona_banks/persona_memories 需各自模块的作用域删除+负向对照后再纳入"),
+    "observations":       ("clean",  "R-18(v20.1.1)：user 轴谓词删除（§12）——表无 bank 列，user 轴是它拥有的全部作用域表达力；v7 存量空 user_id 行不属于任何租户，不动"),
+    "scenes":             ("clean",  "R-18(v20.1.1)：(user_id, bank_id) 谓词删除（§13）"),
+    "store:persona":      ("exempt", "人格库（独立 persona.db，不在 facts.db）无租户列 —— persona_key 是人格轴，与 (user_id, bank_id) 租户模型正交，作用域删除语义不成立；若未来 persona 归属租户，须先补列迁移再纳入（R-18 复核改判 v20.1.1：原裁决『接口未做』经侦察修正为『语义不成立』）"),
 }
 
 
@@ -862,6 +862,44 @@ def cascade_delete_all(
                 gconn.close()
         except Exception as e:
             logger.warning("candidate_facts delete_all 清理失败: %s", e)
+
+        # 12. 观察库（v20.1.1 R-18 · 两轮外审共同挂账）。聚合观察含租户
+        #     内容全文。表只有 user 轴（无 bank 列——老账本），user 轴就是
+        #     它拥有的全部作用域表达力；v7 存量空 user_id 行不属于任何
+        #     租户，不动。表未建过 = 该库从未启用，跳过不告警。
+        try:
+            oconn = get_facts_conn()
+            try:
+                if oconn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='observations'"
+                ).fetchone():
+                    ocols = {r[1] for r in oconn.execute("PRAGMA table_info(observations)")}
+                    if "user_id" in ocols:
+                        cur = oconn.execute(
+                            "DELETE FROM observations WHERE user_id=?", (scope.user_id,))
+                        oconn.commit()
+                        res["observations_deleted"] = int(cur.rowcount or 0)
+            finally:
+                oconn.close()
+        except Exception as e:
+            logger.warning("observations delete_all 清理失败: %s", e)
+
+        # 13. 场景库（v20.1.1 R-18）。v20 起自带全轴列，谓词直删。
+        try:
+            sconn = get_facts_conn()
+            try:
+                if sconn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scenes'"
+                ).fetchone():
+                    cur = sconn.execute(
+                        "DELETE FROM scenes WHERE user_id=? AND bank_id=?",
+                        (scope.user_id, scope.bank_id))
+                    sconn.commit()
+                    res["scenes_deleted"] = int(cur.rowcount or 0)
+            finally:
+                sconn.close()
+        except Exception as e:
+            logger.warning("scenes delete_all 清理失败: %s", e)
 
         wal.mark_status(wal_id, "committed")
         logger.info("🧹 多仓原子级联清空完成 user=%s: %s", user_id, res)
