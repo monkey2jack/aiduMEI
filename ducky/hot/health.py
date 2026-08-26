@@ -159,19 +159,30 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as _lexc:
             probes["local_embed"] = {"error": str(_lexc)[:120]}
         try:
-            from ducky.dual_index import local_point_count, pending_counts
+            from ducky.dual_index import (last_replay_status, local_point_count,
+                                          pending_counts)
             probes["local_index_points"] = local_point_count()
-            probes["pending_embeddings"] = pending_counts()
+            # v20.2.1（外审 R2 配套）：水位旁带「上次重放」——欠账长期非零
+            # 而 last_replay 一直 None/很旧，就是重放触发链断了的直接证据。
+            probes["pending_embeddings"] = {**pending_counts(),
+                                            "last_replay": last_replay_status()}
         except Exception as _dexc:
             probes["dual_index_error"] = str(_dexc)[:120]
 
-        # v20.1.1（N-1）：限流生效值可查——配置生效三查的运维面。非法
-        # env 的报错原文进探针，与阈值/开关探针同一纪律：不静默。
+        # v20.1.1（N-1）：限流生效值可查——配置生效三查的运维面。
+        # v20.2.1（外审 R1 同款）：非法 env 改为回退默认不再抛，探针从
+        # 「捕 ValueError」换成读 config_errors —— 不静默的纪律不变，
+        # 出声方式从炸改成常驻可查。
         try:
-            from ducky.rate_guard import add_rate_limit, delete_all_rate_limit
+            from ducky.rate_guard import (add_rate_limit, delete_all_rate_limit,
+                                          rate_config_errors)
             probes["rate_add_per_min_effective"] = add_rate_limit()
             probes["rate_delete_all_per_min_effective"] = delete_all_rate_limit()
-        except ValueError as _rl_exc:
+            _rc_err = rate_config_errors()
+            if _rc_err:
+                probes["rate_limit_config_error"] = "; ".join(
+                    _rc_err.values())[:160]
+        except Exception as _rl_exc:
             probes["rate_limit_config_error"] = str(_rl_exc)[:160]
 
         # v20.1 WP-D1：核心记忆向量索引开关生效值。值非法时错误原文进探针

@@ -45,30 +45,39 @@ _last_reason = ""
 _shift_count = 0
 
 
-def _int_env(name: str, default: int) -> int:
+# v20.2.1（外审 R1 · 配置雷）：三个阈值站在熔断主路径上（should_try_cloud
+# 在 engine 向量腿 try 之前）——非法 env 若在这里 raise，一个配置笔误就把
+# 「断供保命机制」反转成「hybrid 腿全灭」。保命路径的纪律修正为：
+# **回退默认 + 出声（warning 一次 + 探针常驻）**，绝不抛。
+# 「非法值不静默」的老纪律没有丢——它从「炸」改成了「可观测」。
+_config_errors: dict = {}
+
+
+def _env_or_default(name: str, default, caster, valid):
     raw = os.environ.get(name)
     if raw is None:
+        _config_errors.pop(name, None)
         return default
     try:
-        v = int(raw.strip())
-        if v < 1:
+        v = caster(raw.strip())
+        if not valid(v):
             raise ValueError
+        _config_errors.pop(name, None)
         return v
-    except ValueError:
-        raise ValueError(f"{name} 非法值 {raw!r}：需 >=1 的整数")
+    except (ValueError, TypeError):
+        msg = f"{name} 非法值 {raw!r}，已回退默认 {default}（保命路径不因配置炸）"
+        if _config_errors.get(name) != msg:
+            logger.warning("⚙️ %s", msg)
+        _config_errors[name] = msg
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    return _env_or_default(name, default, int, lambda v: v >= 1)
 
 
 def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        v = float(raw.strip())
-        if v <= 0:
-            raise ValueError
-        return v
-    except ValueError:
-        raise ValueError(f"{name} 非法值 {raw!r}：需 >0 的秒数")
+    return _env_or_default(name, default, float, lambda v: v > 0)
 
 
 def trip_threshold() -> int:
@@ -147,15 +156,14 @@ def record_cloud_success(*, now: Optional[float] = None) -> None:
 
 def _spawn_replay() -> None:
     """升挡后台重放欠账（lite 挡期间的蒸馏与本地补写）。守护线程，
-    失败留账下轮——重放绝不阻塞升挡本身。"""
-    def _run():
-        try:
-            from ducky.dual_index import replay_pending
-            report = replay_pending(apply=True)
-            logger.info("⚙️ 升挡欠账重放：%s", report)
-        except Exception as exc:
-            logger.warning("升挡欠账重放失败（留账）: %s", exc)
-    threading.Thread(target=_run, name="gear-replay", daemon=True).start()
+    失败留账下轮——重放绝不阻塞升挡本身。v20.2.1（外审 R2）后重放有
+    两个触发点（升挡事件 + 启动对账），线程逻辑收编进
+    dual_index.spawn_replay_daemon 共用，绝不各养一套。"""
+    try:
+        from ducky.dual_index import spawn_replay_daemon
+        spawn_replay_daemon(source="upshift")
+    except Exception as exc:
+        logger.warning("升挡欠账重放挂起失败（留账）: %s", exc)
 
 
 def should_try_cloud(*, now: Optional[float] = None) -> bool:
@@ -197,11 +205,13 @@ def gear_status(*, now: Optional[float] = None) -> dict:
             "cooldown_sec": cooldown_sec(),
             "last_shift_reason": _last_reason or None,
             "shift_count": _shift_count,
+            "config_errors": dict(_config_errors) or None,
         }
 
 
 def reset_gear_for_tests() -> None:
     global _state, _consec_failures, _consec_successes, _opened_at, _last_reason, _shift_count
+    _config_errors.clear()
     with _LOCK:
         _state = "closed"
         _consec_failures = 0

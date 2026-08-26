@@ -52,8 +52,13 @@ def ensure_local_collection(client=None) -> None:
 
 
 def upsert_local(point_id: str, text: str, payload: Dict[str, Any],
-                 client=None) -> bool:
-    """写一条本地向量；失败进欠账不抛（软失败三副本纪律）。"""
+                 client=None, *, enqueue_on_fail: bool = True) -> bool:
+    """写一条本地向量；失败进欠账不抛（软失败三副本纪律）。
+
+    enqueue_on_fail（v20.2.1 外审 R4）：重放路径必须传 False —— 重放
+    失败时这里再入一笔新账、外层又把原行回滚待重放，每轮净增 1 条，
+    模型持续故障下欠账表指数自我复制。失败语义由调用方决定：常规写
+    失败=入账（补算契约），重放失败=只回滚原行（留账下轮）。"""
     try:
         from qdrant_client import models as qm
         client = client or _qdrant_client()
@@ -70,9 +75,25 @@ def upsert_local(point_id: str, text: str, payload: Dict[str, Any],
             feature_failed("dual_index_local", exc)
         except Exception:
             pass
-        _enqueue_pending("local", point_id, text, payload)
+        if enqueue_on_fail:
+            _enqueue_pending("local", point_id, text, payload)
         logger.debug("本地向量写入欠账 %s: %s", point_id, exc)
         return False
+
+
+def verbatim_local_pid(user_id: str, bank_id: str, text: str) -> str:
+    """verbatim 本地点的确定性 id（纯函数，v20.2.1 外审 R3 抽出）。
+
+    这类点的 id 由 (原文, 域) 派生而非 memory_id 同源 —— 一条原文可
+    蒸出多条记忆，天然一对多，没有唯一的 memory_id 可同源。单条删除
+    链要够到它，必须拿被删记忆的正文**重演同一套派生**（wal_engine §8b
+    搭车 §0a 抓到的正文调本函数）。改这里的派生公式 = 同时改写入与
+    删除两侧，绝不许只改一边。"""
+    import hashlib
+    import uuid
+    digest = hashlib.md5((text or "").strip().encode("utf-8")).hexdigest()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL,
+                          f"aidumei:verbatim_local::{digest}::{user_id}::{bank_id}"))
 
 
 def upsert_local_verbatim(user_id: str, bank_id: str, text: str,
@@ -80,14 +101,12 @@ def upsert_local_verbatim(user_id: str, bank_id: str, text: str,
     """原文本地向量（lite 挡召回语料）：id 由 (原文哈希, 域) 确定性派生 ——
     同一句原文重发不堆点（与 verbatim 幂等去重同语义）。"""
     import hashlib
-    import uuid
     from datetime import datetime
     text = (text or "").strip()
     if not text:
         return False
     digest = hashlib.md5(text.encode("utf-8")).hexdigest()
-    pid = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                         f"aidumei:verbatim_local::{digest}::{user_id}::{bank_id}"))
+    pid = verbatim_local_pid(user_id, bank_id, text)
     now = datetime.now().isoformat()
     payload = {
         "data": text[:2000],
@@ -279,7 +298,80 @@ def pending_counts() -> Dict[str, int]:
         return {"cloud": -1, "local": -1}
 
 
-def replay_pending(*, apply: bool = True, limit: int = 200) -> Dict[str, Any]:
+_last_replay: Dict[str, Any] = {}
+
+
+def last_replay_status() -> Optional[dict]:
+    """/health 用：最近一次欠账重放的时间、触发源与结果（进程内，
+    重启归 None —— 与挡位同语义：重启是重新认识世界）。"""
+    return dict(_last_replay) or None
+
+
+def unreplayed_count() -> int:
+    """待重放行数（不含 claiming —— 那是正被别的线程还着的账）。"""
+    try:
+        from ducky.utils import get_facts_conn
+        ensure_pending_schema()
+        conn = get_facts_conn()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM pending_embeddings "
+                "WHERE replayed_at IS NULL").fetchone()
+            return int(row[0] or 0)
+        finally:
+            conn.close()
+    except Exception:
+        return -1
+
+
+def spawn_replay_daemon(source: str) -> bool:
+    """守护线程重放欠账 —— 升挡事件与启动对账两个触发点共用。
+
+    v20.2.1（外审 R2）：重放此前只挂在「升挡事件」上，而重启把挡位重置
+    回 closed，升挡事件重启后永不再来 —— lite 期欠账成永久赖账。
+    reconcile_startup 末尾兜底扫一遍即闭合。零欠账不起线程；claiming
+    原子抢占已防两个触发点并发。返回是否真的起了线程。"""
+    import threading
+    if unreplayed_count() <= 0:
+        return False
+
+    def _run():
+        try:
+            report = replay_pending(apply=True, source=source)
+            logger.info("⚙️ 欠账重放（%s）：%s", source, report)
+        except Exception as exc:
+            logger.warning("欠账重放失败（%s，留账下轮）: %s", source, exc)
+
+    threading.Thread(target=_run, name=f"pending-replay-{source}",
+                     daemon=True).start()
+    return True
+
+
+def _revoke_replayed_add(mem, added) -> int:
+    """残窗补偿（v20.2.1 · 外部审计建议采纳）：claiming 抢占后、mem.add
+    完成前，同租户 delete_all 交叉 —— 账本行已被按域清掉，而 add 刚把
+    内容写回云侧 = 已删内容复活。把刚重放的点当场撤销：**用户的删除
+    意愿优先于补算完整性**。逐点独立撤销，单点失败不拖垮其余。"""
+    ids = []
+    if isinstance(added, dict):
+        for r in added.get("results") or []:
+            mid = (r or {}).get("id") if isinstance(r, dict) else None
+            if mid:
+                ids.append(str(mid))
+    revoked = 0
+    for mid in ids:
+        try:
+            mem.delete(mid)
+            revoked += 1
+        except Exception as exc:
+            logger.warning("残窗补偿撤销失败 %s: %s", mid, exc)
+    logger.warning("🪫 重放残窗补偿：同租户 delete_all 交叉，撤销刚重放的 %d/%d 点",
+                   revoked, len(ids))
+    return revoked
+
+
+def replay_pending(*, apply: bool = True, limit: int = 200,
+                   source: str = "manual") -> Dict[str, Any]:
     """欠账重放（升挡后/启动对账调用）。cloud 侧重放整笔 add（完整蒸馏），
     local 侧重放单点 upsert。逐条独立：一条失败不拖垮批次，留在账上下轮再来。"""
     from ducky.utils import get_facts_conn
@@ -293,7 +385,8 @@ def replay_pending(*, apply: bool = True, limit: int = 200) -> Dict[str, Any]:
     finally:
         conn.close()
     report = {"scanned": len(rows), "replayed": 0, "failed": 0,
-              "skipped_claimed_or_deleted": 0, "apply": apply}
+              "skipped_claimed_or_deleted": 0, "revoked_after_scope_delete": 0,
+              "apply": apply}
     if not apply:
         return report
     for pid, side, ref_id, payload_json, user_id, bank_id in rows:
@@ -321,11 +414,28 @@ def replay_pending(*, apply: bool = True, limit: int = 200) -> Dict[str, Any]:
                 from ducky.mem0_runtime import get_memory
                 from ducky.bank_contract import stamp_bank_metadata
                 mem = get_memory()
-                mem.add(data.get("messages", ""), user_id=user_id,
-                        metadata=stamp_bank_metadata(data.get("metadata") or {}, bank_id))
+                added = mem.add(data.get("messages", ""), user_id=user_id,
+                                metadata=stamp_bank_metadata(data.get("metadata") or {}, bank_id))
+                # 残窗闭合（v20.2.1 · 外部审计建议）：add 完成后复核账本行
+                # 还在不在 —— 按域清账（delete_all）连 claiming 行一起删，
+                # 行没了即证明窗口内该租户要求了删除。撤销刚写入的点。
+                vconn = get_facts_conn()
+                try:
+                    still = vconn.execute(
+                        "SELECT 1 FROM pending_embeddings WHERE pending_id=?",
+                        (pid,)).fetchone()
+                finally:
+                    vconn.close()
+                if still is None:
+                    _revoke_replayed_add(mem, added)
+                    report["revoked_after_scope_delete"] += 1
+                    continue
             else:
+                # R4：重放失败不许再入新账（enqueue_on_fail=False），
+                # 只走下方回滚原行 —— 否则每轮净增 1 条自我复制。
                 ok = upsert_local(ref_id, data.get("text", ""),
-                                  data.get("payload") or {})
+                                  data.get("payload") or {},
+                                  enqueue_on_fail=False)
                 if not ok:
                     raise RuntimeError("本地补写仍失败")
             conn = get_facts_conn()
@@ -351,6 +461,10 @@ def replay_pending(*, apply: bool = True, limit: int = 200) -> Dict[str, Any]:
                     rconn.close()
             except Exception:
                 pass
+    from datetime import datetime
+    _last_replay.clear()
+    _last_replay.update({"at": datetime.now().isoformat(timespec="seconds"),
+                         "source": source, "report": dict(report)})
     return report
 
 
