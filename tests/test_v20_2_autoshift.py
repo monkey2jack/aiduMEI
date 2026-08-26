@@ -75,17 +75,20 @@ class _FakeQdrant:
                 if count_filter is None or self._match(pl, count_filter))
         return type("R", (), {"count": n})()
 
-    def search(self, collection_name, query_vector, query_filter=None,
-               limit=10, with_payload=True):
+    # 生产 API 面对齐：新版 qdrant-client **没有** search，只有 query_points。
+    # 替身若多实现一个生产没有的方法，就会像首版那样给假绿灯 ——
+    # 这里刻意只实现 query_points。
+    def query_points(self, collection_name, query, query_filter=None,
+                     limit=10, with_payload=True):
         col = self.cols.get(collection_name, {})
         hits = []
         for pid, (vec, pl) in col.items():
             if query_filter is not None and not self._match(pl, query_filter):
                 continue
-            score = sum(a * b for a, b in zip(query_vector, vec))
+            score = sum(a * b for a, b in zip(query, vec))
             hits.append(type("H", (), {"id": pid, "score": score, "payload": pl})())
         hits.sort(key=lambda h: h.score, reverse=True)
-        return hits[:limit]
+        return type("R", (), {"points": hits[:limit]})()
 
     @staticmethod
     def _match(payload, flt) -> bool:
