@@ -901,8 +901,23 @@ def audit_core_replicas(user_id: str = DEFAULT_USER_ID,
             except Exception:
                 vec_ok = None
                 vector_checked = False
-        if not fts_ok or vec_ok is False:
-            gaps.append({"block": key, "fts": fts_ok, "vector": vec_ok})
+        # v20.2 验收门槛 2：对账巡检覆盖**本地腿**（自动挡第四副本）。
+        # None = 本地库尚未建（备胎未启用/未回填），不算缺腿——缺的定义
+        # 是「库在而块不在」；False 才进 gaps。
+        local_ok = None
+        if mem is not None:
+            try:
+                from ducky.dual_index import LOCAL_COLLECTION
+                client = mem.vector_store.client
+                if LOCAL_COLLECTION in {c.name for c in client.get_collections().collections}:
+                    got = client.retrieve(LOCAL_COLLECTION, ids=[
+                        core_vector_point_id(key, scope.user_id, scope.bank_id)])
+                    local_ok = bool(got)
+            except Exception:
+                local_ok = None
+        if not fts_ok or vec_ok is False or local_ok is False:
+            gaps.append({"block": key, "fts": fts_ok, "vector": vec_ok,
+                         "local_vector": local_ok})
     return {"checked": checked, "gaps": gaps, "vector_checked": vector_checked}
 
 

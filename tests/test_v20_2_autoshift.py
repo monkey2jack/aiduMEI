@@ -65,6 +65,10 @@ class _FakeQdrant:
             for pid in doomed:
                 col.pop(pid)
 
+    def retrieve(self, collection_name, ids, **kw):
+        col = self.cols.get(collection_name, {})
+        return [type("P", (), {"id": i})() for i in ids if str(i) in col]
+
     def count(self, collection_name, count_filter=None, exact=True):
         col = self.cols.get(collection_name, {})
         n = sum(1 for _, (v, pl) in col.items()
@@ -388,3 +392,72 @@ class TestAutoshiftDrill:
         assert di.pending_counts()["cloud"] == 0, "欠账没清零"
         assert any("青竹" in str(c.get("messages", "")) for c in fake.add_calls), \
             "重放没把断供期写入送进完整蒸馏管线"
+
+
+# ══════════════════════════════════════════════════════════════════
+# 自审补项（无外审轮的质量补位）
+# ══════════════════════════════════════════════════════════════════
+
+class TestSelfAuditAdditions:
+    def test_replay_race_deleted_tenant_does_not_resurrect(self, rig):
+        """w 式组合拳变体（自审发现）：欠账重放拿的是快照行 ——
+        delete_all 清租户后，快照行必须抢占失败并跳过，绝不补蒸馏复活。"""
+        client, fake, _, di = rig
+        from ducky.wal_engine import cascade_delete_all
+        di.enqueue_cloud_add({"messages": "将被删除租户的欠账原文"}, "race_u", "default")
+        rows_snapshot_taken = di.pending_counts()["cloud"] == 1
+        assert rows_snapshot_taken
+        cascade_delete_all("race_u")  # §15 清欠账
+        report = di.replay_pending(apply=True)
+        assert report["replayed"] == 0, "已删租户的欠账被重放 —— 复活"
+        assert not any("将被删除租户" in str(c.get("messages", ""))
+                       for c in fake.add_calls), "已删原文进了蒸馏管线"
+
+    def test_full_gear_does_not_double_count_local_index(self, rig):
+        """验收门槛 3 显式化：full 挡召回绝不掺本地索引的点（不双计）。"""
+        client, fake, http, di = rig
+        gear.reset_gear_for_tests()
+        di.upsert_local_verbatim("nodup", "default", "只在本地库存在的句子甲乙丙")
+        body = http.post("/search", json={
+            "query": "只在本地库存在的句子甲乙丙", "user_id": "nodup"}).json()
+        assert body.get("engine_mode") == "full"
+        texts = [r.get("memory", "") for r in body.get("results", [])]
+        assert not any("句子甲乙丙" in x for x in texts), \
+            "full 挡吃到了 local-only 点 —— 双计/跨语言污染"
+
+    def test_core_audit_covers_local_leg(self, rig, monkeypatch):
+        """验收门槛 2 补齐：核心块对账必须看得见本地腿缺失。"""
+        import ducky.core_memory as cm
+        import ducky.utils as utils
+        client, fake, _, di = rig
+        monkeypatch.setattr(cm, "_initialized", False)
+        cm._initialized_scopes.clear()
+
+        class _CoreVS:
+            def __init__(self, c):
+                self.client = c
+            def insert(self, vectors, payloads=None, ids=None):
+                self.client.create_collection("mem0")
+                from types import SimpleNamespace
+                pts = [SimpleNamespace(id=i, vector=v, payload=p)
+                       for i, v, p in zip(ids, vectors, payloads)]
+                self.client.upsert("mem0", pts)
+            def get(self, vid):
+                return self.client.cols.get("mem0", {}).get(str(vid))
+        class _CoreMem:
+            embedding_model = fake.embedding_model
+            vector_store = _CoreVS(client)
+        import ducky.mem0_runtime as runtime
+        monkeypatch.setattr(runtime, "get_memory", lambda: _CoreMem())
+
+        cm.put_block("core_current_project", "对账演练之本地腿内容一二三",
+                     user_id="audit_l")
+        rep = cm.audit_core_replicas(user_id="audit_l")
+        assert rep["checked"] == 1 and rep["gaps"] == [], rep  # 三腿+本地腿全齐
+
+        # 掐掉本地副本 → 对账必须看见 local_vector=False
+        pid = cm.core_vector_point_id("core_current_project", "audit_l", "default")
+        client.cols[di.LOCAL_COLLECTION].pop(pid, None)
+        rep = cm.audit_core_replicas(user_id="audit_l")
+        assert rep["gaps"] and rep["gaps"][0].get("local_vector") is False, \
+            "本地腿缺失没被对账看见 —— 第四副本静默缺腿"
