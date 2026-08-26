@@ -93,6 +93,11 @@ _OUTBOUND_THIRD_PARTY = {
         "出站打 LLM 供应商的 /chat/completions（:165 requests.post；:168 的 Bearer 来自 "
         "_resolve_key(api_key, 'llm')，即供应商 key；地址来自 cfg['base_url']）。"
         "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
+    "ducky/mem0_patches.py":
+        "自身不发任何请求：import httpx 只为构造 httpx.Timeout 配置对象，"
+        "交给 mem0 内部 openai 客户端（§6 llm_transport_policy，v20.2.2 传输层"
+        "快失败）。真正的出站方是 mem0 打 LLM 供应商网关，Bearer 是供应商 key，"
+        "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
     "ducky/pipeline/memory_vision.py":
         "出站打多模态供应商的 {base_url}/chat/completions（:81 requests.post；:54 的 Bearer "
         "来自 cfg 的 api_key，未配置时 :47-48 直接返回错误串而不发请求）。"
