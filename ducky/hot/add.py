@@ -222,6 +222,40 @@ def register_add_routes(app: FastAPI) -> None:
                 feature_failed("pattern_extract", _pe)
                 logger.warning(f"🧩 [PatternExtract] 确定性抽取跳过: {_pe}")
 
+            # 🪫 v20.2 自动挡（WP-F/WP-H）：
+            # ① 原文本地向量 —— lite 挡语义召回的语料，路由层单点写入
+            #    （三条通路全覆盖，与 pattern_extract 同位置哲学），软失败
+            #    进欠账绝不阻断。
+            # ② lite 挡分流 —— 云嵌入熔断期间完全绕开 mem0 主体（LLM 蒸馏
+            #    + 云向量整笔进欠账，升挡后重放走完整管线），确定性层
+            #    （pattern facts / verbatim / 本地向量）已在上方全部落完。
+            #    挡位如实回给调用方，蒸馏延迟不装没事。
+            try:
+                from ducky.dual_index import upsert_local_verbatim
+                upsert_local_verbatim(req.user_id, req.bank_id, _full_text)
+            except Exception as _lv:
+                feature_failed("dual_index_local", _lv)
+                logger.debug(f"🪫 [DualIndex] 原文本地向量跳过: {_lv}")
+            try:
+                from ducky.gear import current_mode
+                if current_mode() == "lite":
+                    from ducky.dual_index import enqueue_cloud_add
+                    enqueue_cloud_add(
+                        {"messages": req.messages if isinstance(req.messages, str)
+                         else messages_json, "metadata": dict(md)},
+                        req.user_id, req.bank_id)
+                    return {
+                        "status": "ok",
+                        "action": "deferred_distillation",
+                        "engine_mode": "lite",
+                        "detail": "云嵌入熔断中：硬事实与原文已确定性落库并可召回；"
+                                  "LLM 蒸馏与云向量已入欠账，服务恢复后自动补算",
+                    }
+            except HTTPException:
+                raise
+            except Exception as _ge:
+                logger.warning(f"⚙️ [Gear] 挡位分流异常（回落 full 路径）: {_ge}")
+
             def _run_pipeline(uid, msgs, meta):
                 try:
                     return lazy_import_layer1()(

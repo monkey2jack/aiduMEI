@@ -163,7 +163,10 @@ def test_route_embedding_down_is_degraded_not_not_found(search_client):
     assert body["recall_verdict"] == "degraded", \
         f"搜挂了被伪装成 {body.get('recall_verdict')} —— 反静默降级铁律"
     assert body["verdict_basis"] == "empty_after_leg_failure"
-    assert body["_recall_legs"].get("vector_leg") == "failed"
+    # v20.2 自动挡：云腿失败后本请求就地落本地腿（无感 fallback），
+    # 但备胎空手（本环境无本地索引）时判语必须仍是 degraded ——
+    # 「备胎接住了」与「云断且备胎也空手」是两回事，后者不许装 not_found。
+    assert body["_recall_legs"].get("vector_leg") == "local_fallback"
     assert "embedding" in body["_recall_legs"].get("error", "")
 
 

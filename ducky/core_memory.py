@@ -807,11 +807,19 @@ def _vector_index_core_block(block_key: str, content: str,
             "reliability": 1.0,
             "recorded_at": now,
         }
+        _pid = core_vector_point_id(block_key, user_id, bank_id)
         mem.vector_store.insert(
             vectors=[vec],
             payloads=[payload],
-            ids=[core_vector_point_id(block_key, user_id, bank_id)],
+            ids=[_pid],
         )
+        # v20.2 自动挡：核心块同 id 补本地副本（软失败进欠账不拖垮云腿）——
+        # 降挡时核心记忆照样可被语义召回。
+        try:
+            from ducky.dual_index import upsert_local
+            upsert_local(_pid, content, payload)
+        except Exception as _le:
+            logger.debug("核心块本地副本跳过 %s: %s", block_key, _le)
         return True
     except Exception as exc:
         try:

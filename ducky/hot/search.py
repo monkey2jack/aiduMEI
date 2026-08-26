@@ -288,6 +288,7 @@ def register_search_routes(app: FastAPI) -> None:
                         # workspace 命中 = 热缓存里真有 —— found，无歧义。
                         "recall_verdict": "found",
                         "verdict_basis": "workspace_hit",
+                        "engine_mode": __import__("ducky.gear", fromlist=["current_mode"]).current_mode(),
                         "recall_confidence": ws_strength["top_score"],
                     }
             except ImportError:
@@ -351,13 +352,29 @@ def register_search_routes(app: FastAPI) -> None:
                 results,
                 strength["top_score"],
                 _verdict_threshold(),
-                vector_leg_failed=(recall_telem.get("vector_leg") == "failed"),
+                # v20.2：云腿断但本请求已落本地腿——备胎拿出货就是 found
+                # （engine_mode=lite 如实标注）；备胎空手 = 系统能力受损，
+                # 仍判 degraded，绝不冒充「查无此忆」。
+                vector_leg_failed=(
+                    recall_telem.get("vector_leg") == "failed"
+                    or (recall_telem.get("vector_leg") == "local_fallback"
+                        and not results)
+                ),
                 recall_path=recall_path,
             )
             if verdict == "degraded":
                 logger.warning("召回判语 degraded：%s（vector_leg=%s）",
                                verdict_basis, recall_telem.get("error", "-"))
-            return {
+            # v20.2 自动挡（WP-H）：挡位如实随响应下发。lite 挡的置信分
+            # 是本地模型口径，与云模型分数不可直接比较 —— 降挡是保命，
+            # 不是无损平替，口径差异必须让调用方看得见。
+            from ducky.gear import gear_status
+            _gs = gear_status()
+            # 本次请求实际用的腿比系统挡位更诚实：half-open 探测成功的那次
+            # 查询真真切切吃的是云腿，报 lite 反而是撒谎。
+            _leg = (recall_telem or {}).get("vector_leg", "")
+            _this_mode = "lite" if _leg in ("local", "local_fallback") else _gs["mode"]
+            resp = {
                 "status": "ok", "results": results,
                 "_recall_path": recall_path,
                 "_rerank": rerank_telem,
@@ -366,7 +383,12 @@ def register_search_routes(app: FastAPI) -> None:
                 "recall_verdict": verdict,
                 "verdict_basis": verdict_basis,
                 "recall_confidence": strength["top_score"],
+                "engine_mode": _this_mode,
             }
+            if _this_mode == "lite":
+                resp["engine_mode_reason"] = _gs.get("last_shift_reason")
+                resp["confidence_scale"] = "local-bge-small-zh"
+            return resp
         except Exception as e:
             logger.error(f"search 失败: {e}")
             return {"status": "error", "results": [], "detail": str(e)}

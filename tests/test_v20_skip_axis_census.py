@@ -144,6 +144,19 @@ _AXES = (
         "doc_en": "`mem0ai` installed",
     },
     {
+        # v20.2 自动挡：备胎真模型测试要 fastembed + 模型文件在场 ——
+        # 缺依赖是跳过不是失败（与 mem0 轴同款；模型未部署时用例内
+        # 二次 skip，轴登记按依赖可导入性计）。
+        "key": "fastembed_local",
+        "file": "test_v20_2_autoshift.py",
+        "scope": "callsite",
+        # 同一用例两个跳过点同属本轴：依赖缺失（importorskip）与
+        # 模型文件未部署（用例内 skip）——都是「备胎不在场」。
+        "match": r'importorskip\("fastembed"|模型文件未部署',
+        "doc_zh": "`fastembed` 已安装",
+        "doc_en": "`fastembed` installed",
+    },
+    {
         "key": "git_binary",
         "file": "test_v20_gitignore_guard.py",
         "scope": "file",
@@ -443,7 +456,8 @@ def test_every_registered_skip_axis_has_a_probe():
                      ("regex", "bench_dep_regex"),
                      ("numpy", "bench_dep_numpy"),
                      ("nltk", "bench_dep_nltk"),
-                     ("mem0", "mem0_base")):
+                     ("mem0", "mem0_base"),
+                     ("fastembed", "fastembed_local")):
         try:
             __import__(mod)
         except ImportError:
@@ -458,7 +472,7 @@ def test_every_registered_skip_axis_has_a_probe():
 
     probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
               "bench_dep_regex", "bench_dep_numpy", "bench_dep_nltk",
-              "locomo_dataset", "git_binary", "mem0_base"}
+              "locomo_dataset", "git_binary", "mem0_base", "fastembed_local"}
     unprobed = {axis["key"] for axis in _AXES} - probed
     assert not unprobed, (
         f"这些轴没有探测器：{sorted(unprobed)} —— 少一个探测器，"

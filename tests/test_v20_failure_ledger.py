@@ -124,6 +124,7 @@ _EXPECTED_FEATURES = {
     # 分开记名：两条腿坏法不同（FTS=本地库，向量=嵌入服务+向量库），
     # 修法也不同，合并记账会把诊断线索抹掉。
     "core_memory_vector_index",
+    "dual_index_local",
 }
 
 
