@@ -508,6 +508,14 @@ def cascade_delete_memory(
         except Exception as we:
             logger.warning("workspace 单条驱逐失败: %s", we)
 
+        # 8. 本地向量单删（v20.2 自动挡 WP-F）。双索引同源 id ——
+        #    云侧删了本地不删，降挡时已删内容会从备胎索引复活。
+        try:
+            from ducky.dual_index import delete_local
+            res["local_vector_deleted"] = delete_local([memory_id]) > 0
+        except Exception as e:
+            logger.debug("本地向量单删跳过: %s", e)
+
         wal.mark_status(wal_id, "committed")
         return {"status": "ok", "details": res}
     except Exception as exc:
@@ -549,6 +557,8 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "store:evolve":     ("clean",  "按本租户已删 memory_id 集合清理（§5，检索质量信号）"),
     "store:verbatim":   ("clean",  "cascade_delete_verbatim（§6）"),
     "store:workspace":  ("clean",  "ws_clear 内存+SQLite 双清（§7，v20.1 整改轮补齐 —— 外审 z P1-01：此前已删内容以 found/workspace_hit 复活）"),
+    "store:qdrant_local": ("clean", "v20.2 自动挡本地向量库（mem0_local，512 维）：(user_id, bank_id) 谓词删除（§14）；单删按同源 id 精确删"),
+    "pending_embeddings": ("clean", "v20.2 自动挡欠账账本：载荷含用户原文，(user_id, bank_id) 谓词删除（§15）——欠着的债也是债，删除承诺覆盖它"),
     # ── 显式申报的已知残留（申报不是沉默；沉默才是本矩阵要消灭的东西）──
     "observations":       ("clean",  "R-18(v20.1.1)：user 轴谓词删除（§12）——表无 bank 列，user 轴是它拥有的全部作用域表达力；v7 存量空 user_id 行不属于任何租户，不动"),
     "scenes":             ("clean",  "R-18(v20.1.1)：(user_id, bank_id) 谓词删除（§13）"),
@@ -900,6 +910,25 @@ def cascade_delete_all(
                 sconn.close()
         except Exception as e:
             logger.warning("scenes delete_all 清理失败: %s", e)
+
+        # 14. 本地向量库（v20.2 自动挡 WP-F）。lite 挡语料与蒸馏本地副本
+        #     都住这里，域谓词删除——已删内容绝不许从备胎索引复活。
+        try:
+            from ducky.dual_index import delete_local_by_scope
+            res["local_vectors_deleted"] = delete_local_by_scope(
+                scope.user_id, bank_id=scope.bank_id)
+        except Exception as e:
+            logger.warning("本地向量 delete_all 清理失败: %s", e)
+
+        # 15. 欠账账本（v20.2 自动挡 WP-F）。lite 挡期间的原始请求载荷
+        #     在这里排队等重放——不清它，已删租户的原文会在升挡重放时
+        #     以「补蒸馏」的名义复活（与 w 的回填复活链同形）。
+        try:
+            from ducky.dual_index import delete_pending_by_scope
+            res["pending_embeddings_deleted"] = delete_pending_by_scope(
+                scope.user_id, bank_id=scope.bank_id)
+        except Exception as e:
+            logger.warning("欠账账本 delete_all 清理失败: %s", e)
 
         wal.mark_status(wal_id, "committed")
         logger.info("🧹 多仓原子级联清空完成 user=%s: %s", user_id, res)

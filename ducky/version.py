@@ -3,6 +3,36 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.2.0 (私有验证线 20.2.0-dev.N · 智慧引擎自动挡 · 2026-08-26)
+    主题：外部服务失效时自动降挡无感续跑，恢复时自动升挡欠账回补，挡位
+    永远诚实可见。「V20 就是双引擎、自动挡、市面独一份」（维护者定调）。
+    公开 Tag/Release 停在 v20.1，正式 v20.2 须验收通过并获授权后发布。
+    1. WP-E 本地嵌入备胎：ducky/local_embed.py（fastembed/ONNX，
+       BAAI/bge-small-zh-v1.5 512 维）——阶段 0 双环境 POC 定案（sanity
+       双 6/6，单条 1.0ms 开发机 / 6.7ms 生产 2 核）；运行时强制离线
+       （HF_HUB_OFFLINE），模型由 scripts/fetch_local_embed_model.py
+       部署期就位（支持 --from 离线拷入）；fastembed 进可选依赖组并登记
+       第十一条跳过轴。
+    2. WP-F 双索引与欠账：ducky/dual_index.py —— 本地 collection
+       mem0_local（512 维）与云库同源 id；原文本地向量在 /add 路由层
+       单点写入（ducky/hot/add.py，lite 挡语料）；核心块双写
+       （ducky/core_memory.py）；欠账账本 pending_embeddings（lite 挡
+       整笔蒸馏欠账 + 本地单点欠账，恢复重放）；删除链新增本地腿与
+       欠账腿（ducky/wal_engine.py §14/§15 + 单删 §8，矩阵两条新裁决）；
+       存量回填 scripts/backfill_local_vectors.py（dry-run 默认，生产
+       执行停点）。
+    3. WP-G 熔断切换器：ducky/gear.py 三态机（N=3/M=2/T=60s 惯例值，
+       标注待生产故障分布校准）；半开态拿真实流量当探针（首跑演练抓出
+       的死锁：不试探则成功信号永不来，系统卡死备胎挡）；云腿失败时
+       ducky/engine.py **同一请求内**落本地腿兜底——无感顺滑到单次查询；
+       升降挡进事件账本，升挡触发后台欠账重放。
+    4. WP-H 挡位诚实化：/search 响应带 engine_mode（按本次实际用的腿，
+       ducky/hot/search.py），lite 挡附 confidence_scale 口径注记；
+       /health 挡位/熔断内态/备胎在场/欠账水位/本地点数五探针。
+    5. 测试：新增 13 条点名用例（tests/test_v20_2_autoshift.py，含断供
+       演练全链端到端、假恢复防抖、降挡期云索引零写入负向）；用例总数
+       1267；双 README 与轴表同步。
+
 v20.1.1 (公开后外审加固 · 2026-08-26)
     主题：v20.1 公开发布后两份独立外审（生产侧复审 + 社区结构性审计）的
     复核采纳项落地。公开 Tag/Release 停在 v20.1，本版随 main 公开源码，
@@ -951,7 +981,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.1.1"
+SERVICE_VERSION = "20.2.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -965,6 +995,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.2.0", "", "", "智慧引擎自动挡 · 本地备胎/双索引/熔断切换/挡位诚实 · 私有验证线"),
     ("20.1.1", "", "", "公开后外审加固 · 限流护栏/metadata 白名单/R-18 删除链/守卫三连"),
     ("20.1.0", "", "", "确定性兜底与诚实召回 · 五份外审 R-01~R-17 闭合后公开"),
     ("20.0.1", "", "", "mem0ai 2.0.19 兼容 · 删除链孤儿清理 · 私有预发布"),
