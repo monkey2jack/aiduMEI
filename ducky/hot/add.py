@@ -256,42 +256,87 @@ def register_add_routes(app: FastAPI) -> None:
             except Exception as _ge:
                 logger.warning(f"⚙️ [Gear] 挡位分流异常（回落 full 路径）: {_ge}")
 
-            def _run_pipeline(uid, msgs, meta):
+            def _direct_write(uid, msgs, meta, infer_effective, note=None):
+                """确定性直写（layer1 之外的兜底通路）。infer_effective 由
+                调用方决定：非 LLM 故障透传调用方的 infer（v20 纪律——显式
+                免抽取不许偷偷变回 LLM 抽取）；LLM 故障/挡位 open 强制
+                False（否则 fallback 里还藏着一次 mem0 内部 LLM 调用 ——
+                2026-08-26 实弹里网关恰好复活才没暴露的洞）。"""
                 try:
-                    return lazy_import_layer1()(
+                    add_result = mem.add(msgs, user_id=uid, metadata=meta,
+                                         infer=infer_effective)
+                except Exception as _de:
+                    # fallback 自身纯化：直写内层再撞 LLMError（infer=True
+                    # 且 LLM 恰在此刻死）→ 上报挡位并就地降为 infer=False，
+                    # 绝不让 fallback 自己 500。非 LLM 异常照旧上抛。
+                    if type(_de).__name__ != "LLMError":
+                        raise
+                    from ducky.gear import record_llm_failure
+                    record_llm_failure(str(_de))
+                    logger.warning(f"直写内层 LLM 失败，就地降为确定性直写: {_de}")
+                    note = note or "skipped_llm_error"
+                    add_result = mem.add(msgs, user_id=uid, metadata=meta,
+                                         infer=False)
+                register_salience_for_add(add_result, user_id=uid, bank_id=req.bank_id)
+                try:
+                    from ducky.text_fts import _index_memory
+                    results = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
+                    if isinstance(results, list):
+                        for r in results:
+                            if not isinstance(r, dict):
+                                continue
+                            mid = r.get("id") or r.get("memory_id")
+                            content = r.get("memory") or r.get("data") or ""
+                            if mid and content:
+                                # 🔴v20：降级路径曾漏传 bank_id——向量进了
+                                # work 域、FTS 行落在 default 域，命名域的
+                                # 关键词召回永远查不到这条。此处必须带域。
+                                _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category"), bank_id=req.bank_id)
+                except Exception as ie:
+                    feature_failed("index_memory", ie)
+                    logger.debug(f"FTS index on add 跳过: {ie}")
+                out = {"status": "ok", "action": "direct"}
+                if note:
+                    # 诚实注记（additive，不动既有契约）：这条写入没做蒸馏。
+                    out["distillation"] = note
+                return out
+
+            def _run_pipeline(uid, msgs, meta):
+                # ⚙️ v20.2.2 LLM 腿挡位：open 态不再逐请求撞超时——直接
+                # 确定性直写秒回（原文/硬事实/云向量照落，内容照样可召回；
+                # 欠的只是蒸馏精修，故障账本与事件账本可查）。closed/half-open
+                # 走真实蒸馏，半开拿真实写入当探针（命门教训）。
+                from ducky.gear import record_llm_failure, record_llm_success, should_try_llm
+                try:
+                    _try_llm = should_try_llm()
+                except Exception:
+                    _try_llm = True
+                if not _try_llm and infer_flag:
+                    return _direct_write(uid, msgs, meta, False,
+                                         note="skipped_llm_gear_open")
+                try:
+                    _r = lazy_import_layer1()(
                         mem, msgs, uid, meta,
                         bank_id=req.bank_id, infer=infer_flag,
                     )
+                    # 成功信号只在 LLM 真被使用过时上报（infer=False 的
+                    # layer1 整段跳过 LLM——记成功就是假信号）。
+                    if infer_flag:
+                        record_llm_success()
+                    return _r
                 except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
                     feature_failed("index_memory", e)
                     logger.warning(f"Layer 1 自检异常，降级为直接写入: {e}")
-                    # v20：降级分支同样尊重 infer —— 否则调用方显式要的
-                    # 免抽取写入会在降级时偷偷变回 LLM 抽取，确定性通路
-                    # 就成了「大部分时候确定」，最坏的时候最不确定。
-                    add_result = mem.add(msgs, user_id=uid, metadata=meta,
-                                         infer=infer_flag)
-                    register_salience_for_add(add_result, user_id=uid, bank_id=req.bank_id)
-                    try:
-                        from ducky.text_fts import _index_memory
-                        results = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
-                        if isinstance(results, list):
-                            for r in results:
-                                if not isinstance(r, dict):
-                                    continue
-                                mid = r.get("id") or r.get("memory_id")
-                                content = r.get("memory") or r.get("data") or ""
-                                if mid and content:
-                                    # 🔴v20：这条降级分支漏传 bank_id。上面 store_verbatim /
-                                    # scan_and_resolve_text_conflicts / layer1 都老实传了
-                                    # req.bank_id，唯独 layer1 抛异常后的兜底写入没传 ——
-                                    # 于是向量进了 work 域、FTS 行却落在 default 域，
-                                    # 之后 work 域的关键词召回永远查不到这条。且这是**降级
-                                    # 路径**：出问题的时候才走到，最不容易被发现。
-                                    _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category"), bank_id=req.bank_id)
-                    except Exception as ie:
-                        feature_failed("index_memory", ie)
-                        logger.debug(f"FTS index on add 跳过: {ie}")
-                    return {"status": "ok", "action": "direct"}
+                    # 信号纯净（Y2 教训的写侧版）：只有 LLMError 形态计入
+                    # LLM 腿；FTS/salience 等非 LLM 崩溃不许污染挡位。
+                    if type(e).__name__ == "LLMError":
+                        record_llm_failure(str(e))
+                        return _direct_write(uid, msgs, meta, False,
+                                             note="skipped_llm_error")
+                    # v20：非 LLM 故障的降级分支照旧尊重 infer —— 否则
+                    # 调用方显式要的免抽取写入会在降级时偷偷变回 LLM 抽取，
+                    # 确定性通路就成了「大部分时候确定」。
+                    return _direct_write(uid, msgs, meta, infer_flag)
 
             def _execute_batch(uid, msgs, meta, job_ids):
                 """合并包 / 单条异步包统一执行，并把结果回写到所有关联 job。"""

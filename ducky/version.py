@@ -3,6 +3,35 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.2.2 (LLM 蒸馏腿挡位化 · 2026-08-26)
+    主题：自动挡补上第三条腿。实弹取证（2026-08-26 冒烟恰逢 LLM 网关
+    521 瞬态断供）：嵌入活着而 LLM 死时，mem0 内部 openai 客户端按
+    Retry-After:120 盲重试，把单次 /add 同步挂 4.5 分钟——LLM 腿此前
+    无挡位裸奔（嵌入腿 v20.2 有挡、rerank 腿 v20.1 已软失败）。
+    公开 Tag/Release 停在 v20.2，版本号仅服务侧三段式推进（SOP 双轨）。
+    1. 传输层快失败：ducky/mem0_patches.py §6 llm_transport_policy ——
+       mem0 内部 openai 客户端 max_retries=0 + 45s/connect 10s 超时
+       （45s 对齐 ducky/llm_client.py 已运行多版的验证值）；重试职责
+       上移给挡位与降级链。顺序契约：先换客户端实例再包用量追踪，
+       反过来 usage_tracking 静默空转。
+    2. LLM 蒸馏腿挡位：ducky/gear.py 泛化为参数化 _Breaker 双实例
+       （嵌入腿公开 API 签名与行为逐字不变，既有测试零改动全绿）；
+       LLM 腿 should_try_llm/record_llm_failure/record_llm_success，
+       env AIDUMEI_LLM_GEAR_*（回退语义同 R1），事件账本
+       target_id=llm_leg，/health 新增 llm_gear 探针
+       （ducky/hot/health.py）；.env.example 补录两腿参数。
+    3. 写路径接线：ducky/hot/add.py —— 挡位 open 时跳过 layer1 直接
+       确定性直写秒回（infer=False，原文/硬事实/云向量照落可召回），
+       响应带 distillation 注记（additive）；LLMError 形态失败上报
+       挡位并本请求就地降级；直写内层再撞 LLMError 自纯化（fallback
+       不许自己 500——洞③闭合）；非 LLM 故障保持旧语义透传 infer，
+       且不污染 LLM 腿信号（Y2 教训写侧版）。
+    4. 测试：9 条点名用例（两腿独立/三态防抖/降挡后跳过 layer1/信号
+       纯净/半开真实写入升挡/双重故障自纯化/传输补丁两态），6 处变异
+       探针逐一验红后还原（tests/test_v20_2_autoshift.py）。用例总数
+       1281 → 1290。
+    5. 文档：双 README 自动挡门面补 LLM 腿条目与数字同步。
+
 v20.2.1 (自动挡外审整改 · 2026-08-26)
     主题：v20.2 公开后两份独立外审（生产侧敌对复审 + 外部结构性审计）的
     采纳项落地——4 🔴 全修 + 2 🟡 + 残窗闭合。公开 Tag/Release 停在
@@ -1026,7 +1055,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.2.1"
+SERVICE_VERSION = "20.2.2"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1040,6 +1069,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.2.2", "", "", "LLM 蒸馏腿挡位化 · 传输层盲重试掐除 · 断供写入确定性直写秒回"),
     ("20.2.1", "", "", "自动挡外审整改 · 拆配置雷/启动重放兜底/verbatim 单删闭合/重放防自我复制"),
     ("20.2.0", "", "", "智慧引擎自动挡 · 双引擎/熔断切换/挡位诚实 · 断供演练实机验证后公开"),
     ("20.1.1", "", "", "公开后外审加固 · 限流护栏/metadata 白名单/R-18 删除链/守卫三连"),

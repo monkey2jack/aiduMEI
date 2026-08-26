@@ -458,10 +458,47 @@ def _patch_usage_tracking(mem_instance: Any) -> None:
 # ═══════════════════════════════════════════════
 # §6  统一入口
 # ═══════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════
+# §6  补丁 llm_transport_policy（v20.2.2 · LLM 腿挡位化 WP-I）
+#     实弹取证（2026-08-26 网关 521 瞬态）：openai SDK 默认 max_retries=2
+#     且尊重响应头 Retry-After: 120 —— mem0 内部 LLM 抽取把单次 /add
+#     同步挂了 4.5 分钟。重试的职责上移给挡位（ducky.gear LLM 腿）与
+#     降级链：传输层只许失败一次、限时返回。
+#     45s 对齐 ducky/llm_client.py 已运行多版的验证值（推理模型蒸馏
+#     上界），connect 10s —— 不是拍脑袋，是对齐自家栈的既验证参数。
+#     ⚠️ 顺序契约：本补丁必须在 usage_tracking **之前**跑 ——
+#     with_options 返回新客户端实例，若先 wrap 旧实例的 create 再换
+#     客户端，用量追踪就静默空转（本文件 §5 头注记载的同款死法）。
+# ═══════════════════════════════════════════════
+def _patch_llm_transport_policy(mem_instance: Any) -> None:
+    pid = "llm_transport_policy"
+    try:
+        llm = getattr(mem_instance, "llm", None)
+        client = getattr(llm, "client", None)
+        if client is None or not hasattr(client, "with_options"):
+            _record(pid, "drift",
+                    "mem0 LLM 客户端形态变化：Memory.llm.client 缺失或无 "
+                    "with_options —— 补丁失去着力点，盲重试仍在")
+            return
+        import httpx
+        llm.client = client.with_options(
+            max_retries=0, timeout=httpx.Timeout(45.0, connect=10.0))
+        _record(pid, "applied",
+                "mem0 内部 LLM 客户端 max_retries=0 + timeout 45s/connect 10s"
+                "（重试职责上移给挡位与降级链）")
+    except Exception as e:
+        _record(pid, "failed", f"{type(e).__name__}: {e}")
+
+
 def apply_all(mem_instance: Any) -> dict[str, Any]:
     """在 Memory 实例造好之后调用一次。幂等。返回 patch_status()。"""
     _patch_role_drop()
     _patch_code_block_hardening()
+    # 顺序契约：transport_policy 先换客户端实例，usage_tracking 再 wrap
+    # 新实例的 create —— 反过来用量追踪会静默空转（§6 头注）。
+    _patch_llm_transport_policy(mem_instance)
     _patch_usage_tracking(mem_instance)
     st = patch_status()
     if st["ok"]:

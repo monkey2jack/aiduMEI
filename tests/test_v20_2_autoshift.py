@@ -181,7 +181,10 @@ def rig(monkeypatch, tmp_path):
     hot_search_app = FastAPI()
     register_add_routes(hot_search_app)
     hot_search.register_search_routes(hot_search_app)
-    return client, fake, TestClient(hot_search_app), di
+    yield client, fake, TestClient(hot_search_app), di
+    # 收尾：重放守护线程不许活过本测试的猴补丁世界（活过去=在别人的
+    # caplog 窗口里打日志、摸别人的库——全轴序闪烁红灯的根）。
+    di.join_replay_for_tests()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -695,3 +698,218 @@ class TestOuterExceptNotCloudSignal:
 
 def self_boom():
     return TestOuterExceptNotCloudSignal._BoomDict({"results": []})
+
+
+# ══════════════════════════════════════════════════════════════════
+# v20.2.2 · LLM 蒸馏腿挡位（传输层快失败 + 写路径接线）
+# 起因：实弹取证 2026-08-26——LLM 网关 521 + openai SDK 尊重
+# Retry-After:120 的盲重试，把单次 /add 同步挂 4.5 分钟（嵌入活着）。
+# ══════════════════════════════════════════════════════════════════
+
+def _mk_llm_error(msg="LLM extraction failed: Error code: 521"):
+    """mem0 的 LLMError 按**类型名**识别（不 import mem0 内部路径——
+    形态匹配比路径依赖更抗上游重构）。"""
+    return type("LLMError", (Exception,), {})(msg)
+
+
+class TestLLMGearStateMachine:
+    def setup_method(self):
+        gear.reset_gear_for_tests()
+
+    def test_llm_leg_independent_from_embed_leg(self):
+        t = 1000.0
+        for i in range(3):
+            gear.record_llm_failure("网关 521", now=t + i)
+        assert gear.llm_current_mode(now=t + 4) == "lite"
+        assert gear.current_mode(now=t + 4) == "full", \
+            "LLM 腿降挡牵连了嵌入腿——两腿状态必须独立"
+        gear.reset_gear_for_tests()
+        for i in range(3):
+            gear.record_cloud_failure("embed down", now=t + i)
+        assert gear.current_mode(now=t + 4) == "lite"
+        assert gear.llm_current_mode(now=t + 4) == "full", \
+            "嵌入腿降挡牵连了 LLM 腿"
+
+    def test_llm_leg_three_state_cycle_with_debounce(self):
+        t = 1000.0
+        gear.record_llm_failure("x", now=t)
+        gear.record_llm_failure("x", now=t + 1)
+        assert gear.llm_current_mode(now=t + 2) == "full", "两次失败就降挡——过敏"
+        gear.record_llm_failure("x", now=t + 2)
+        assert gear.should_try_llm(now=t + 10) is False, "open 冷却中还去撞"
+        assert gear.should_try_llm(now=t + 64) is True, "半开必须放真实流量（命门）"
+        gear.record_llm_success(now=t + 65)
+        assert gear.llm_current_mode(now=t + 66) == "lite", \
+            "单次侥幸成功就升挡——假恢复骗过了防抖"
+        gear.record_llm_success(now=t + 67)
+        assert gear.llm_current_mode(now=t + 68) == "full"
+
+    def test_llm_env_falls_back_like_r1(self, monkeypatch):
+        monkeypatch.setenv("AIDUMEI_LLM_GEAR_TRIP_FAILURES", "很多")
+        assert gear.llm_trip_threshold() == 3
+        errs = gear.llm_gear_status()["config_errors"]
+        assert errs and "AIDUMEI_LLM_GEAR_TRIP_FAILURES" in errs
+
+
+class TestLLMGearWriteWiring:
+    """写路径接线：LLMError 上报降挡、挡内直写秒回且 infer=False、
+    非 LLM 故障不污染信号（Y2 写侧版）、半开真实写入升挡。"""
+
+    def _spy_infer(self, fake, monkeypatch, infer_seen):
+        orig_add = fake.add
+        def spy_add(messages, user_id=None, metadata=None, **kw):
+            infer_seen.append(kw.get("infer"))
+            return orig_add(messages, user_id=user_id, metadata=metadata, **kw)
+        monkeypatch.setattr(fake, "add", spy_add)
+
+    def test_llm_error_trips_gear_then_gear_open_skips_layer1(self, rig, monkeypatch):
+        import ducky.hot.add as hot_add
+        client, fake, http, di = rig
+        calls = {"layer1": 0}
+
+        def broken_layer1():
+            def _w(mem, msgs, uid, meta, bank_id="default", infer=True):
+                calls["layer1"] += 1
+                raise _mk_llm_error()
+            return _w
+        monkeypatch.setattr(hot_add, "lazy_import_layer1", broken_layer1)
+        infer_seen: list = []
+        self._spy_infer(fake, monkeypatch, infer_seen)
+
+        for i in range(3):
+            r = http.post("/add", json={"messages": f"LLM 断供期写入 {i}",
+                                        "user_id": "u_llm"})
+            assert r.status_code == 200, "LLM 死了 add 不许 500"
+            body = r.json()
+            assert body.get("action") == "direct"
+            assert body.get("distillation") == "skipped_llm_error", body
+        assert all(v is False for v in infer_seen), \
+            f"LLM 死了 fallback 还想走 LLM 抽取（洞③未闭合）: {infer_seen}"
+        assert gear.llm_current_mode() == "lite", "3 次 LLMError 没降挡"
+        assert gear.current_mode() == "full", "LLM 故障污染了嵌入腿"
+
+        # 挡位 open：后续 add 一下 layer1 都不碰（不再逐请求付超时）
+        n = calls["layer1"]
+        r = http.post("/add", json={"messages": "挡内秒回写入",
+                                    "user_id": "u_llm"})
+        assert r.status_code == 200
+        assert r.json().get("distillation") == "skipped_llm_gear_open"
+        assert calls["layer1"] == n, \
+            "挡位 open 还在探 layer1——每次 add 都要重新撞一遍超时"
+        # 挡内写入照样落库：内容进了 fake mem（嵌入活着，云向量照打）
+        assert any("挡内秒回写入" in str(c["messages"]) for c in fake.add_calls)
+
+    def test_non_llm_failure_keeps_old_semantics_and_pure_signal(self, rig, monkeypatch):
+        import ducky.hot.add as hot_add
+        client, fake, http, di = rig
+
+        def crashy_layer1():
+            def _w(mem, msgs, uid, meta, bank_id="default", infer=True):
+                raise ValueError("FTS 崩了（非 LLM 故障演练）")
+            return _w
+        monkeypatch.setattr(hot_add, "lazy_import_layer1", crashy_layer1)
+        infer_seen: list = []
+        self._spy_infer(fake, monkeypatch, infer_seen)
+
+        for i in range(4):
+            r = http.post("/add", json={"messages": f"非 LLM 故障写入 {i}",
+                                        "user_id": "u_nl"})
+            assert r.status_code == 200
+            assert r.json().get("distillation") is None, \
+                "非 LLM 故障不该打蒸馏跳过注记"
+        assert gear.llm_current_mode() == "full", \
+            "ValueError 污染了 LLM 腿信号（Y2 写侧版失守）"
+        assert all(v is True for v in infer_seen), \
+            "非 LLM 故障的降级分支必须透传 infer（v20 纪律）"
+
+    def test_half_open_recovers_via_real_adds(self, rig, monkeypatch):
+        import time as _time
+        import ducky.hot.add as hot_add
+        client, fake, http, di = rig
+        t0 = _time.time() - 120
+        for i in range(3):
+            gear.record_llm_failure("旧断供", now=t0 + i)
+        assert gear.llm_gear_status()["breaker"] == "half_open"
+
+        def healthy_layer1():
+            def _w(mem, msgs, uid, meta, bank_id="default", infer=True):
+                return {"status": "ok", "action": "indexed"}
+            return _w
+        monkeypatch.setattr(hot_add, "lazy_import_layer1", healthy_layer1)
+        http.post("/add", json={"messages": "恢复探测一", "user_id": "u_rec"})
+        assert gear.llm_current_mode() == "lite", "单次成功不许升挡"
+        http.post("/add", json={"messages": "恢复探测二", "user_id": "u_rec"})
+        assert gear.llm_current_mode() == "full", \
+            "半开两次真实写入成功仍未升挡——恢复链断了"
+
+    def test_direct_write_inner_llm_error_self_purifies(self, rig, monkeypatch):
+        """fallback 自身纯化：非 LLM 故障降级直写（infer 透传 True）时
+        内层 mem.add 撞上 LLMError → 就地降 infer=False，不 500。"""
+        import ducky.hot.add as hot_add
+        client, fake, http, di = rig
+
+        def crashy_layer1():
+            def _w(mem, msgs, uid, meta, bank_id="default", infer=True):
+                raise ValueError("非 LLM 故障")
+            return _w
+        monkeypatch.setattr(hot_add, "lazy_import_layer1", crashy_layer1)
+        orig_add = fake.add
+        infer_seen: list = []
+
+        def add_llm_dead(messages, user_id=None, metadata=None, **kw):
+            infer_seen.append(kw.get("infer"))
+            if kw.get("infer"):
+                raise _mk_llm_error()
+            return orig_add(messages, user_id=user_id, metadata=metadata, **kw)
+        monkeypatch.setattr(fake, "add", add_llm_dead)
+
+        r = http.post("/add", json={"messages": "双重故障写入", "user_id": "u_dj"})
+        assert r.status_code == 200, "fallback 自己 500 了——洞③还在"
+        assert r.json().get("distillation") == "skipped_llm_error"
+        assert infer_seen == [True, False], infer_seen
+        assert gear.llm_gear_status()["consecutive_failures"] == 1, \
+            "直写内层的 LLMError 没有上报挡位"
+
+
+class TestLLMTransportPolicy:
+    """mem0 内部 openai 客户端的传输策略补丁（盲重试上移给挡位）。"""
+
+    def test_patch_clips_blind_retries(self):
+        from ducky.mem0_patches import _patch_llm_transport_policy, patch_status
+        seen = {}
+
+        class _C:
+            def with_options(self, **kw):
+                seen.update(kw)
+                return ("patched", kw)
+
+        class _NS:  # noqa: N801
+            pass
+        m = _NS(); m.llm = _NS(); m.llm.client = _C()
+        _patch_llm_transport_policy(m)
+        assert seen.get("max_retries") == 0, "盲重试没掐"
+        assert seen.get("timeout") is not None, "没设有限超时"
+        assert m.llm.client[0] == "patched", "新客户端没挂回去"
+        st = patch_status()["patches"].get("llm_transport_policy", {})
+        assert st.get("status") == "applied", st
+
+    def test_patch_reports_drift_on_shape_change(self):
+        from ducky.mem0_patches import _patch_llm_transport_policy, patch_status
+
+        class _NS:  # noqa: N801
+            llm = None
+        _patch_llm_transport_policy(_NS())
+        assert patch_status()["patches"]["llm_transport_policy"]["status"] == "drift", \
+            "挂载点消失必须报 drift，不许静默空转（§5 usage_tracking 的死法）"
+        # 还原账本态，避免污染后续断言 patch_status().ok 的测试
+        seen = {}
+
+        class _C:
+            def with_options(self, **kw):
+                seen.update(kw)
+                return self
+        class _M:  # noqa: N801
+            pass
+        m = _M(); m.llm = _M(); m.llm.client = _C()
+        _patch_llm_transport_policy(m)
+        assert patch_status()["patches"]["llm_transport_policy"]["status"] == "applied"
