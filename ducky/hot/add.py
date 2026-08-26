@@ -35,6 +35,17 @@ def register_add_routes(app: FastAPI) -> None:
             scope = make_scope(req.user_id, req.bank_id)
             req.user_id = _normalize_user_id(scope.user_id) if scope.user_id else "default"
             req.bank_id = scope.bank_id
+            # v20.1.1（N-1）：写路径限流——拦失控循环，不拦正常流量
+            # （默认 120/min，生产 14 天分钟峰值 35 的 3.4 倍）。
+            from ducky.rate_guard import add_rate_limit, check_rate
+            _retry = check_rate("add", req.user_id, limit=add_rate_limit())
+            if _retry is not None:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"写入频率超限（租户 {req.user_id}）：默认护栏用于拦截失控循环，"
+                           f"{_retry}s 后重试；上限可经 AIDUMEI_RATE_ADD_PER_MIN 调整（0=关闭）",
+                    headers={"Retry-After": str(_retry)},
+                )
             ensure_bank_registered(make_scope(req.user_id, req.bank_id))
 
             from ducky.add_speed import (
