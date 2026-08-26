@@ -61,8 +61,11 @@ def _load_model():
                 "本地嵌入不可用：fastembed 未安装（可选依赖组 local-embed；"
                 "pip install 'aidumei[local-embed]' 或 pip install fastembed）"
             )
-        # 备胎不许伸手要网：只认已就位的模型文件。
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        # 备胎不许伸手要网：只认已就位的模型文件。强制覆写而非 setdefault
+        # （v20.2.1 外审 Y1：进程环境预置 HF_HUB_OFFLINE=0 可绕过 setdefault）
+        # —— 改进程环境是刻意的：本进程内任何 HF 下载通道都该被封死，
+        # 部署期联网下载有专门通道（scripts/fetch_local_embed_model.py）。
+        os.environ["HF_HUB_OFFLINE"] = "1"
         try:
             _model = TextEmbedding(LOCAL_EMBED_MODEL, cache_dir=local_embed_cache_dir())
         except Exception as exc:

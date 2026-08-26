@@ -232,10 +232,39 @@ class TestGear:
         assert gear.current_mode(now=t + 73) == "full"
         assert gear.gear_status()["shift_count"] == 2  # 一降一升
 
-    def test_invalid_env_raises_by_name(self, monkeypatch):
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        """v20.2.1（外审 R1）拆配置雷：非法 env **回退默认 + 探针点名**，
+        绝不抛 —— 旧语义 raise 站在 should_try_cloud 主路径上，一个
+        配置笔误就把「断供保命」反转成「全站搜索 500」。"""
         monkeypatch.setenv("AIDUMEI_GEAR_TRIP_FAILURES", "很多次")
-        with pytest.raises(ValueError, match="AIDUMEI_GEAR_TRIP_FAILURES"):
-            gear.trip_threshold()
+        assert gear.trip_threshold() == 3
+        errs = gear.gear_status()["config_errors"]
+        assert errs and "AIDUMEI_GEAR_TRIP_FAILURES" in errs
+
+    def test_bad_env_system_still_shifts(self, monkeypatch):
+        """R1 负向对照：env 全填坏值，熔断照常降挡→冷却→半开→升挡 ——
+        保命路径在坏配置下完整活着（这正是旧 raise 语义做不到的）。"""
+        monkeypatch.setenv("AIDUMEI_GEAR_TRIP_FAILURES", "-5")
+        monkeypatch.setenv("AIDUMEI_GEAR_COOLDOWN_SEC", "60s")
+        t = 1000.0
+        for i in range(3):
+            gear.record_cloud_failure("x", now=t + i)
+        assert gear.current_mode(now=t + 3) == "lite", "默认 N=3 未生效"
+        assert gear.should_try_cloud(now=t + 64) is True, "默认 T=60 未生效"
+        gear.record_cloud_success(now=t + 65)
+        gear.record_cloud_success(now=t + 66)
+        assert gear.current_mode(now=t + 67) == "full", "默认 M=2 未生效"
+        errs = gear.gear_status(now=t + 68)["config_errors"] or {}
+        assert set(errs) == {"AIDUMEI_GEAR_TRIP_FAILURES",
+                             "AIDUMEI_GEAR_COOLDOWN_SEC"}
+
+    def test_valid_env_clears_config_error(self, monkeypatch):
+        """回退≠忽略配置：合法值照常生效，且错误记录被清掉。"""
+        monkeypatch.setenv("AIDUMEI_GEAR_TRIP_FAILURES", "废话")
+        assert gear.trip_threshold() == 3
+        monkeypatch.setenv("AIDUMEI_GEAR_TRIP_FAILURES", "5")
+        assert gear.trip_threshold() == 5
+        assert not (gear.gear_status()["config_errors"] or {})
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -464,3 +493,205 @@ class TestSelfAuditAdditions:
         rep = cm.audit_core_replicas(user_id="audit_l")
         assert rep["gaps"] and rep["gaps"][0].get("local_vector") is False, \
             "本地腿缺失没被对账看见 —— 第四副本静默缺腿"
+
+
+# ══════════════════════════════════════════════════════════════════
+# v20.2.1 · 外审整改验收（生产侧复审 R2/R3/R4 + 外部审计残窗建议 + Y2）
+# R1 的验收在上方 TestGear（回退语义三连测）。
+# ══════════════════════════════════════════════════════════════════
+
+def _sandbox_wal(monkeypatch, tmp_path):
+    import ducky.wal_engine as we
+    monkeypatch.setattr(
+        we.WALEngine, "get_instance",
+        classmethod(lambda cls: we.WALEngine(wal_dir=str(tmp_path / "wal"))))
+    return we
+
+
+class TestReplayTriggersOnStartup:
+    """R2：重放此前只挂在升挡事件上，重启（挡位回 closed）= 永久赖账。"""
+
+    def test_reconcile_startup_drains_debt(self, rig, monkeypatch, tmp_path):
+        client, fake, http, di = rig
+        we = _sandbox_wal(monkeypatch, tmp_path)
+        di.enqueue_cloud_add({"messages": "断供期间说的话：暗号是青蛙",
+                              "metadata": {}}, "u_r2", "default")
+        assert di.pending_counts()["cloud"] == 1
+        gear.reset_gear_for_tests()  # 模拟重启：挡位回 closed，升挡事件不会再来
+
+        report = we.reconcile_startup()
+        assert report["pending_replay_spawned"] is True
+
+        import time as _time
+        deadline = _time.time() + 8
+        while _time.time() < deadline:
+            if di.pending_counts()["cloud"] == 0 and di.last_replay_status():
+                break
+            _time.sleep(0.05)
+        assert di.pending_counts()["cloud"] == 0, "启动对账没把欠账还上"
+        assert any("青蛙" in str(c["messages"]) for c in fake.add_calls), \
+            "欠账被清了但没重放进 mem0——是删账不是还账"
+        lr = di.last_replay_status()
+        assert lr and lr["source"] == "reconcile_startup"
+        assert lr["report"]["replayed"] == 1
+
+    def test_spawn_skips_when_no_debt(self, rig):
+        _, _, _, di = rig
+        assert di.unreplayed_count() == 0
+        assert di.spawn_replay_daemon(source="test") is False, \
+            "零欠账也起线程——启动面白烧一根线程"
+
+
+class TestVerbatimLocalSingleDelete:
+    """R3：verbatim 本地点 id 由 (原文,域) 派生、不与 memory_id 同源 ——
+    单删必须重演派生才够得着，否则降挡窗口里已删内容从备胎复活。"""
+
+    def test_pid_derivation_pure_and_scoped(self, rig):
+        _, _, _, di = rig
+        a = di.verbatim_local_pid("u1", "default", "同一句话")
+        assert a == di.verbatim_local_pid("u1", "default", "  同一句话  "), \
+            "去空白后同文不同 id——写删两侧会错位"
+        assert a != di.verbatim_local_pid("u2", "default", "同一句话")
+        assert a != di.verbatim_local_pid("u1", "work", "同一句话")
+
+    def test_single_delete_reaches_verbatim_local_point(self, rig, monkeypatch, tmp_path):
+        client, fake, http, di = rig
+        we = _sandbox_wal(monkeypatch, tmp_path)
+        text = "青蛙水彩画的开价是三百元"
+        other = "无关内容：明天例会改到十点"
+        assert di.upsert_local_verbatim("u_r3", "default", text)
+        assert di.upsert_local_verbatim("u_r3", "default", other)
+        pid = di.verbatim_local_pid("u_r3", "default", text)
+        pid_other = di.verbatim_local_pid("u_r3", "default", other)
+        assert pid in client.cols[di.LOCAL_COLLECTION]
+
+        # 正文可反查（§0a 的定位现场）：FTS 里挂上该记忆的原文
+        from ducky.text_fts import _index_memory
+        _index_memory("mem_r3", text, user_id="u_r3", bank_id="default")
+
+        out = we.cascade_delete_memory("mem_r3", user_id="u_r3", bank_id="default")
+        det = out["details"]
+        assert det.get("verbatim_local_vector_deleted") is True, det
+        assert pid not in client.cols[di.LOCAL_COLLECTION], \
+            "单删后 verbatim 本地点仍在——降挡时已删内容会从备胎复活（R3 未闭合）"
+        # 区分力对照：同租户另一句原文纹丝不动（精确删，不是按域核平）
+        assert pid_other in client.cols[di.LOCAL_COLLECTION]
+
+        # 降挡实感对照：强制走本地腿，被删内容搜不回来
+        fake.embedding_model.up = False
+        for _ in range(gear.trip_threshold()):
+            gear.record_cloud_failure("演练断供")
+        hits = di.search_local("青蛙水彩画 开价", "u_r3", bank_id="default")
+        assert all("三百元" not in h["memory"] for h in hits)
+
+
+class TestReplayNoSelfReplication:
+    """R4：重放失败不许再入新账 —— 否则模型持续故障下欠账表每轮 +1
+    自我复制（写放大 + 告警淹没）。"""
+
+    def test_debt_stable_under_persistent_failure_then_drains(self, rig, monkeypatch):
+        client, fake, http, di = rig
+        di._enqueue_pending("local", "pt_r4", "补写正文",
+                            {"user_id": "u_r4", "bank_id": "default"})
+        assert di.unreplayed_count() == 1
+
+        def _broken(_ts):
+            raise RuntimeError("模型文件损坏（演练持续故障）")
+        monkeypatch.setattr(di, "local_embed_texts", _broken)
+        for rnd in range(3):
+            rep = di.replay_pending(apply=True)
+            assert rep["failed"] == 1, rep
+            assert di.unreplayed_count() == 1, \
+                f"第 {rnd + 1} 轮重放后欠账自我复制（预期恒为 1）"
+
+        # 区分力对照：模型恢复后同一行还得上——失败轮没有弄丢/弄脏原账
+        monkeypatch.setattr(di, "local_embed_texts",
+                            lambda ts: [_bigram_vec(f"local::{t}") for t in ts])
+        rep = di.replay_pending(apply=True)
+        assert rep["replayed"] == 1
+        assert di.unreplayed_count() == 0
+        assert "pt_r4" in client.cols[di.LOCAL_COLLECTION]
+
+
+class TestResidualWindowRevoke:
+    """残窗闭合（外部审计建议）：claiming 抢占后、mem.add 完成前，同租户 delete_all
+    清了账本行 —— add 刚写回云侧的点必须当场撤销（删除意愿 > 补算完整性）。"""
+
+    def test_cloud_replay_revokes_when_row_deleted_mid_add(self, rig, monkeypatch):
+        client, fake, http, di = rig
+        di.enqueue_cloud_add({"messages": "窗口内该被删掉的话",
+                              "metadata": {}}, "u_win", "default")
+        deleted_ids: list = []
+        monkeypatch.setattr(fake, "delete",
+                            lambda mid: deleted_ids.append(str(mid)),
+                            raising=False)
+        orig_add = fake.add
+
+        def add_and_race(messages, user_id=None, metadata=None, **kw):
+            out = orig_add(messages, user_id=user_id, metadata=metadata, **kw)
+            # add 尚未返回时并发 delete_all 清账（残窗的精确时序）
+            di.delete_pending_by_scope("u_win", "default")
+            return out
+        monkeypatch.setattr(fake, "add", add_and_race)
+
+        rep = di.replay_pending(apply=True)
+        assert rep["revoked_after_scope_delete"] == 1, rep
+        assert rep["replayed"] == 0, "撤销的重放不许再计入 replayed"
+        assert len(deleted_ids) == 1, "刚重放的点没有被撤销——已删内容复活"
+        assert di.pending_counts()["cloud"] == 0
+
+    def test_no_race_no_revoke(self, rig, monkeypatch):
+        """区分力对照：没有交叉删除时一个点都不许撤销。"""
+        client, fake, http, di = rig
+        di.enqueue_cloud_add({"messages": "正常补算的话", "metadata": {}},
+                             "u_calm", "default")
+        deleted_ids: list = []
+        monkeypatch.setattr(fake, "delete",
+                            lambda mid: deleted_ids.append(str(mid)),
+                            raising=False)
+        rep = di.replay_pending(apply=True)
+        assert rep["replayed"] == 1 and rep["revoked_after_scope_delete"] == 0
+        assert deleted_ids == []
+
+
+class TestOuterExceptNotCloudSignal:
+    """Y2：外层 except 捕的是复筛/装配等非云腿异常 —— 不许再记云失败。
+    最痛场景：半开探测**成功**（云已恢复）而装配段有 bug —— 旧代码会把
+    这次成功倒打成失败，熔断被打回 open，云永远「恢复不了」。"""
+
+    class _BoomDict(dict):
+        def get(self, *a, **kw):
+            raise RuntimeError("装配段炸（非云腿 bug 演练）")
+
+    def test_assembly_error_does_not_knock_half_open_back(self, rig, monkeypatch):
+        import time as _time
+        client, fake, http, di = rig
+        monkeypatch.setattr(fake, "search",
+                            lambda *a, **kw: self_boom(), raising=False)
+
+        # 把挡位做进「冷却已过的 open」：下一次请求自动转半开并试云
+        t0 = _time.time() - 120
+        gear.record_cloud_failure("旧断供", now=t0)
+        gear.record_cloud_failure("旧断供", now=t0 + 1)
+        gear.record_cloud_failure("旧断供", now=t0 + 2)
+        assert gear.gear_status()["breaker"] == "half_open"
+
+        r = http.post("/search", json={"query": "任意查询", "user_id": "u_y2"})
+        assert r.status_code == 200, "非云腿异常炸掉了请求"
+        st = gear.gear_status()
+        assert st["breaker"] != "open", \
+            "云探测明明成功，装配 bug 却把熔断打回 open（Y2 未闭合）"
+
+    def test_assembly_error_never_accumulates_failures(self, rig, monkeypatch):
+        client, fake, http, di = rig
+        monkeypatch.setattr(fake, "search",
+                            lambda *a, **kw: self_boom(), raising=False)
+        for _ in range(5):
+            r = http.post("/search", json={"query": "查一下", "user_id": "u_y2b"})
+            assert r.status_code == 200
+        st = gear.gear_status()
+        assert st["mode"] == "full" and st["consecutive_failures"] == 0, st
+
+
+def self_boom():
+    return TestOuterExceptNotCloudSignal._BoomDict({"results": []})
