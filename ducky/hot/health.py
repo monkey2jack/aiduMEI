@@ -146,6 +146,25 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as _vt_exc:
             probes["recall_verdict_threshold_error"] = str(_vt_exc)[:120]
 
+        # v20.2 自动挡（WP-H）：挡位、熔断器内态、备胎在场性、欠账水位、
+        # 本地索引点数——「现在跑在哪个挡上」运维面一眼可见。
+        try:
+            from ducky.gear import gear_status
+            probes["engine_gear"] = gear_status()
+        except Exception as _gexc:
+            probes["engine_gear"] = {"error": str(_gexc)[:120]}
+        try:
+            from ducky.local_embed import local_embed_status
+            probes["local_embed"] = local_embed_status()
+        except Exception as _lexc:
+            probes["local_embed"] = {"error": str(_lexc)[:120]}
+        try:
+            from ducky.dual_index import local_point_count, pending_counts
+            probes["local_index_points"] = local_point_count()
+            probes["pending_embeddings"] = pending_counts()
+        except Exception as _dexc:
+            probes["dual_index_error"] = str(_dexc)[:120]
+
         # v20.1.1（N-1）：限流生效值可查——配置生效三查的运维面。非法
         # env 的报错原文进探针，与阈值/开关探针同一纪律：不静默。
         try:

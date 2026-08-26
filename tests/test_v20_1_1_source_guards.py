@@ -241,6 +241,7 @@ _MIGRATION_LEDGER = {
     ("ducky/core_memory.py", "ALTER", "core_memory"),
     ("ducky/core_memory.py", "ALTER", "core_memory__scoped"),
     ("ducky/core_memory.py", "CREATE", "<dynamic>"),
+    ("ducky/dual_index.py", "CREATE", "pending_embeddings"),
     ("ducky/event_ledger.py", "ALTER", "memory_events"),
     ("ducky/event_ledger.py", "CREATE", "memory_events"),
     ("ducky/evolve_mem.py", "CREATE", "evolve_adjustments"),

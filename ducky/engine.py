@@ -112,21 +112,55 @@ class RecallEngine:
         # 1. 向量初步候选召回（多取候选供加权和时效过滤）
         cand_limit = max(limit * 3, 30)
         _set_recall_telemetry(vector_leg="ok")
+        # 🪫 v20.2 自动挡（WP-G/WP-F）：切换逻辑是这台双引擎的命门 ——
+        # ① open 态（熔断中）向量腿直接走本地索引，云一根手指都不碰；
+        # ② closed / half-open 试云腿（半开就是拿真实流量当探针 ——
+        #    不试探，成功信号永远不来，系统会卡死在备胎挡）；
+        # ③ 云腿当场炸掉时**同一次请求内**落到本地腿兜底 —— 换挡不是
+        #    下一个用户才享受的事，这一次查询就无感顺滑。
+        # 查询嵌入永远与所查索引同语言（云查云、本地查本地），绝不跨比。
+        from ducky.gear import record_cloud_failure, record_cloud_success, should_try_cloud
+        _tried_cloud = should_try_cloud()
         try:
-            # 🔴v20：默认域**不能**把 bank_id 下推给 mem0 —— 存量向量 payload 里
-            # 没这个字段，Qdrant 的 must 语义会把它们整批滤掉，且不报错只返回空。
-            # 下推只用于命名域，默认域靠下面的 Python 复筛保证隔离。
-            from ducky.bank_contract import vector_item_in_bank, vector_scope_filters
-            raw_res = mem.search(query, filters=vector_scope_filters(user_id, bank_id), limit=cand_limit)
+            if not _tried_cloud:
+                from ducky.dual_index import search_local
+                raw_res = search_local(query, user_id, bank_id=bank_id, limit=cand_limit)
+                _set_recall_telemetry(vector_leg="local")
+            else:
+                # 🔴v20：默认域**不能**把 bank_id 下推给 mem0 —— 存量向量 payload 里
+                # 没这个字段，Qdrant 的 must 语义会把它们整批滤掉，且不报错只返回空。
+                # 下推只用于命名域，默认域靠下面的 Python 复筛保证隔离。
+                from ducky.bank_contract import vector_scope_filters
+                try:
+                    raw_res = mem.search(query, filters=vector_scope_filters(user_id, bank_id), limit=cand_limit)
+                    record_cloud_success()
+                except Exception as _cloud_exc:
+                    record_cloud_failure(str(_cloud_exc))
+                    logger.warning("云向量腿失败，本请求就地落本地腿: %s", str(_cloud_exc)[:120])
+                    # 备胎自己也可能不在场（依赖未装/索引未建）——备胎再炸
+                    # 就是干净的空手，绝不让 fallback 的异常反过来炸掉请求。
+                    try:
+                        from ducky.dual_index import search_local
+                        raw_res = search_local(query, user_id, bank_id=bank_id, limit=cand_limit)
+                    except Exception as _local_exc:
+                        logger.warning("本地腿也不可用（备胎空手）: %s", str(_local_exc)[:120])
+                        raw_res = []
+                    # 云失败原因留在遥测里：判语层要用它区分「备胎接住了」
+                    # 与「云断且备胎空手」（后者必须仍判 degraded）。
+                    _set_recall_telemetry(vector_leg="local_fallback",
+                                          error=str(_cloud_exc)[:120])
             if isinstance(raw_res, dict):
                 candidates = raw_res.get("results", []) or []
             elif isinstance(raw_res, list):
                 candidates = raw_res
             else:
                 candidates = []
-            candidates = [c for c in candidates if vector_item_in_bank(c, bank_id)]
+            from ducky.bank_contract import vector_item_in_bank as _viib
+            candidates = [c for c in candidates if _viib(c, bank_id)]
         except Exception as e:
             logger.warning("向量召回异常降级: %s", e)
+            if _tried_cloud:
+                record_cloud_failure(str(e))
             candidates = []
             # v20.1 WP-C：向量腿失效必须让调用方看得见。此前这个 except 把
             # 「嵌入服务挂了」消化成 candidates=[]，一路走完返回空列表 ——
