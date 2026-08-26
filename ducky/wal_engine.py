@@ -516,6 +516,20 @@ def cascade_delete_memory(
         except Exception as e:
             logger.debug("本地向量单删跳过: %s", e)
 
+        # 8b. verbatim 本地点（v20.2.1 外审 R3）：这类点的 id 由 (原文, 域)
+        #     派生、不与 memory_id 同源，§8 的钥匙够不着 —— 搭车 §0a 抓到
+        #     的正文重演派生（dual_index.verbatim_local_pid 同一公式），
+        #     精确删除。覆盖精度与 §6 原文层同级：正文与写入原文逐字一致
+        #     才命中（保真写入/确定性通路全中）；蒸馏改写场景两条腿同受限，
+        #     属 P0-4 已审计语义，delete_all 的按域谓词删仍是全量兜底。
+        try:
+            if _content_for_verbatim:
+                from ducky.dual_index import delete_local as _dl, verbatim_local_pid
+                _vpid = verbatim_local_pid(user_id, bank_id, _content_for_verbatim)
+                res["verbatim_local_vector_deleted"] = _dl([_vpid]) > 0
+        except Exception as e:
+            logger.debug("verbatim 本地点单删跳过: %s", e)
+
         wal.mark_status(wal_id, "committed")
         return {"status": "ok", "details": res}
     except Exception as exc:
@@ -951,7 +965,7 @@ def reconcile_startup() -> Dict[str, Any]:
     }
     if not pending:
         logger.info("🔍 [WAL Reconcile] 启动对账完成：无挂起事务，数据状态健康")
-        return report
+        return _finish_reconcile(report)
 
     logger.warning("🔍 [WAL Reconcile] 发现 %d 条未决 WAL 事务，开始自动恢复...", len(pending))
     for ent in pending:
@@ -977,4 +991,34 @@ def reconcile_startup() -> Dict[str, Any]:
             logger.error("Reconcile 恢复失败 wal_id=%s: %s", ent.wal_id, err)
             report["failed"] += 1
 
+    return _finish_reconcile(report)
+
+
+def _finish_reconcile(report: Dict[str, Any]) -> Dict[str, Any]:
+    """启动对账收尾（两条返回路径共用）。
+
+    v20.2.1（外审 R2）：欠账重放此前只挂在「升挡事件」上，而重启把挡位
+    重置回 closed —— 升挡事件重启后永不再来，lite 期欠账成永久赖账。
+    这里兜底扫一遍（守护线程不阻塞启动；零欠账不起线程；claiming 抢占
+    防与升挡重放并发）。顺带打一条挡位/限流参数自检日志（外审 R1 配套：
+    回退语义下坏配置不再炸，就必须在启动面**出声**可查）。"""
+    try:
+        from ducky.dual_index import spawn_replay_daemon
+        report["pending_replay_spawned"] = spawn_replay_daemon(
+            source="reconcile_startup")
+    except Exception as exc:
+        logger.warning("启动欠账重放挂起失败（留账）: %s", exc)
+        report["pending_replay_spawned"] = False
+    try:
+        from ducky.gear import gear_status
+        from ducky.rate_guard import add_rate_limit, delete_all_rate_limit, rate_config_errors
+        gs = gear_status()
+        logger.info(
+            "⚙️ 启动参数自检：gear trip=%s recover=%s cooldown=%ss config_errors=%s | "
+            "rate add=%s/min delete_all=%s/min config_errors=%s",
+            gs["trip_threshold"], gs["recover_threshold"], gs["cooldown_sec"],
+            gs["config_errors"], add_rate_limit(), delete_all_rate_limit(),
+            rate_config_errors() or None)
+    except Exception as exc:
+        logger.debug("启动参数自检日志跳过: %s", exc)
     return report

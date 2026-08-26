@@ -126,7 +126,7 @@ def _code_files():
 # 生产侧日志采集按 aiduMEM.* / aiduMEM-v* 过滤。一次「顺手清理品牌残留」的全局替换
 # 会把这些一起改掉：服务照常起、日志照常写，只是再也进不了采集管道。
 # 数字放在这里，少一处就红。
-_LOGGER_SITES = 90  # v20.2 自动挡: +3（ducky/gear.py、ducky/local_embed.py、ducky/dual_index.py）
+_LOGGER_SITES = 91  # v20.2 自动挡: +3（gear/local_embed/dual_index）；v20.2.1 外审 R1: +1（ducky/rate_guard.py 回退告警）
 
 # ══ 二、机器契约：AIDUMEM_* 环境变量冻结集 ══════════════════════════════
 # 这些键名已经写在客户的 .env 里。改前缀不会报错，只会让配置静默回落到默认值 ——

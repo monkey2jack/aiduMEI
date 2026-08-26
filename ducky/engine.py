@@ -159,8 +159,9 @@ class RecallEngine:
             candidates = [c for c in candidates if _viib(c, bank_id)]
         except Exception as e:
             logger.warning("向量召回异常降级: %s", e)
-            if _tried_cloud:
-                record_cloud_failure(str(e))
+            # v20.2.1（外审 Y2）：云调用已被内层 try 精确包住并各自上报；
+            # 走到这里的是复筛/装配等**非云腿**异常 —— 再记云失败会误触
+            # 熔断降挡（三次复筛 bug 就把好端端的云挡切了）。不记。
             candidates = []
             # v20.1 WP-C：向量腿失效必须让调用方看得见。此前这个 except 把
             # 「嵌入服务挂了」消化成 candidates=[]，一路走完返回空列表 ——

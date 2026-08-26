@@ -48,11 +48,17 @@ class TestRateGuard:
         for i in range(50):
             assert check_rate("r", "u", limit=0, now=t0 + i * 0.01) is None
 
-    def test_invalid_env_raises_by_name(self, monkeypatch):
-        from ducky.rate_guard import add_rate_limit
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        """v20.2.1（外审 R1 同款）：限流站在写路径入口，非法 env 由
+        raise 改为回退默认 + rate_config_errors 点名 —— 配置笔误不许
+        让每次 /add 直接 500。"""
+        import ducky.rate_guard as rg
         monkeypatch.setenv("AIDUMEI_RATE_ADD_PER_MIN", "很快")
-        with pytest.raises(ValueError, match="AIDUMEI_RATE_ADD_PER_MIN"):
-            add_rate_limit()
+        assert rg.add_rate_limit() == 120
+        assert "AIDUMEI_RATE_ADD_PER_MIN" in rg.rate_config_errors()
+        monkeypatch.setenv("AIDUMEI_RATE_ADD_PER_MIN", "77")
+        assert rg.add_rate_limit() == 77, "回退≠忽略配置"
+        assert not rg.rate_config_errors()
 
     def test_delete_all_route_returns_429_with_retry_after(self, monkeypatch, tmp_path):
         """超限的 delete_all 必须 429 + Retry-After，绝不静默放行。"""
