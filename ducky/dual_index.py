@@ -342,9 +342,26 @@ def spawn_replay_daemon(source: str) -> bool:
         except Exception as exc:
             logger.warning("欠账重放失败（%s，留账下轮）: %s", source, exc)
 
-    threading.Thread(target=_run, name=f"pending-replay-{source}",
-                     daemon=True).start()
+    global _replay_thread
+    _replay_thread = threading.Thread(target=_run, name=f"pending-replay-{source}",
+                                      daemon=True)
+    _replay_thread.start()
     return True
+
+
+_replay_thread = None  # 最近一次重放线程句柄（join_replay_for_tests 用）
+
+
+def join_replay_for_tests(timeout: float = 10.0) -> None:
+    """测试收尾：等重放守护线程真正结束。
+
+    线程活过测试边界 = 活进了别人的猴补丁世界——FACTS_DB 补丁被还原后，
+    线程的下一次连接摸到的就是别的库，日志落进别的测试的 caplog 窗口
+    （全轴序下的闪烁红灯就是这么来的）。生产不需要这把手（环境不换），
+    测试必须收尾。"""
+    t = _replay_thread
+    if t is not None and t.is_alive():
+        t.join(timeout)
 
 
 def _revoke_replayed_add(mem, added) -> int:

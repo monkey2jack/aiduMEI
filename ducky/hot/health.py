@@ -149,8 +149,11 @@ def register_health_routes(app: FastAPI) -> None:
         # v20.2 自动挡（WP-H）：挡位、熔断器内态、备胎在场性、欠账水位、
         # 本地索引点数——「现在跑在哪个挡上」运维面一眼可见。
         try:
-            from ducky.gear import gear_status
+            from ducky.gear import gear_status, llm_gear_status
             probes["engine_gear"] = gear_status()
+            # v20.2.2：LLM 蒸馏腿的挡位（与嵌入腿互相独立——LLM 断供时
+            # 写入降为确定性直写秒回，欠蒸馏可查，见 gear.py LLM 腿）。
+            probes["llm_gear"] = llm_gear_status()
         except Exception as _gexc:
             probes["engine_gear"] = {"error": str(_gexc)[:120]}
         try:
