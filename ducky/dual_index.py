@@ -257,7 +257,8 @@ def pending_counts() -> Dict[str, int]:
         try:
             rows = conn.execute(
                 "SELECT side, COUNT(*) FROM pending_embeddings "
-                "WHERE replayed_at IS NULL GROUP BY side").fetchall()
+                "WHERE replayed_at IS NULL OR replayed_at='claiming' "
+                "GROUP BY side").fetchall()
             out = {"cloud": 0, "local": 0}
             for side, n in rows:
                 out[str(side)] = int(n)
@@ -281,10 +282,29 @@ def replay_pending(*, apply: bool = True, limit: int = 200) -> Dict[str, Any]:
             "ORDER BY pending_id LIMIT ?", (limit,)).fetchall()
     finally:
         conn.close()
-    report = {"scanned": len(rows), "replayed": 0, "failed": 0, "apply": apply}
+    report = {"scanned": len(rows), "replayed": 0, "failed": 0,
+              "skipped_claimed_or_deleted": 0, "apply": apply}
     if not apply:
         return report
     for pid, side, ref_id, payload_json, user_id, bank_id in rows:
+        # 竞态闭合（自审发现，w 式组合拳变体）：本循环拿的是快照行 ——
+        # 若 delete_all 在重放执行前清了该租户，快照行照跑就是「已删内容
+        # 以补蒸馏名义复活」。原子抢占：UPDATE ... WHERE replayed_at IS NULL
+        # 只会命中仍然在账的行；被 delete_all 删掉或被并发重放拿走的行
+        # rowcount=0，跳过。残余窗口（抢占后、mem.add 完成前的同租户
+        # delete_all 交叉，秒级）如实登记于矩阵理由，不冒充零。
+        cconn = get_facts_conn()
+        try:
+            cur = cconn.execute(
+                "UPDATE pending_embeddings SET replayed_at='claiming' "
+                "WHERE pending_id=? AND replayed_at IS NULL", (pid,))
+            cconn.commit()
+            claimed = int(cur.rowcount or 0) == 1
+        finally:
+            cconn.close()
+        if not claimed:
+            report["skipped_claimed_or_deleted"] += 1
+            continue
         try:
             data = json.loads(payload_json)
             if side == "cloud":
@@ -310,6 +330,17 @@ def replay_pending(*, apply: bool = True, limit: int = 200) -> Dict[str, Any]:
         except Exception as exc:
             report["failed"] += 1
             logger.warning("欠账重放失败 #%s（留账下轮）: %s", pid, exc)
+            try:  # 失败回滚抢占标记，下轮再来
+                rconn = get_facts_conn()
+                try:
+                    rconn.execute(
+                        "UPDATE pending_embeddings SET replayed_at=NULL "
+                        "WHERE pending_id=? AND replayed_at='claiming'", (pid,))
+                    rconn.commit()
+                finally:
+                    rconn.close()
+            except Exception:
+                pass
     return report
 
 
