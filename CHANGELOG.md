@@ -4,6 +4,50 @@
 
 ---
 
+## v20.2.2 — LLM 蒸馏腿挡位化（2026-08-26）
+
+> **性质：维护版。公开 Tag 与 Release 停在 `v20.2`，本版随 main 公开源码，
+> 版本号仅服务侧三段式推进（SOP 双轨）。** 起因：v20.2.1 实机冒烟恰逢一场
+> 真实的 LLM 网关 521 瞬态断供——嵌入活着而 LLM 死时，单次 /add 被传输层
+> 盲重试同步挂 4.5 分钟。自动挡此前只给嵌入腿装了挡位（rerank 腿 v20.1 已
+> 逐请求软失败），LLM 腿裸奔——恰是最慢、最贵、最易抖的一条腿。
+
+- **传输层快失败**：`ducky/mem0_patches.py` 新增 §6 `llm_transport_policy`
+  补丁——mem0 内部 openai 客户端 `max_retries=0` + 45s/connect 10s 超时。
+  实弹里那 4.5 分钟有 4 分钟是 openai SDK 尊重网关响应头 Retry-After: 120
+  在打坐；重试的职责上移给挡位与降级链，传输层只许失败一次、限时返回。
+  45s 对齐 `ducky/llm_client.py` 已运行多版的验证值，不拍脑袋。
+  **顺序契约**：本补丁在 usage_tracking 之前跑——with_options 返回新客户端
+  实例，先包旧实例再换客户端会让用量追踪静默空转（§5 头注记载的同款死法）。
+- **LLM 蒸馏腿挡位**：`ducky/gear.py` 泛化为参数化 `_Breaker` 双实例——
+  嵌入腿公开 API 签名与行为**逐字不变**（既有测试零改动全绿是重构安全网）；
+  LLM 腿新增 `should_try_llm` / `record_llm_failure` / `record_llm_success`，
+  三态机与防抖语义同款（连续 N 败降挡、冷却后半开、真实流量探测、连续 M 成
+  升挡），env `AIDUMEI_LLM_GEAR_TRIP_FAILURES / _RECOVER_SUCCESSES /
+  _COOLDOWN_SEC`（非法值回退语义同 R1）。两腿状态互相独立——LLM 断供不碰
+  嵌入挡位。升降挡进事件账本（target_id=llm_leg）；`/health` 新增 `llm_gear`
+  探针（`ducky/hot/health.py`）；`.env.example` 补录两腿挡位参数。
+  LLM 腿升挡无重放回调：挡内写入已确定性落库，欠的只是蒸馏精修——「补蒸馏
+  债」需要 replace 语义（重放会产生第二份记忆），显式后置不装样子。
+- **写路径接线**：`ducky/hot/add.py` —— 挡位 open 时**跳过 layer1 直接
+  确定性直写**（infer=False）：原文、硬事实、云向量照落、内容照样可召回
+  （嵌入腿活着），写入秒回不再逐请求撞超时；响应带 `distillation` 诚实注记
+  （additive 字段：`skipped_llm_gear_open` / `skipped_llm_error`）。
+  LLMError 形态的 layer1 失败上报挡位并**本请求就地降级**；直写内层再撞
+  LLMError 时自纯化（就地降 infer=False 重写，fallback 不许自己 500——
+  实弹里网关恰好复活才没暴露的洞，本版闭合）；非 LLM 故障保持旧语义
+  （透传调用方 infer，显式免抽取不许偷偷变回 LLM 抽取），且**不污染 LLM
+  腿信号**——只认异常类型名 LLMError（v20.2.1 外审 Y2 教训的写侧版）。
+- **测试**：9 条点名用例——两腿状态独立（双向）、三态防抖、降挡后 layer1
+  零触碰、信号纯净负向、半开真实写入升挡、双重故障自纯化、传输补丁
+  applied/drift 两态（`tests/test_v20_2_autoshift.py`）；6 处变异探针
+  （挡位跳过/infer 强制/失败上报/信号纯净/补丁空转/内层纯化）逐一验红后
+  还原。附测试收尾把手 `join_replay_for_tests`（`ducky/dual_index.py`）：
+  重放守护线程不许活过测试的猴补丁世界（否则在后续测试的 caplog 窗口里
+  打日志，制造全轴序下的闪烁红灯）。用例总数 1281 → 1290。
+- **文档**：双 README 自动挡门面补「LLM 腿同样有挡位」条目；测试数字同步
+  （1290 / 开发机 1278+12 / 沙箱推导 1289+1）。
+
 ## v20.2.1 — 自动挡外审整改（2026-08-26）
 
 > **性质：维护版。公开 Tag 与 Release 停在 `v20.2`，本版随 main 公开源码，
