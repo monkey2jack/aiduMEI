@@ -153,8 +153,18 @@ def search_local(query: str, user_id: str, bank_id: str = "default",
         qm.FieldCondition(key="user_id", match=qm.MatchValue(value=user_id)),
         qm.FieldCondition(key="bank_id", match=qm.MatchValue(value=bank_id)),
     ])
-    hits = client.search(collection_name=LOCAL_COLLECTION, query_vector=qv,
-                         query_filter=flt, limit=limit, with_payload=True)
+    # 生产实测（2026-08-27 质量对照窗口）：新版 qdrant-client 已移除
+    # `search`，只有 `query_points` —— 而测试替身实现了 search，制造了
+    # 「lite 向量腿在生产其实一直 AttributeError、命中全靠 BM25 兜底」的
+    # 假绿灯。query_points 优先，老版本回落 search；替身也被改造成
+    # 只有 query_points（对齐生产 API 面，见 test_v20_2_autoshift）。
+    if hasattr(client, "query_points"):
+        hits = client.query_points(collection_name=LOCAL_COLLECTION, query=qv,
+                                   query_filter=flt, limit=limit,
+                                   with_payload=True).points
+    else:
+        hits = client.search(collection_name=LOCAL_COLLECTION, query_vector=qv,
+                             query_filter=flt, limit=limit, with_payload=True)
     out = []
     for h in hits:
         pl = dict(h.payload or {})
