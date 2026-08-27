@@ -342,3 +342,71 @@ def test_boundary_marker_lists_stay_in_sync():
         f"  插件侧: {sorted(found)}\n"
         "改一处必须改另一处（外审 F-12）。"
     )
+
+
+# ════════════════════════════════════════════════════════════════════
+# F-26 / F-02 · 发布物与构建上下文的静态验收
+# ════════════════════════════════════════════════════════════════════
+#
+# 真构建一遍放在 CI（wheel-assets / docker-context-secrets 两个 job）——
+# `python -m build` 要几十秒，不该压在每次本地跑测试上。但**声明层的完整性
+# 是静态可判的**，这两条守卫就守那一层：CI 没跑的时候，声明写错照样立刻变红。
+
+_CLAIMED_WHEEL_ASSETS = ("frontend", "integrations", "deploy",
+                         "mem0_config_local.json.example", ".env.example")
+
+
+def test_pyproject_declares_every_claimed_wheel_asset():
+    """README/CHANGELOG 宣称随包发布的资产，pyproject 必须逐项声明。
+
+    外审 F-26：`packages.find` 只发现 ducky*/benchmarks*，而 MANIFEST.in 的
+    recursive-include 只影响 sdist —— 于是 wheel 里没有 UI，入口点在、/ui 是空的。
+    """
+    txt = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    try:
+        import tomllib
+        data = tomllib.loads(txt)
+    except Exception as exc:                    # pragma: no cover
+        pytest.fail(f"pyproject.toml 解析失败：{exc}")
+    pkg_data = (data.get("tool", {}).get("setuptools", {}).get("package-data", {}))
+    declared = " ".join(str(v) for v in pkg_data.values())
+    missing = [a for a in _CLAIMED_WHEEL_ASSETS if a not in declared]
+    assert not missing, (
+        f"pyproject 的 package-data 未声明这些宣称随包发布的资产：{missing}\n"
+        "（真构建验收在 CI 的 wheel-assets job；这条守的是声明层）"
+    )
+
+
+def test_dockerignore_excludes_secrets_but_keeps_examples():
+    """构建上下文必须排除密钥，且**不能把样例文件一起排掉**（F-02）。
+
+    `.gitignore` 只保护 Git。Dockerfile 的 `COPY . /app` 会把上下文里的
+    `.env`/`*.key` 复制进镜像层 —— 容器以非 root 运行也没用，能拉镜像的人
+    读得到那一层。
+    """
+    ign = (_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    need = (".env", ".llm_key", ".sf_key", ".sensenova_key",
+            "mem0_config_local.json", "*.pem", "*.key")
+    missing = [n for n in need if n not in ign]
+    assert not missing, f".dockerignore 未排除：{missing}"
+    # 负向：排除得太狠会让 README 的「复制 .env.example」这一步无从下手
+    assert ".env.example" in ign, "样例文件必须显式保留（否则构建上下文里没有可复制的模板）"
+
+
+def test_ci_has_the_three_new_acceptance_jobs():
+    """三条新验收 job 必须在场，且**触发方式保持维护者裁决的只手动**。
+
+    这条守卫的由来：验收 job 最容易的失败方式不是写错，是**被删掉或改成
+    只在某个分支跑** —— 而删掉之后一切照常全绿。
+    """
+    import yaml
+    wf = yaml.safe_load((_ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8"))
+    jobs = set(wf.get("jobs") or {})
+    for j in ("mcp-extra-import", "wheel-assets", "docker-context-secrets"):
+        assert j in jobs, f"CI 缺少验收 job：{j}（现有 {sorted(jobs)}）"
+    # PyYAML 会把裸 `on:` 解析成布尔 True 键
+    triggers = set(wf.get(True) or wf.get("on") or {})
+    assert triggers == {"workflow_dispatch", "workflow_call"}, (
+        f"触发方式变成 {sorted(triggers)} —— 只手动触发是维护者的明确裁决"
+        "（Actions 失败邮件是实际骚扰），改它需要维护者重新拍板"
+    )

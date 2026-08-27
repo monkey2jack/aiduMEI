@@ -102,9 +102,19 @@ def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
         return {"error": str(e)}
 
 
-def _api_post(path: str, body: dict | None = None, timeout: int = 30) -> dict:
-    """POST 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
+def _api_post(path: str, body: dict | None = None, timeout: int = 30,
+              params: dict | None = None) -> dict:
+    """POST 请求 api_server。返回解析后的 JSON dict 或 error dict。
+
+    `params` 走 query string（v20.2.4 · 外审 F-21）：有些端点的入参是**散装标量**
+    而不是 Pydantic 模型，FastAPI 会从 query 读它们，把同名键塞进 JSON body
+    是**静默无效**的 —— 请求 200、参数全丢。哪个端点该用哪种，由
+    tests/test_v20_2_4_mcp_contract.py 逐工具对表钉住。
+    """
     url = f"{API_BASE}{path}"
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None and v != ""})
     data = json.dumps(body or {}).encode()
     try:
         req = urllib.request.Request(
@@ -331,7 +341,8 @@ def facts_list(category: str = "", limit: int = 20) -> str:
 
 
 @mcp.tool()
-def facts_add(content: str, category: str = "general", source: str = "mcp") -> str:
+def facts_add(content: str, category: str = "general", source: str = "mcp",
+              fact_key: str = "", user_id: str = DEFAULT_USER_ID) -> str:
     """向结构化知识库添加一条 Fact。
 
     Args:
@@ -339,7 +350,17 @@ def facts_add(content: str, category: str = "general", source: str = "mcp") -> s
         category: 分类（preference / event / skill / identity / general）
         source:   来源标识
     """
-    result = _api_post("/facts/add", {"content": content, "category": category, "source": source})
+    # v20.2.4（外审 F-21）：此前发的是 JSON body {"content", "category", "source"}。
+    # 端点 add_fact 的入参是**散装标量**（从 query 读），且**根本没有 content
+    # 字段** —— 于是这个工具从来没成功存进过任何一条事实：请求 200，内容全丢。
+    # content 的落点是 fact_value；参数走 query。
+    result = _api_post("/facts/add", None, params={
+        "fact_value": content,
+        "fact_key": (fact_key or content[:40]),
+        "category": category,
+        "source": source,
+        "user_id": user_id,
+    })
     return _ok(result)
 
 
@@ -402,18 +423,24 @@ def code_graph_view(path: str = "") -> str:
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def session_start(session_id: str, metadata: str = "{}") -> str:
+def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = "default") -> str:
     """开始一个新会话，建立记忆锚点。
 
     Args:
-        session_id: 会话唯一标识（如时间戳字符串）
-        metadata:   JSON 字符串，附加元数据（如 {"source": "feishu"}）
+        user_id: 用户标识
+        bank_id: 记忆库标识
+
+    Note:
+        会话 id 由**服务端生成**并在响应里返回。此前本工具声明过
+        session_id / metadata 两个参数，而端点并不接收它们（v20.2.4 外审整改
+        中由逐工具对表发现）—— 收了不发比不收更糟，所以签名改成了实话。
     """
-    try:
-        meta = json.loads(metadata)
-    except json.JSONDecodeError:
-        meta = {}
-    result = _api_post("/session/start", {"session_id": session_id, "metadata": meta})
+    # v20.2.4（外审 F-21 同族，本轮对表新发现）：端点 session_start 的签名是
+    # (user_id, bank_id) —— 此前发的 session_id / metadata **两个都不被接收**，
+    # 会话 id 一直是服务端自己生成的。收了参数却不发送，是给调用方一个假承诺；
+    # 与其留着骗人，不如让签名说实话。
+    result = _api_post("/session/start", None,
+                       params={"user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 

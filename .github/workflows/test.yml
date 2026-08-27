@@ -94,3 +94,117 @@ jobs:
           echo "✅ 前提成立：仅 requirements.txt，包本体未安装"
       - name: README 原文路径——import api_server 必须成功
         run: python -c "import api_server; print('✅ 裸装路径可 import')"
+
+  # ── v20.2.4（外审 F-21）：可选依赖组装得上、工具起不来 ──────────────
+  # `mcp` 此前没有上限，pip 解析到 2.x，而 mcp_server.py 导入的
+  # `mcp.server.fastmcp` 在 2.x 里不存在。`pip install 'aidumei[mcp]'` 全绿，
+  # 用户拿到的是一个 import 就炸的工具集。**装得上 ≠ 用得了。**
+  mcp-extra-import:
+    runs-on: ubuntu-latest
+    env:
+      AIDUMEM_DATA_DIR: /tmp/aidumei-mcp-extra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 按用户会打的那条命令装
+        run: |
+          python -m pip install --upgrade pip
+          pip install '.[mcp]'
+      - name: 前提反证——mcp 必须真的装进来了
+        # 若 extra 名字写错或被静默跳过，下一步的 import 可能因为别的原因通过，
+        # 而这个 job 就变成了一个不检验任何东西的绿灯。
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          v = md.version("mcp")
+          major = int(v.split(".")[0])
+          assert major < 2, f"解析到 mcp {v} —— <2 的上限没生效"
+          print(f"✅ 前提成立：mcp {v}")
+          PY
+      - name: 工具集必须能导入
+        run: python -c "import mcp_server; print('✅ mcp_server 导入成功')"
+
+  # ── v20.2.4（外审 F-26）：wheel 里没有 UI 与集成资产 ────────────────
+  # packages.find 只发现 ducky*/benchmarks*，而 MANIFEST.in 的
+  # recursive-include 只影响 sdist。于是 `pip install aidumei` 之后入口点在、
+  # /ui 是空的、首次运行找不到配置样例。CHANGELOG 宣称过这些随包发布 ——
+  # **宣称即承诺，那就得有一条真装一遍的验收。**
+  wheel-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 构建 wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist_ci
+      - name: 前提反证——只有一个 wheel，且版本号与 version.py 一致
+        run: |
+          python - <<'PY'
+          import glob, re
+          whls = glob.glob("dist_ci/*.whl")
+          assert len(whls) == 1, f"期望恰好 1 个 wheel，实得 {whls}"
+          src = open("ducky/version.py", encoding="utf-8").read()
+          ver = re.search(r'SERVICE_VERSION\s*=\s*"([^"]+)"', src).group(1)
+          assert ver in whls[0], f"wheel {whls[0]} 与 SERVICE_VERSION {ver} 不一致"
+          print(f"✅ 前提成立：{whls[0]}（{ver}）")
+          PY
+      - name: 装进干净环境，逐项断言宣称的资产在场
+        run: |
+          python -m venv /tmp/wenv
+          /tmp/wenv/bin/pip install --quiet dist_ci/*.whl
+          /tmp/wenv/bin/python - <<'PY'
+          import pathlib, sysconfig
+          site = pathlib.Path(sysconfig.get_paths()["purelib"])
+          missing = []
+          for rel in ("frontend", "integrations", "deploy",
+                      "mem0_config_local.json.example", ".env.example"):
+              if not (site / rel).exists():
+                  missing.append(rel)
+          assert not missing, f"wheel 缺少宣称随包发布的资产：{missing}"
+          n = len(list((site / "frontend").rglob("*")))
+          assert n >= 5, f"frontend 只有 {n} 项，像是空目录占位"
+          print(f"✅ 资产齐备（frontend {n} 项）")
+          PY
+
+  # ── v20.2.4（外审 F-02）：镜像层里的密钥 ────────────────────────────
+  # `.gitignore` 只保护 Git，不保护 Docker build context。Dockerfile 的
+  # `COPY . /app` 会把上下文里的 .env / *.key 复制进镜像层 —— 即使容器以
+  # 非 root 运行，能拉取镜像的人仍然读得到那一层。
+  docker-context-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: .dockerignore 必须排除密钥与本地配置
+        run: |
+          python - <<'PY'
+          import pathlib
+          ign = pathlib.Path(".dockerignore").read_text(encoding="utf-8")
+          need = [".env", ".llm_key", ".sf_key", ".sensenova_key",
+                  "mem0_config_local.json", "*.pem", "*.key"]
+          missing = [n for n in need if n not in ign]
+          assert not missing, f".dockerignore 未排除：{missing}"
+          assert ".env.example" in ign, "样例文件必须显式保留（负向：别把它一起排除了）"
+          print("✅ 排除项齐备，且样例文件保留")
+          PY
+      - name: 造一个假密钥，证明它进不了构建上下文
+        # 前提反证：不是只读 .dockerignore 的文本，而是让 docker 自己说话。
+        run: |
+          printf 'AIDUMEM_API_TOKEN=ci-fake-not-a-real-secret\n' > .env
+          printf 'ci-fake-llm-key\n' > .llm_key
+          docker build -t aidumei-ctx-probe -f Dockerfile . --target builder 2>/dev/null \
+            || docker build -t aidumei-ctx-probe -f Dockerfile .
+          leaked=$(docker run --rm --entrypoint sh aidumei-ctx-probe -c \
+            'ls -a /app 2>/dev/null | grep -cE "^\.env$|^\.llm_key$"' || echo 0)
+          rm -f .env .llm_key
+          if [ "$leaked" != "0" ]; then
+            echo "❌ 镜像层里找到了 $leaked 个密钥文件"
+            exit 1
+          fi
+          echo "✅ 假密钥未进入镜像"
