@@ -174,8 +174,16 @@ def scan_bytes(raw: bytes, words: list[str]) -> tuple[dict[str, int], dict[str, 
         bucket = exempt if mark in line else hits
         text = line.decode("utf-8", "ignore")
 
+        low = text.lower()
         for w in words:
-            n = text.count(w)
+            # v20.2.3：**大小写不敏感**。此前是 text.count(w) 直比 ——
+            # 词表里写全小写的词，咬不住正文里首字母大写的同一个词，而
+            # 「词表里有」与「真的扫得到」看起来一模一样（实测踩过：
+            # 补了词，负向对照仍报 0）。靠往词表里堆大小写变体是脆的，
+            # 判据本身不区分大小写才是结构性的。
+            # 注：本注释刻意不写出任何真实敏感词 —— 扫描器会扫自己，
+            # 举例说明会把说明文字变成命中（本轮已踩过第三次同类坑）。
+            n = low.count(w.lower())
             if n:
                 bucket[w] = bucket.get(w, 0) + n
 

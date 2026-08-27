@@ -34,7 +34,21 @@ import urllib.request
 from pathlib import Path
 
 AIDUMEM_URL = os.environ.get("AIDUMEM_URL", "http://127.0.0.1:8767").rstrip("/")
-TIMEOUT = int(os.environ.get("AIDUMEM_TIMEOUT", "10"))
+# v20.2.3（外审 M-2 普查）：原为裸 int()，非法值会让 hook 每次触发都崩，
+# 而 hook 崩在宿主编辑器里最不容易被看见。本文件是**独立脚本**（拷进
+# 用户环境运行，够不着 ducky.env_config），故就地安全解析，语义一致。
+def _timeout_env(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+        return v if v >= 1 else default
+    except ValueError:
+        return default
+
+
+TIMEOUT = _timeout_env("AIDUMEM_TIMEOUT", 10)
 
 
 # ── 凭据与身份（v19.4.2 补齐）─────────────────────────────

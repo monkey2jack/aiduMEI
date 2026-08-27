@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import math
 import os
+
+from ducky.env_config import float_env
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,9 +23,11 @@ from ducky.failure_ledger import feature_failed
 logger = logging.getLogger("aiduMEM.scoring")
 
 # 统一衰减率与映射参数（单一真相源，支持环境变量微调）
-RECENCY_LAMBDA = float(os.environ.get("AIDUMEM_RECENCY_LAMBDA", "0.05"))
-RERANK_WEIGHT = float(os.environ.get("AIDUMEM_RERANK_WEIGHT", "0.4"))
-SIGMOIDAL_TEMPERATURE = float(os.environ.get("AIDUMEM_SIGMOIDAL_TEMP", "10.0"))
+# v20.2.3（外审 M-2 同族）：非法值曾让本模块 import 即崩 —— 打分参数
+# 写错一个字符，整条召回链跟着消失。回退默认 + 出声，见 ducky/env_config.py。
+RECENCY_LAMBDA = float_env("AIDUMEM_RECENCY_LAMBDA", 0.05, minimum=0.0)
+RERANK_WEIGHT = float_env("AIDUMEM_RERANK_WEIGHT", 0.4, minimum=0.0, maximum=1.0)
+SIGMOIDAL_TEMPERATURE = float_env("AIDUMEM_SIGMOIDAL_TEMP", 10.0, minimum=0.0)
 
 DEFAULT_WEIGHTS = {
     "vector": 0.35,

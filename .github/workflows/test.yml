@@ -61,3 +61,36 @@ jobs:
         # 都留在日志里 —— 哪天某条轴悄悄多吃掉几十条用例，翻日志就能看见。
         if: always()
         run: pytest tests/ -q -rs 2>&1 | tail -20
+
+  # ── 新用户入门路径冒烟（v20.2.3 · 外审 H-1）──────────────────────────
+  # 上面那个 job 装完 requirements 还会补跑 `pip install -e .`，于是按
+  # pyproject 把依赖拉齐了 —— 恰好**遮蔽**了 requirements.txt 自身的缺口。
+  # README「30 秒上手 · 方式一」教新用户只跑 requirements.txt，那条路径
+  # 因此从未被 CI 走过：python-multipart 漏了半个版本没人发现，
+  # 而它缺席时 `import api_server` 直接 RuntimeError（服务起不来）。
+  # 这个 job 只做一件事：**照 README 的原话走一遍**。
+  bare-requirements-smoke:
+    runs-on: ubuntu-latest
+    env:
+      AIDUMEM_DATA_DIR: /tmp/aidumei-bare-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install（只装 requirements.txt，绝不补 pip install .）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: 反证——本 job 必须真的没装包内依赖
+        # 若哪天有人在上面偷偷加了 `pip install .`，这一步会让本 job 失去
+        # 意义却仍然全绿。断言「本包未被安装」，把这个 job 的前提焊死。
+        run: |
+          if pip show aidumei > /dev/null 2>&1; then
+            echo "❌ aidumei 已被安装 —— 本 job 的前提被破坏，它不再检验裸装路径"
+            exit 1
+          fi
+          echo "✅ 前提成立：仅 requirements.txt，包本体未安装"
+      - name: README 原文路径——import api_server 必须成功
+        run: python -c "import api_server; print('✅ 裸装路径可 import')"

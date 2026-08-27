@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+
+from ducky.env_config import int_env
 import re
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +20,9 @@ logger = logging.getLogger("aiduMEM.security.injection_guard")
 
 # 模式：enforce（默认拦截） | log_only（仅记录警告）
 GUARD_MODE = os.environ.get("AIDUMEM_INJECTION_GUARD_MODE", "enforce").strip().lower()
-MAX_CONTENT_LENGTH = int(os.environ.get("AIDUMEM_MAX_MEMORY_CHARS", "100000"))
+# v20.2.3（外审 M-2 同族）：注入清洗是安全模块，非法值让它 import 即崩
+# = 三层清洗整体下线。回退默认 + 出声。
+MAX_CONTENT_LENGTH = int_env("AIDUMEM_MAX_MEMORY_CHARS", 100000, minimum=1)
 
 # ── 第一层：原始特征检测正则 ────────────────────────────────────────
 _RAW_INJECTION_PATTERNS = re.compile(

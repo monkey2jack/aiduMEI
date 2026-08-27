@@ -98,3 +98,4 @@ scan_words.txt
 # 打包时用 COPYFILE_DISABLE=1 挡掉；这一条挡的是「哪天有人手滑 git add 进来」。
 ._*
 .DS_Store
+docs/README_draft.md

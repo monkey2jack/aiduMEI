@@ -4,6 +4,81 @@
 
 ---
 
+## v20.2.3 — 外部审计整改（2026-08-27）
+
+> **性质：维护版。公开 Tag 与 Release 停在 `v20.2`，本版随 main 公开源码，
+> 版本号仅服务侧三段式推进（SOP 双轨）。** 来源：第三方独立审计
+> （完全外部视角——从公开仓克隆至独立目录、独立 venv 复现构建与全量测试）
+> 提出 1 高危 + 3 中危 + 4 低危；本仓逐条独立复核，**四项实质指控全部复现属实**，
+> 其中中危一项的爆炸半径经自查**比报告更大**（点名 2 处，普查 8 处）。
+
+- **H-1 入门路径依赖补齐（高危）**：`requirements.txt` 补 `python-multipart`。
+  它在 `pyproject.toml` 一直声明着，本清单却漏了；而 FastAPI 的 `Form(...)`
+  在**路由注册期（import 期）**就要求它（`ducky/hot/legacy_routes.py` 与
+  `ducky/extended/routes.py` 各一处）。CI 与 Dockerfile 都在 requirements
+  之后补跑 `pip install .`（按 pyproject 拉齐），恰好**遮蔽**了这个缺口 ——
+  于是唯一裸奔的，正是 README「30 秒上手 · 方式一」教新用户走的那条路径。
+  干净 venv 实测复现：`RuntimeError: Form data requires "python-multipart"
+  to be installed.`。与 v19.4.2 的 `inotify_simple` 是同一类事故（声明缺失
+  → 部署即崩），CHANGELOG 记了教训却没结构化，这次焊成守卫：
+  `tests/test_v20_runtime_deps_declaration.py`（pyproject 运行时依赖 ⊆
+  requirements，PEP 503 名称规范化防「补了但写法不同」骗过守卫，例外须
+  显式登记并写明理由）+ CI 新增 `bare-requirements-smoke` job，照 README
+  原话只装 requirements.txt 再 `import api_server`，并断言「本 job 确实
+  没装包本体」——否则哪天有人偷加一行 `pip install .`，这个 job 会失去
+  意义却仍然全绿。
+- **M-2 配置雷全仓拆除（中危，范围大于原报告）**：新增
+  `ducky/env_config.py` 作为 env 数值解析的**单一真相源**（叶子模块，
+  只 import os/logging —— 配置解析被 auth 这类底层安全模块在 import 期
+  调用，任何内部依赖都可能织出循环导入，而循环导入的症状恰恰又是
+  「服务起不来」，等于用新的启动阻断换掉旧的）。审计点名 2 处，自查普查出
+  6 处，元守卫上岗后又抓出 2 处，合计 8 处全部改为**回退默认 + 出声一次 +
+  探针可查**：`ducky/security/auth.py` 的 SESSION_TTL（**炸在 import 期 =
+  鉴权模块加载失败 = 整个服务起不来**，比 v20.2.1 外审 R1 原案更狠）、
+  `ducky/scoring.py` 三处打分参数、`ducky/security/injection_guard.py` 的
+  内容长度上限、`api_server.py` 端口（or 链保留原语义，但错误点名到真正
+  提供了坏值的那个 env，不张冠李戴）、`frontend/dev_server.py` 与
+  `integrations/cursor-hook/claude-code-hook.py`（独立脚本，够不着单一真相源，
+  就地安全解析、语义一致）。`ducky/gear.py` 与 `ducky/rate_guard.py` 在
+  v20.2.1 各自拆过一次雷、实现留在本地，本轮一并收编进单一真相源，
+  **公开行为逐字不变**（既有 53 条用例零改动全绿是重构安全网）。
+  元守卫 `test_no_raw_env_numeric_cast_in_production_code` 判据走 **AST
+  不走字符串**：正则版把 `env_config` 自己头注里当反面例子写的
+  `int(os.environ.get(...))` 判成了违规——「守卫分不清代码和讲代码的话」
+  这个坑本仓踩过第二次，这次一步到位。
+- **M-1 登录爆破护栏（中危）**：`ducky/rate_guard.py` 新增按客户端 IP 的
+  登录失败计数，`api_server.py` 的 `/login` 接线。两点与写路径限流不同，
+  都是刻意的：**只计失败**（正常用户换设备连登几次不该被锁）、
+  **先查后验**（超限直接 429，连 PBKDF2 都不跑——既省 100ms，也不给攻击者
+  「这次算不算数」的旁路信号）。默认 10 次/分钟/IP，
+  `AIDUMEI_LOGIN_FAILURES_PER_MIN` 可调（0=关闭），429 带 `Retry-After`。
+  局限如实注明：反代之后 `request.client.host` 是反代 IP，本护栏退化为
+  全局阈值；`X-Forwarded-For` 可伪造，未经可信反代校验绝不拿来当分桶键 ——
+  宁可退化，也不给攻击者一个「换个头就换个桶」的绕过口。
+- **L 组三项**：`api_server.py` 检测到 HTTPS 反代痕迹（`X-Forwarded-Proto`）
+  而 `AIDUMEM_COOKIE_SECURE` 未开时打 warning（会话 cookie 缺 secure 标志
+  会随一次降级到 HTTP 的请求裸奔，属「配置与部署形态不匹配」，必须出声）；
+  `ducky/router_usage.py` 把 `AIDUMEM_ROUTER_SSH_STRICT=yes` 从「可配」
+  升格为**生产部署验收线**（accept-new 是 TOFU，首连即中间人窗口）；
+  `docs/README_draft.md` 草稿移出仓库。
+- **M-3 如实登记，不冒充修复**：前端 vendored `echarts.min.js` 为 5.5.0，
+  命中 CVE-2026-45249 / GHSA-fgmj-fm8m-jvvx（Lines series + 默认 tooltip
+  formatter + `data[i].name` → innerHTML sink，修复版 6.1.0）。经独立核查
+  （OSV 原始条目 + 仓内用法逐处比对）确认**当前不可达**：仓内唯一用法是
+  `frontend/js/panels.js` 的 `graph` series + 自定义 formatter，且
+  `p.data.name` 已过 `esc()`，全仓无 lines series。跨大版本升级（5.x→6.x）
+  须配 UI 实测验证面板不坏，本版**不动**，留待专项处理 —— 不可达不等于
+  可以不管，但也不该在一个维护版里塞一个没做视觉验收的大版本跳跃。
+- **测试**：新增 2 个点名文件共 22 条用例（`tests/test_v20_runtime_deps_declaration.py`
+  依赖双清单守卫 + `tests/test_v20_2_3_audit_remediation.py` 配置雷子进程验证、
+  元守卫与登录护栏）。配置雷用例**跑子进程**是刻意的：
+  这些常量在 import 期求值，父进程里模块早已加载，monkeypatch env 根本
+  影响不到它们——那样的「测试」会稳过且证明不了任何事（假绿灯）。
+  5 处变异探针（auth 雷回归 / 回退退化成忽略配置 / 护栏空转 / 先查后验被破 /
+  成功也计数）逐一验红后还原。新守卫的跳过分支改为**前提断言**而非
+  `pytest.skip`——产品形态变化不是环境轴，用 skip 会凭空造出一条假的
+  跳过轴。用例总数 1290 → 1312，双 README 同步。
+
 ## v20.2.2 — LLM 蒸馏腿挡位化（2026-08-26）
 
 > **性质：维护版。公开 Tag 与 Release 停在 `v20.2`，本版随 main 公开源码，
