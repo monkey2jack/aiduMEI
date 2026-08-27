@@ -166,7 +166,11 @@ def login_table_status() -> dict:
             "tracked_ips": len(_login_fails),
             "max_tracked_ips": login_max_tracked_ips(),
             "window": _login_win,
-            "global_throttle_active": _login_throttle_win == _login_win,
+            # 判据必须带 `_login_win >= 0`：两者的初始值都是 -1，于是**刚启动、
+            # 表还是空的**时候相等 —— 探针会报「全局节流已激活」。
+            # 探针自己撒的谎和缺陷一样害人，而且更难查（它看起来像证据）。
+            "global_throttle_active": (_login_win >= 0
+                                       and _login_throttle_win == _login_win),
         }
 
 
