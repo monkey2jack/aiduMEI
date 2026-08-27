@@ -19,6 +19,7 @@ warning 打一次（同值不刷屏），错误常驻 config_errors()，进 /hea
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Callable, Optional
 
@@ -36,6 +37,17 @@ def _resolve(name: str, default, caster: Callable, valid: Callable,
         return default
     try:
         v = caster(str(raw).strip())
+        # v20.2.3（外审 A-1）：**先拦非有限值**。NaN 与任何数比较恒为 False，
+        # 于是 `not (v < min or v > max)` 对 NaN 恒真 —— NaN 被判「合法」，
+        # 静默通过、不进 _errors、不打 warning、探针零痕迹。这正是本模块
+        # 头注自己定义的「假绿灯」形态，而且它埋在**专门用来拆配置雷的
+        # 模块**里。下游是真有杀伤的：RERANK_WEIGHT=nan 会让融合分
+        # `old*(1-W) + rr*W` 整体变 NaN，排序彻底失效而全系统报健康。
+        # `1e999` 解析成 inf，无上限的参数同样拦不住 —— 一并由此拦下。
+        # int 路径天然免疫（int("nan") 直接 ValueError），但判据放在共用
+        # 层是刻意的：将来新增任何 caster 都自动受保护，不靠下一个人记得。
+        if not math.isfinite(v):
+            raise ValueError
         if not valid(v):
             raise ValueError
         _errors.pop(name, None)
@@ -62,22 +74,36 @@ def int_env(name: str, default: int, *, minimum: Optional[int] = None,
     if maximum is not None:
         bounds.append(f"<={maximum}")
     return int(_resolve(name, default, int, _valid, raw=raw,
-                        expects="整数" + (" " + " 且 ".join(bounds) if bounds else "")))
+                        expects="有限整数" + (" " + " 且 ".join(bounds) if bounds else "")))
 
 
 def float_env(name: str, default: float, *, minimum: Optional[float] = None,
-              maximum: Optional[float] = None, raw: Optional[str] = None) -> float:
-    """浮点 env。语义同 int_env。"""
+              maximum: Optional[float] = None,
+              exclusive_minimum: Optional[float] = None,
+              raw: Optional[str] = None) -> float:
+    """浮点 env。语义同 int_env，另有 exclusive_minimum（严格大于）。
+
+    v20.2.3（外审 A-2）：加 exclusive_minimum 是为了让调用方能表达**真正的
+    `v > 0`**。此前 ducky/gear.py 拿 `minimum=0.000001` 近似它，于是区间
+    (0, 1e-6) 的合法旧值被拒 —— 收编时宣称的「公开行为逐字不变」就不逐字了。
+    影响接近于零（没人给熔断器配亚微秒冷却），但**旗立到「逐字」，实况就
+    该经得起逐字**，所以补的是能力而不是措辞。
+    （不设 exclusive_maximum：当下无调用方需要，需要时再加——不预造抽象。）
+    """
     def _valid(v: float) -> bool:
+        if exclusive_minimum is not None and v <= exclusive_minimum:
+            return False
         return not ((minimum is not None and v < minimum)
                     or (maximum is not None and v > maximum))
     bounds = []
+    if exclusive_minimum is not None:
+        bounds.append(f">{exclusive_minimum}")
     if minimum is not None:
         bounds.append(f">={minimum}")
     if maximum is not None:
         bounds.append(f"<={maximum}")
     return float(_resolve(name, default, float, _valid, raw=raw,
-                          expects="数值" + (" " + " 且 ".join(bounds) if bounds else "")))
+                          expects="有限数值" + (" " + " 且 ".join(bounds) if bounds else "")))
 
 
 def config_errors(*names: str) -> dict[str, str]:
