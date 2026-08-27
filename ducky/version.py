@@ -42,7 +42,26 @@ v20.2.3 (外部审计整改 · 2026-08-27)
        frontend/js/panels.js 的 graph series + 自定义 formatter 且已过
        esc()，全仓无 lines series。升级到 6.x 是跨大版本、须配 UI 实测，
        本版不动，留待专项。
-    6. 测试：新增 2 个点名文件 22 条用例
+    6. 引擎三档可选：ducky/engine_mode.py —— AIDUMEI_ENGINE_MODE=
+       auto|cloud|local。这同时是本轮唯一有效的内存优化：备胎实测常驻
+       +151MB（onnxruntime 库 75MB + 模型会话 122MB），四种旋钮调优实测
+       全部无效、模型已是最小的中文可用款，**唯一有效的优化就是不加载它**。
+       两腿独立谓词接线到 local_embed（省内存闸门）/dual_index/gear/
+       ducky/hot/add.py（本地档 action=local_only 且不入云欠账）/health 探针。
+    7. 自查 S-1：ducky/rate_guard.py 的计数表从不清理，而 /login 免鉴权 ——
+       实测 5 万个源 IP = 5 万条常驻条目（约 12MB），本轮自挖自填；照抄
+       ducky/security/auth.py 早就有的清理模式（超阈值才扫、只丢死条目、
+       语义无损），新增 window_count() 可观测面。
+    8. 自查 S-2：元守卫盲于 import 别名（`import os as _os` 直接溜过），
+       加固当天就抓出它原先漏掉的 ducky/hot/legacy_helpers.py 一处 ——
+       守卫的盲区比它守的缺陷更危险。
+    9. 自查 S-3：欠账水位有数字没判据。ducky/dual_index.py 新增
+       pending_verdict() 三态，stuck 的判据是「数字大**且**上次重放无进展」，
+       阈值 AIDUMEI_PENDING_WARN_LEVEL 默认 500（惯例值，标注待校准）。
+    10. 自查 S-4：README 部署章整章数字过期，且「本机不加载任何大模型权重」
+       在自动挡之后已是假话。按 2026-08-27 生产实测重写为双体量对比表，
+       并修正 1 核 1G 的口径。宣称即承诺。
+    11. 测试：新增 2 个点名文件 22 条用例
        （tests/test_v20_runtime_deps_declaration.py 依赖双清单守卫 +
        tests/test_v20_2_3_audit_remediation.py 配置雷子进程验证与登录护栏），
        5 处变异探针逐一验红后还原。配置雷用例**跑子进程**是刻意的：

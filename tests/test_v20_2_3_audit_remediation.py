@@ -115,16 +115,28 @@ def _raw_env_casts(src: str) -> list[int]:
     except SyntaxError:
         return []
 
+    # v20.2.3（自查 S-2）：**解析 import 别名**。首版只认字面量 `os.`，
+    # 于是 `import os as _os` + `int(_os.getenv(...))` 直接溜过 —— 仓里
+    # 恰好就有两处别名导入。守卫自己的盲区比它守的缺陷更危险：它会让
+    # 「扫过了」和「扫得到」看起来一模一样。
+    os_names = {"os"}
+    for nd in ast.walk(tree):
+        if isinstance(nd, ast.Import):
+            for a in nd.names:
+                if a.name == "os" and a.asname:
+                    os_names.add(a.asname)
+
     def _is_env_read(node: ast.AST) -> bool:
         if not isinstance(node, ast.Call):
             return False
         f = node.func
         if isinstance(f, ast.Attribute):
-            if f.attr == "getenv" and isinstance(f.value, ast.Name) and f.value.id == "os":
+            if f.attr == "getenv" and isinstance(f.value, ast.Name) and f.value.id in os_names:
                 return True
             if (f.attr == "get" and isinstance(f.value, ast.Attribute)
                     and f.value.attr == "environ"
-                    and isinstance(f.value.value, ast.Name) and f.value.value.id == "os"):
+                    and isinstance(f.value.value, ast.Name)
+                    and f.value.value.id in os_names):
                 return True
         return False
 
@@ -196,6 +208,9 @@ def test_meta_guard_has_discriminating_power():
     # 讲坏形态的话不是坏形态（正则版在这里翻过车）
     assert _raw_env_casts('"""别写 int(os.environ.get(...)) 这种。"""') == []
     assert _raw_env_casts('# 反面例子：int(os.environ.get("A"))') == []
+    # 别名导入不许溜过（S-2：首版只认字面量 os.，仓里恰好有两处别名导入）
+    assert _raw_env_casts('import os as _os\nx = int(_os.getenv("A", "1"))') == [2]
+    assert _raw_env_casts('import os as _o\ny = float(_o.environ.get("B", "2"))') == [2]
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -274,3 +289,157 @@ class TestLoginBruteForceGuard:
         assert r.headers.get("Retry-After"), "429 必须带 Retry-After"
         assert checked["n"] == 0, (
             "超限时仍调用了口令校验——「先查后验」失守（白烧 PBKDF2 且给旁路信号）")
+
+
+# ══════════════════════════════════════════════════════════════════
+# 引擎三档可选（v20.2.3 · 用户可自行选择云端/本地/自动）
+# 立案由来：自动挡的本地备胎实测常驻 +151MB RSS / +169MB 磁盘，而旋钮级
+# 调优（线程数/arena/malloc_trim）实测全部无效、模型也已是最小的中文可用
+# 款 —— **唯一有效的优化就是「不加载它」**。于是「省内存」与「让用户自己
+# 选档」是同一件事，一并落成产品能力。
+# ══════════════════════════════════════════════════════════════════
+
+class TestEngineModeSelection:
+    def setup_method(self):
+        from ducky.engine_mode import reset_mode_warnings_for_tests
+        reset_mode_warnings_for_tests()
+
+    def test_default_is_auto_and_both_legs_on(self, monkeypatch):
+        import ducky.engine_mode as em
+        monkeypatch.delenv("AIDUMEI_ENGINE_MODE", raising=False)
+        assert em.configured_mode() == "auto"
+        assert em.cloud_leg_enabled() and em.local_leg_enabled()
+
+    @pytest.mark.parametrize("mode,cloud,local", [
+        ("auto", True, True), ("cloud", True, False), ("local", False, True),
+        ("AUTO", True, True), ("  Local  ", False, True),
+    ])
+    def test_modes_map_to_leg_switches(self, monkeypatch, mode, cloud, local):
+        import ducky.engine_mode as em
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", mode)
+        assert em.cloud_leg_enabled() is cloud
+        assert em.local_leg_enabled() is local
+
+    def test_illegal_mode_falls_back_to_auto_not_crash(self, monkeypatch):
+        """档位配错不该让服务起不来（配置雷纪律一视同仁）。"""
+        import ducky.engine_mode as em
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "涡轮增压")
+        assert em.configured_mode() == "auto"
+        assert em.cloud_leg_enabled() and em.local_leg_enabled()
+
+    def test_cloud_mode_never_loads_the_local_model(self, monkeypatch):
+        """**省 151MB 的闸门**：云端档下探测直接报不可用，绝不触碰加载。"""
+        import ducky.local_embed as le
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")
+        called = {"n": 0}
+
+        def boom():
+            called["n"] += 1
+            raise AssertionError("云端档下不该加载本地模型")
+        monkeypatch.setattr(le, "_load_model", boom)
+        assert le.is_local_embed_available() is False
+        assert called["n"] == 0, "云端档仍然摸了模型加载路径"
+
+    def test_auto_mode_still_probes_the_model(self, monkeypatch):
+        """区分力对照：自动挡下探测**必须**照常走加载路径 ——
+        否则上面那条会因为「谁都不加载」而假绿。"""
+        import ducky.local_embed as le
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "auto")
+        monkeypatch.setattr(le, "_FASTEMBED_IMPORTABLE", True)
+        monkeypatch.setattr(le, "_model", None)
+        called = {"n": 0}
+
+        def fake_load():
+            called["n"] += 1
+            return object()
+        monkeypatch.setattr(le, "_load_model", fake_load)
+        assert le.is_local_embed_available() is True
+        assert called["n"] == 1, "自动挡下没走加载路径——对照失去区分力"
+
+    def test_health_exposes_the_configured_mode(self, monkeypatch):
+        from ducky.engine_mode import mode_status
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")
+        st = mode_status()
+        assert st["configured"] == "cloud"
+        assert st["cloud_leg"] is True and st["local_leg"] is False
+        assert st["note"], "档位探针必须自带人话说明，运维面不该只有一个枚举值"
+
+
+# ══════════════════════════════════════════════════════════════════
+# 自查项 S-1 / S-3（S-2 的验收在元守卫的区分力用例里）
+# ══════════════════════════════════════════════════════════════════
+
+class TestWindowTableDoesNotGrowUnbounded:
+    """S-1：/login 是免鉴权公开端点，而计数表原先**从不清理** ——
+    自查实测 5 万个源 IP = 5 万条常驻条目（约 12MB），死条目永不回收。"""
+
+    def setup_method(self):
+        from ducky.rate_guard import reset_rate_windows
+        reset_rate_windows()
+
+    def test_stale_entries_are_swept(self):
+        from ducky.rate_guard import (_SWEEP_THRESHOLD, record_login_failure,
+                                      window_count)
+        old_t = 1_000_000.0
+        for i in range(_SWEEP_THRESHOLD + 200):
+            record_login_failure(f"2001:db8::{i:x}", now=old_t)
+        grew = window_count()
+        assert grew > _SWEEP_THRESHOLD
+        # 下一个窗口来一个新请求：死条目必须被清掉
+        record_login_failure("2001:db8::live", now=old_t + 600)
+        after = window_count()
+        assert after < 10, (
+            f"上一窗口的 {grew} 条死条目没被清理（剩 {after}）—— "
+            "免鉴权端点的无界增长仍在")
+
+    def test_sweep_is_semantically_lossless(self):
+        """区分力对照：清理不许影响判定。当前窗口的计数一条都不许丢。"""
+        from ducky.rate_guard import (_SWEEP_THRESHOLD, login_failure_limit,
+                                      login_locked, record_login_failure)
+        t = 2_000_000.0
+        victim = "203.0.113.99"
+        for _ in range(login_failure_limit()):
+            record_login_failure(victim, now=t)
+        assert login_locked(victim, now=t) is not None
+        # 触发清理：同窗口塞满阈值
+        for i in range(_SWEEP_THRESHOLD + 50):
+            record_login_failure(f"198.51.100.{i % 256}::{i}", now=t)
+        assert login_locked(victim, now=t) is not None, (
+            "清理把当前窗口的计数也扫掉了——护栏被自己的清理机制解除")
+
+    def test_normal_deployment_never_triggers_sweep(self):
+        """正常规模不该触发扫描（清理是保险丝，不是常态开销）。"""
+        from ducky.rate_guard import _SWEEP_THRESHOLD, record_login_failure, window_count
+        for i in range(100):
+            record_login_failure(f"10.0.0.{i}")
+        assert window_count() == 100 <= _SWEEP_THRESHOLD
+
+
+class TestPendingVerdict:
+    """S-3：欠账水位此前只有裸数字、没有判据。"""
+
+    def test_low_water_is_ok(self):
+        from ducky.dual_index import pending_verdict
+        assert pending_verdict({"cloud": 3, "local": 1})["level"] == "ok"
+
+    def test_high_water_with_progress_is_elevated_not_stuck(self, monkeypatch):
+        """区分力：刚断供完正在排队补算 ≠ 卡死。只看数字会把前者误报成后者。"""
+        import ducky.dual_index as di
+        monkeypatch.setenv("AIDUMEI_PENDING_WARN_LEVEL", "10")
+        monkeypatch.setattr(di, "last_replay_status",
+                            lambda: {"report": {"replayed": 7}})
+        assert di.pending_verdict({"cloud": 50, "local": 0})["level"] == "elevated"
+
+    def test_high_water_without_progress_is_stuck_and_says_why(self, monkeypatch):
+        import ducky.dual_index as di
+        monkeypatch.setenv("AIDUMEI_PENDING_WARN_LEVEL", "10")
+        monkeypatch.setattr(di, "last_replay_status",
+                            lambda: {"report": {"replayed": 0}})
+        v = di.pending_verdict({"cloud": 50, "local": 0})
+        assert v["level"] == "stuck"
+        assert "local_embed" in v["hint"], "判语必须指向下一步去哪看，不能只喊卡住了"
+
+    def test_zero_threshold_disables_verdict(self, monkeypatch):
+        import ducky.dual_index as di
+        monkeypatch.setenv("AIDUMEI_PENDING_WARN_LEVEL", "0")
+        assert di.pending_verdict({"cloud": 99999, "local": 0})["level"] == "ok"
