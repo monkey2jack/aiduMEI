@@ -37,6 +37,8 @@ import threading
 import time
 from typing import Callable, Optional
 
+from ducky.env_config import config_errors, float_env as env_float, int_env as env_int
+
 logger = logging.getLogger("aiduMEM.gear")
 
 _FAIL_ENV = "AIDUMEI_GEAR_TRIP_FAILURES"      # 嵌入腿 closed→open 连续失败数
@@ -55,34 +57,24 @@ _DEFAULT_COOLDOWN = 60.0
 # 「断供保命机制」反转成「腿全灭」。保命路径的纪律修正为：
 # **回退默认 + 出声（warning 一次 + 探针常驻）**，绝不抛。
 # 「非法值不静默」的老纪律没有丢——它从「炸」改成了「可观测」。
-_config_errors: dict = {}
-
-
-def _env_or_default(name: str, default, caster, valid):
-    raw = os.environ.get(name)
-    if raw is None:
-        _config_errors.pop(name, None)
-        return default
-    try:
-        v = caster(raw.strip())
-        if not valid(v):
-            raise ValueError
-        _config_errors.pop(name, None)
-        return v
-    except (ValueError, TypeError):
-        msg = f"{name} 非法值 {raw!r}，已回退默认 {default}（保命路径不因配置炸）"
-        if _config_errors.get(name) != msg:
-            logger.warning("⚙️ %s", msg)
-        _config_errors[name] = msg
-        return default
+# v20.2.3（外审 M-2）：本模块 v20.2.1 自己拆过一次雷，实现留在了本地；
+# 外审在 auth/scoring/injection_guard 里发现同款雷之后，实现收编进
+# ducky/env_config（单一真相源），这里只保留「本腿关心哪几个 env」。
+# 公开行为逐字不变：非法值回退默认、warning 一次、status 里可查。
+_GEAR_ENVS = (_FAIL_ENV, _RECOVER_ENV, _COOLDOWN_ENV,
+              _LLM_FAIL_ENV, _LLM_RECOVER_ENV, _LLM_COOLDOWN_ENV)
 
 
 def _int_env(name: str, default: int) -> int:
-    return _env_or_default(name, default, int, lambda v: v >= 1)
+    return env_int(name, default, minimum=1)
 
 
 def _float_env(name: str, default: float) -> float:
-    return _env_or_default(name, default, float, lambda v: v > 0)
+    return env_float(name, default, minimum=0.000001)
+
+
+def _gear_config_errors() -> dict:
+    return config_errors(*_GEAR_ENVS)
 
 
 def _ledger_shift(direction: str, reason: str, target_id: str) -> None:
@@ -232,7 +224,7 @@ class _Breaker:
                 "cooldown_sec": self.cooldown_sec(),
                 "last_shift_reason": self._last_reason or None,
                 "shift_count": self._shift_count,
-                "config_errors": dict(_config_errors) or None,
+                "config_errors": _gear_config_errors() or None,
             }
 
     def reset(self) -> None:
@@ -322,6 +314,7 @@ def llm_gear_status(*, now: Optional[float] = None) -> dict:
 
 
 def reset_gear_for_tests() -> None:
-    _config_errors.clear()
+    from ducky.env_config import clear_config_errors_for_tests
+    clear_config_errors_for_tests()
     _EMBED.reset()
     _LLM.reset()

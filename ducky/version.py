@@ -3,6 +3,52 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.2.3 (外部审计整改 · 2026-08-27)
+    主题：第三方独立审计（完全外部视角：从公开仓克隆、独立 venv 复现）
+    的 1 高危 + 3 中危 + 4 低危逐条复核整改。公开 Tag/Release 停在 v20.2，
+    版本号仅服务侧三段式推进（SOP 双轨）。
+    1. H-1 入门路径依赖补齐：requirements.txt 补 python-multipart —— 它在
+       pyproject 声明着、本清单却漏了，而 FastAPI 的 Form(...) 在**路由
+       注册期**就要它（ducky/hot/legacy_routes.py、ducky/extended/routes.py
+       各一处）。CI 与 Dockerfile 都在其后补跑 pip install .，恰好遮蔽了
+       缺口 —— **唯一裸奔的是 README「30 秒上手」教新用户走的那条**。
+       干净 venv 实测复现：RuntimeError: Form data requires
+       "python-multipart"。与 v19.4.2 的 inotify_simple 同类事故，本轮焊成
+       守卫（tests/test_v20_runtime_deps_declaration.py：pyproject 运行时
+       依赖 ⊆ requirements，PEP 503 名称规范化，例外须显式登记）+ CI
+       新增 bare-requirements-smoke job（含「本 job 未装包本体」的前提反证）。
+    2. M-2 配置雷全仓拆除：新增 ducky/env_config.py 作单一真相源
+       （叶子模块，只 import os/logging —— 配置解析被 auth 这类底层模块
+       在 import 期调用，任何内部依赖都可能织出循环导入）。审计点名 2 处，
+       自查普查出 6 处，元守卫上岗后又抓出 2 处：ducky/security/auth.py
+       （SESSION_TTL，**炸在 import 期=服务起不来**）、ducky/scoring.py 三处、
+       ducky/security/injection_guard.py、api_server.py 端口、
+       frontend/dev_server.py、integrations/cursor-hook（后两者是独立脚本，
+       就地安全解析，语义一致）；ducky/gear.py 与 ducky/rate_guard.py 的
+       v20.2.1 本地实现收编进单一真相源，公开行为逐字不变。元守卫判据走
+       **AST 不走字符串**——正则版把 env_config 自己头注里的反面例子判成了违规。
+    3. M-1 登录爆破护栏：ducky/rate_guard.py 新增按 IP 的登录失败计数
+       （只计失败、不计成功；**先查后验**——超限直接 429 连 PBKDF2 都不跑，
+       既省 100ms 也不给攻击者旁路信号），api_server.py /login 接线，
+       env AIDUMEI_LOGIN_FAILURES_PER_MIN（默认 10，0=关闭）。反代之后
+       退化为全局阈值的局限如实注明：X-Forwarded-For 可伪造，绝不拿来分桶。
+    4. L 组：api_server.py 检测到 HTTPS 反代痕迹而 AIDUMEM_COOKIE_SECURE
+       未开时告警（与「配置不静默」纪律一致）；ducky/router_usage.py 把
+       AIDUMEM_ROUTER_SSH_STRICT=yes 从「可配」升格为生产验收线；
+       docs/README_draft.md 草稿移出仓库。
+    5. M-3 如实登记不冒充修复：前端 vendored echarts 5.5.0 命中
+       CVE-2026-45249（Lines series + 默认 tooltip formatter + data name →
+       innerHTML）。独立核查确认**当前不可达**：仓内唯一用法是
+       frontend/js/panels.js 的 graph series + 自定义 formatter 且已过
+       esc()，全仓无 lines series。升级到 6.x 是跨大版本、须配 UI 实测，
+       本版不动，留待专项。
+    6. 测试：新增 2 个点名文件 22 条用例
+       （tests/test_v20_runtime_deps_declaration.py 依赖双清单守卫 +
+       tests/test_v20_2_3_audit_remediation.py 配置雷子进程验证与登录护栏），
+       5 处变异探针逐一验红后还原。配置雷用例**跑子进程**是刻意的：
+       这些常量在 import 期求值，父进程里 monkeypatch env 影响不到它们，
+       那样的测试会稳过且证明不了任何事。用例总数 1290 → 1312。
+
 v20.2.2 (LLM 蒸馏腿挡位化 · 2026-08-26)
     主题：自动挡补上第三条腿。实弹取证（2026-08-26 冒烟恰逢 LLM 网关
     521 瞬态断供）：嵌入活着而 LLM 死时，mem0 内部 openai 客户端按
@@ -1055,7 +1101,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.2.2"
+SERVICE_VERSION = "20.2.3"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1069,6 +1115,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.2.3", "", "", "外部审计整改 · 入门依赖补齐/配置雷全仓拆除/登录爆破护栏"),
     ("20.2.2", "", "", "LLM 蒸馏腿挡位化 · 传输层盲重试掐除 · 断供写入确定性直写秒回"),
     ("20.2.1", "", "", "自动挡外审整改 · 拆配置雷/启动重放兜底/verbatim 单删闭合/重放防自我复制"),
     ("20.2.0", "", "", "智慧引擎自动挡 · 双引擎/熔断切换/挡位诚实 · 断供演练实机验证后公开"),
