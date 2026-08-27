@@ -61,12 +61,28 @@ v20.2.3 (外部审计整改 · 2026-08-27)
     10. 自查 S-4：README 部署章整章数字过期，且「本机不加载任何大模型权重」
        在自动挡之后已是假话。按 2026-08-27 生产实测重写为双体量对比表，
        并修正 1 核 1G 的口径。宣称即承诺。
-    11. 测试：新增 2 个点名文件 22 条用例
+    11. A-1（第二轮外审·中危）：ducky/env_config.py 的边界判据被 NaN 旁路
+       （NaN 与任何数比较恒为 False → not(False or False) 判为合法），
+       静默通过且探针零痕迹 —— 假绿灯长在拆雷模块里；1e999→inf 在无上限
+       参数上同样旁路。共用层 _resolve 先拦非有限值（math.isfinite），
+       非法值词表补 nan/inf/1e999（旧词表 inf 拦得住而 nan 漏网）。
+    12. A-2（低危）：v20.2.1 的 `v > 0` 被 minimum=1e-6 近似收编，(0,1e-6)
+       的合法旧值被拒 —— 宣称的「逐字不变」不逐字。float_env 增加
+       exclusive_minimum，ducky/gear.py 改用它表达真正的严格大于零。
+    13. A-3（低危）：version.py 的用例总数在同一次发布里过期，而本版
+       S-4 自查项刚写过「数字过期就是假话」。除改数字外新增三面对账守卫
+       （version.py / CHANGELOG.md 宣称值 = pytest 实数，且两者互相一致）。
+    14. A-4（低危）：本地档下 gear_status 仍报 full/closed，等于宣称云腿
+       正在服役。改报 disabled_by_policy 并保留熔断器内态；**只动探针面**，
+       current_mode() 维持 full|lite 二值（ducky/hot/add.py 据其分流），
+       ducky/hot/search.py 的 engine_mode 改为先看部署配置。
+    15. 测试：新增 2 个点名文件 22 条用例
        （tests/test_v20_runtime_deps_declaration.py 依赖双清单守卫 +
        tests/test_v20_2_3_audit_remediation.py 配置雷子进程验证与登录护栏），
        5 处变异探针逐一验红后还原。配置雷用例**跑子进程**是刻意的：
        这些常量在 import 期求值，父进程里 monkeypatch env 影响不到它们，
-       那样的测试会稳过且证明不了任何事。用例总数 1290 → 1312。
+       那样的测试会稳过且证明不了任何事。三档与自查项另有 20 条
+       点名用例、7 处变异探针验红。用例总数 1290 → 1367。
 
 v20.2.2 (LLM 蒸馏腿挡位化 · 2026-08-26)
     主题：自动挡补上第三条腿。实弹取证（2026-08-26 冒烟恰逢 LLM 网关

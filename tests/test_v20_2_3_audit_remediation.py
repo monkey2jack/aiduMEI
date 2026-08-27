@@ -443,3 +443,219 @@ class TestPendingVerdict:
         import ducky.dual_index as di
         monkeypatch.setenv("AIDUMEI_PENDING_WARN_LEVEL", "0")
         assert di.pending_verdict({"cloud": 99999, "local": 0})["level"] == "ok"
+
+
+# ══════════════════════════════════════════════════════════════════
+# 第二轮外审（2026-08-27）A-1 ~ A-4 整改验收
+# ══════════════════════════════════════════════════════════════════
+
+class TestNonFiniteEnvValues:
+    """A-1：拆雷模块自己埋的雷 —— NaN 与任何数比较恒为 False，于是
+    `not (v < min or v > max)` 对 NaN 恒真，NaN 被判「合法」静默通过。
+    这是本模块头注自己定义的「假绿灯」形态，讽刺地长在拆雷模块里。"""
+
+    def setup_method(self):
+        from ducky.env_config import clear_config_errors_for_tests
+        clear_config_errors_for_tests()
+
+    # 上一版的非法值词表只有乱串/负数/超界 —— inf 拦得住、**nan 漏网**，
+    # 负向对照恰好缺了这条区分力（重演自家「负向对照要有区分力」的老教训）。
+    NON_FINITE = ["nan", "NaN", "NAN", "inf", "-inf", "Infinity", "-Infinity",
+                  "1e999", "-1e999", "1E999"]
+
+    @pytest.mark.parametrize("bad", NON_FINITE)
+    def test_non_finite_rejected_on_unbounded_float(self, monkeypatch, bad):
+        """**无上限**的参数最危险：inf 没有上限可撞，nan 谁都撞不上。"""
+        from ducky.env_config import config_errors, float_env
+        monkeypatch.setenv("AIDUMEI_TEST_F", bad)
+        assert float_env("AIDUMEI_TEST_F", 0.05, minimum=0.0) == 0.05, (
+            f"{bad!r} 旁路了下限判据 —— 静默变成非有限值")
+        assert "AIDUMEI_TEST_F" in config_errors(), (
+            f"{bad!r} 被拦下了却没进 config_errors —— 探针依旧失明")
+
+    @pytest.mark.parametrize("bad", NON_FINITE)
+    def test_non_finite_rejected_on_bounded_float(self, monkeypatch, bad):
+        from ducky.env_config import config_errors, float_env
+        monkeypatch.setenv("AIDUMEI_TEST_F", bad)
+        assert float_env("AIDUMEI_TEST_F", 0.4, minimum=0.0, maximum=1.0) == 0.4
+        assert "AIDUMEI_TEST_F" in config_errors()
+
+    def test_real_scoring_params_are_finite_under_attack(self):
+        """端到端：打分参数是本雷下游杀伤最大的地方（融合分整体 NaN →
+        排序彻底失效而全系统报健康）。子进程验，因为常量在 import 期求值。"""
+        import math
+        for env, attr, default in (
+            ("AIDUMEM_RERANK_WEIGHT", "RERANK_WEIGHT", 0.4),
+            ("AIDUMEM_RECENCY_LAMBDA", "RECENCY_LAMBDA", 0.05),
+            ("AIDUMEM_SIGMOIDAL_TEMP", "SIGMOIDAL_TEMPERATURE", 10.0),
+        ):
+            for bad in ("nan", "1e999"):
+                code = (f"import math, ducky.scoring as s; v = s.{attr}; "
+                        f"assert math.isfinite(v), f'非有限值漏网: {{v}}'; "
+                        f"assert v == {default!r}, f'未回退默认: {{v}}'; print('OK')")
+                r = subprocess.run([sys.executable, "-c", code],
+                                   env={**os.environ, env: bad},
+                                   capture_output=True, text=True,
+                                   cwd=_ROOT, timeout=120)
+                assert r.returncode == 0 and "OK" in r.stdout, (
+                    f"{env}={bad} → {attr} 未被拦下：\n{r.stderr[-300:]}")
+
+    def test_finite_values_still_pass(self):
+        """区分力对照：拦非有限值不许误伤正常值（否则守卫退化成「全拒」）。"""
+        from ducky.env_config import config_errors, float_env
+        import os as _o
+        for good, expect in (("0.0", 0.0), ("1e-7", 1e-7), ("0.999", 0.999),
+                             ("1e300", 1e300)):
+            _o.environ["AIDUMEI_TEST_F"] = good
+            assert float_env("AIDUMEI_TEST_F", 9.9, minimum=0.0) == expect
+            assert "AIDUMEI_TEST_F" not in config_errors()
+        _o.environ.pop("AIDUMEI_TEST_F", None)
+
+
+class TestExclusiveMinimumRestoresByteIdenticalBehaviour:
+    """A-2：v20.2.1 的判据是 `v > 0`，收编时用 minimum=1e-6 近似 ——
+    区间 (0, 1e-6) 的合法旧值被拒，「公开行为逐字不变」就不逐字了。"""
+
+    def test_sub_microsecond_cooldown_is_accepted_again(self, monkeypatch):
+        import ducky.gear as gear
+        monkeypatch.setenv("AIDUMEI_GEAR_COOLDOWN_SEC", "0.0000005")
+        assert gear.cooldown_sec() == 5e-07, (
+            "亚微秒冷却被拒 —— 与 v20.2.1 的 `v > 0` 判据仍不逐字一致")
+
+    @pytest.mark.parametrize("bad", ["0", "0.0", "-1", "-0.5"])
+    def test_zero_and_negative_still_rejected(self, monkeypatch, bad):
+        """区分力对照：恢复 (0,1e-6) 不许把 0 和负数一起放进来 ——
+        旧判据是**严格**大于零。"""
+        import ducky.gear as gear
+        monkeypatch.setenv("AIDUMEI_GEAR_COOLDOWN_SEC", bad)
+        assert gear.cooldown_sec() == 60.0, f"{bad} 不该被接受"
+
+    def test_exclusive_and_inclusive_minimum_differ(self):
+        """把两种下限的语义差钉死，防止将来又被 epsilon 近似糊过去。"""
+        from ducky.env_config import float_env
+        import os as _o
+        _o.environ["AIDUMEI_TEST_F"] = "0.0"
+        assert float_env("AIDUMEI_TEST_F", 7.0, minimum=0.0) == 0.0
+        assert float_env("AIDUMEI_TEST_F", 7.0, exclusive_minimum=0.0) == 7.0
+        _o.environ.pop("AIDUMEI_TEST_F", None)
+
+
+class TestGearProbeIsHonestUnderPolicy:
+    """A-4：本地档下云腿一次都不会被尝试，探针却报 full/closed ——
+    只看 engine_gear 的值班人会以为云端腿正在服役且健康。"""
+
+    def test_local_mode_probe_says_disabled(self, monkeypatch):
+        from ducky.gear import gear_status, llm_gear_status, should_try_cloud
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        assert should_try_cloud() is False
+        for st in (gear_status(), llm_gear_status()):
+            assert st["mode"] == "disabled_by_policy", st
+            assert st["policy_disabled"] is True
+            assert st["breaker_mode_if_serving"] == "full", (
+                "熔断器真实内态被抹掉了 —— 它只是没在服役，不是不存在")
+
+    @pytest.mark.parametrize("mode", ["auto", "cloud"])
+    def test_other_modes_probe_unchanged(self, monkeypatch, mode):
+        """区分力对照：云端档下云腿照常服役，探针**不许**报 disabled。"""
+        from ducky.gear import gear_status
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", mode)
+        st = gear_status()
+        assert st["mode"] in ("full", "lite") and st["policy_disabled"] is False
+
+    def test_decision_surface_stays_two_valued(self, monkeypatch):
+        """**判定面不许被污染**：current_mode() 被 ducky/hot/add.py 拿去分流
+        lite 分支，混进第三个值会走错路。探针诚实 ≠ 判定改语义。"""
+        from ducky.gear import current_mode, llm_current_mode
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        assert current_mode() in ("full", "lite")
+        assert llm_current_mode() in ("full", "lite")
+
+
+# ══════════════════════════════════════════════════════════════════
+# A-3 治本：宣称用例数三面对账（version.py / CHANGELOG / pytest 实数）
+#
+# 立案由来是一次很难堪的自打脸：同一次发布里，S-4 自查项刚写下
+# 「数字过期就是假话」，version.py 里的用例总数就过期了 —— 第二个提交
+# 新增 20 条用例，没回头改第一个提交写下的数字。而且根因是**替换悄悄
+# 没生效**（锚文本凭记忆写，实际文本不同），我在这一轮里踩了四次。
+#
+# README 那三行早有守卫（test_v19_4_1_audit_fixes），CHANGELOG 与
+# version.py 一直没有 —— 「谁在看着这两份文件的数字」的答案是没人。
+# 本条把答案变成：pytest。靠记性的东西，迟早都要焊成结构。
+# ══════════════════════════════════════════════════════════════════
+
+def _collected_total() -> int:
+    """从 pytest 自身取真值（同 README 守卫的方法论：不硬编码期望值）。"""
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
+         "-p", "no:cacheprovider"],
+        cwd=_ROOT, capture_output=True, text=True, timeout=600)
+    m = re.search(r"(\d+)\s+tests?\s+collected", proc.stdout)
+    assert m, f"无法解析实际用例数：\n{proc.stdout[-400:]}"
+    return int(m.group(1))
+
+
+def _service_version() -> str:
+    src = open(os.path.join(_ROOT, "ducky", "version.py"), encoding="utf-8").read()
+    m = re.search(r'^SERVICE_VERSION\s*=\s*"([^"]+)"', src, re.M)
+    assert m, "读不到 SERVICE_VERSION —— 对账失去锚点"
+    return m.group(1)
+
+
+def _current_release_blocks() -> dict[str, str]:
+    """当前版本在 version.py 与 CHANGELOG.md 里的那一段。"""
+    ver = _service_version()
+    out = {}
+    src = open(os.path.join(_ROOT, "ducky", "version.py"), encoding="utf-8").read()
+    m = re.search(r"^v%s \(.*?(?=^v\d+\.\d+(?:\.\d+)? \()" % re.escape(ver),
+                  src, re.M | re.S)
+    assert m, f"version.py 找不到 v{ver} 说明块"
+    out["ducky/version.py"] = m.group(0)
+    log = open(os.path.join(_ROOT, "CHANGELOG.md"), encoding="utf-8").read()
+    m = re.search(r"^## v%s\b(.*?)(?=^## v\d)" % re.escape(ver), log, re.M | re.S)
+    assert m, f"CHANGELOG.md 找不到 v{ver} 小节"
+    out["CHANGELOG.md"] = m.group(1)
+    return out
+
+
+_CLAIM_RE = re.compile(r"用例总数\s*(\d+)\s*(?:→|->)\s*(\d+)")
+
+
+def test_claimed_case_count_matches_reality_in_every_release_doc():
+    """version.py 与 CHANGELOG 当前版本段里宣称的用例总数 = pytest 实数。"""
+    actual = _collected_total()
+    problems = []
+    for fname, block in _current_release_blocks().items():
+        hits = _CLAIM_RE.findall(block)
+        if not hits:
+            problems.append(f"{fname}：当前版本段里没有「用例总数 X → Y」的宣称 —— "
+                            "格式变了，本守卫失去着力点，请同步改判据")
+            continue
+        for _before, after in hits:
+            if int(after) != actual:
+                problems.append(f"{fname} 宣称用例总数 {after}，pytest 实测 {actual}")
+    assert not problems, (
+        "宣称与实况脱节（宣称即承诺铁律）：\n  " + "\n  ".join(problems)
+        + "\n\n这条守卫的由来：v20.2.3 第二个提交新增用例后，第一个提交写下的"
+        "\n数字没人回头改，而同一次发布里的自查项刚写过「数字过期就是假话」。")
+
+
+def test_claimed_counts_agree_across_all_release_docs():
+    """三面互相之间也要一致 —— 只对实数不够：两份文档各自对了实数、
+    却在别的数字上互相打架，读者照样无从分辨（v19.4.2 就这么翻过车）。"""
+    claims = {}
+    for fname, block in _current_release_blocks().items():
+        for before, after in _CLAIM_RE.findall(block):
+            claims.setdefault(fname, set()).add((before, after))
+    values = {v for s in claims.values() for v in s}
+    assert len(values) <= 1, (
+        f"各文档对同一版本的用例数宣称不一致：{claims}")
+
+
+def test_this_guard_can_actually_see_a_stale_number():
+    """守卫自证区分力：拿一段**故意写错**的文本喂给同一套判据，必须认出来。
+    （不改真文件——守卫的自证不该依赖破坏被守护的东西。）"""
+    fake = "用例总数 1290 → 999"
+    hits = _CLAIM_RE.findall(fake)
+    assert hits == [("1290", "999")], "判据认不出宣称形态，等于永远绿"
+    assert int(hits[0][1]) != _collected_total(), "自证样本恰好等于实数，失去区分力"
