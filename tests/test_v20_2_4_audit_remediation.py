@@ -410,3 +410,54 @@ def test_ci_has_the_three_new_acceptance_jobs():
         f"触发方式变成 {sorted(triggers)} —— 只手动触发是维护者的明确裁决"
         "（Actions 失败邮件是实际骚扰），改它需要维护者重新拍板"
     )
+
+
+# ════════════════════════════════════════════════════════════════════
+# 临时目录登记制（2026-08-28 生产机清理战场时触发）
+# ════════════════════════════════════════════════════════════════════
+
+_MKDTEMP_BASELINE = 45          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改
+
+
+def test_mkdtemp_sites_are_registered():
+    """裸用 `tempfile.mkdtemp()` 的位点数登记在案。
+
+    由来：生产机 `/tmp` 里攒了 **3573 个** `aidumem_*` 目录、146MB（08-24 → 08-28）
+    —— tests/ 里 46 处 mkdtemp 绝大多数不注册清理，而 pytest 的 `tmp_path`
+    本来自带「保留最近 3 次、更老的自动删」，mkdtemp 绕过了它。
+
+    conftest 已加会话级兜底回收，所以这条守卫不是拦门，是**提醒**：
+    新写测试请优先用 `tmp_path` fixture；确实要 mkdtemp 就把这个数字一起改，
+    让下一个人看见这里有一笔账。
+    """
+    n = 0
+    for f in sorted((_ROOT / "tests").glob("test_*.py")):
+        n += len(re.findall(r"\bmkdtemp\s*\(", f.read_text(encoding="utf-8")))
+    assert n == _MKDTEMP_BASELINE, (
+        f"tests/ 里 mkdtemp 位点数 {n} ≠ 登记基线 {_MKDTEMP_BASELINE}。\n"
+        "新增了？优先改用 `tmp_path` fixture（自动管理、自动回收）；\n"
+        "确实需要 mkdtemp 的话，把 _MKDTEMP_BASELINE 一起改到 "
+        f"{n}，让这笔账留在明面上。"
+    )
+
+
+def test_conftest_reaps_tempdirs_before_collection():
+    """回收的**时序**必须对：快照要在 collection 之前拍。
+
+    这条守的是一个已经踩过的坑：不少测试在模块顶层（import 期＝collection 期）
+    调 mkdtemp，而 session fixture 的 setup 在 collection **之后** —— 它拿到的
+    before 已经包含那些目录，于是永远不删。实测症状是「跑完一轮 /tmp 里稳定
+    剩 1 个」。所以快照必须落在 `pytest_configure` 里。
+    """
+    src = (_ROOT / "conftest.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fns = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assert "pytest_configure" in fns, "回收快照不在 pytest_configure 里 —— 时序会退回到那个坑"
+    assert "_reap_test_tempdirs" in fns, "会话级回收 fixture 不见了"
+    # 快照必须真的在 configure 里赋值，而不只是有个同名函数
+    cfg = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "pytest_configure")
+    assigns = {t.id for node in ast.walk(cfg) if isinstance(node, ast.Global) for t in []} | {
+        nm for node in ast.walk(cfg) if isinstance(node, ast.Assign)
+        for t in node.targets if isinstance(t, ast.Name) for nm in [t.id]}
+    assert "_TMP_BEFORE" in assigns, "pytest_configure 里没有给 _TMP_BEFORE 赋值"
