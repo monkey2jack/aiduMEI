@@ -51,14 +51,26 @@ def ensure_local_collection(client=None) -> None:
         logger.info("🪫 本地向量库 %s 已建（%d 维）", LOCAL_COLLECTION, LOCAL_EMBED_DIM)
 
 
+def _local_off() -> bool:
+    """云端档：本地腿整条关闭（不写、不搜、不加载模型）。写入侧静默跳过
+    是对的 —— 部署方**明确选择了**没有备胎，那不是故障，不该进欠账。"""
+    try:
+        from ducky.engine_mode import local_leg_enabled
+        return not local_leg_enabled()
+    except Exception:
+        return False
+
+
 def upsert_local(point_id: str, text: str, payload: Dict[str, Any],
                  client=None, *, enqueue_on_fail: bool = True) -> bool:
-    """写一条本地向量；失败进欠账不抛（软失败三副本纪律）。
+    """写一条本地向量；失败进欠账不抛（软失败三副本纪律）。云端档整条跳过。
 
     enqueue_on_fail（v20.2.1 外审 R4）：重放路径必须传 False —— 重放
     失败时这里再入一笔新账、外层又把原行回滚待重放，每轮净增 1 条，
     模型持续故障下欠账表指数自我复制。失败语义由调用方决定：常规写
     失败=入账（补算契约），重放失败=只回滚原行（留账下轮）。"""
+    if _local_off():
+        return False
     try:
         from qdrant_client import models as qm
         client = client or _qdrant_client()
@@ -103,7 +115,7 @@ def upsert_local_verbatim(user_id: str, bank_id: str, text: str,
     import hashlib
     from datetime import datetime
     text = (text or "").strip()
-    if not text:
+    if not text or _local_off():
         return False
     digest = hashlib.md5(text.encode("utf-8")).hexdigest()
     pid = verbatim_local_pid(user_id, bank_id, text)
@@ -162,6 +174,8 @@ def search_local(query: str, user_id: str, bank_id: str = "default",
                  limit: int = 20, client=None) -> List[dict]:
     """lite 挡召回腿：查询用**本地模型**嵌入（与索引同语言），结果装配
     对齐 mem0 结果契约（memory/score/metadata），上层管线零改动。"""
+    if _local_off():
+        return []
     from qdrant_client import models as qm
     client = client or _qdrant_client()
     existing = {c.name for c in client.get_collections().collections}
@@ -275,6 +289,44 @@ def enqueue_cloud_add(request_payload: Dict[str, Any], user_id: str,
         logger.info("🪫 lite 挡写入：云侧蒸馏欠账 +1（user=%s）", user_id)
     except Exception as exc:
         logger.warning("云侧欠账入账失败: %s", exc)
+
+
+# v20.2.3（自查 S-3）：欠账账本**无上界**——备胎模型若持续损坏，
+# 每次写入 +1 行永久增长，而 /health 此前只报一个裸数字、**没有任何
+# 判据说多少算不健康**（重演了 refine_memory「阈值是拍脑袋常数」的老
+# 问题，这次是连常数都没有）。下面这个阈值同样是**工程惯例值、非实测**，
+# 按老规矩显式标注待生产分布校准——但「有个会说话的判据」比「一个没人
+# 看得懂的数字」强，这是水位探针存在的意义。
+_PENDING_WARN_ENV = "AIDUMEI_PENDING_WARN_LEVEL"
+_DEFAULT_PENDING_WARN = 500
+
+
+def pending_warn_level() -> int:
+    from ducky.env_config import int_env
+    return int_env(_PENDING_WARN_ENV, _DEFAULT_PENDING_WARN, minimum=0)
+
+
+def pending_verdict(counts: Dict[str, int]) -> Dict[str, Any]:
+    """把裸水位翻译成判语：ok / elevated / stuck。
+
+    stuck 的判据不是「数字大」，而是「数字大**且**最近一次重放没能清掉」
+    ——单看数字会把「刚断供完、正在排队补算」误报成故障。
+    """
+    total = max(counts.get("cloud", 0), 0) + max(counts.get("local", 0), 0)
+    level = pending_warn_level()
+    if level <= 0 or total < level:
+        return {"level": "ok", "total": total, "warn_at": level}
+    last = last_replay_status()
+    drained = bool(last and (last.get("report") or {}).get("replayed"))
+    return {
+        "level": "elevated" if drained else "stuck",
+        "total": total,
+        "warn_at": level,
+        "hint": ("欠账水位偏高但上次重放确有进展，属补算排队"
+                 if drained else
+                 "欠账水位偏高且上次重放未清掉任何一条——请查本地嵌入模型"
+                 "是否损坏（/health 的 local_embed.load_error）或云侧是否仍断供"),
+    }
 
 
 def pending_counts() -> Dict[str, int]:
