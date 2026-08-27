@@ -83,8 +83,18 @@ def fact_visible_to_tenant(conn, fact_id, user_id: str | None, bank_id: str = DE
         ).fetchone()
         return row is not None
     except Exception as exc:
-        logger.debug("fact_visible_to_tenant 判定跳过（放行）: %s", exc)
-        return True
+        # v20.2.4（外审 F-14）：**fail-closed**。此前任何异常一律放行，于是
+        # 「库暂时锁住、判不出来」被翻译成「这条资源确定可见」——而下游
+        # /opinions、/events/history 都靠它把门。锁、损坏、I/O、未知异常，
+        # 一律按不可见处理；只有 legacy schema（表/列还没建过）才是兼容路径。
+        msg = str(exc).lower()
+        if "no such column" in msg or "no such table" in msg:
+            logger.debug("fact_visible_to_tenant: legacy schema 兼容放行: %s", exc)
+            return True
+        logger.warning(
+            "fact_visible_to_tenant 判定失败，按**不可见**处理（fail-closed）: %s", exc
+        )
+        return False
 
 
 def _facts_has_bank_column(conn) -> bool:
@@ -388,9 +398,22 @@ def wrap_inject_frame(block: str) -> str:
     空块原样返回；已含 <memory> 标记的块视为已包装，不重复包装。
     """
     block = (block or "").strip()
-    if not block or "<memory>" in block:
+    if not block:
         return block
-    return f"{INJECT_FRAME_TOP}\n<memory>\n{block}\n</memory>"
+    # v20.2.4（外审 F-12）：幂等判据改成「**开头**是我们自己写的完整 frame 前缀」。
+    # 此前是「字符串里任何位置出现 <memory>」—— 于是一段普通正文里写个
+    # `<memory>` 就能让整个包装静默跳过，**防御被它要保护的内容自己关掉**。
+    if block.startswith(INJECT_FRAME_TOP):
+        return block
+    try:
+        from ducky.security.injection_guard import neutralize_boundary_markers
+        body = neutralize_boundary_markers(block)
+    except Exception as exc:
+        # 中和失败绝不能让包装整体跳过（那就回到了缺陷本身）。
+        # 退路是**继续包装**、只是不中和，并留一笔。
+        logger.warning("边界中和失败，仍照常包装: %s", exc)
+        body = block
+    return f"{INJECT_FRAME_TOP}\n<memory>\n{body}\n</memory>"
 
 
 def inject_context(

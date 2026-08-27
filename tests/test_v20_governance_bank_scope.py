@@ -239,8 +239,19 @@ def test_review_refuses_cross_bank():
     archived = _rows("SELECT archived FROM facts WHERE id=?", (fid,))
     assert archived[0][0] == 0, "越库裁决归档了另一库的事实——P0 数据破坏"
 
-    # 负向对照：报对 bank → 裁决正常走完，证明守卫不是无脑全拒
-    ok = review_candidate(cid, "reject", reason="本库正常驳回", bank_id="bank_a")
+    # v20.2.4（外审 F-08）**契约收紧**：声明了作用域就得**两轴都报对**。
+    # 此前只校验 bank，user 轴解包出来只拿去写账本、不参与授权 —— 于是
+    # 攻击者用自己的 user_id + 受害者的 bank_id 就能归档受害者的事实。
+    # 半个作用域不是作用域，所以正向对照现在必须同时报 user。
+    denied_user = review_candidate(cid, "reject", reason="报对库但报错用户",
+                                   user_id="someone_else", bank_id="bank_a")
+    assert denied_user["status"] == "", f"user 轴没接通: {denied_user}"
+    assert "其他用户" in denied_user["detail"]
+    assert _cand(cid)["status"] == "pending", "被拒的裁决改动了候选状态"
+
+    # 负向对照：两轴都报对 → 裁决正常走完，证明守卫不是无脑全拒
+    ok = review_candidate(cid, "reject", reason="本库正常驳回",
+                          user_id="u1", bank_id="bank_a")
     assert ok["status"] == "rejected", f"本库裁决被误拒: {ok}"
     archived = _rows("SELECT archived FROM facts WHERE id=?", (fid,))
     assert archived[0][0] == 1, "本库驳回未归档事实——守卫把正常裁决也废了"
@@ -300,7 +311,8 @@ def test_review_endpoint_bank_guard(monkeypatch):
     cid3 = res3["governance"]["candidate_id"]
     r3 = client.post("/governance/review", json={
         "candidate_id": cid3, "decision": "approve",
-        "reason": "本库正常批准", "bank_id": "bank_b",
+        # v20.2.4 F-08：显式声明作用域时两轴都要报（user 轴此前完全没校验）
+        "reason": "本库正常批准", "bank_id": "bank_b", "user_id": "u1",
     })
     assert r3.status_code == 200, r3.text
     assert r3.json()["details"]["status"] == "committed"

@@ -134,7 +134,7 @@ def _degraded_search(monkeypatch, bank_id=DEFAULT_BANK_ID):
         lambda: (_ for _ in ()).throw(RuntimeError("hybrid 不可用")),
     )
     monkeypatch.setattr(hs, "boost_salience_for_results", lambda r: None)
-    monkeypatch.setattr(hs, "_annotate_memory_types", lambda r: None)
+    monkeypatch.setattr(hs, "_annotate_memory_types", lambda r, **kw: None)
     return mem, hs
 
 

@@ -23,10 +23,10 @@ from ducky.memory_salience import on_memory_accessed, on_memory_added
 
 logger = logging.getLogger("aiduMEM.runtime")
 
-from ducky.utils import BASE_DIR, LOG_DIR, DEFAULT_USER_ID
+from ducky.utils import BASE_DIR, LOG_DIR, DEFAULT_USER_ID, mem0_config_path
 
 USAGE_FILE = os.path.join(LOG_DIR, "llm_usage.json")
-MEM0_CONFIG = os.path.join(BASE_DIR, "mem0_config_local.json")
+MEM0_CONFIG = mem0_config_path()   # v20.2.4 F-22：支持 AIDUMEM_CONFIG_FILE
 
 
 def _clear_qdrant_lock():
@@ -370,6 +370,12 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     _rerank_tls.last = telem
     if not documents:
         telem["status"] = "skipped_empty_input"
+        return []
+    # v20.2.4（外审 F-03）：本地档拦下云 rerank。三态遥测里如实记一态，
+    # 绝不折叠进 not_configured —— 「没配」和「档位不让」是两件事。
+    from ducky.engine_mode import cloud_egress_allowed
+    if not cloud_egress_allowed("rerank"):
+        telem["status"] = "blocked_by_engine_mode"
         return []
     cfg = _load_rerank_config()
     api_key = cfg.get("api_key", "")

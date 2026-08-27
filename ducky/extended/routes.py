@@ -10,7 +10,9 @@ import os
 import json
 from datetime import datetime, timezone, timedelta
 
-from fastapi import Form, Query
+from fastapi import Form, HTTPException, Query
+
+from ducky.facts_recall import tenant_clause
 
 from ducky.extended import auto_memory as am
 from ducky.extended.auto_memory import (
@@ -30,6 +32,15 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
         get_db_fn=_get_db_fn,
         get_facts_conn_fn=_gfc,
     )
+    # ⚠️ v20.2.4（外审 F-05 / F-07）：本模块这批「次级事实端点」在 v20.0 的
+    # 全量记忆域隔离里**整体漏了** —— 主路径（/add、/search、delete_all）都做了
+    # 二维 scope 收窄，而这里的路由签名连 user_id 都没有，SQL 是裸的
+    # `WHERE id=?` / `WHERE archived=0`。后果不是计数侧信道，是**直接吐正文**
+    # 和**按 ID 改别人的事实**。
+    #
+    # 收窄统一用 ducky.facts_recall.tenant_clause —— 读侧唯一的 scope 谓词来源，
+    # 它自带域收窄语义（默认租户在已迁移库上也收到 bank_id='default'）。
+    # **不要在这里另写一份 SQL 片段**，两份早晚长歪一份。
     # 兼容：路由闭包内用局部名（与旧语义一致）
     _get_db = _get_db_fn
     _get_facts_conn = _gfc
@@ -107,36 +118,58 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
         return {"ok":True,"fact_id":fid,"peer":"ai"}
 
     @app.post("/facts/preference")
-    def facts_preference(fact_id:int, score:float=Query(0.5, ge=-1.0, le=1.0)):
+    def facts_preference(fact_id:int, score:float=Query(0.5, ge=-1.0, le=1.0),
+                         user_id:str=Query(DEFAULT_USER_ID),
+                         bank_id:str=Query(DEFAULT_BANK_ID)):
         db = _get_facts_conn()
-        db.execute("UPDATE facts SET preference_score=? WHERE id=?", (score, fact_id))
-        db.commit(); db.close()
+        clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
+        cur = db.execute("UPDATE facts SET preference_score=? WHERE id=?" + clause,
+                         [score, fact_id] + params)
+        db.commit(); n = cur.rowcount; db.close()
+        # 越域与不存在**同一个 404**：区分开就等于告诉调用方「这个 id 存在，
+        # 只是不属于你」——那是一条按 ID 探测他域的侧信道。
+        if not n:
+            raise HTTPException(status_code=404, detail="fact not found in this scope")
         return {"ok":True,"fact_id":fact_id,"preference_score":score}
 
     @app.get("/facts/preferences")
-    def facts_preferences_list(min_abs:float=0.3):
+    def facts_preferences_list(min_abs:float=0.3,
+                               user_id:str=Query(DEFAULT_USER_ID),
+                               bank_id:str=Query(DEFAULT_BANK_ID)):
         db = _get_facts_conn()
+        clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
         rows = db.execute("""SELECT id,category,fact_key,fact_value,preference_score
-            FROM facts WHERE ABS(preference_score)>=? AND archived=0
-            ORDER BY ABS(preference_score) DESC LIMIT 50""", (min_abs,)).fetchall()
+            FROM facts WHERE ABS(preference_score)>=? AND archived=0""" + clause + """
+            ORDER BY ABS(preference_score) DESC LIMIT 50""", [min_abs] + params).fetchall()
         db.close()
         return {"count":len(rows),"likes":len([r for r in rows if r['preference_score']>0]),
                 "dislikes":len([r for r in rows if r['preference_score']<0]),
                 "items":[dict(r) for r in rows]}
 
     @app.post("/facts/expire")
-    def facts_expire(fact_id:int, expires_in_hours:int=24):
+    def facts_expire(fact_id:int,
+                     # 范围收窄（外审 F-07）：此前任意调用方可以把事实立刻过期
+                     # 或推到极远未来。1 小时 ~ 10 年。
+                     expires_in_hours:int=Query(24, ge=1, le=87600),
+                     user_id:str=Query(DEFAULT_USER_ID),
+                     bank_id:str=Query(DEFAULT_BANK_ID)):
         db = _get_facts_conn()
         expires_at = (datetime.now(timezone.utc)+timedelta(hours=expires_in_hours)).isoformat()
-        db.execute("UPDATE facts SET expires_at=? WHERE id=?", (expires_at, fact_id))
-        db.commit(); db.close()
+        clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
+        cur = db.execute("UPDATE facts SET expires_at=? WHERE id=?" + clause,
+                         [expires_at, fact_id] + params)
+        db.commit(); n = cur.rowcount; db.close()
+        if not n:
+            raise HTTPException(status_code=404, detail="fact not found in this scope")
         return {"ok":True,"fact_id":fact_id,"expires_at":expires_at}
 
     @app.get("/knowledge/tree")
-    def knowledge_tree():
+    def knowledge_tree(user_id:str=Query(DEFAULT_USER_ID),
+                       bank_id:str=Query(DEFAULT_BANK_ID)):
         db = _get_facts_conn()
-        cats = db.execute("""SELECT category,COUNT(*) as cnt FROM facts WHERE archived=0
-            GROUP BY category ORDER BY cnt DESC""").fetchall()
+        clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
+        cats = db.execute("""SELECT category,COUNT(*) as cnt FROM facts WHERE archived=0""" + clause + """
+            GROUP BY category ORDER BY cnt DESC""", params).fetchall()
         db.close()
         tree = {}
         for c in cats:
@@ -147,22 +180,29 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
         return {"domains":len(tree),"total_facts":sum(c['cnt'] for c in cats),"tree":tree}
 
     @app.get("/facts/delta")
-    def facts_delta(since:str=Query(..., description="ISO时间戳")):
+    def facts_delta(since:str=Query(..., description="ISO时间戳"),
+                    user_id:str=Query(DEFAULT_USER_ID),
+                    bank_id:str=Query(DEFAULT_BANK_ID)):
         db = _get_facts_conn()
+        clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
         added = db.execute("""SELECT id,category,fact_key,fact_value,created_at
-            FROM facts WHERE created_at>? AND archived=0
-            ORDER BY created_at DESC LIMIT 100""", (since,)).fetchall()
+            FROM facts WHERE created_at>? AND archived=0""" + clause + """
+            ORDER BY created_at DESC LIMIT 100""", [since] + params).fetchall()
         archived = db.execute("""SELECT id,category,fact_key,archived_at
-            FROM facts WHERE archived=1 AND archived_at>?
-            ORDER BY archived_at DESC LIMIT 50""", (since,)).fetchall()
+            FROM facts WHERE archived=1 AND archived_at>?""" + clause + """
+            ORDER BY archived_at DESC LIMIT 50""", [since] + params).fetchall()
         db.close()
         return {"since":since,"added":len(added),"removed":len(archived),
                 "new_facts":[dict(r) for r in added[:20]],
                 "archived_facts":[dict(r) for r in archived[:10]]}
 
     @app.get("/search/deep")
-    def search_deep(query:str, depth:int=Query(2, ge=1, le=3)):
+    def search_deep(query:str, depth:int=Query(2, ge=1, le=3),
+                    user_id:str=Query(DEFAULT_USER_ID),
+                    bank_id:str=Query(DEFAULT_BANK_ID)):
         db = _get_facts_conn()
+        # 别名 f：本路由两个查询都用 f.* —— tenant_clause 的 alias 参数就是为这个。
+        fclause, fparams = tenant_clause(user_id, alias="f", bank_id=bank_id, conn=db)
         try:
             # 🟡18：facts_fts 虚拟表从未创建，原 JOIN 每次抛异常静默降级为空。
             # 改用 facts 表上的关键词 LIKE 检索（中英混合切词），不依赖 FTS 虚拟表。
@@ -174,8 +214,9 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
                 fts_results = db.execute(f"""SELECT f.id,f.category,f.fact_key,f.fact_value,
                     f.trust_score,f.preference_score,f.retrieval_count
                     FROM facts f
-                    WHERE ({clauses}) AND f.archived=0
-                    ORDER BY f.trust_score*(1.0+f.preference_score) DESC LIMIT 20""", params).fetchall()
+                    WHERE ({clauses}) AND f.archived=0{fclause}
+                    ORDER BY f.trust_score*(1.0+f.preference_score) DESC LIMIT 20""",
+                    params + fparams).fetchall()
             else:
                 fts_results = []
         except Exception as e:
@@ -189,8 +230,8 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
                 f.trust_score,f.preference_score FROM facts f
                 JOIN fact_entities fe ON fe.fact_id=f.id
                 JOIN entities e ON e.entity_id=fe.entity_id
-                WHERE e.name IN ({placeholders}) AND f.archived=0
-                ORDER BY f.trust_score DESC LIMIT 10""", entities).fetchall()
+                WHERE e.name IN ({placeholders}) AND f.archived=0{fclause}
+                ORDER BY f.trust_score DESC LIMIT 10""", list(entities) + fparams).fetchall()
         db.close()
         seen = set(); merged = []
         for r in (list(fts_results)+list(entity_facts)):

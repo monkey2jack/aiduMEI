@@ -219,7 +219,7 @@ def _build_search_client(monkeypatch, hybrid_fn):
             raise RuntimeError("mem0 down")
 
     monkeypatch.setattr(hs, "get_memory", lambda: _FakeMem())
-    monkeypatch.setattr(hs, "ensure_bank_registered", lambda scope: None)
+    monkeypatch.setattr(hs, "ensure_bank_registered", lambda scope, **kw: None)
     monkeypatch.setattr(hs, "boost_salience_for_results", lambda results: None)
     monkeypatch.setattr(hs, "lazy_import_hybrid", lambda: hybrid_fn)
     monkeypatch.setattr(mw, "ws_lookup", lambda uid, q, bank_id="default": [])
@@ -282,11 +282,11 @@ def test_search_degraded_recall_path_when_mem0_survives(monkeypatch):
         raise RuntimeError("hybrid broken")
 
     monkeypatch.setattr(hs, "get_memory", lambda: _FakeMem())
-    monkeypatch.setattr(hs, "ensure_bank_registered", lambda scope: None)
+    monkeypatch.setattr(hs, "ensure_bank_registered", lambda scope, **kw: None)
     monkeypatch.setattr(hs, "boost_salience_for_results", lambda results: None)
     monkeypatch.setattr(hs, "lazy_import_hybrid", lambda: _hybrid)
-    monkeypatch.setattr(hs, "vector_scope_filters", lambda uid, bank: {"user_id": uid})
-    monkeypatch.setattr(hs, "vector_item_in_bank", lambda item, bank: True)
+    monkeypatch.setattr(hs, "vector_scope_filters", lambda uid, bank, **kw: {"user_id": uid})
+    monkeypatch.setattr(hs, "vector_item_in_bank", lambda item, bank, **kw: True)
     monkeypatch.setattr(mw, "ws_lookup", lambda uid, q, bank_id="default": [])
     monkeypatch.setattr(mw, "ws_feed_from_results",
                         lambda uid, results, bank_id="default": None)
@@ -308,7 +308,7 @@ def test_search_workspace_hit_recall_path(monkeypatch):
     import ducky.memory_workspace as mw
 
     monkeypatch.setattr(hs, "get_memory", lambda: object())
-    monkeypatch.setattr(hs, "ensure_bank_registered", lambda scope: None)
+    monkeypatch.setattr(hs, "ensure_bank_registered", lambda scope, **kw: None)
     monkeypatch.setattr(hs, "boost_salience_for_results", lambda results: None)
     monkeypatch.setattr(
         mw, "ws_lookup",

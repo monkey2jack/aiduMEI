@@ -86,6 +86,22 @@ def ensure_memory_types_schema() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_types_type ON memory_types(memory_type)"
         )
+        # v20.2.4（外审 F-16）：**三列唯一约束**。
+        #
+        # 表的主键是单列 memory_ref。具名域靠派生 storage key 躲开了碰撞，
+        # 但默认域为了保持旧 key 形状**原样使用 ref** —— 于是两个用户拿同一个
+        # ref 写入时会撞 ON CONFLICT(memory_ref)，后写者不但覆盖类型，
+        # 还把 user_id/bank_id 一并改成自己的（外审实测：表内只剩 1 行，
+        # alice 查询回退 FACTS）。
+        #
+        # 做法是 additive 加唯一索引，**不重建表**（SQLite 改主键要重建，
+        # 而重建是不可逆动作；生产 dry-run 实测 346 行、新约束下冲突组 0、
+        # 同 ref 跨用户 0 组 —— 加索引不会丢任何行）。upsert 的冲突目标
+        # 同步改成这三列。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_types_scope_ref "
+            "ON memory_types(user_id, bank_id, memory_ref_raw)"
+        )
         # P2-4：ref 空间统一兼容。主链写时用 mem0 UUID，backfill 用 fact:{id}，
         # 两者可能指向同一条记忆。这里幂等补 ref_alt 列，查询时双 ref 可命中。
         try:
@@ -298,7 +314,8 @@ def classify_and_record(
             "INSERT INTO memory_types "
             "(memory_ref, ref_alt, memory_type, source, confidence, updated_at, user_id, bank_id, memory_ref_raw) "
             "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?) "
-            "ON CONFLICT(memory_ref) DO UPDATE SET "
+            # v20.2.4 F-16：冲突目标 = 三列唯一约束，不再是单列 memory_ref
+                "ON CONFLICT(user_id, bank_id, memory_ref_raw) DO UPDATE SET "
             "ref_alt=COALESCE(excluded.ref_alt, memory_types.ref_alt), "
             "memory_type=excluded.memory_type, source=excluded.source, "
             "confidence=excluded.confidence, updated_at=CURRENT_TIMESTAMP, "
@@ -321,6 +338,22 @@ def classify_and_record(
         "bank_id": scope.bank_id,
         "memory_ref": raw_ref,
     }
+
+
+def memory_type_ref(item: dict) -> str:
+    """从检索结果条目构造类型账本的查询键。**唯一构造点。**
+
+    v20.2.4（外审 F-15 顺带整改）：此前两处各自构造 —— hot/search 是
+    `fact:{fact_id}` 优先、UUID 回退，而 scoring 只用 UUID。于是同一条记忆
+    在两条路径上可能拿到**不同的类型**（一处查得到、一处查不到回退 FACTS），
+    而没有任何东西会告诉你这件事。构造逻辑收敛到这里，两边都调它。
+    """
+    if not isinstance(item, dict):
+        return ""
+    meta = item.get("metadata") or {}
+    if isinstance(meta, dict) and meta.get("fact_id") is not None:
+        return f"fact:{meta['fact_id']}"
+    return str(item.get("id") or item.get("memory_id") or "")
 
 
 def get_batch_memory_types(
@@ -516,7 +549,8 @@ def backfill_from_facts(
                 "INSERT INTO memory_types "
                 "(memory_ref, memory_type, source, confidence, updated_at, user_id, bank_id, memory_ref_raw) "
                 "VALUES (?,?,?,?,CURRENT_TIMESTAMP,?,?,?) "
-                "ON CONFLICT(memory_ref) DO UPDATE SET "
+                # v20.2.4 F-16：冲突目标 = 三列唯一约束，不再是单列 memory_ref
+                "ON CONFLICT(user_id, bank_id, memory_ref_raw) DO UPDATE SET "
                 "memory_type=excluded.memory_type, source='backfill', confidence=0.5, "
                 "updated_at=CURRENT_TIMESTAMP, user_id=excluded.user_id, "
                 "bank_id=excluded.bank_id, memory_ref_raw=excluded.memory_ref_raw",
