@@ -111,12 +111,62 @@ def is_fact_seeking_query(query: str) -> bool:
     return bool(_FACT_SEEKING_KEYWORDS.search(query))
 
 
-def compute_time_decay(created_ts: float, now_ts: Optional[float] = None, recency_lambda: Optional[float] = None) -> float:
+# ── 差异化时效衰减（v20.2.4 · WP-A，借鉴一个同源分支的分车道衰减思路）──
+#
+# 问题：此前全局一个 λ（RECENCY_LAMBDA），于是「用户叫什么名字」与「上周部署
+# 报错时的心情」在时效上被一视同仁地打折 —— 只能二选一地错：要么身份被过度
+# 打折，要么情绪被过度保鲜。
+#
+# 取舍：**借参数，不借表结构**。承载类型的账本 v19.0 就有（ducky/memory_types，
+# 六类、带作用域列、带确定性降级），且 score_and_rank_candidates 已在循环外
+# 批量查好（get_batch_memory_types，注释写着「彻底消除 N+1」）——所以本特性
+# **零新表、零新查询、零额外往返**，只是把已经在手的类型用起来。
+#
+# ⚠️ 六个 λ 是**工程惯例值，不是实测值**，与召回阈值 0.46、熔断 N/M/T 同款
+# 待生产分布校准。**绝不冒充「算出来的」。**
+#
+# FACTS 取 0.05 是刻意的：它等于今天的全局默认，而 mtype 缺失时上游回退
+# "FACTS" —— 于是**未分类的存量记忆行为逐字不变**（门槛 5 由此天然成立）。
+TYPE_DECAY: Dict[str, float] = {
+    "PREFERENCES":  0.00,   # 偏好长期稳定，不该因久未提及被打折
+    "DECISIONS":    0.02,   # 关键决策与约定，衰减极慢
+    "FACTS":        0.05,   # ＝ 今天的全局默认，存量行为不变
+    "REFLECTIONS":  0.08,   # 反思洞察，中速
+    "EXPERIENCES":  0.16,   # 经历，较快
+    "OBSERVATIONS": 0.28,   # 中性观察，最快
+}
+_TYPE_DECAY_ENV = "AIDUMEI_TYPE_DECAY"
+
+
+def type_decay_enabled() -> bool:
+    """按类型分档是否启用。**默认关** —— 新能力先诚实默认，拿到真实分布
+    再定（老规矩）。关闭时打分路径逐字节回到本特性之前。"""
+    return os.environ.get(_TYPE_DECAY_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def type_decay_lambda(memory_type: Optional[str]) -> float:
+    """按记忆类型取衰减率；未知/缺失类型回退全局 RECENCY_LAMBDA。
+
+    回退而不是报错是刻意的：类型账本对存量记忆覆盖不全（2026-08-27 生产
+    实测覆盖率 29%），查不到必须安全降级，绝不跳过、绝不给 0 分。
+    """
+    if not memory_type:
+        return RECENCY_LAMBDA
+    return TYPE_DECAY.get(str(memory_type).upper(), RECENCY_LAMBDA)
+
+
+def compute_time_decay(created_ts: float, now_ts: Optional[float] = None, recency_lambda: Optional[float] = None,
+                       memory_type: Optional[str] = None) -> float:
     """统一计算时间衰减分数。"""
     if created_ts <= 0:
         return 0.5  # 未知时间给中性分
     now = now_ts or time.time()
-    lam = recency_lambda or RECENCY_LAMBDA
+    # v20.2.4：memory_type 给定时按类型取 λ；**不给时逐字回到旧行为**
+    # （`or` 链保持原样 —— 传 0.0 的 λ 走 TYPE_DECAY 分支，不会被 or 吃掉）。
+    if memory_type is not None:
+        lam = type_decay_lambda(memory_type)
+    else:
+        lam = recency_lambda or RECENCY_LAMBDA
     age_days = max(0.0, (now - created_ts) / 86400.0)
     return round(math.exp(-lam * age_days), 4)
 
@@ -142,6 +192,9 @@ def score_and_rank_candidates(
     w = weights or DEFAULT_WEIGHTS
     now_ts = time.time()
     is_fact_query = is_fact_seeking_query(query)
+
+    # v20.2.4：开关在循环外读一次（每条候选读 env 是白烧）
+    _type_decay_on = type_decay_enabled()
 
     # 1. 批量查询 Salience 记录（0 N+1）
     mem_ids = [str(it.get("id") or it.get("memory_id") or "") for it in candidates if it.get("id") or it.get("memory_id")]
@@ -178,7 +231,8 @@ def score_and_rank_candidates(
 
         # 统一时效分
         created_ts = extract_timestamp(item)
-        time_s = compute_time_decay(created_ts, now_ts, RECENCY_LAMBDA)
+        time_s = compute_time_decay(created_ts, now_ts, RECENCY_LAMBDA,
+                                    memory_type=mtype if _type_decay_on else None)
 
         # 可靠性分
         reliability = (item.get("metadata") or {}).get("reliability", 0.5) or 0.5
