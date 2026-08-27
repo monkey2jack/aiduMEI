@@ -113,6 +113,9 @@ def fetch_router_llm_usage() -> Dict[str, Any]:
             # accept-new 会在首次连接时接受任意主机密钥（TOFU）。
             # 生产环境建议预置 known_hosts 后改为 StrictHostKeyChecking=yes，
             # 可通过 AIDUMEM_ROUTER_SSH_STRICT=yes 覆盖。
+            # v20.2.3（外审 L-3）：accept-new 是 TOFU——首次连接无条件信任。
+            # **生产部署验收线：置 AIDUMEM_ROUTER_SSH_STRICT=yes**（先手工
+            # 完成一次 known_hosts 录入），否则首连即中间人窗口。
             "ssh",
             "-o", f"StrictHostKeyChecking={os.environ.get('AIDUMEM_ROUTER_SSH_STRICT', 'accept-new')}",
             "-o", "ConnectTimeout=3",
