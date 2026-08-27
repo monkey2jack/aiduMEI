@@ -104,6 +104,40 @@ library out of the box**; add keys and it upshifts automatically. One package, t
 with it, your call.
 
 
+## 🛡️ Security boundary: audited against our own contract (v20.2.4)
+
+An independent third-party security review graded this tree **C (conditional fail)** on 27 findings. Every one was **verified against the code, none was a false positive, and all are now remediated**.
+
+It did not audit for SaaS-grade isolation — the README has always said this is not an isolation layer for mutually distrusting customers, and the report explicitly preserved that boundary. It audited whether **the contract we wrote down** actually holds. Three of our own claims were overturned:
+
+| We wrote | Reality |
+|---|---|
+| The `local` gear spends "zero tokens, zero outbound network" | Nine modules called the LLM directly; none looked at the gear |
+| "Every online read/write path carries a two-dimensional scope" | A set of secondary endpoints were bare `WHERE id=?` |
+| "Three-layer injection defence" | The wrapper returned early whenever the body contained `<memory>` |
+
+**The third one is worth dwelling on**: that was a defence the protected content could switch off by mentioning it. Writing `<memory>` into a memory silently skipped the whole frame. It is now **encoded** rather than detected — record delimiters carry a one-time nonce (structurally unforgeable) and boundary markers in the body are neutralised (a zero-width character is inserted; nothing is deleted).
+
+**This was not "27 fixes".** The 27 symptoms collapse onto five principles, each with a structural guard so the next instance turns red before it lands:
+
+| # | Principle | The failure it names |
+|---|---|---|
+| 1 | One source of truth, not per-call-site diligence | Gear predicates on the main chain; nine call sites unguarded |
+| 2 | Add the capability; don't reword the docs | Gate in `main()`, then docs saying "don't use `uvicorn app`" |
+| 3 | Fail closed by default | `except Exception: return True`; a typo degrading silently |
+| 4 | Encode the boundary; don't detect the attack | Deciding "already wrapped" by substring presence |
+| 5 | A guard must catch the next one of its kind | A test double two parameters short of production |
+
+**Measured, not designed:**
+
+- Public binding without credentials: **four real `uvicorn` subprocess scenarios all behave**, including "`--host 0.0.0.0` fails before accepting requests" — that is uvicorn's own argument, invisible to our environment variable, so the check reads argv too;
+- Login failure table: 10,000 distinct IPs went from **0.433 s / unbounded** to **0.011 s / 4096 entries**, with a per-window global throttle that releases itself the next minute;
+- Generic state-word collateral: "please turn off notifications (unrelated to email and lights)" used to invalidate two unrelated facts; now **zero**;
+- Type-aware decay was entirely inert under a named bank (0.0111 instead of 1.0000 — discounted ninefold-times-ten as if it were a plain fact). **That was this version's own defect**, and it slipped past this version's own 50 cases because the test double was looser than production.
+
+**One thing stated plainly**: `checkpoints`, the persona store and the observation store are **not on the two-dimensional tenant axis** (see the "Precise boundary" table above for what each actually keys on). That is a pre-existing design decision, explicitly marked in the in-repo delete-chain matrix. What this version did was bring it into the open — the README's sweeping claim is gone, those endpoints are labelled system interfaces, and `delete_all` now returns a `not_cleared` field listing what it did not touch and why. **The "I thought it was all wiped" misreading is gone; the capability boundary itself is unchanged.**
+
+
 ## Why v20.0 Is a Major Release
 
 v19.5.0 and this release do **not** change the same layer.
@@ -114,7 +148,7 @@ v19.5.0 and this release do **not** change the same layer.
 | What changed | The release process — **zero runtime behaviour change** | The **ownership model** of memory (a data-plane contract) |
 | One-line theme | Don't let out what shouldn't be said | Don't let mix what shouldn't be mixed |
 | Should you upgrade | Optional; nothing functional depends on it | **Recommended** — it fixes a class of silent data loss |
-| Total test cases | ~700 | **1432** |
+| Total test cases | ~700 | **1433** |
 
 Three reasons, each harder than the last:
 
@@ -678,17 +712,17 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **1432** (measured via `pytest --collect-only`) |
-| Clean dev machine | 1420 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 1431 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1432 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
-| All axes present | 1432 all green · 0 skipped — **measured on the production box, 2026-08-27** (candidate tree cloned from a bundle, `.git` present, all eleven axes available) |
+| Total cases | **1433** (measured via `pytest --collect-only`) |
+| Clean dev machine | 1421 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Sandbox on the production box | 1432 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1433 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
+| All axes present | 1433 all green · 0 skipped — **measured on the production box, 2026-08-27** (candidate tree cloned from a bundle, `.git` present, all eleven axes available) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 1420 and 1431**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. 1420 is measured here; 1431 is **axis-derived** (1432 minus
+> **Why report both 1421 and 1432**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. 1421 is measured here; 1432 is **axis-derived** (1433 minus
 > the git-worktree axis) — the last real sandbox measurement was 859, on the v20.0 committed tree when the
 > total was 860. For every number, say whether it was measured or derived.
 > Always state the environment alongside a test count.
@@ -712,8 +746,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` installed | 20 | all of `tests/test_v20_mem0_patch_layer.py` (patch-layer therapy tests need the real base; a missing mem0 used to be 20 ERRORs masquerading as real defects — now an honest skip) |
 > | `fastembed` installed | 1 | `tests/test_v20_2_autoshift.py` (real-model test for the autoshift fallback leg; honest skip when the dependency or model file is absent) |
 >
-> A dev machine lacks the first → 1420 + 12. The sandbox on the production box lacks the second (whitelist copy, no
-> `.git`) → 1431 + 1. **Each is missing one, so neither partial environment produces 1432 all green** — the
+> A dev machine lacks the first → 1421 + 12. The sandbox on the production box lacks the second (whitelist copy, no
+> `.git`) → 1432 + 1. **Each is missing one, so neither partial environment produces 1433 all green** — the
 > is a derived number. The previous README claimed it was "verified on production", and the very
 > production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
 > must survive the measurement it cites.**
@@ -732,20 +766,20 @@ python -m compileall ducky api_server.py mcp_server.py
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 1420 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1432 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1420 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 1421 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1433 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1421 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 1431 passed, 1 skipped
+> our own production box is exactly that), the first command above actually prints 1432 passed, 1 skipped
 > (**axis-derived**; the last real sandbox measurement was 859 passed, 1 skipped on the v20.0 committed tree,
 > when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1432 passed` line in
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1433 passed` line in
 > the code block above requires *all eleven* axes present at once; that complete-axis result was measured on
-> the production box on 2026-08-27 (candidate tree, total 1432, zero skips).
+> the production box on 2026-08-27 (candidate tree, total 1433, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >
