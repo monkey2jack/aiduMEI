@@ -25,13 +25,13 @@ delete_all，在配额烧穿或数据清空之前被 429 拦停。
 """
 from __future__ import annotations
 
-import logging
 import os
 import threading
 import time
 from typing import Dict, Optional, Tuple
 
-logger = logging.getLogger("aiduMEM.rate_guard")
+from ducky.env_config import config_errors, int_env
+
 
 _ADD_ENV = "AIDUMEI_RATE_ADD_PER_MIN"
 _DELETE_ALL_ENV = "AIDUMEI_RATE_DELETE_ALL_PER_MIN"
@@ -42,32 +42,15 @@ _WINDOWS: Dict[Tuple[str, str], Tuple[int, int]] = {}
 _LOCK = threading.Lock()
 
 
-_config_errors: dict = {}
-
-
+# v20.2.3（外审 M-2）：实现收编进 ducky/env_config（单一真相源），
+# 公开行为逐字不变。见该模块头注与 gear.py 同款说明。
 def _limit_from_env(env_name: str, default: int) -> int:
-    """v20.2.1（外审 R1 同款）：限流站在写路径入口，非法 env 在这里 raise
-    会让每次 /add 直接 500 —— 回退默认 + 出声，不炸业务路径。"""
-    raw = os.environ.get(env_name)
-    if raw is None:
-        _config_errors.pop(env_name, None)
-        return default
-    try:
-        v = int(raw.strip())
-        if v < 0:
-            raise ValueError
-        _config_errors.pop(env_name, None)
-        return v
-    except ValueError:
-        msg = f"{env_name} 非法值 {raw!r}，已回退默认 {default}（0=关闭该路限流）"
-        if _config_errors.get(env_name) != msg:
-            logger.warning("🚧 %s", msg)
-        _config_errors[env_name] = msg
-        return default
+    """0 = 关闭该路限流；非法值回退默认并点名出声（不炸写路径）。"""
+    return int_env(env_name, default, minimum=0)
 
 
 def rate_config_errors() -> dict:
-    return dict(_config_errors)
+    return config_errors(_ADD_ENV, _DELETE_ALL_ENV, _LOGIN_ENV)
 
 
 def add_rate_limit() -> int:
@@ -99,6 +82,54 @@ def check_rate(route: str, user_id: str, *, limit: int,
             return max(1, int((w + 1) * 60 - t))
         _WINDOWS[key] = (w, c + 1)
     return None
+
+
+# ── 登录爆破护栏（v20.2.3 · 外审 M-1）─────────────────────────────────
+# /login 是公网可达入口（按文档加反代对外后尤其如此），此前**无限流、
+# 无失败锁定**。PBKDF2 200k 轮让单次校验 ~100ms，是减速带不是墙。
+#
+# 与写路径限流的两点不同，都是刻意的：
+#   ① **只计失败**：成功登录不该被计数——正常用户换设备连登几次不该被锁；
+#   ② **先查后验**：超限时直接 429，连口令校验都不做（既省 PBKDF2 的
+#      100ms，也让攻击者拿不到「这次算不算数」的旁路信号）。
+# 分桶键是客户端 IP。**反代之后 request.client.host 是反代的 IP**——
+# 那种部署下本护栏退化为全局阈值（仍拦得住爆破，但会牵连同源用户）；
+# X-Forwarded-For 可伪造，未经可信反代校验绝不拿来当分桶键，宁可退化
+# 也不给攻击者一个「换个头就换个桶」的绕过口。
+_LOGIN_ENV = "AIDUMEI_LOGIN_FAILURES_PER_MIN"
+_DEFAULT_LOGIN_FAILURES_PER_MIN = 10
+
+
+def login_failure_limit() -> int:
+    """每分钟每 IP 允许的登录失败次数（0=关闭本护栏）。"""
+    return int_env(_LOGIN_ENV, _DEFAULT_LOGIN_FAILURES_PER_MIN, minimum=0)
+
+
+def login_locked(client_ip: str, *, now: Optional[float] = None) -> Optional[int]:
+    """只查不计：该 IP 当前是否已超失败上限。超限返回建议 Retry-After 秒。"""
+    limit = login_failure_limit()
+    if limit <= 0:
+        return None
+    t = time.time() if now is None else now
+    win = int(t // 60)
+    with _LOCK:
+        w, c = _WINDOWS.get(("login_fail", str(client_ip)), (win, 0))
+        if w != win or c < limit:
+            return None
+        return max(1, int((w + 1) * 60 - t))
+
+
+def record_login_failure(client_ip: str, *, now: Optional[float] = None) -> int:
+    """记一次登录失败，返回本窗口内的累计失败数。"""
+    t = time.time() if now is None else now
+    win = int(t // 60)
+    key = ("login_fail", str(client_ip))
+    with _LOCK:
+        w, c = _WINDOWS.get(key, (win, 0))
+        if w != win:
+            w, c = win, 0
+        _WINDOWS[key] = (w, c + 1)
+        return c + 1
 
 
 def reset_rate_windows() -> None:
