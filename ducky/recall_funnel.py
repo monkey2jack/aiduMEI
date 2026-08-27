@@ -182,6 +182,7 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
         query=query,
         candidates=candidates_to_score,
         user_id=user_id,
+        bank_id=bank_id,              # v20.2.4 F-15：此前断在这里
         limit=limit * 2,
     )
     stages.append({"name": "unified_scoring", "count": len(ranked_candidates), "ms": int((time.time()-t0)*1000)})

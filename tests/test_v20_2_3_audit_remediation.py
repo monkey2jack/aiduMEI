@@ -377,42 +377,70 @@ class TestWindowTableDoesNotGrowUnbounded:
         from ducky.rate_guard import reset_rate_windows
         reset_rate_windows()
 
-    def test_stale_entries_are_swept(self):
-        from ducky.rate_guard import (_SWEEP_THRESHOLD, record_login_failure,
-                                      window_count)
-        old_t = 1_000_000.0
-        for i in range(_SWEEP_THRESHOLD + 200):
-            record_login_failure(f"2001:db8::{i:x}", now=old_t)
-        grew = window_count()
-        assert grew > _SWEEP_THRESHOLD
-        # 下一个窗口来一个新请求：死条目必须被清掉
-        record_login_failure("2001:db8::live", now=old_t + 600)
-        after = window_count()
-        assert after < 10, (
-            f"上一窗口的 {grew} 条死条目没被清理（剩 {after}）—— "
-            "免鉴权端点的无界增长仍在")
+    # v20.2.4（外审 F-19）：结构已重写 —— 登录失败不再进共享的 _WINDOWS，
+    # 而是「每窗口一张表、跨窗口整体丢弃 + 硬上限」。原先这三条测的是
+    # 「超阈值才 sweep」那套机制，而外审证明那套限制不了**当前窗口**的增长
+    # （一个窗口 10,000 个新 IP = 10,000 条常驻，且插入退化成平方级）。
+    # 意图不变（免鉴权端点不许无界增长），判据换成新结构。
 
-    def test_sweep_is_semantically_lossless(self):
-        """区分力对照：清理不许影响判定。当前窗口的计数一条都不许丢。"""
-        from ducky.rate_guard import (_SWEEP_THRESHOLD, login_failure_limit,
-                                      login_locked, record_login_failure)
+    def test_login_table_is_hard_bounded(self):
+        """硬上限：同一窗口塞多少新 IP，表都不越过上限。"""
+        from ducky.rate_guard import (login_max_tracked_ips,
+                                      login_table_status, record_login_failure)
+        t = 1_000_000.0
+        cap = login_max_tracked_ips()
+        for i in range(cap + 3000):
+            record_login_failure(f"2001:db8::{i:x}", now=t)
+        st = login_table_status()
+        assert st["tracked_ips"] <= cap, (
+            f"表涨到 {st['tracked_ips']}，超过硬上限 {cap} —— 无界增长仍在")
+
+    def test_window_roll_discards_whole_table(self):
+        """跨窗口整表丢弃（O(1)，不是逐条判过期）。"""
+        from ducky.rate_guard import login_table_status, record_login_failure
+        t = 1_000_000.0
+        for i in range(500):
+            record_login_failure(f"10.1.{i // 256}.{i % 256}", now=t)
+        assert login_table_status()["tracked_ips"] == 500
+        record_login_failure("192.0.2.9", now=t + 600)
+        assert login_table_status()["tracked_ips"] == 1, "上一窗口的表没被整体丢弃"
+
+    def test_full_table_throttles_globally_then_self_releases(self):
+        """表被撑满 → 本窗口全局节流；下一窗口自动解除。
+
+        两个都要验：只做前半就是把撑表变成永久 DoS，只做后半等于新 IP
+        撑满表之后免疫护栏（那是绕过）。
+        """
+        from ducky.rate_guard import (login_locked, login_max_tracked_ips,
+                                      login_table_status, record_login_failure)
+        t = 3_000_000.0
+        for i in range(login_max_tracked_ips() + 10):
+            record_login_failure(f"198.51.100.{i % 256}::{i}", now=t)
+        assert login_table_status()["global_throttle_active"] is True
+        assert login_locked("203.0.113.7", now=t) is not None, "撑满表后新 IP 免疫了护栏"
+        assert login_locked("203.0.113.7", now=t + 61) is None, "全局节流没有随窗口自动解除"
+
+    def test_counts_survive_until_the_cap(self):
+        """区分力对照：上限之前，已记录 IP 的计数一条都不许丢。"""
+        from ducky.rate_guard import (login_failure_limit, login_locked,
+                                      record_login_failure)
         t = 2_000_000.0
         victim = "203.0.113.99"
         for _ in range(login_failure_limit()):
             record_login_failure(victim, now=t)
         assert login_locked(victim, now=t) is not None
-        # 触发清理：同窗口塞满阈值
-        for i in range(_SWEEP_THRESHOLD + 50):
-            record_login_failure(f"198.51.100.{i % 256}::{i}", now=t)
-        assert login_locked(victim, now=t) is not None, (
-            "清理把当前窗口的计数也扫掉了——护栏被自己的清理机制解除")
+        for i in range(200):     # 远低于上限，不该触发全局节流
+            record_login_failure(f"192.0.2.{i}", now=t)
+        assert login_locked(victim, now=t) is not None, "受害者的计数被后来的写入挤掉了"
 
-    def test_normal_deployment_never_triggers_sweep(self):
-        """正常规模不该触发扫描（清理是保险丝，不是常态开销）。"""
-        from ducky.rate_guard import _SWEEP_THRESHOLD, record_login_failure, window_count
+    def test_normal_scale_never_throttles(self):
+        """正常规模不该触发全局节流（它是保险丝，不是常态）。"""
+        from ducky.rate_guard import login_table_status, record_login_failure
         for i in range(100):
             record_login_failure(f"10.0.0.{i}")
-        assert window_count() == 100 <= _SWEEP_THRESHOLD
+        st = login_table_status()
+        assert st["tracked_ips"] == 100
+        assert st["global_throttle_active"] is False
 
 
 class TestPendingVerdict:

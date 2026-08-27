@@ -125,12 +125,15 @@ class TestThreshold3SingleBatchQuery:
     """门槛 3 · 类型查询不得逐条打库。"""
 
     def _run(self, monkeypatch, n=25):
-        calls = {"count": 0, "sizes": []}
+        calls = {"count": 0, "sizes": [], "scopes": []}
         import ducky.memory_types as mt
 
-        def _spy(ids):
+        # 替身签名**逐参数对齐生产**（外审 F-15 的教训：窄替身会把
+        # 「生产不传 scope」这个缺陷整个吃掉）。而且顺手把 scope 记下来断言。
+        def _spy(ids, *, user_id="default", bank_id="default"):
             calls["count"] += 1
             calls["sizes"].append(len(list(ids)))
+            calls["scopes"].append((user_id, bank_id))
             return {}
 
         monkeypatch.setattr(mt, "get_batch_memory_types", _spy)
@@ -341,7 +344,8 @@ class TestWiringEndToEnd:
         import ducky.memory_types as mt
         import ducky.mem0_runtime as rt
         types = {"m0": "PREFERENCES", "m1": "OBSERVATIONS"}
-        monkeypatch.setattr(mt, "get_batch_memory_types", lambda ids: types)
+        monkeypatch.setattr(mt, "get_batch_memory_types",
+                            lambda ids, **kw: types)   # 签名对齐：照单全收
         monkeypatch.setattr(rt, "rerank", lambda *a, **k: [], raising=False)
         if on:
             monkeypatch.setenv("AIDUMEI_TYPE_DECAY", "1")

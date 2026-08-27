@@ -25,8 +25,14 @@ _coalesce_worker_started = False
 _coalesce_worker_lock = threading.Lock()
 _coalesce_flush_cb: Optional[Callable] = None
 
-def _coalesce_key(user_id: str, metadata: Optional[dict] = None, profile: str = "default") -> str:
-    """缓冲键 = user + session + profile，避免亲密/技术短句混批。"""
+def _coalesce_key(user_id: str, metadata: Optional[dict] = None, profile: str = "default",
+                  bank_id: str = "default") -> str:
+    """缓冲键 = user + **bank** + session + profile，避免亲密/技术短句混批。
+
+    v20.2.4（外审 F-04）：此前键里**没有 bank** —— 同 user、同 session 的
+    bank-a 与 bank-b 拿到同一个键 `u::s`，两个域的短句被合进同一批，
+    第二个缓冲的 parts 里躺着另一个域的内容（外审实测）。
+    """
     md = metadata or {}
     sid = (
         md.get("session_id")
@@ -37,7 +43,8 @@ def _coalesce_key(user_id: str, metadata: Optional[dict] = None, profile: str = 
     )
     sid = str(sid).strip()
     prof = (profile or "default").strip() or "default"
-    base = f"{user_id}::{sid}" if sid else str(user_id or DEFAULT_USER_ID)
+    bank = (bank_id or "default").strip() or "default"
+    base = f"{user_id}@{bank}::{sid}" if sid else f"{user_id or DEFAULT_USER_ID}@{bank}"
     if prof and prof != "default":
         return f"{base}::{prof}"
     return base
@@ -129,6 +136,8 @@ def _buf_snapshot(key: str, buf: dict) -> dict:
     return {
         "key": key,
         "user_id": buf.get("user_id"),
+        # batch 自带的**不可变** scope —— 冲刷时只用这个，绝不回头读全局状态
+        "bank_id": buf.get("bank_id") or "default",
         "profile": buf.get("profile") or "default",
         "messages": [{"role": "user", "content": text}],
         "metadata": dict(buf.get("metadata") or {}),
@@ -211,6 +220,10 @@ def coalesce_enqueue(
     metadata: Optional[dict] = None,
     *,
     job_id: Optional[str] = None,
+    # v20.2.4（外审 F-04）：scope 随 batch 走，**不靠回调闭包捕获**。
+    # 全局 _coalesce_flush_cb 会被后一个请求覆盖，闭包里那个 bank_id 是
+    # 「最后一次注册时的」，冲刷时可能把 A 域的内容写进 B 域。
+    bank_id: str = "default",
 ) -> dict:
     """
     把一条短句放入合并缓冲。
@@ -224,7 +237,7 @@ def coalesce_enqueue(
     text = messages_to_text(messages_json)
     # 写入 metadata 便于落库/调试
     md.setdefault("coalesce_profile", profile)
-    key = _coalesce_key(user_id, md, profile)
+    key = _coalesce_key(user_id, md, profile, bank_id=bank_id)
     now = time.time()
     ready_batch = None
 
@@ -243,6 +256,7 @@ def coalesce_enqueue(
         if not buf:
             _coalesce_buf[key] = {
                 "user_id": user_id,
+                "bank_id": (bank_id or "default").strip() or "default",
                 "profile": profile,
                 "first_ts": now,
                 "last_ts": now,
@@ -364,18 +378,28 @@ def coalesce_flush_due(
     *,
     force: bool = False,
     key: Optional[str] = None,
+    bank_id: Optional[str] = None,
 ) -> list[dict]:
     """
     冲刷到期缓冲。
-    返回 [{user_id, messages, metadata, job_ids, count, reason, key, profile}, ...]
+    返回 [{user_id, bank_id, messages, metadata, job_ids, count, reason, key, profile}, ...]
+
+    v20.2.4（外审 F-04）：
+    · 新增 bank_id 过滤 —— 手动冲刷不该把一个域的内容交给另一个域处理；
+    · **键格式已变**（`{user}@{bank}[::sid][::prof]`），这里的前缀匹配同步改掉。
+      改了键的构造却忘了改读取方，症状是「冲刷不到任何东西且不报错」。
     """
     now = time.time()
     out: list[dict] = []
     with _coalesce_lock:
         if key:
             keys = [key]
+        elif user_id and bank_id:
+            _pfx = f"{user_id}@{(bank_id or 'default').strip() or 'default'}"
+            keys = [k for k in _coalesce_buf.keys() if k == _pfx or k.startswith(f"{_pfx}::")]
         elif user_id:
-            keys = [k for k in _coalesce_buf.keys() if k == user_id or k.startswith(f"{user_id}::")]
+            _pfx = f"{user_id}@"
+            keys = [k for k in _coalesce_buf.keys() if k.startswith(_pfx)]
         else:
             keys = list(_coalesce_buf.keys())
         for k in keys:
@@ -391,6 +415,9 @@ def coalesce_flush_due(
             out.append({
                 "key": k,
                 "user_id": snap["user_id"],
+                # F-04：scope 随 batch 走 —— 这一处此前漏了，于是 _buf_snapshot
+                # 带上了 bank 而 flush_due 又把它丢掉，冲刷方拿到 None。
+                "bank_id": snap.get("bank_id") or "default",
                 "profile": bprof,
                 "messages": snap["messages"],
                 "metadata": {
@@ -477,7 +504,12 @@ def coalesce_status(user_id: Optional[str] = None) -> dict:
 
 
 def register_coalesce_flusher(cb: Callable) -> None:
-    """注册冲刷回调：cb(user_id, messages, metadata, job_ids)。"""
+    """注册冲刷回调：cb(user_id, messages, metadata, job_ids, *, bank_id)。
+
+    v20.2.4（外审 F-04）：bank_id 是**参数**而不是闭包变量 —— 这个回调是
+    进程级单例，后注册的会覆盖先注册的，闭包里捕获的 scope 属于「最后那次
+    请求」，冲刷别人的 batch 时就写错域了。
+    """
     global _coalesce_flush_cb
     _coalesce_flush_cb = cb
 
@@ -502,6 +534,7 @@ def _coalesce_worker_loop() -> None:
                             batch["messages"],
                             batch["metadata"],
                             jids,
+                            bank_id=batch.get("bank_id") or "default",
                         )
                     except Exception as e:
                         logger.error(f"coalesce flush cb failed: {e}")
