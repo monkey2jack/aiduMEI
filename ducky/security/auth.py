@@ -42,6 +42,8 @@ import hashlib
 import hmac
 import logging
 import os
+
+from ducky.env_config import int_env
 import secrets
 import threading
 import time
@@ -54,7 +56,9 @@ _PBKDF2_ALGO = "pbkdf2_sha256"
 _PBKDF2_ROUNDS = 200_000
 
 # 会话默认有效期 12 小时；可由部署方按需调整。
-SESSION_TTL_SECONDS = int(os.environ.get("AIDUMEM_SESSION_TTL_SECONDS", "43200"))
+# v20.2.3（外审 M-2）：此处原是裸 int()，非法值让 auth 模块 **import 即崩**
+# ——整个服务起不来。鉴权是最不该因一个配置笔误而消失的东西。
+SESSION_TTL_SECONDS = int_env("AIDUMEM_SESSION_TTL_SECONDS", 43200, minimum=1)
 SESSION_COOKIE_NAME = "aidumei_session"
 
 
