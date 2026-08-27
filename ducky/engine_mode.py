@@ -78,3 +78,46 @@ def mode_status() -> dict:
 
 def reset_mode_warnings_for_tests() -> None:
     _warned.clear()
+
+# ── 本地档的云出口闸门（v20.2.4 · 外审 F-03）──
+#
+# 病根：v20.2.3 引入三档时，档位谓词只接在 /add 与 /search 主链上，而全仓有
+# 九个模块直接调 llm_client.call_llm（reflect / governance / persona_memory /
+# refine_memory / skill_growth / self_edit / instinct_graduation / memory_types），
+# 它们一个都不看档位。于是双语 README 写着 local 档「零 token、零外部网络」，
+# 实况是照样把记忆发给外部服务 —— **假宣称，不是小瑕疵**。
+#
+# 闸门放在这里（而不是九个调用点各加一句）是刻意的：第十个调用点必须**自动**
+# 受保护，不能靠下一个人记得加。调用方看到的只是「这次没成功」，走的是它们
+# 本来就有的降级路径。
+_blocked_counts: dict[str, int] = {}
+_blocked_warned: set[str] = set()
+
+
+def note_cloud_egress_blocked(which: str) -> None:
+    """记一次被本地档拦下的云出口。首次出声，之后只计数（不刷日志）。"""
+    _blocked_counts[which] = _blocked_counts.get(which, 0) + 1
+    if which not in _blocked_warned:
+        _blocked_warned.add(which)
+        logger.warning(
+            "🔋 [本地档] 已拦下云端出口 %s —— AIDUMEI_ENGINE_MODE=local "
+            "承诺零外呼，本次调用按降级处理", which,
+        )
+
+
+def cloud_egress_blocked_counts() -> dict[str, int]:
+    """供 /health 探针读取：本地档拦下了哪些出口、各几次。"""
+    return dict(_blocked_counts)
+
+
+def cloud_egress_allowed(which: str) -> bool:
+    """云出口守门谓词。**所有**外呼点在发请求前必须过这一道。
+
+    返回 False 时调用方应走自己的降级路径（返回 None / 空结果），
+    **不要抛异常** —— 保命路径不能因为档位配置而 500。
+    """
+    if cloud_leg_enabled():
+        return True
+    note_cloud_egress_blocked(which)
+    return False
+

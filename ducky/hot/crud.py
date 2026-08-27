@@ -242,7 +242,8 @@ def register_crud_routes(app: FastAPI) -> None:
     # 📒 事件溯源账本（v19.4.0 Mímir 借鉴 B5）：任意记忆的完整变更史可查
     @app.get("/events/history")
     def events_history(target_id: str = "", limit: int = 100,
-                       user_id: str = DEFAULT_USER_ID):
+                       user_id: str = DEFAULT_USER_ID,
+                       bank_id: str = DEFAULT_BANK_ID):
         """查某条记忆的完整变更史（谁、何时、做了什么、为什么）
 
         🟡-D（v19.4.1）：target_id 常常是自增整数，可被顺序枚举。
@@ -257,14 +258,27 @@ def register_crud_routes(app: FastAPI) -> None:
             from ducky.facts_recall import fact_visible_to_tenant
             from ducky.utils import get_facts_conn
 
+            # v20.2.4（外审 F-11）：**所有 target 形态走同一授权路径**。
+            #
+            # 此前只有 `bare.isdigit()` 才校验，于是 `fact:some-string-key`
+            # 这类非数字键**完全绕过** fact_visible_to_tenant，且 get_history()
+            # 调用时一个 scope 都不传 —— 严格档下攻击者照样拿到受害者的账本
+            # 理由与操作者信息。
+            #
+            # 现在：数字键仍走归属校验（两轴，此前 bank 也没传）；**任何**形态
+            # 都把 scope 交给 get_history —— 它自己就有 user_id/bank_id 参数，
+            # 一直没人传。
             bare = target_id.strip()
             if bare.startswith("fact:"):
                 bare = bare[5:]
+            uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
             if bare.isdigit():
-                uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
-                if not fact_visible_to_tenant(get_facts_conn(), int(bare), uid):
+                if not fact_visible_to_tenant(get_facts_conn(), int(bare), uid,
+                                              bank_id=bank_id):
                     return {"status": "ok", "results": []}
-            return {"status": "ok", "results": get_history(target_id.strip(), limit=limit)}
+            return {"status": "ok",
+                    "results": get_history(target_id.strip(), limit=limit,
+                                           user_id=uid, bank_id=bank_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
@@ -343,7 +357,10 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(500, str(e))
 
     @app.get("/opinions")
-    def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID):
+    def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID,
+                      # v20.2.4（外审 F-11）：此前**没有 bank 参数**，
+                      # 可见性校验一律按默认域判 —— 具名域的信念对谁都可见。
+                      bank_id: str = DEFAULT_BANK_ID):
         """查某事实的信念清单（严格档下按租户可见性校验，见 🟡-D）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
@@ -353,7 +370,8 @@ def register_crud_routes(app: FastAPI) -> None:
             from ducky.utils import get_facts_conn
 
             uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
-            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid):
+            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid,
+                                          bank_id=bank_id):
                 return {"status": "ok", "results": []}
             return {"status": "ok", "results": list_opinions(fact_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
@@ -366,7 +384,8 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(500, str(e))
 
     @app.get("/opinions/aggregate")
-    def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID):
+    def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID,
+                           bank_id: str = DEFAULT_BANK_ID):
         """聚合判定：≥2 个不同证据来源才聚合（单来源刷好评不聚合）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
@@ -376,7 +395,8 @@ def register_crud_routes(app: FastAPI) -> None:
             from ducky.utils import get_facts_conn
 
             uid = _normalize_user_id(user_id) if user_id else DEFAULT_USER_ID
-            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid):
+            if not fact_visible_to_tenant(get_facts_conn(), fact_id, uid,
+                                          bank_id=bank_id):
                 return {"status": "ok", "details": {}}
             return {"status": "ok", "details": aggregate_opinion(fact_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400

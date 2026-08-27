@@ -153,6 +153,11 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/event_ledger.py", "placeholders"), ("ducky/event_ledger.py", "scope_sql"),
     ("ducky/evolve_mem.py", "placeholders"), ("ducky/evolve_mem.py", "table"),
     ("ducky/extended/routes.py", "clauses"), ("ducky/extended/routes.py", "placeholders"),
+    # v20.2.4（外审 F-05/F-07 scope 化）：tenant_clause 返回的**结构性**片段
+    # （" AND bank_id=? AND user_id=?" 之类），值一律走 ? 参数化随 params 传。
+    # 人工核对：来源是 ducky/facts_recall.tenant_clause，不含任何请求数据。
+    ("ducky/extended/routes.py", "fclause"),
+    ("ducky/hot/legacy_routes.py", "fclause"),
     ("ducky/facts_recall.py", "placeholders"),
     ("ducky/federation/broadcast.py", "peer_frag"), ("ducky/federation/broadcast.py", "shared_frag"),
     ("ducky/federation/dedup.py", "agent_frag"),
