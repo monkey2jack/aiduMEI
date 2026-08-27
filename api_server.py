@@ -354,18 +354,35 @@ def _register_login(route_app: FastAPI) -> None:
             create_session,
         )
 
+        # 🚪 v20.2.3（外审 M-1）：爆破护栏。**先查后验** —— 超限直接 429，
+        # 连 PBKDF2 都不跑（省 100ms，也不给攻击者旁路信号）。
+        from ducky.rate_guard import login_locked, record_login_failure
+        _ip = (request.client.host if request.client else "unknown")
+        _retry = login_locked(_ip)
+        if _retry is not None:
+            logger.warning("🚪 登录失败次数超限，暂时拒绝（%ss 后重试）", _retry)
+            return JSONResponse(
+                {"success": False,
+                 "message": f"登录失败次数过多，请 {_retry} 秒后重试 / "
+                            f"Too many failed attempts, retry in {_retry}s"},
+                status_code=429, headers={"Retry-After": str(_retry)},
+            )
+
         try:
             payload = await request.json()
         except Exception:
             payload = {}
         given = payload.get("password")
         if not isinstance(given, str) or not given:
+            # 空口令也计数：否则攻击者可以拿它当免费的「探测门是否开着」。
+            record_login_failure(_ip)
             return JSONResponse(
                 {"success": False, "message": "密码不能为空或格式错误"}, status_code=401
             )
 
         if not check_ui_password(given):
-            logger.warning("🚪 UI 登录失败（密码错误）")
+            _n = record_login_failure(_ip)
+            logger.warning("🚪 UI 登录失败（密码错误，本窗口第 %d 次）", _n)
             return JSONResponse(
                 {"success": False, "message": "访问密码错误 / Wrong password"},
                 status_code=401,
@@ -378,6 +395,16 @@ def _register_login(route_app: FastAPI) -> None:
         secure_flag = os.environ.get("AIDUMEM_COOKIE_SECURE", "0").strip().lower() in {
             "1", "true", "yes",
         }
+        # v20.2.3（外审 L-2）：默认关是对的（回环部署走 HTTP，开了 cookie
+        # 根本发不出去）。但**反代之后还没开**就是真漏洞：会话 cookie 会
+        # 随一次降级到 HTTP 的请求裸奔出去。请求头里带着 HTTPS 痕迹却没开
+        # secure —— 这种「配置与部署形态不匹配」必须出声，不许静默。
+        if not secure_flag and request.headers.get("x-forwarded-proto", "").lower() == "https":
+            logger.warning(
+                "🔓 检测到 HTTPS 反代（X-Forwarded-Proto: https）但 "
+                "AIDUMEM_COOKIE_SECURE 未开启 —— 会话 cookie 缺少 secure 标志，"
+                "遇到降级到 HTTP 的请求会明文外泄。请设 AIDUMEM_COOKIE_SECURE=1。"
+            )
         resp = JSONResponse({"success": True, "expires_in": ttl})
         resp.set_cookie(
             key=SESSION_COOKIE_NAME,
@@ -500,7 +527,15 @@ def _start_background() -> None:
 def main():
     _start_background()
     host = os.environ.get("AIDUMEM_HOST", "127.0.0.1")
-    port = int(os.environ.get("AIDUMEM_API_PORT") or os.environ.get("MEM0_API_PORT") or 8767)
+    # v20.2.3（外审 M-2）：端口曾是裸 int() —— 写错一个字符服务直接起不来，
+    # 且报错是 ValueError 而非「端口配置无效」。回退默认 + 点名出声。
+    # or 链保留原语义（新键优先、空串落到旧键），但错误要点名到**真正
+    # 提供了这个值的那个 env**，不许张冠李戴。
+    from ducky.env_config import int_env as _int_env
+    _port_name, _port_raw = "AIDUMEM_API_PORT", os.environ.get("AIDUMEM_API_PORT")
+    if not _port_raw:
+        _port_name, _port_raw = "MEM0_API_PORT", os.environ.get("MEM0_API_PORT")
+    port = _int_env(_port_name, 8767, minimum=1, maximum=65535, raw=_port_raw)
     if not _api_token():
         logger.warning(
             "⚠️ 未设置 AIDUMEM_API_TOKEN：REST 接口无鉴权。"

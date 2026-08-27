@@ -54,7 +54,25 @@ except ImportError as exc:                # pragma: no cover - 环境问题，�
     raise SystemExit(1)
 
 UPSTREAM = os.environ.get("AIDUMEM_UPSTREAM", "http://127.0.0.1:8777")
-PORT = int(os.environ.get("AIDUMEI_PORT", "8788"))
+# v20.2.3（外审 M-2 普查）：原为裸 int()，非法端口让 dev server 起不来。
+# 本文件是**独立脚本**（不作为包的一部分被 import），够不着
+# ducky.env_config 那个单一真相源，故就地安全解析——语义一致：
+# 非法值回退默认 + 出声，绝不 raise。
+def _port_env(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+        if not (1 <= v <= 65535):
+            raise ValueError
+        return v
+    except ValueError:
+        print(f"⚙️ {name} 非法值 {raw!r}，已回退默认 {default}")
+        return default
+
+
+PORT = _port_env("AIDUMEI_PORT", 8788)
 TIMEOUT = 60
 
 # ---------------------------------------------------------------------------
