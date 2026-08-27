@@ -70,7 +70,11 @@ def _int_env(name: str, default: int) -> int:
 
 
 def _float_env(name: str, default: float) -> float:
-    return env_float(name, default, minimum=0.000001)
+    # v20.2.3（外审 A-2）：v20.2.1 的旧判据是 `v > 0`，收编时用
+    # minimum=0.000001 近似，于是 (0, 1e-6) 的合法旧值被拒 ——「逐字不变」
+    # 就不逐字了。改用 exclusive_minimum 表达**真正的严格大于零**，
+    # 边界由 tests 钉死，宣称与实况重新对齐。
+    return env_float(name, default, exclusive_minimum=0.0)
 
 
 def _gear_config_errors() -> dict:
@@ -210,13 +214,32 @@ class _Breaker:
             self._state = "half_open"
             logger.info("⚙️ %s腿：冷却结束，进入半开探测", self._noun)
 
+    def policy_disabled(self) -> bool:
+        """本腿是否被**部署配置**整条关闭（不是熔断，是选择）。"""
+        try:
+            from ducky.engine_mode import cloud_leg_enabled
+            return not cloud_leg_enabled()
+        except Exception:
+            return False
+
     def status(self, *, now: Optional[float] = None) -> dict:
-        """/health 探针：挡位、熔断器内态、参数生效值、最近换挡原因。"""
+        """/health 探针：挡位、熔断器内态、参数生效值、最近换挡原因。
+
+        v20.2.3（外审 A-4）：本腿被配置关闭时，mode 报 `disabled_by_policy`
+        而不是 `full` —— 本地档下云腿一次都不会被尝试，报「full/closed」
+        等于告诉值班人「云端腿正在服役且健康」，那是一句活生生的假话。
+        **只改探针面，不改判定面**：current_mode() 保持 full|lite 二值语义
+        （ducky/hot/add.py 拿它分流 lite 分支，混进第三个值会走错路），
+        breaker 也保持熔断器的真实内态（它没被抹掉，只是没在服役）。
+        """
         m = self.mode(now=now)
+        disabled = self.policy_disabled()
         with self._lock:
             return {
                 "leg": self.leg,
-                "mode": m,
+                "mode": "disabled_by_policy" if disabled else m,
+                "policy_disabled": disabled,
+                "breaker_mode_if_serving": m if disabled else None,
                 "breaker": self._state,
                 "consecutive_failures": self._consec_failures,
                 "trip_threshold": self.trip_threshold(),

@@ -373,7 +373,17 @@ def register_search_routes(app: FastAPI) -> None:
             # 本次请求实际用的腿比系统挡位更诚实：half-open 探测成功的那次
             # 查询真真切切吃的是云腿，报 lite 反而是撒谎。
             _leg = (recall_telem or {}).get("vector_leg", "")
-            _this_mode = "lite" if _leg in ("local", "local_fallback") else _gs["mode"]
+            # v20.2.3（外审 A-4 配套）：先看**部署配置**再看腿。本地档下云腿
+            # 被整条关闭，gear_status 会如实报 disabled_by_policy —— 那是给
+            # 运维看的探针词，不该外泄进 /search 的响应契约（调用方按
+            # full|lite 解析）。本地档恒在本地腿上，就报 lite。
+            from ducky.engine_mode import cloud_leg_enabled
+            if not cloud_leg_enabled():
+                _this_mode = "lite"
+            elif _leg in ("local", "local_fallback"):
+                _this_mode = "lite"
+            else:
+                _this_mode = _gs["mode"]
             resp = {
                 "status": "ok", "results": results,
                 "_recall_path": recall_path,
