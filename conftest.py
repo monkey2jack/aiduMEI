@@ -144,3 +144,78 @@ if REDIRECTED_DATA_DIR:
             "unittest.mock.patch.dict——pop 是「删掉」不是「还原」，"
             "本来有值的变量会被抹成没有"
         )
+
+# ── 测试临时目录回收（v20.2.4 · 生产机实测触发）────────────────────────
+#
+# 2026-08-28 在生产机上清理战场时数出来：`/tmp` 下有 **3573 个** `aidumem_*`
+# 临时目录、146MB，从 08-24 一路攒到那天。根因是 tests/ 里 46 处
+# `tempfile.mkdtemp()` 绝大多数不注册清理 —— 而 pytest 自己的 `tmp_path`
+# 本来就带「保留最近 3 次、更老的自动删」，`mkdtemp` 绕过了那套机制。
+#
+# 删一次不算修好，下周照样攒回来。所以做**会话级兜底**，而不是逐个去改 46 处：
+#   ① 删本次会话新出现的（精确到本次，不碰别人的）；
+#   ② 顺带收掉 3 天以上的历史积累。
+#
+# 三道安全约束（这段代码在删目录，写清楚为什么它不会删错）：
+#   · 只认 `aidumem_` 这一个前缀 —— 实测 45 个 mkdtemp 位点全用它；
+#   · 只在系统临时目录内动手，且用 realpath 复核，防符号链接逃逸；
+#   · 任何失败都静默 —— 清理失败绝不该把测试结果染红。
+_TMP_PREFIX = "aidumem_"
+_STALE_DAYS = 3
+
+
+def _reapable(root: str):
+    import glob
+    import os as _o
+    real_root = _o.path.realpath(root)
+    out = []
+    for d in glob.glob(_o.path.join(root, _TMP_PREFIX + "*")):
+        rp = _o.path.realpath(d)
+        if _o.path.isdir(rp) and rp.startswith(real_root + _o.sep):
+            out.append(rp)
+    return set(out)
+
+
+_TMP_BEFORE: set = set()
+
+
+def pytest_configure(config):
+    """在 **collection 之前**拍下 before 快照。
+
+    时序是这条清理的命门：不少测试在**模块顶层**调 `mkdtemp`（import 期，
+    也就是 collection 期）。而 session fixture 的 setup 发生在 collection
+    **之后** —— 它拿到的 before 已经把那些目录算进「别人的」，于是永远不删。
+    实测就是这么发现的：跑完一轮，`/tmp` 里仍稳定剩 1 个目录。
+    """
+    global _TMP_BEFORE
+    try:
+        _TMP_BEFORE = _reapable(tempfile.gettempdir())
+    except Exception:
+        _TMP_BEFORE = set()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _reap_test_tempdirs():
+    """会话结束时回收本仓测试留下的临时目录。见上方成因注释。"""
+    import time      # 模块级没有 time；shutil/tempfile 用模块级的（禁重复 import 遮蔽）
+
+    root = tempfile.gettempdir()
+    before = _TMP_BEFORE
+
+    yield
+
+    try:
+        now = time.time()
+        after = _reapable(root)
+        doomed = set(after) - set(before)          # ① 本次会话新增的
+        for d in after:                             # ② 3 天以上的历史积累
+            try:
+                if now - os.path.getmtime(d) > _STALE_DAYS * 86400:
+                    doomed.add(d)
+            except OSError:
+                pass
+        for d in doomed:
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception:
+        pass        # 清理失败不许影响测试结论
+
