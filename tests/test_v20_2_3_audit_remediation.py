@@ -433,6 +433,20 @@ class TestWindowTableDoesNotGrowUnbounded:
             record_login_failure(f"192.0.2.{i}", now=t)
         assert login_locked(victim, now=t) is not None, "受害者的计数被后来的写入挤掉了"
 
+    def test_cold_start_does_not_report_throttling(self):
+        """冷启动（表空、没有任何窗口）**不许**报全局节流。
+
+        两个窗口号的初始值都是 -1，天真判据 `throttle_win == cur_win` 在这个
+        状态下恒真 —— 生产 /health 第一次就报了「全局节流已激活」而表里 0 条。
+        **探针撒的谎比缺陷更难查，因为它看起来像证据。**
+        """
+        from ducky.rate_guard import login_table_status, reset_rate_windows
+        reset_rate_windows()
+        st = login_table_status()
+        assert st["tracked_ips"] == 0
+        assert st["global_throttle_active"] is False, (
+            f"表空却报全局节流：{st}")
+
     def test_normal_scale_never_throttles(self):
         """正常规模不该触发全局节流（它是保险丝，不是常态）。"""
         from ducky.rate_guard import login_table_status, record_login_failure
