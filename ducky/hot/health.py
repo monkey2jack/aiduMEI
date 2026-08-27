@@ -92,6 +92,25 @@ def register_health_routes(app: FastAPI) -> None:
             "injection_guard_ok": True,
         }
 
+        # v20.2.4（外审 F-18）：报**生效模式**，不是「模块可导入」。
+        # GUARD_MODE 拼错时旧代码静默降级为 log-only，而 injection_guard_ok
+        # 照样是 True —— 探针说「守卫在」，守卫其实只在记日志。
+        try:
+            from ducky.security.injection_guard import guard_mode_status
+            probes["injection_guard_mode"] = guard_mode_status()
+        except Exception as _ig_exc:
+            probes["injection_guard_mode"] = {"error": str(_ig_exc)[:100]}
+
+        # v20.2.4（外审 F-03）：本地档拦下的云出口计数。
+        # 「local 档零外呼」这句话需要一个能被观察的凭据，而不只是一条测试。
+        try:
+            from ducky.engine_mode import cloud_egress_blocked_counts
+            _blocked = cloud_egress_blocked_counts()
+            if _blocked:
+                probes["cloud_egress_blocked"] = _blocked
+        except Exception as _ce_exc:
+            logger.debug("云出口计数探针跳过: %s", _ce_exc)
+
         # v20 scope/backend contract: expose the actual default bank and
         # vector backend capability without making health depend on optional
         # sqlite-vec or a running Qdrant server.  A failed optional probe is a
@@ -189,6 +208,10 @@ def register_health_routes(app: FastAPI) -> None:
                                           rate_config_errors)
             probes["rate_add_per_min_effective"] = add_rate_limit()
             probes["rate_delete_all_per_min_effective"] = delete_all_rate_limit()
+            # v20.2.4（外审 F-19）：登录表规模 / 上限 / 是否处于全局节流。
+            # 「表会不会涨到撑爆」此前只能靠读代码猜；现在是一个可查的数字。
+            from ducky.rate_guard import login_table_status
+            probes["login_table"] = login_table_status()
             _rc_err = rate_config_errors()
             if _rc_err:
                 probes["rate_limit_config_error"] = "; ".join(
