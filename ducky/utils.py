@@ -105,6 +105,20 @@ for _d in (DATA_DIR, LOG_DIR):
     except OSError:
         pass  # 只读环境下静默降级，由后续实际读写抛出更明确的错误
 
+def mem0_config_path() -> str:
+    """mem0 本地配置文件路径的**唯一**解析点（v20.2.4 · 外审 F-22）。
+
+    README 与 .env.example 都写着 `AIDUMEM_CONFIG_FILE`，而三处读它的模块
+    （mem0_runtime / llm_client / speed.config）全部硬编码 BASE_DIR 下的固定
+    文件名 —— **那个环境变量从来没有任何代码读过**。文档承诺了一个不存在的
+    开关，用户按文档配了却毫无效果，且没有任何告警。
+    """
+    raw = os.environ.get("AIDUMEM_CONFIG_FILE", "").strip()
+    if raw:
+        return os.path.expanduser(raw)
+    return os.path.join(BASE_DIR, "mem0_config_local.json")
+
+
 FACTS_DB      = os.path.join(DATA_DIR, "facts.db")
 OBS_DB        = os.path.join(DATA_DIR, "observations.db")
 SCENES_DB     = os.path.join(DATA_DIR, "scenes.db")

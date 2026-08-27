@@ -120,19 +120,26 @@ ${SUMMARY:+DESCRIPTION: $SUMMARY
 ${CONTENT}"
 
 # ── 发送到 aiduMEM Raw Drawer ──────────────────────────
-PAYLOAD=$(python3 -c "
-import json, sys
-content = sys.stdin.read()
+# v20.2.4（外审 F-25）：user id **通过环境变量**交给 Python，不再插进源码。
+# 此前是 '${AIDUMEM_USER_ID}' 直接嵌在单引号字符串里 —— 值里带一个单引号就能
+# 闭合字符串并注入任意 Python 表达式（无害 payload 已实证可执行）。
+PAYLOAD=$(AIDUMEI_HOOK_UID="${AIDUMEM_USER_ID}" python3 -c "
+import json, os, sys
 print(json.dumps({
-    'content': content,
+    'content': sys.stdin.read(),
     'source': 'cursor_hook',
-    'user_id': '${AIDUMEM_USER_ID}'
+    'user_id': os.environ.get('AIDUMEI_HOOK_UID', ''),
 }))
 " <<< "$STORE_TEXT")
 
 # ${AUTH_ARGS[@]+...} 写法是为了在 bash 3.2（macOS 自带）下，
 # 空数组遇上 `set -u` 不会报 "unbound variable"。
-HTTP_CODE=$(curl -s -o /tmp/aidumem_resp.json -w "%{http_code}" \
+# v20.2.4（外审 F-25）：固定的 /tmp 文件在世界可写目录里，存在并发串读与
+# symlink 覆盖风险。改 mktemp + 0600 + trap 清理。
+RESP_FILE=$(mktemp "${TMPDIR:-/tmp}/aidumem_resp.XXXXXX")
+chmod 600 "$RESP_FILE"
+trap 'rm -f "$RESP_FILE"' EXIT INT TERM
+HTTP_CODE=$(curl -s -o "$RESP_FILE" -w "%{http_code}" \
     --max-time "$TIMEOUT" \
     -X POST "${AIDUMEM_URL}/add/raw" \
     -H "Content-Type: application/json" \
@@ -140,7 +147,7 @@ HTTP_CODE=$(curl -s -o /tmp/aidumem_resp.json -w "%{http_code}" \
     -d "$PAYLOAD" 2>/dev/null || echo "000")
 
 if [[ "$HTTP_CODE" == "200" ]]; then
-    ID=$(python3 -c "import json; d=json.load(open('/tmp/aidumem_resp.json')); print(d.get('id','?'))" 2>/dev/null || echo "?")
+    ID=$(python3 -c "import json; d=json.load(open('$RESP_FILE')); print(d.get('id','?'))" 2>/dev/null || echo "?")
     echo "✅ aiduMEI: ${REL_PATH} → Raw Drawer [${ID}]"
 elif [[ "$HTTP_CODE" == "401" || "$HTTP_CODE" == "403" ]]; then
     # 单独点名鉴权失败：这是最常见也最容易误判为「服务挂了」的一种失败。

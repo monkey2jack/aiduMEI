@@ -315,7 +315,11 @@ def register_add_routes(app: FastAPI) -> None:
                     out["distillation"] = note
                 return out
 
-            def _run_pipeline(uid, msgs, meta):
+            def _run_pipeline(uid, msgs, meta, *, bank_id=None):
+                # v20.2.4（外审 F-04）：bank 走**参数**，默认回退闭包里的
+                # req.bank_id（同请求内的同步调用行为不变）。跨请求的 coalesce
+                # 冲刷必须显式传 batch 自带的 scope —— 全局回调是进程级单例，
+                # 闭包里那个 req 属于「最后一次注册的请求」。
                 # ⚙️ v20.2.2 LLM 腿挡位：open 态不再逐请求撞超时——直接
                 # 确定性直写秒回（原文/硬事实/云向量照落，内容照样可召回；
                 # 欠的只是蒸馏精修，故障账本与事件账本可查）。closed/half-open
@@ -331,7 +335,7 @@ def register_add_routes(app: FastAPI) -> None:
                 try:
                     _r = lazy_import_layer1()(
                         mem, msgs, uid, meta,
-                        bank_id=req.bank_id, infer=infer_flag,
+                        bank_id=(bank_id or req.bank_id), infer=infer_flag,
                     )
                     # 成功信号只在 LLM 真被使用过时上报（infer=False 的
                     # layer1 整段跳过 LLM——记成功就是假信号）。
@@ -352,13 +356,13 @@ def register_add_routes(app: FastAPI) -> None:
                     # 确定性通路就成了「大部分时候确定」。
                     return _direct_write(uid, msgs, meta, infer_flag)
 
-            def _execute_batch(uid, msgs, meta, job_ids):
+            def _execute_batch(uid, msgs, meta, job_ids, *, bank_id=None):
                 """合并包 / 单条异步包统一执行，并把结果回写到所有关联 job。"""
                 jids = list(job_ids or [])
                 for jid in jids:
                     job_update(jid, status="running")
                 try:
-                    result = _run_pipeline(uid, msgs, meta or {})
+                    result = _run_pipeline(uid, msgs, meta or {}, bank_id=bank_id)
                     # 标注 coalesce 信息到 result.details
                     if isinstance(result, dict):
                         details = dict(result.get("details") or {})
@@ -390,8 +394,9 @@ def register_add_routes(app: FastAPI) -> None:
                     raise
 
             # 注册 coalesce 冲刷回调 + 后台 worker（只一次）
-            def _coalesce_cb(uid, msgs, meta, job_ids):
-                _execute_batch(uid, msgs, meta, job_ids)
+            def _coalesce_cb(uid, msgs, meta, job_ids, *, bank_id="default"):
+                # v20.2.4（F-04）：scope 从 batch 参数来，**不读闭包里的 req**
+                _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id)
 
             register_coalesce_flusher(_coalesce_cb)
             ensure_coalesce_worker()
@@ -406,7 +411,8 @@ def register_add_routes(app: FastAPI) -> None:
                 )
                 if should:
                     enq = coalesce_enqueue(
-                        req.user_id, messages_json, md, job_id=job_id
+                        req.user_id, messages_json, md, job_id=job_id,
+                        bank_id=req.bank_id,          # F-04：scope 随 batch 落库
                     )
                     # 若顺带带出已到期的旧包 / 满额包，立刻后台执行
                     batches = []
@@ -550,7 +556,10 @@ def register_add_routes(app: FastAPI) -> None:
             raise HTTPException(500, str(e))
 
     @app.post("/add/coalesce/flush")
-    def add_coalesce_flush(user_id: str = "", force: bool = True):
+    def add_coalesce_flush(user_id: str = "", force: bool = True,
+                           # v20.2.4（外审 F-04）：手动冲刷也必须接受作用域 ——
+                           # 否则一个域的 preview 会被交给另一个域处理。
+                           bank_id: str = ""):
         """手动冲刷合并队列（调试）"""
         try:
             from ducky.add_speed import coalesce_flush_due, ensure_coalesce_worker
@@ -559,17 +568,20 @@ def register_add_routes(app: FastAPI) -> None:
             mem = get_memory()
             patch_llm_for_speed(mem)
 
-            def _run_pipeline(uid, msgs, meta):
-                return lazy_import_layer1()(mem, msgs, uid, meta or {})
+            def _run_pipeline(uid, msgs, meta, *, bank_id="default"):
+                # F-04：bank 从 batch 自带的 scope 来，不猜、不读全局
+                return lazy_import_layer1()(mem, msgs, uid, meta or {}, bank_id=bank_id)
 
             flushed = []
-            batches = coalesce_flush_due(user_id=(user_id or None), force=force)
+            batches = coalesce_flush_due(user_id=(user_id or None), force=force,
+                                         bank_id=(bank_id or None))
             for b in batches:
                 jids = b.get("job_ids") or []
                 for jid in jids:
                     job_update(jid, status="running")
                 try:
-                    result = _run_pipeline(b["user_id"], b["messages"], b.get("metadata") or {})
+                    result = _run_pipeline(b["user_id"], b["messages"], b.get("metadata") or {},
+                                           bank_id=b.get("bank_id") or "default")
                     for jid in jids:
                         job_update(jid, status="done", result=result)
                     flushed.append({

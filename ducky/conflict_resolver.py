@@ -249,6 +249,28 @@ def resolve_fact_conflict(
     }
 
 
+def _attr_matches(new_text: str, fact_key: str, attr_re: str) -> bool:
+    """新文本是否**确实在说这条事实的那个属性**（v20.2.4 · 外审 F-13 第二层）。
+
+    第一层（attr_re 在新文本里）只能证明「这句话在谈某个开关」，证明不了
+    「在谈哪一个」。所以再要一级显式判据：
+
+      ① fact_key 整体出现在新文本里 —— 最强证据；
+      ② fact_key 剥掉通用状态词后的**具名部分**出现在新文本里
+         （「邮箱开关」剥掉「开关」剩「邮箱」）。
+
+    两级都不满足就**不消解**。记忆失效不可逆，宁漏一条不错杀一条 ——
+    这条取舍写在这里，别为了「多消解一点」把它放宽。
+    """
+    key = (fact_key or "").strip()
+    if not key:
+        return False
+    if key in new_text:
+        return True
+    specific = re.sub(attr_re, "", key, flags=re.IGNORECASE).strip()
+    return bool(specific) and specific in new_text
+
+
 def scan_and_resolve_text_conflicts(
     new_text: str,
     user_id: str = DEFAULT_USER_ID,
@@ -274,10 +296,18 @@ def scan_and_resolve_text_conflicts(
     signaled = is_correction(new_text)
 
     # 先判断文本中是否有任何规则被命中（避免无效 DB 查询）
+    # v20.2.4（外审 F-13）：**attr_re 此前从未参与判定**。规则是三段
+    # (属性, 旧值, 新值)，而这里只看 new_re、下面只用 old_re —— 属性正则解包出来
+    # 就被丢掉了。后果实测：提交「请关闭通知（与邮箱和灯光都无关）」，同域两条
+    # 互不相关的「已开启」事实**同时被失效**。通用状态词成了域内广谱杀虫剂。
+    #
+    # 第一层收窄：属性词也必须出现在新文本里。上面那句话没有「开关/状态」字样，
+    # 到这里就被拦住了。
     triggered_patterns = [
         (attr_re, old_re, new_re)
         for attr_re, old_re, new_re in MUTUAL_EXCLUSION_PATTERNS
         if re.search(new_re, new_text, re.IGNORECASE)
+        and re.search(attr_re, new_text, re.IGNORECASE)
     ]
     if not triggered_patterns:
         if signaled:
@@ -322,6 +352,11 @@ def scan_and_resolve_text_conflicts(
                 ]
 
             for fid, fkey, fval in rows:
+                if not _attr_matches(new_text, fkey, attr_re):
+                    logger.debug(
+                        "🐙 [ConflictResolver] 属性对不上，跳过消解: key='%s'", fkey,
+                    )
+                    continue
                 cursor.execute(
                     "UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ? AND "
                     + scope_sql,

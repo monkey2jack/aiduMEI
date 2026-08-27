@@ -196,7 +196,8 @@ def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5) -> st
 
 
 @mcp.tool()
-def mem_search_deep(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 10) -> str:
+def mem_search_deep(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 10,
+                    bank_id: str = "default") -> str:
     """深度搜索 — 同时检索向量库 + FTS5 全文索引 + facts 结构化知识库，三路并行召回。
 
     比 mem_search 召回更全面，适合知识库查询和精确事实检索。
@@ -206,7 +207,15 @@ def mem_search_deep(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 10)
         user_id: 用户标识
         top_k:   每路返回结果数，默认 10
     """
-    result = _api_get("/search/deep", {"query": query, "depth": min(max(top_k // 5, 1), 3)})
+    # v20.2.4（外审 F-21）：此前**接了 user_id 却不发送** —— 调用方以为选了
+    # 租户，实际查的是默认域；而 /search/deep 那时还没有 scope 参数（F-05 已补），
+    # 于是这条 MCP 工具直接放大了「次级 API 全库吐正文」的影响面。
+    result = _api_get("/search/deep", {
+        "query": query,
+        "depth": min(max(top_k // 5, 1), 3),
+        "user_id": user_id,
+        "bank_id": bank_id,
+    })
     return _ok(result)
 
 
@@ -368,7 +377,9 @@ def code_impact(file_path: str) -> str:
     Args:
         file_path: 要分析的文件路径（相对或绝对路径）
     """
-    result = _api_post("/code/impact", {"file_path": file_path})
+    # v20.2.4（外审 F-21）：API 的 ImpactRequest 要的是 `changed_files`（列表），
+    # 这里一直发 `file_path` —— 服务端拿到空列表，工具从来没真正工作过。
+    result = _api_post("/code/impact", {"changed_files": [file_path]})
     return _ok(result)
 
 
@@ -431,7 +442,9 @@ def session_report(session_id: str) -> str:
     Args:
         session_id: 会话标识
     """
-    result = _api_post("/session/report", {"session_id": session_id})
+    # v20.2.4（外审 F-21）：API 侧是 @app.get("/session/report")，这里用的是 POST
+    # —— 405 一路被 _ok() 包成正常返回，调用方看不出工具坏了。
+    result = _api_get("/session/report", {"session_id": session_id})
     return _ok(result)
 
 

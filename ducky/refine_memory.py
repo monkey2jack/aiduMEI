@@ -64,6 +64,11 @@ def ensure_refine_schema() -> None:
             CREATE TABLE IF NOT EXISTS refined_memories (
                 refine_id     INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id       TEXT NOT NULL DEFAULT 'default',
+                -- v20.2.4（外审 F-10）：bank 轴。此前整合账本只有 user 轴，
+                -- 于是同一用户 bank-a 与 bank-b 的事实被合成一条摘要，
+                -- 摘要本身落进 default 域（外审实测 3+3 → source_ids 六条、
+                -- 摘要 bank_id='default'）。生产 dry-run：本表 0 行，纯加列。
+                bank_id       TEXT NOT NULL DEFAULT 'default',
                 category      TEXT NOT NULL DEFAULT 'general',
                 source_ids    TEXT NOT NULL,       -- JSON 数组：被合并的 fact id
                 summary       TEXT NOT NULL,
@@ -100,6 +105,21 @@ def ensure_refine_schema() -> None:
                     "refine 写入将不可用: %s", alter_exc,
                 )
                 raise
+        # v20.2.4 F-10：存量库 additive 补列（本仓既有 ensure_*_schema 同款做法）
+
+        try:
+
+            _cols = [r[1] for r in conn.execute("PRAGMA table_info(refined_memories)")]
+
+            if "bank_id" not in _cols:
+
+                conn.execute("ALTER TABLE refined_memories ADD COLUMN "
+
+                             "bank_id TEXT NOT NULL DEFAULT 'default'")
+
+        except Exception as _e:
+
+            logger.debug("refined_memories bank_id 补列跳过: %s", _e)
         conn.commit()
         _checked = True
     except Exception as e:
@@ -108,7 +128,8 @@ def ensure_refine_schema() -> None:
         conn.close()
 
 
-def _load_candidates(conn, user_id: str, category: str, limit: int) -> list[dict]:
+def _load_candidates(conn, user_id: str, category: str, limit: int,
+                     *, bank_id: str = "default") -> list[dict]:
     """取候选事实：默认身份 = 全库通配，具名租户 = 按 source 收窄。
 
     v19.4.2：通配哨兵原先硬编码在 SQL 里（`?='default' OR source=?`）。
@@ -119,6 +140,14 @@ def _load_candidates(conn, user_id: str, category: str, limit: int) -> list[dict
     改为字面量与 DEFAULT_USER_ID 都认：老部署逐字节不变，新部署恢复原意。
     """
     if user_id in ("default", DEFAULT_USER_ID):
+        # v20.2.4（外审 F-10）：bank 轴收窄。此前只按 user + category 取候选，
+        # 于是同一用户 bank-a 与 bank-b 的事实被合成一条摘要（实测 3+3 → 六条）。
+        _bclause, _bparams = ("", [])
+        try:
+            from ducky.facts_recall import tenant_clause
+            _bclause, _bparams = tenant_clause(user_id, bank_id=bank_id, conn=conn)
+        except Exception as _e:
+            logger.debug("refine 候选 bank 收窄跳过: %s", _e)
         rows = conn.execute(
             """
             SELECT id, category, fact_key, fact_value FROM facts
@@ -255,12 +284,13 @@ def _extractive_summary(items: list[dict]) -> str:
     return f"{category}要点（{len(items)} 条合并）：{body}{tail}"
 
 
-def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool = True) -> dict:
+def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool = True,
+                 bank_id: str = "default") -> dict:
     """对指定 category 下的记忆做一次递归精炼（proposed，不自动应用）。"""
     ensure_refine_schema()
     conn = get_facts_conn()
     try:
-        candidates = _load_candidates(conn, user_id, category, limit)
+        candidates = _load_candidates(conn, user_id, category, limit, bank_id=bank_id)
     finally:
         conn.close()
 
@@ -334,9 +364,11 @@ def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool 
                 "category": category,
             }
         conn.execute(
-            "INSERT INTO refined_memories (user_id, category, source_ids, summary, reason, confidence, state, consolidation_basis) "
-            "VALUES (?,?,?,?,?,?, 'proposed', ?)",
-            (user_id, category, json.dumps(source_ids), summary, f"recursive-refine:{sig[:8]}", confidence, basis),
+            "INSERT INTO refined_memories (user_id, bank_id, category, source_ids, summary, "
+            "reason, confidence, state, consolidation_basis) "
+            "VALUES (?,?,?,?,?,?,?, 'proposed', ?)",
+            (user_id, bank_id, category, json.dumps(source_ids), summary,
+             f"recursive-refine:{sig[:8]}", confidence, basis),
         )
         conn.commit()
         refine_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
@@ -380,13 +412,20 @@ def list_refinements(user_id: str = "default", state: str = "proposed", limit: i
         conn.close()
 
 
-def apply_refinement(refine_id: int) -> dict:
+def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") -> dict:
+    """（v20.2.4 · 外审 F-10）**action 请求不许只凭自增 ID 执行**。
+
+    声明了 scope 就按 (user_id, bank_id) 严格匹配；不声明保持既有管理员语义。
+    半个作用域不是作用域 —— 与治理审批（F-08）同一口径。
+    """
     """应用一次精炼：把 source_ids 对应的 facts 软归档，并同步剔除 FTS 和 Qdrant 索引。"""
     ensure_refine_schema()
     conn = get_facts_conn()
     try:
         row = conn.execute(
-            "SELECT * FROM refined_memories WHERE refine_id=? AND state='proposed'", (refine_id,)
+            "SELECT * FROM refined_memories WHERE refine_id=? AND state='proposed'"
+            + (" AND user_id=? AND bank_id=?" if (user_id and bank_id) else ""),
+            ([refine_id] + ([user_id, bank_id] if (user_id and bank_id) else [])),
         ).fetchone()
         if not row:
             return {"status": "error", "detail": f"refine_id={refine_id} 不存在或已应用"}
@@ -469,7 +508,12 @@ def apply_refinement(refine_id: int) -> dict:
         conn.close()
 
 
-def rollback_refinement(refine_id: int) -> dict:
+def rollback_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") -> dict:
+    """（v20.2.4 · 外审 F-10）**action 请求不许只凭自增 ID 执行**。
+
+    声明了 scope 就按 (user_id, bank_id) 严格匹配；不声明保持既有管理员语义。
+    半个作用域不是作用域 —— 与治理审批（F-08）同一口径。
+    """
     """回滚一次精炼：把 archived facts 恢复为有效并重新索引。"""
     ensure_refine_schema()
     conn = get_facts_conn()
