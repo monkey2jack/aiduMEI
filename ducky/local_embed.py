@@ -82,7 +82,16 @@ def _load_model():
 
 def is_local_embed_available() -> bool:
     """无副作用可用性探测：依赖可导入 + 模型能加载（懒加载后缓存判定）。
-    探测失败绝不抛 —— 它是切换器和 /health 的眼睛，眼睛不能自己先瞎。"""
+    探测失败绝不抛 —— 它是切换器和 /health 的眼睛，眼睛不能自己先瞎。
+
+    v20.2.3：**云端档下直接报不可用** —— 这是省下那 151MB 的闸门本身。
+    实测：onnxruntime 库 75MB + 模型会话 122MB，旋钮级调优（线程数/
+    arena 策略/malloc_trim）全部无效（206~215MB 噪声内），模型也已是
+    fastembed 目录里最小的中文可用款。**唯一有效的优化就是不加载它。**
+    """
+    from ducky.engine_mode import local_leg_enabled
+    if not local_leg_enabled():
+        return False
     if not _FASTEMBED_IMPORTABLE:
         return False
     if _model is not None:
