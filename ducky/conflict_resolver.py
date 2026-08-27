@@ -132,6 +132,47 @@ def load_custom_exclusion_patterns(patterns: list[tuple[str, str, str]]) -> None
     logger.info("🐙 [ConflictResolver] 已加载 %d 条自定义互斥规则", len(patterns))
 
 
+# ── 纠正语检测（v20.2.4 · WP-B）──
+#
+# 观察：用户明说「你记错了 / 不对，是…」是信噪比最高的一类信号。
+#
+# 🔴 **红线（不许删这段注释）**：**纠正语绝不允许单独触发替换或删除。**
+# 正则必然误报（「这个方案不对称」「我没错过」），而记忆删除不可逆——
+# 用户随口一句就丢记忆，是本系统最不能犯的错。本函数是**纯谓词**：
+# 它只回答「这句话像不像纠正」，不碰库、不改判决、不产生副作用。
+#
+# 收窄手段是**位置约束**：纠正语是话头，必须出现在句首或标点之后。
+# 「这个方案不对称」里的「不对」前面是「案」——不匹配。宁可漏报不可误报。
+_CORRECTION_RE = re.compile(
+    r"(?:^|[，,。.；;：:！!？?\s])"           # 话头位：句首或标点后
+    r"(?:"
+    r"不对(?![称等劲口路头号板])"              # 排除「不对称/不对等/不对劲」等构词
+    r"|不是这样|不是的"
+    r"|(?:你|我)(?:记|说|理解)错了?"
+    r"|搞错了?|弄错了?|说错了?|记错了?"
+    r"|更正一下|纠正一下|更正[:：]|纠正[:：]"
+    r"|(?:我)?改主意了?"
+    r"|actually[,，]"                          # 必须带逗号：排除「actually working」
+    r"|correction[:：]"
+    r"|I\s+was\s+wrong"
+    r"|that'?s\s+(?:not\s+right|wrong|incorrect)"
+    r"|no[,，]\s*(?:it'?s|it\s+is|the|that)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_correction(text: str) -> bool:
+    """这句话是否带用户明示的纠正措辞。**纯谓词，零副作用。**
+
+    调用方必须自己承担判决责任 —— 见上方红线：本函数为真**不构成**
+    删除或替换任何记忆的理由。
+    """
+    if not text:
+        return False
+    return bool(_CORRECTION_RE.search(str(text)))
+
+
 def resolve_fact_conflict(
     category: str,
     fact_key: str,
@@ -220,6 +261,18 @@ def scan_and_resolve_text_conflicts(
 
     性能优化: 先在内存中做规则匹配，只在命中时才查数据库。
     """
+    # v20.2.4（WP-B）：纠正语**只登记，不判决**。
+    #
+    # 取舍说明：本函数原有一条「无规则命中就不碰 DB」的快速返回路径。为记一笔
+    # 账而在这里开库，会把零开销的快速路径变成每次写入都打库 —— 用性能倒退换
+    # 一条统计，不划算。所以登记分两处落：
+    #   · 无消解时 → 只落日志（正则是微秒级，不碰 DB）；
+    #   · 有消解时 → 附在**已经要写的**那条账本行上（零新连接、零新写入、零表变更）。
+    #
+    # 边界：属性级入口 resolve_fact_conflict() 不接此信号 —— 它只拿到
+    # (category, fact_key, value)，原文不在它手上，纠正措辞无从谈起。
+    signaled = is_correction(new_text)
+
     # 先判断文本中是否有任何规则被命中（避免无效 DB 查询）
     triggered_patterns = [
         (attr_re, old_re, new_re)
@@ -227,6 +280,14 @@ def scan_and_resolve_text_conflicts(
         if re.search(new_re, new_text, re.IGNORECASE)
     ]
     if not triggered_patterns:
+        if signaled:
+            # 这正是「信号被浪费」的那个场景：用户明说记错了，而内容层没有
+            # 任何互斥规则接得住。**如实留痕，但一个字都不改** —— 见 is_correction
+            # 上方红线：正则必然误报，而记忆删除不可逆。
+            logger.info(
+                "🐙 [ConflictResolver] 检测到用户纠正措辞，内容层无规则命中；"
+                "仅登记不消解: %.60s", new_text,
+            )
         return []  # 快速返回，不查 DB
 
     scope = make_scope(user_id, bank_id)
@@ -282,7 +343,8 @@ def scan_and_resolve_text_conflicts(
         if resolved_actions:
             _append_conflict_event(
                 cursor, "scan_resolve", new_text[:100],
-                f"{len(resolved_actions)} facts invalidated",
+                f"{len(resolved_actions)} facts invalidated"
+                + (" · user_signaled_correction" if signaled else ""),
                 [a["fact_id"] for a in resolved_actions], now_str,
                 user_id=scope.user_id,
                 bank_id=scope.bank_id,
