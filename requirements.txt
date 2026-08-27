@@ -27,7 +27,7 @@ uvicorn>=0.30,<1.0
 # pydantic: api_server.py 的 BaseModel / Field 都来自这里（v2 系列）
 pydantic==2.13.4
 # pydantic-settings: 从环境变量 / .env 读配置（mem0 自身依赖）
-pydantic-settings==2.14.1
+pydantic-settings==2.14.2   # v20.2.4：2.14.1 命中 GHSA-4xgf-cpjx-pc3j，升到修复版
 # pydantic_core: pydantic v2 的 Rust 内核（必须与 pydantic 版本对齐）
 pydantic_core==2.46.4
 
