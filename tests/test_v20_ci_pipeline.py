@@ -62,6 +62,25 @@ def _job_text(job: dict) -> str:
     return yaml.safe_dump(job, allow_unicode=True)
 
 
+def _safe_tokens(line: str) -> list:
+    """把一行 shell 切成 token，**不许因为合法写法而崩**。
+
+    v20.2.4：`shlex.split` 遇到行尾续行（`... \\`）会抛
+    `ValueError: No escaped character`，而续行是完全合法的 shell。守卫崩掉是
+    ERROR 而不是 FAIL —— 看起来像「守卫坏了」而不是「代码有问题」，是最容易
+    被耸肩放过的一种失败。
+
+    退路选「粗一点的切分」而不是「跳过这一行」：万一跳掉的正是 pytest 那一行，
+    这条守卫就会报「CI 里没人跑测试」——一个假红灯。
+    """
+    if not line.strip():
+        return []
+    try:
+        return shlex.split(line, comments=True)
+    except ValueError:
+        return line.replace("\\", " ").split()
+
+
 def _runs_pytest(job: dict) -> bool:
     for step in job.get("steps") or []:
         if "pytest" in str(step.get("run") or ""):
@@ -110,7 +129,7 @@ def test_a_workflow_actually_runs_the_test_suite():
         for job in (wf.get("jobs") or {}).values():
             for step in job.get("steps") or []:
                 for line in str(step.get("run") or "").splitlines():
-                    toks = shlex.split(line, comments=True) if line.strip() else []
+                    toks = _safe_tokens(line)
                     if not toks:
                         continue
                     # 允许 `pytest …` 与 `python -m pytest …` 两种写法
