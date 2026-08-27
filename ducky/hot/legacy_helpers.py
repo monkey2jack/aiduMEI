@@ -360,11 +360,12 @@ def _run_consolidation(user_id=DEFAULT_USER_ID, max_obs=50):
 # ═══════════════════════════════════════════════
 def _background_consolidation_loop():
     # 🔴10：合并间隔改为读 manifest/env 可配置项（consolidation_interval_hours，默认 24h）。
-    import os as _os
-    try:
-        interval_h = float(_os.getenv("AIDUMEM_CONSOLIDATION_INTERVAL_HOURS", "0")) or None
-    except ValueError:
-        interval_h = None
+    # v20.2.3（自查 S-2）：原为 `float(_os.getenv(...))` 裹 try/except ——
+    # 行为本身安全，但**别名导入让元守卫看不见它**，下一处照写就没人拦。
+    # 统一走单一真相源，形态与全仓一致。
+    from ducky.env_config import float_env
+    interval_h = float_env("AIDUMEM_CONSOLIDATION_INTERVAL_HOURS", 0.0,
+                           minimum=0.0) or None
     if interval_h is None:
         try:
             import json as _json

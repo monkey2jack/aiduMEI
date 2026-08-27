@@ -913,3 +913,47 @@ class TestLLMTransportPolicy:
         m = _M(); m.llm = _M(); m.llm.client = _C()
         _patch_llm_transport_policy(m)
         assert patch_status()["patches"]["llm_transport_policy"]["status"] == "applied"
+
+
+# ══════════════════════════════════════════════════════════════════
+# 引擎三档可选 · 需要演练台（rig）的那几条（其余在
+# tests/test_v20_2_3_audit_remediation.py::TestEngineModeSelection）
+# ══════════════════════════════════════════════════════════════════
+
+class TestEngineModeOnRig:
+    """档位对写入/检索链路的实际效果（云端档省内存的闸门、本地档零 token）。"""
+
+    def test_cloud_mode_skips_local_index_writes(self, rig, monkeypatch):
+        client, fake, http, di = rig
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")
+        assert di.upsert_local_verbatim("u_c", "default", "云端档不该写本地") is False
+        assert di.upsert_local("pid_c", "文本", {"user_id": "u_c"}) is False
+        assert di.LOCAL_COLLECTION not in client.cols or not client.cols.get(di.LOCAL_COLLECTION)
+        assert di.search_local("任何查询", "u_c") == [], "云端档仍在搜本地库"
+        # 且**不许**因为跳过就入欠账（那是故障语义，不是配置语义）
+        assert di.unreplayed_count() == 0, "配置性跳过被误记成欠账 → 假水位"
+
+    def test_local_mode_never_touches_cloud(self, rig, monkeypatch):
+        """本地档：云腿的两个入口（向量与蒸馏）都必须关死。"""
+        client, fake, http, di = rig
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        gear.reset_gear_for_tests()
+        assert gear.should_try_cloud() is False
+        assert gear.should_try_llm() is False
+
+    def test_local_mode_add_is_zero_token_and_no_debt(self, rig, monkeypatch):
+        """本地档写入：不调云、不入欠账（本地档没有「恢复」这回事，
+        入了就是永不清零的假水位）。"""
+        client, fake, http, di = rig
+        monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        before = len(fake.add_calls)
+        r = http.post("/add", json={"messages": "本地档写入：暗号是灯笼椒",
+                                    "user_id": "u_lo"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("action") == "local_only", body
+        assert body.get("engine_mode") == "local"
+        assert len(fake.add_calls) == before, "本地档仍然调用了云侧 mem0.add"
+        assert di.pending_counts()["cloud"] == 0, "本地档不该产生云欠账"
+        # 但确定性层必须照落：本地向量在
+        assert client.cols.get(di.LOCAL_COLLECTION), "本地档没写本地向量——档位形同虚设"

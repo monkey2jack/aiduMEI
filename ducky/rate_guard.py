@@ -41,6 +41,25 @@ _DEFAULT_DELETE_ALL_PER_MIN = 3
 _WINDOWS: Dict[Tuple[str, str], Tuple[int, int]] = {}
 _LOCK = threading.Lock()
 
+# v20.2.3（自查 S-1）：**这张表原先从不清理**，而 /login 是免鉴权公开
+# 端点 —— 自查实测：5 万个不同源 IP 各打一次失败登录 = 5 万条常驻条目
+# （约 12MB），100 万 IP 约 240MB，两小时前的死条目永不回收。
+# 我为了堵爆破洞加的按 IP 分桶，恰好把一张有界的表（租户数有限）
+# 变成了攻击者可撑爆的表（IPv6 一个 /64 就有 2^64 个地址）。
+# 修法照抄同仓 ducky/security/auth.py 的 _purge_expired_locked ——
+# **那个成熟模式一直在旁边，我加护栏时没抄它。**
+# 过期条目丢弃是**语义无损**的：读取时若 w != win 本就按新窗口处理，
+# 旧窗口的条目对判定不产生任何影响，删与不删结果逐字节相同。
+_SWEEP_THRESHOLD = 4096   # 超过这个规模才扫，正常部署永不触发
+
+
+def _sweep_stale_locked(win: int) -> int:
+    """丢弃非当前窗口的死条目。调用方必须已持 _LOCK。"""
+    dead = [k for k, (w, _) in _WINDOWS.items() if w != win]
+    for k in dead:
+        _WINDOWS.pop(k, None)
+    return len(dead)
+
 
 # v20.2.3（外审 M-2）：实现收编进 ducky/env_config（单一真相源），
 # 公开行为逐字不变。见该模块头注与 gear.py 同款说明。
@@ -75,6 +94,8 @@ def check_rate(route: str, user_id: str, *, limit: int,
     win = int(t // 60)
     key = (route, str(user_id))
     with _LOCK:
+        if len(_WINDOWS) > _SWEEP_THRESHOLD:
+            _sweep_stale_locked(win)
         w, c = _WINDOWS.get(key, (win, 0))
         if w != win:
             w, c = win, 0
@@ -125,11 +146,19 @@ def record_login_failure(client_ip: str, *, now: Optional[float] = None) -> int:
     win = int(t // 60)
     key = ("login_fail", str(client_ip))
     with _LOCK:
+        if len(_WINDOWS) > _SWEEP_THRESHOLD:
+            _sweep_stale_locked(win)
         w, c = _WINDOWS.get(key, (win, 0))
         if w != win:
             w, c = win, 0
         _WINDOWS[key] = (w, c + 1)
         return c + 1
+
+
+def window_count() -> int:
+    """/health 与测试用：当前计数窗口条目数（无界增长的可观测面）。"""
+    with _LOCK:
+        return len(_WINDOWS)
 
 
 def reset_rate_windows() -> None:

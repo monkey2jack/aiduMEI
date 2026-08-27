@@ -237,7 +237,21 @@ def register_add_routes(app: FastAPI) -> None:
                 feature_failed("dual_index_local", _lv)
                 logger.debug(f"🪫 [DualIndex] 原文本地向量跳过: {_lv}")
             try:
+                from ducky.engine_mode import cloud_leg_enabled
                 from ducky.gear import current_mode
+                if not cloud_leg_enabled():
+                    # 🔋 本地档（v20.2.3）：零 token、零外部网络。确定性抽取、
+                    # 原文、本地向量已在上方全部落完，云侧**不入欠账** ——
+                    # 欠账的语义是「等恢复后补算」，而本地档没有「恢复」
+                    # 这回事（是部署方的选择，不是故障）。入了就是永不清零
+                    # 的假水位，会把 /health 的欠账探针变成噪声。
+                    return {
+                        "status": "ok",
+                        "action": "local_only",
+                        "engine_mode": "local",
+                        "detail": "本地档：硬事实、原文与本地向量已落库并可召回；"
+                                  "按部署配置不调用云端 LLM 与云嵌入（零 token）",
+                    }
                 if current_mode() == "lite":
                     from ducky.dual_index import enqueue_cloud_add
                     enqueue_cloud_add(

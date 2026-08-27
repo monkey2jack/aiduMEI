@@ -149,6 +149,11 @@ def register_health_routes(app: FastAPI) -> None:
         # v20.2 自动挡（WP-H）：挡位、熔断器内态、备胎在场性、欠账水位、
         # 本地索引点数——「现在跑在哪个挡上」运维面一眼可见。
         try:
+            from ducky.engine_mode import mode_status
+            probes["engine_mode_policy"] = mode_status()
+        except Exception as _mexc:
+            probes["engine_mode_policy"] = {"error": str(_mexc)[:120]}
+        try:
             from ducky.gear import gear_status, llm_gear_status
             probes["engine_gear"] = gear_status()
             # v20.2.2：LLM 蒸馏腿的挡位（与嵌入腿互相独立——LLM 断供时
@@ -167,8 +172,11 @@ def register_health_routes(app: FastAPI) -> None:
             probes["local_index_points"] = local_point_count()
             # v20.2.1（外审 R2 配套）：水位旁带「上次重放」——欠账长期非零
             # 而 last_replay 一直 None/很旧，就是重放触发链断了的直接证据。
-            probes["pending_embeddings"] = {**pending_counts(),
-                                            "last_replay": last_replay_status()}
+            _pc = pending_counts()
+            from ducky.dual_index import pending_verdict
+            probes["pending_embeddings"] = {**_pc,
+                                            "last_replay": last_replay_status(),
+                                            "verdict": pending_verdict(_pc)}
         except Exception as _dexc:
             probes["dual_index_error"] = str(_dexc)[:120]
 

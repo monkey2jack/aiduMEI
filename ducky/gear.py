@@ -272,6 +272,11 @@ def record_cloud_success(*, now: Optional[float] = None) -> None:
 
 
 def should_try_cloud(*, now: Optional[float] = None) -> bool:
+    """v20.2.3：本地档（部署方明确选择零外部依赖）永不试云腿 ——
+    档位是**配置**，熔断器是**判定**，两件事分开：这里先问配置。"""
+    from ducky.engine_mode import cloud_leg_enabled
+    if not cloud_leg_enabled():
+        return False
     return _EMBED.should_try(now=now)
 
 
@@ -301,7 +306,11 @@ def record_llm_success(*, now: Optional[float] = None) -> None:
 
 def should_try_llm(*, now: Optional[float] = None) -> bool:
     """写入管线该不该走 LLM 蒸馏：open 态直接确定性直写（秒回），
-    closed/half-open 走真实蒸馏（半开拿真实写入当探针，同命门教训）。"""
+    closed/half-open 走真实蒸馏（半开拿真实写入当探针，同命门教训）。
+    v20.2.3：本地档零 token —— LLM 蒸馏整条不走。"""
+    from ducky.engine_mode import cloud_leg_enabled
+    if not cloud_leg_enabled():
+        return False
     return _LLM.should_try(now=now)
 
 
