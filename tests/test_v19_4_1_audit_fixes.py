@@ -1123,14 +1123,30 @@ def test_yellow_d_routes_accept_user_id():
     """源码守卫：三条枚举型路由必须接收 user_id 并做可见性校验"""
     import pathlib
 
-    crud = pathlib.Path(_REPO_ROOT, "ducky", "hot", "crud.py").read_text(encoding="utf-8")
-    for sig in (
-        "def events_history(target_id: str = \"\", limit: int = 100,",
-        "def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID)",
-        "def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID)",
-    ):
-        assert sig in crud, f"路由签名未补 user_id: {sig}"
-    assert crud.count("fact_visible_to_tenant") >= 3, "三条路由都要做可见性校验"
+    import ast
+
+    src = pathlib.Path(_REPO_ROOT, "ducky", "hot", "crud.py").read_text(encoding="utf-8")
+
+    # v20.2.4：判据从**整签名字面量匹配**改成 AST 参数检查。
+    #
+    # 旧判据把三个函数的完整签名当字符串比对，于是 F-11 给它们补 bank_id 轴
+    # 之后（合法的签名扩展）守卫直接变红 —— 它守的是「签名一个字都不许动」，
+    # 而它该守的是「这三条路由必须接收作用域并做可见性校验」。
+    # 判据太脆会逼着人去改判据，而改判据的人未必记得它原本要守什么。
+    tree = ast.parse(src)
+    fns = {n.name: n for n in ast.walk(tree)
+           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for name in ("events_history", "opinions_list", "opinions_aggregate"):
+        fn = fns.get(name)
+        assert fn is not None, f"路由函数 {name} 不见了"
+        params = {a.arg for a in list(fn.args.args) + list(fn.args.kwonlyargs)}
+        assert "user_id" in params, f"{name}() 未接收 user_id"
+        # v20.2.4 F-11：bank 轴也是作用域的一半，缺一半等于没有作用域
+        assert "bank_id" in params, f"{name}() 未接收 bank_id（外审 F-11）"
+    assert src.count("fact_visible_to_tenant") >= 3, "三条路由都要做可见性校验"
+    # 校验必须**带上 bank 轴**：只传 user 的调用是半个作用域
+    assert src.count("bank_id=bank_id") >= 3, \
+        "fact_visible_to_tenant / get_history 调用未传 bank 轴（外审 F-11）"
 
 
 def test_yellow_a_readme_claims_are_consistent():

@@ -6,6 +6,40 @@ from __future__ import annotations
 # 在 mem0 之前注入一个空壳模块，避免加载真正的 posthog 包。
 # 不改 mem0 源码，升级安全。
 import types as _types, os as _os
+
+# ── .env 早期加载（v20.2.4 · 外审 F-22）────────────────────────────
+#
+# `ducky.utils.load_env_file()` 一直存在，但**从没有任何生产入口调用过它**
+# （全仓只有测试在调）。于是照 README 复制一份 .env 再 `python api_server.py`，
+# token / UI 口令可能根本不生效 —— 文档教的那条路和代码走的那条路不是同一条。
+#
+# 为什么内联在这里、而不是调 ducky.utils.load_env_file：**顺序契约**。
+# `ducky.utils` 的 BASE_DIR / DATA_DIR 等一批常量是 **import 期求值**的，
+# 一旦 `import ducky.*` 发生，再注入环境变量就晚了。所以这段必须跑在第一次
+# import ducky 之前，而它又不能依赖 ducky —— 只好就地写这十几行。
+# 解析规则与 ducky.utils.parse_env_file 保持一致（不覆盖已存在的变量）。
+def _bootstrap_env_file() -> int:
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    _path = _os.environ.get("AIDUMEM_ENV_FILE") or _os.path.join(_here, ".env")
+    _n = 0
+    try:
+        with open(_path, "r", encoding="utf-8") as _fh:
+            for _line in _fh:
+                _line = _line.strip()
+                if not _line or _line.startswith("#") or "=" not in _line:
+                    continue
+                _k, _v = _line.split("=", 1)
+                _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+                if _k and _k not in _os.environ:
+                    _os.environ[_k] = _v
+                    _n += 1
+    except OSError:
+        return 0          # 文件不存在 / 读不了：静默，绝不拖垮启动
+    return _n
+
+
+_ENV_FILE_INJECTED = _bootstrap_env_file()
+
 _os.environ.setdefault("MEM0_TELEMETRY", "false")
 _stub = _types.ModuleType("posthog")
 class _NoopPosthog:
@@ -87,7 +121,11 @@ async def _lifespan(_app: "FastAPI"):
 
     `_start_background()` 本身是幂等的（`_background_started` 双检锁），所以
     `main()` 那一次调用保持原样不动 —— 两条路各自都能起，重复调用无副作用。
+
+    v20.2.4（外审 F-01）：安全门禁也挪到了这里，且放在 `_start_background()`
+    **之前** —— 拒绝启动就该在建表、预热、起线程之前发生。
     """
+    _enforce_public_binding_policy()
     _start_background()
     yield
 
@@ -263,9 +301,111 @@ async def _record_http_outcome(request: Request, call_next):
     return response
 
 
+def _client_is_loopback(request: "Request") -> bool:
+    """请求是否来自回环。
+
+    非 IP 形态的 `client.host`（ASGI 直连测试客户端报的是 "testclient"）视为本地：
+    真实网络请求的 client.host 一定是 IP，所以这条在生产里不可能被利用；而把它
+    判成「非回环」会让所有不配凭据的用例集体 503 —— 那是拿测试基座换一个假的
+    严格。取舍写在这里，**别把它放宽成「任意字符串都放行」**。
+    拿不到来源时 fail-closed（当作非回环）。
+    """
+    import ipaddress
+    client = getattr(request, "client", None)
+    host = (getattr(client, "host", "") or "").strip()
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host in ("localhost", "testclient")
+
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _detect_bind_host() -> str:
+    """推断**实际**监听地址（v20.2.4 · 外审 F-01）。
+
+    `AIDUMEM_HOST` 只管我们自己的入口。而外审门槛点名的那一种起法 ——
+    `uvicorn api_server:app --host 0.0.0.0` —— 里的 host 是 **uvicorn 自己的
+    命令行参数**，环境变量根本看不到它。所以这里也扫一眼 argv：土，但它是
+    这条路上唯一能在「开始接收请求之前」拿到的事实，而门槛要的正是这个时点。
+
+    两个来源里**非回环的那个优先**（更严的赢）。argv 也看不到的情况
+    （编程式 `uvicorn.Server(config)`）由请求期那道兜底。
+    """
+    env_host = os.environ.get("AIDUMEM_HOST", "").strip()
+    argv_host = ""
+    argv = list(sys.argv or [])
+    for i, a in enumerate(argv):
+        if a in ("--host", "-b", "--bind") and i + 1 < len(argv):
+            argv_host = argv[i + 1].rsplit(":", 1)[0].strip().strip("[]")
+        elif a.startswith("--host="):
+            argv_host = a.split("=", 1)[1].strip()
+        elif a.startswith("--bind="):
+            argv_host = a.split("=", 1)[1].rsplit(":", 1)[0].strip()
+    for h in (argv_host, env_host):
+        if h and h not in _LOOPBACK_HOSTS:
+            return h
+    return env_host or argv_host or "127.0.0.1"
+
+
+def _enforce_public_binding_policy() -> None:
+    """公网裸奔门禁 —— **必须在开始接收请求之前执行**（v20.2.4 · 外审 F-01）。
+
+    此前这段只长在 `main()` 里。而上面 `_lifespan` 的 docstring 讲的正是这条路：
+    `uvicorn api_server:app` / gunicorn 把 `app` 当 ASGI 对象导入，**完全不经过
+    main()**。v20 的 P1-6 认识到这条路会让后台能力静默缺席、把它们挪进了
+    lifespan，却漏了同一条路上的**安全门禁** —— 于是无 token + 非回环时整个
+    路由表对公网敞开，而鉴权 middleware 按设计是「没配凭据就整体关闭」。
+
+    判据用 `_auth_enabled()`（token 或 UI 口令任一）而不是原来的 `_api_token()`：
+    只配了 UI 口令的部署，middleware 其实会鉴权，原判据会误报。
+    """
+    host = _detect_bind_host()
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return
+    if _auth_enabled():
+        return
+    if os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}:
+        logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
+        return
+    logger.critical(
+        "🛑 [Security Fatal] 拒绝启动：监听地址为公网/非回环 '%s' 且未配置任何凭据"
+        "（AIDUMEM_API_TOKEN 或 UI 口令）。请配置凭据，或显式设置 "
+        "AIDUMEM_ALLOW_INSECURE_PUBLIC=1 后重试。", host,
+    )
+    raise RuntimeError(
+        f"Fatal Security Policy: binding to '{host}' without any credential is prohibited."
+    )
+
+
 @app.middleware("http")
 async def _require_credentials(request: Request, call_next):
     if not _auth_enabled():
+        # v20.2.4（外审 F-01 第二道）：无凭据的实例**只服务回环**。
+        #
+        # 配置面的检查（_enforce_public_binding_policy）拦不住一种情况：
+        # `uvicorn --host 0.0.0.0` 里的 host 是 **uvicorn 自己的命令行参数**，
+        # 环境变量 AIDUMEM_HOST 根本看不到它。所以这一道把判据换成**运行时
+        # 事实**——请求是谁发来的。不管服务监听在哪，没配凭据就只招待本机。
+        if not _client_is_loopback(request):
+            logger.critical(
+                "🛑 [Security] 拒绝非回环请求：本实例未配置任何凭据"
+                "（AIDUMEM_API_TOKEN 或 UI 口令），只服务回环。来源=%s 路径=%s",
+                getattr(getattr(request, "client", None), "host", "?"),
+                request.url.path,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "This instance has no credential configured and therefore "
+                              "serves loopback only. Set AIDUMEM_API_TOKEN (or a UI "
+                              "password) before exposing it beyond localhost.",
+                    "code": "no_credential_public_access_denied",
+                },
+            )
         return await call_next(request)
     if _is_public_path(request.url.path):
         return await call_next(request)
@@ -544,17 +684,9 @@ def main():
     env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
     if not env_pwd:
         logger.info("🔐 UI 登录使用 data/.ui_password_hash 安全凭据（或通过环境变量 AIDUMEM_UI_PASSWORD 配置）")
-    if host not in ("127.0.0.1", "localhost") and not _api_token():
-        allow_insecure = os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
-        if not allow_insecure:
-            logger.critical(
-                "🛑 [Security Fatal] 拒绝启动：监听地址为公网/非回环 '%s' 且未配置 AIDUMEM_API_TOKEN。"
-                "为防止未授权公网裸奔，请在 .env 中设置 AIDUMEM_API_TOKEN 或显式设置 AIDUMEM_ALLOW_INSECURE_PUBLIC=1 后重试。",
-                host
-            )
-            raise RuntimeError(f"Fatal Security Policy: Binding to '{host}' without AIDUMEM_API_TOKEN is prohibited.")
-        else:
-            logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
+    # v20.2.4（F-01）：与 lifespan 共用**同一个**门禁实现 —— 两份拷贝
+    # 早晚会长歪一份，而长歪的那份恰好是没人跑的那条路。
+    _enforce_public_binding_policy()
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

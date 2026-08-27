@@ -10,7 +10,8 @@ from ducky.utils import BASE_DIR as _BASE_DIR
 
 logger = logging.getLogger("aiduMEM.speed")
 
-_CFG_PATH = os.path.join(_BASE_DIR, "mem0_config_local.json")
+from ducky.utils import mem0_config_path as _mcp
+_CFG_PATH = _mcp()   # v20.2.4 F-22
 
 _DEFAULT_SPEED = {
     "extract_cache_ttl_sec": 3600,

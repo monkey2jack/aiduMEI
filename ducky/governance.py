@@ -304,8 +304,16 @@ def _llm_evaluate(category: str, fact_key: str, fact_value: str) -> dict | None:
 # ── 内部裁决动作（都在调用方事务内，不自行 commit）─────────────────────
 
 def _tombstone_rejected(conn, fact_key: str, category: str, fact_value: str,
-                        user_id: str, reason: str, actor: str) -> None:
-    """被驳回内容留痕进 tombstones（复用 B3 表，可查可恢复）。"""
+                        user_id: str, reason: str, actor: str,
+                        bank_id: str = "") -> None:
+    """被驳回内容留痕进 tombstones（复用 B3 表，可查可恢复）。
+
+    v20.2.4（外审 F-09）：INSERT 此前**不提供 bank_id**，于是 tombstones 表的
+    列默认值把具名域被驳回的内容写成 `<user>/default`。后果有三层：删除原 bank
+    时清不掉这份快照、默认域的视图可能看见它、擦除矩阵与审计归属都不再可信
+    （外审实测：victim 域含 secret 的内容落在 ('victim','default') 上）。
+    scope 从被治理的 candidate 行继承 —— 留痕的归属必须跟被留痕的东西一致。
+    """
     try:
         from ducky.tombstone import ensure_tombstone_schema
         ensure_tombstone_schema()
@@ -316,10 +324,10 @@ def _tombstone_rejected(conn, fact_key: str, category: str, fact_value: str,
         conn.execute(
             """INSERT INTO tombstones
                (target_id, target_type, user_id, content_snapshot, facts_snapshot,
-                reason, actor, tombstoned_at)
-               VALUES (?, 'fact', ?, ?, ?, ?, ?, ?)""",
+                reason, actor, tombstoned_at, bank_id)
+               VALUES (?, 'fact', ?, ?, ?, ?, ?, ?, ?)""",
             (f"fact:{fact_key}", user_id, fact_value, facts_snapshot,
-             reason, actor, _now_iso()),
+             reason, actor, _now_iso(), (bank_id or "").strip() or "default"),
         )
     except Exception as exc:
         logger.debug("reject tombstone 留痕跳过: %s", exc)
@@ -364,7 +372,8 @@ def _apply_reject(conn, candidate_id: int, fact_id: int, fact_key: str,
     if fact_id:
         conn.execute("UPDATE facts SET archived=1, archived_at=CURRENT_TIMESTAMP WHERE id=?",
                      (fact_id,))
-    _tombstone_rejected(conn, fact_key, category, fact_value, user_id, reason, actor)
+    _tombstone_rejected(conn, fact_key, category, fact_value, user_id, reason, actor,
+                        bank_id=scope_bank)
     conn.execute(
         "UPDATE candidate_facts SET status='rejected', review_reason=?, decided_at=? WHERE candidate_id=?",
         (reason, _now_iso(), candidate_id),
@@ -556,6 +565,7 @@ def review_candidate(candidate_id: int, decision: str, reason: str = "",
         if not row:
             result["detail"] = "候选不存在"
             return result
+        row_uid_pre, row_bid_pre = _row_scope(row)
         if bank_id:
             try:
                 from ducky.bank_contract import normalize_bank_id
@@ -563,9 +573,21 @@ def review_candidate(candidate_id: int, decision: str, reason: str = "",
             except Exception:
                 result["detail"] = "非法 bank_id"
                 return result
-            have = (row["bank_id"] if "bank_id" in row.keys() else "") or "default"
+            have = row_bid_pre or "default"
             if have != want:
                 result["detail"] = "候选属于其他记忆库，越库裁决被拒"
+                return result
+            # v20.2.4（外审 F-08）：**user 轴此前完全没校验**。
+            # `_row_scope(row)` 就在下面几行取着，却只被拿去写账本，
+            # 不参与授权 —— 于是攻击者用自己的 user_id + 受害者的 bank_id
+            # 就能 reject 并归档受害者的事实（实测 archived 变 1）。
+            #
+            # 既有语义保留：不传 bank_id 仍是 v19 的管理员全权。但**一旦声明了
+            # 作用域，就两轴都得对上** —— 半个作用域不是作用域。
+            have_uid = row_uid_pre or DEFAULT_USER_ID
+            want_uid = (user_id or DEFAULT_USER_ID).strip() or DEFAULT_USER_ID
+            if have_uid != want_uid:
+                result["detail"] = "候选属于其他用户，越域裁决被拒"
                 return result
         if row["status"] not in ("pending", "evaluated"):
             result.update(status=row["status"], detail="已裁决，幂等返回")

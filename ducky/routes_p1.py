@@ -34,8 +34,16 @@ class TypeResetRequest(BaseModel):
 
     user_id: str = DEFAULT_USER_ID
     bank_id: str = DEFAULT_BANK_ID
-    # Destructive all-scope cleanup is deliberately not exposed by default.
-    all_scopes: bool = False
+    # v20.2.4（外审 F-06）：`all_scopes` **已从 HTTP 契约里移除**。
+    #
+    # 它本来的定位是「离线维护逃生口」，但字段留在 model 上、路由又
+    # 原样透传，于是一个普通 POST 就能清空**全部域**的类型账本
+    # （实测：两 bank 各一行 → 请求 all_scopes=true → deleted=2，账本清空）。
+    # 注释写着「deliberately not exposed by default」，而它其实是暴露的 ——
+    # **注释不是能力边界**。
+    #
+    # 底层 reset_all_types(all_scopes=...) 的能力保留给不注册到 HTTP 的
+    # 离线 CLI；这里连字段都不给，request body 里写了也没有任何东西去读它。
 
 
 class SkillGrowRequest(BaseModel):
@@ -52,6 +60,8 @@ class RefineGroupRequest(BaseModel):
 
     category: str
     user_id: str = DEFAULT_USER_ID
+    # v20.2.4（外审 F-10）：此前**没有这个字段**，于是跨 bank 合并
+    bank_id: str = DEFAULT_BANK_ID
     limit: int = 20
     use_llm: bool = True
 
@@ -60,6 +70,10 @@ class RefineActionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     refine_id: int
+    # v20.2.4（外审 F-10）：apply / rollback **不许只凭自增 ID 执行**。
+    # 声明了 scope 就严格匹配；缺省保持既有管理员语义（与治理 F-08 同口径）。
+    user_id: str = ""
+    bank_id: str = ""
 
 
 def register_p1_routes(app: FastAPI) -> None:
@@ -164,10 +178,13 @@ def register_p1_routes(app: FastAPI) -> None:
         try:
             req = req or TypeResetRequest()
             scope = make_scope(req.user_id, req.bank_id)
+            # 恒 False：HTTP 面永不打开全域清空（外审 F-06）。
+            # model_config 是 extra="allow"，所以 body 里的 all_scopes 会被
+            # 当额外字段收下 —— 但这里**不读它**，写了也没用。
             deleted = reset_all_types(
                 scope.user_id,
                 scope.bank_id,
-                all_scopes=bool(req.all_scopes),
+                all_scopes=False,
             )
             return {
                 "status": "ok",
@@ -219,6 +236,7 @@ def register_p1_routes(app: FastAPI) -> None:
                 req.category,
                 limit=req.limit,
                 use_llm=req.use_llm,
+                bank_id=req.bank_id,      # v20.2.4 F-10：此前断在这里
             )
         except Exception as e:
             logger.error(f"/memory/refine 失败: {e}")
@@ -241,7 +259,8 @@ def register_p1_routes(app: FastAPI) -> None:
         from ducky.refine_memory import apply_refinement
 
         try:
-            return apply_refinement(req.refine_id)
+            return apply_refinement(req.refine_id,
+                                    user_id=req.user_id, bank_id=req.bank_id)
         except Exception as e:
             logger.error(f"/memory/refine/apply 失败: {e}")
             return {"status": "error", "detail": str(e)}
@@ -252,7 +271,8 @@ def register_p1_routes(app: FastAPI) -> None:
         from ducky.refine_memory import rollback_refinement
 
         try:
-            return rollback_refinement(req.refine_id)
+            return rollback_refinement(req.refine_id,
+                                       user_id=req.user_id, bank_id=req.bank_id)
         except Exception as e:
             logger.error(f"/memory/refine/rollback 失败: {e}")
             return {"status": "error", "detail": str(e)}

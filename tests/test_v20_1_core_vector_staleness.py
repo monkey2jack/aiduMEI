@@ -148,7 +148,7 @@ class TestVectorWrite:
         ledgered = []
         import ducky.failure_ledger as ledger
         monkeypatch.setattr(ledger, "feature_failed",
-                            lambda feat, exc: ledgered.append(feat))
+                            lambda feat, exc, **kw: ledgered.append(feat))
         cm.init_core_memory()
         result = cm.put_block("core_current_project", CONTENT, user_id="wpd_fail")
         assert result["status"] == "ok", "向量腿失败把正本写入拖垮了"

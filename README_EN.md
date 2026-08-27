@@ -114,7 +114,7 @@ v19.5.0 and this release do **not** change the same layer.
 | What changed | The release process — **zero runtime behaviour change** | The **ownership model** of memory (a data-plane contract) |
 | One-line theme | Don't let out what shouldn't be said | Don't let mix what shouldn't be mixed |
 | Should you upgrade | Optional; nothing functional depends on it | **Recommended** — it fixes a class of silent data loss |
-| Total test cases | ~700 | **1417** |
+| Total test cases | ~700 | **1432** |
 
 Three reasons, each harder than the last:
 
@@ -122,7 +122,18 @@ Three reasons, each harder than the last:
 
 Before v19, "who does this memory belong to, and to which domain" was expressed as a *side job* of channel markers like `source` / `agent_id`. But a channel is not ownership. The moment two unrelated memory domains collide on the same key, **the later write silently destroys the earlier one — no error on either side, no log line, no counter moves.**
 
-v20 turns scope from a *convention* into a *contract*: write, query, delete, restore, aggregate, feedback, background jobs, the event ledger, the graduation chain, persona profiles — **every online read/write path must state which domain it operates on**, and an invalid scope raises *before* any data is fetched rather than silently degrading into a full-table scan.
+v20 turns scope from a *convention* into a *contract*: write, query, delete, restore, stats, feedback, background jobs, the event ledger, the graduation chain — these paths must state which domain they operate on, and an invalid scope raises *before* any data is fetched rather than silently degrading into a full-table scan.
+
+> **Precise boundary (corrected in v20.2.4 after a third-party security review)**: this sentence used to say "**every** online read/write path", while the in-repo `DELETE_CHAIN_MATRIX` has always exempted a few tables explicitly. The mismatch was **our wording being too broad**, not the matrix hiding anything. What is *not* on the two-dimensional tenant axis:
+>
+> | Subsystem | Actual axis | Why |
+> |---|---|---|
+> | `checkpoints` | session (`session_id`) | Session-snapshot subsystem with no tenant column; multi-tenancy is a separate project |
+> | `persona_memories` | persona version | Its internal `bank_id` is a persona version number, not a tenant bank |
+> | `observations` | user only | The table has no bank column — that is the whole of its expressiveness |
+> | `entities` / `fact_events` / `memory_states` etc. | shared or audit trail | A dictionary carries no content; deleting a ledger destroys the audit trail |
+>
+> These are treated as **system/admin interfaces**, not tenant data surfaces. Since v20.2.4 the `delete_all` response carries a `not_cleared` field returning the exemption list with reasons — the caller has a right to see where "clear all memories" actually stops.
 
 The migration is fully additive: **not one existing row is modified or removed**, legacy data lands in the `default` domain, and key shapes stay byte-identical to v19.
 
@@ -667,17 +678,17 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **1417** (measured via `pytest --collect-only`) |
-| Clean dev machine | 1405 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 1416 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1417 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
-| All axes present | 1417 all green · 0 skipped — **measured on the production box, 2026-08-27** (candidate tree cloned from a bundle, `.git` present, all eleven axes available) |
+| Total cases | **1432** (measured via `pytest --collect-only`) |
+| Clean dev machine | 1420 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Sandbox on the production box | 1431 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1432 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
+| All axes present | 1432 all green · 0 skipped — **measured on the production box, 2026-08-27** (candidate tree cloned from a bundle, `.git` present, all eleven axes available) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 1405 and 1416**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. 1405 is measured here; 1416 is **axis-derived** (1417 minus
+> **Why report both 1420 and 1431**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. 1420 is measured here; 1431 is **axis-derived** (1432 minus
 > the git-worktree axis) — the last real sandbox measurement was 859, on the v20.0 committed tree when the
 > total was 860. For every number, say whether it was measured or derived.
 > Always state the environment alongside a test count.
@@ -701,8 +712,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` installed | 20 | all of `tests/test_v20_mem0_patch_layer.py` (patch-layer therapy tests need the real base; a missing mem0 used to be 20 ERRORs masquerading as real defects — now an honest skip) |
 > | `fastembed` installed | 1 | `tests/test_v20_2_autoshift.py` (real-model test for the autoshift fallback leg; honest skip when the dependency or model file is absent) |
 >
-> A dev machine lacks the first → 1405 + 12. The sandbox on the production box lacks the second (whitelist copy, no
-> `.git`) → 1416 + 1. **Each is missing one, so neither partial environment produces 1417 all green** — the
+> A dev machine lacks the first → 1420 + 12. The sandbox on the production box lacks the second (whitelist copy, no
+> `.git`) → 1431 + 1. **Each is missing one, so neither partial environment produces 1432 all green** — the
 > is a derived number. The previous README claimed it was "verified on production", and the very
 > production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
 > must survive the measurement it cites.**
@@ -721,20 +732,20 @@ python -m compileall ducky api_server.py mcp_server.py
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 1405 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1417 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1405 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 1420 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1432 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1420 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 1416 passed, 1 skipped
+> our own production box is exactly that), the first command above actually prints 1431 passed, 1 skipped
 > (**axis-derived**; the last real sandbox measurement was 859 passed, 1 skipped on the v20.0 committed tree,
 > when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1417 passed` line in
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1432 passed` line in
 > the code block above requires *all eleven* axes present at once; that complete-axis result was measured on
-> the production box on 2026-08-27 (candidate tree, total 1417, zero skips).
+> the production box on 2026-08-27 (candidate tree, total 1432, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >

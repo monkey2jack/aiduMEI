@@ -295,20 +295,41 @@ def register_legacy_routes(app):
                 "count":len(rows),"min_match":len(e_list)}
 
     @app.get("/facts/entities/list")
-    def list_entities(entity_type: str = None, limit: int = 50):
+    def list_entities(entity_type: str = None, limit: int = 50,
+                      user_id: str = DEFAULT_USER_ID,
+                      bank_id: str = DEFAULT_BANK_ID):
+        # v20.2.4（外审 F-05）：entities 是**全局实体表**，它的域归属只能靠
+        # 关联的 facts 来定。所以 JOIN facts 并按 scope 收窄。
+        #
+        # 语义变化如实写明：原来是 LEFT JOIN，孤立实体（没有任何关联事实）
+        # 也会列出来；现在改 JOIN，只列**本域有事实关联**的实体。域隔离下这是
+        # 对的 —— 一个实体如果在本域没有任何事实，它不属于本域的知识。
+        # 用模块级已导入的 tenant_clause —— 函数内再 import 一次会把它变成局部名，
+        # 整个函数体内该名字都是局部的（P0-2 那次 /add 连炸 13 分钟就是这么来的）。
         conn = _get_facts_conn()
+        fclause, fparams = tenant_clause(user_id, alias="f", bank_id=bank_id, conn=conn)
+        # 整条 SQL 内联在 f-string 里（不用 base + f"..." 拼）是刻意的：
+        # 拼接形态会**逃过** f-string SQL 插值守卫的扫描（v20.1.1 N-4），
+        # 于是这处插值既不被登记也不被检查。让代码落进守卫射程，
+        # 而不是让守卫将就代码。
         if entity_type:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT e.*, COUNT(fe.fact_id) as fact_count
-                FROM entities e LEFT JOIN fact_entities fe ON fe.entity_id=e.entity_id
-                WHERE e.entity_type=? GROUP BY e.entity_id ORDER BY fact_count DESC LIMIT ?
-            """, (entity_type, limit)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT e.*, COUNT(fe.fact_id) as fact_count
-                FROM entities e LEFT JOIN fact_entities fe ON fe.entity_id=e.entity_id
+                FROM entities e
+                JOIN fact_entities fe ON fe.entity_id=e.entity_id
+                JOIN facts f ON f.id=fe.fact_id
+                WHERE e.entity_type=?{fclause}
                 GROUP BY e.entity_id ORDER BY fact_count DESC LIMIT ?
-            """, (limit,)).fetchall()
+            """, [entity_type] + fparams + [limit]).fetchall()
+        else:
+            rows = conn.execute(f"""
+                SELECT e.*, COUNT(fe.fact_id) as fact_count
+                FROM entities e
+                JOIN fact_entities fe ON fe.entity_id=e.entity_id
+                JOIN facts f ON f.id=fe.fact_id
+                WHERE 1=1{fclause}
+                GROUP BY e.entity_id ORDER BY fact_count DESC LIMIT ?
+            """, fparams + [limit]).fetchall()
         conn.close()
         return {"status":"ok","entities":[dict(r) for r in rows],"count":len(rows)}
 
@@ -472,7 +493,12 @@ def register_legacy_routes(app):
     def search_facts(query: str = "", category: str = None, top_k: int = 10,
                      min_trust: float = 0.0, use_hybrid: bool = True,
                      level: str = "L2", before: str = "", after: str = "",
-                     user_id: str = DEFAULT_USER_ID):
+                     user_id: str = DEFAULT_USER_ID,
+                     # v20.2.4（外审 F-17）：此前**没有这个参数**，而
+                     # facts_recall.search_facts 一直有。FastAPI 会静默丢弃多余的
+                     # query 参数，所以请求看着接受了 bank_id=xxx，轨迹里却始终是
+                     # default —— 「看似选了域，其实查的是另一个域」。
+                     bank_id: str = DEFAULT_BANK_ID):
         # facts 是独立结构化知识库，不再绕经 mem0/Qdrant；use_hybrid 保留为兼容参数。
         # P0-1 时间过滤：before/after 支持 YYYY[-MM[-DD]] 粒度。
         from ducky.facts_recall import search_facts as recall_facts
@@ -485,6 +511,7 @@ def register_legacy_routes(app):
             before=before,
             after=after,
             user_id=user_id,
+            bank_id=bank_id,
         )
 
     # ── §8  Observations + Reflect ──

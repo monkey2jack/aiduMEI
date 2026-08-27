@@ -515,6 +515,23 @@ def put_block(
 
     # 长度和内容校验
     content = content.strip() if content else ""
+    # v20.2.4（外审 F-12）：核心记忆**直接进 Agent 上下文**，而此前这条写入
+    # 路径既不过注入校验、也不做边界中和 —— 于是它成了绕过召回侧全部防御的
+    # 一条直通道。校验放在长度检查之后、落库之前。
+    if content:
+        try:
+            from ducky.security.injection_guard import (
+                neutralize_boundary_markers, validate_and_sanitize_memory_content)
+            ok, cleaned, reason = validate_and_sanitize_memory_content(content)
+            if not ok:
+                raise ValueError(f"内容被注入守卫拒绝: {reason}")
+            content = neutralize_boundary_markers(cleaned)
+        except ValueError:
+            raise
+        except Exception as exc:
+            # 守卫自身异常不许静默放行 —— 那等于守卫不存在，且看不出来。
+            logger.warning("核心记忆内容校验异常，按拒绝处理: %s", exc)
+            raise ValueError("内容校验不可用，拒绝写入核心记忆") from exc
     if len(content) < 10:
         raise ValueError("content 太短，至少 10 个字符")
     if len(content) > 600:

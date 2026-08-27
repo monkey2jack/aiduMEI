@@ -39,12 +39,16 @@ dependencies = [
 
 [project.optional-dependencies]
 local-embed = ["fastembed>=0.8"]
-mcp = ["mcp>=1.0.0"]
+# v20.2.4（外审 F-21）：钉 <2 —— 上限缺失时 pip 解析到 mcp 2.x，
+# 而 mcp_server.py 导入的 `mcp.server.fastmcp` 在 2.x 里不存在，
+# 于是 `pip install 'aidumei[mcp]'` 装得上、工具起不来。
+# v2 迁移另立项，不在维护版里跨大版本。
+mcp = ["mcp>=1.0.0,<2"]
 # sync: mem0_sync.py 守护模式（inotify 监听 MEMORY.md）。仅 Linux 有 inotify。
 # v19.4.2 补：此前该依赖从未在任何清单里声明，照仓库部署 sync 必然崩溃循环。
 sync = ["inotify_simple>=1.3.5; sys_platform == 'linux'"]
 full = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",   # v20.2.4 F-21：同上，2.x 的 fastmcp 路径已变
     "inotify_simple>=1.3.5; sys_platform == 'linux'",
 ]
 
@@ -77,6 +81,20 @@ include = ["ducky*", "benchmarks*"]
 # smoke fixture 与协议文档是管线可复现性的一部分，必须进 wheel。
 [tool.setuptools.package-data]
 benchmarks = ["fixtures/*.json", "*.md"]
+# v20.2.4（外审 F-26）：UI / 集成 / 部署资产此前**不进 wheel** ——
+# packages.find 只发现 ducky* 与 benchmarks*，而 MANIFEST.in 的
+# recursive-include 只影响 sdist。于是 `pip install aidumei` 之后入口点在、
+# /ui 却是空的，首次运行也找不到配置样例。
+#
+# 做法：把它们作为 ducky 的 package-data 随包发布（ducky/ 是唯一确定进 wheel
+# 的包），并在 CI 里加一条「安装 wheel 后这些文件必须存在」的验收。
+ducky = [
+    "../frontend/**/*",
+    "../integrations/**/*",
+    "../deploy/**/*",
+    "../mem0_config_local.json.example",
+    "../.env.example",
+]
 
 # 显式声明根目录顶层单文件模块，setuptools 才能把它打进 wheel 根目录，
 # 否则 pip install 之后 import api_server 会 ModuleNotFoundError，

@@ -8,3 +8,24 @@ data_*/
 dist/
 build/
 *.egg-info/
+
+# ── v20.2.4（外审 F-02）：密钥与本地配置绝不进构建上下文 ──
+#
+# .gitignore 只保护 Git，**不保护 Docker build context**。Dockerfile 的
+# `COPY . /app` 会把上下文里的一切复制进镜像层 —— 即使最终容器以非 root 运行，
+# 镜像层仍可被任何能拉取/导出镜像的人读出来。
+#
+# 需要密钥时用 BuildKit secret 或运行时只读挂载，**不要把 secret 当 COPY 输入**。
+.env
+.env.*
+!.env.example
+.llm_key
+.sf_key
+.sensenova_key
+mem0_config_local.json
+*.pem
+*.key
+*.crt
+*.p12
+.ui_password_hash
+aidumei_backups/

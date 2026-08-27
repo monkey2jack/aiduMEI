@@ -19,11 +19,11 @@ from typing import Optional
 
 import requests
 
-from ducky.utils import BASE_DIR
+from ducky.utils import BASE_DIR, mem0_config_path
 
 logger = logging.getLogger("aiduMEM.llm_client")
 
-MEM0_CONFIG = os.path.join(BASE_DIR, "mem0_config_local.json")
+MEM0_CONFIG = mem0_config_path()   # v20.2.4 F-22：支持 AIDUMEM_CONFIG_FILE
 
 # 密钥占位符 → 对应 key 文件（顺序即回退顺序）
 _KEY_FALLBACKS = {
@@ -232,6 +232,14 @@ def call_llm(
     请求级 reasoning_effort/enable_thinking 均被网关无视；小预算下思考耗尽
     预算 → content 空 + finish_reason=length。检测到该形态自动放大预算重试一次。
     """
+    # v20.2.4（外审 F-03）：**本地档在最底层硬阻断**，见
+    # ducky/engine_mode.cloud_egress_allowed 的成因注释。返回 None 而不是抛异常
+    # 是因为本函数的契约本来就是「失败返回 None，调用方降级」—— 于是阻断走的是
+    # **既有的**降级路径，九个调用点一行都不用改。
+    from ducky.engine_mode import cloud_egress_allowed
+    if not cloud_egress_allowed("call_llm"):
+        return None
+
     cfg = get_llm_config()
     if not cfg.get("api_key") or not cfg.get("model"):
         logger.debug("LLM 未配置，跳过直接调用")

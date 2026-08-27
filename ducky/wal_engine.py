@@ -580,6 +580,18 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
 }
 
 
+def delete_chain_exemptions() -> Dict[str, str]:
+    """删除链的**豁免清单**（表名 → 理由）。供 delete_all 响应如实告知。
+
+    v20.2.4（外审 F-23）：矩阵一直标着这些 exempt 项，但只有读代码的人看得见。
+    调用方拿到 `status: ok` 时理解的是「全部记忆已清空」——而 checkpoints、
+    persona、observations 这类正交/全局状态不在清理面内，其中的内容仍可能被
+    注入后续上下文。这不是新增豁免，是把既有豁免**摆到响应里**。
+    """
+    return {name: reason for name, (verdict, reason) in DELETE_CHAIN_MATRIX.items()
+            if verdict == "exempt"}
+
+
 def cascade_delete_all(
     user_id: str,
     confirm: bool = False,
@@ -946,7 +958,15 @@ def cascade_delete_all(
 
         wal.mark_status(wal_id, "committed")
         logger.info("🧹 多仓原子级联清空完成 user=%s: %s", user_id, res)
-        return {"status": "ok", "details": res}
+        # v20.2.4（外审 F-23）：**如实告知没清什么**。
+        #
+        # DELETE_CHAIN_MATRIX 里的 exempt 项各有各的理由（审计履历不许销毁、
+        # 跨租户词典没有租户轴、会话遗产子系统另立项…），矩阵本身是诚实的。
+        # 不诚实的是**响应**：调用方看到 status=ok 会理解成「全部记忆已清空」，
+        # 而其中一部分内容仍可能在后续上下文里出现。
+        # 把豁免清单连同理由一起带回去 —— 用户有权知道边界在哪。
+        return {"status": "ok", "details": res,
+                "not_cleared": delete_chain_exemptions()}
     except Exception as exc:
         wal.mark_status(wal_id, "failed", error=str(exc))
         logger.error("级联清空全部记忆失败: %s", exc)

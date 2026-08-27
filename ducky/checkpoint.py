@@ -68,6 +68,16 @@ def write_checkpoint(session_id: str, blocks: dict) -> dict:
         raise ValueError("session_id 无效，长度至少 3 字符")
 
     session_id = session_id.strip()
+    # v20.2.4（外审 F-12）：checkpoint 的内容也会被注入 Agent 上下文，
+    # 此前同样零校验零中和。这里只**中和边界**、不做拒绝 —— checkpoint 是
+    # 会话快照（可能包含任何对话原文），拒绝写入会把正常会话弄丢；
+    # 而边界中和不改语义、不丢内容，正好是这条路径该用的力度。
+    try:
+        from ducky.security.injection_guard import neutralize_boundary_markers
+        blocks = {k: neutralize_boundary_markers(v) if isinstance(v, str) else v
+                  for k, v in (blocks or {}).items()}
+    except Exception as exc:
+        logger.warning("checkpoint 边界中和跳过（内容照写）: %s", exc)
     now = datetime.now().isoformat()
     conn = get_facts_conn()
 

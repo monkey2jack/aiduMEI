@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import threading
+import logging
 import time
 from typing import Dict, Optional, Tuple
 
@@ -37,6 +38,8 @@ _ADD_ENV = "AIDUMEI_RATE_ADD_PER_MIN"
 _DELETE_ALL_ENV = "AIDUMEI_RATE_DELETE_ALL_PER_MIN"
 _DEFAULT_ADD_PER_MIN = 120
 _DEFAULT_DELETE_ALL_PER_MIN = 3
+
+logger = logging.getLogger("aiduMEM.RateGuard")
 
 _WINDOWS: Dict[Tuple[str, str], Tuple[int, int]] = {}
 _LOCK = threading.Lock()
@@ -126,6 +129,47 @@ def login_failure_limit() -> int:
     return int_env(_LOGIN_ENV, _DEFAULT_LOGIN_FAILURES_PER_MIN, minimum=0)
 
 
+# ── 登录失败表（v20.2.4 · 外审 F-19 重写）──
+#
+# v20.2.3 的 S-1 给它加了清理，但清理只处理**过期窗口**的条目 —— 同一窗口内
+# 的新 IP 一条都清不掉。外审实测：一个窗口写入 10,000 个不同 IP，得到 10,000
+# 条常驻，且越过阈值后每次插入都遍历整张字典，规模上去是平方级。
+# 「超过阈值才 sweep」限制不了当前窗口的增长，这是当时修法本身的盲区。
+#
+# 现在的结构：**每个窗口一个字典，跨窗口整体丢弃**（O(1)，没有扫描这回事），
+# 加一条硬上限。表被撑满意味着正在被大规模爆破 —— 此时进入**本窗口的全局
+# 节流**：既不让新 IP 免疫护栏（那是绕过），也不永久锁死所有人（那是 DoS），
+# 下一分钟自动解除。真正的公网入口限流仍应放在反代/WAF 上。
+_LOGIN_MAX_IPS_ENV = "AIDUMEI_LOGIN_MAX_TRACKED_IPS"
+_DEFAULT_LOGIN_MAX_IPS = 4096
+_login_win: int = -1
+_login_fails: dict = {}
+_login_throttle_win: int = -1
+
+
+def login_max_tracked_ips() -> int:
+    return int_env(_LOGIN_MAX_IPS_ENV, _DEFAULT_LOGIN_MAX_IPS, minimum=64)
+
+
+def _roll_login_window_locked(win: int) -> None:
+    """跨窗口就把整张表丢掉 —— 不遍历、不逐条判过期。"""
+    global _login_win, _login_fails
+    if win != _login_win:
+        _login_win = win
+        _login_fails = {}
+
+
+def login_table_status() -> dict:
+    """/health 与测试用：登录表规模、上限、是否处于全局节流。"""
+    with _LOCK:
+        return {
+            "tracked_ips": len(_login_fails),
+            "max_tracked_ips": login_max_tracked_ips(),
+            "window": _login_win,
+            "global_throttle_active": _login_throttle_win == _login_win,
+        }
+
+
 def login_locked(client_ip: str, *, now: Optional[float] = None) -> Optional[int]:
     """只查不计：该 IP 当前是否已超失败上限。超限返回建议 Retry-After 秒。"""
     limit = login_failure_limit()
@@ -134,25 +178,39 @@ def login_locked(client_ip: str, *, now: Optional[float] = None) -> Optional[int
     t = time.time() if now is None else now
     win = int(t // 60)
     with _LOCK:
-        w, c = _WINDOWS.get(("login_fail", str(client_ip)), (win, 0))
-        if w != win or c < limit:
+        _roll_login_window_locked(win)
+        # 表被撑满触发的全局节流：本窗口内所有 IP 一律按超限处理。
+        if _login_throttle_win == win:
+            return max(1, int((win + 1) * 60 - t))
+        if _login_fails.get(str(client_ip), 0) < limit:
             return None
-        return max(1, int((w + 1) * 60 - t))
+        return max(1, int((win + 1) * 60 - t))
 
 
 def record_login_failure(client_ip: str, *, now: Optional[float] = None) -> int:
     """记一次登录失败，返回本窗口内的累计失败数。"""
+    global _login_throttle_win
     t = time.time() if now is None else now
     win = int(t // 60)
-    key = ("login_fail", str(client_ip))
+    ip = str(client_ip)
     with _LOCK:
-        if len(_WINDOWS) > _SWEEP_THRESHOLD:
-            _sweep_stale_locked(win)
-        w, c = _WINDOWS.get(key, (win, 0))
-        if w != win:
-            w, c = win, 0
-        _WINDOWS[key] = (w, c + 1)
-        return c + 1
+        _roll_login_window_locked(win)
+        cur = _login_fails.get(ip)
+        if cur is not None:
+            _login_fails[ip] = cur + 1
+            return cur + 1
+        if len(_login_fails) >= login_max_tracked_ips():
+            # 表满 = 正在被大规模爆破。进入本窗口全局节流，且**停止增长**。
+            if _login_throttle_win != win:
+                _login_throttle_win = win
+                logger.warning(
+                    "🛡️ [RateGuard] 登录失败表达到上限 %d，本窗口转入全局节流"
+                    "（下一分钟自动解除）。公网入口限流请配在反代/WAF。",
+                    login_max_tracked_ips(),
+                )
+            return max(login_failure_limit(), 1)
+        _login_fails[ip] = 1
+        return 1
 
 
 def window_count() -> int:
@@ -162,6 +220,14 @@ def window_count() -> int:
 
 
 def reset_rate_windows() -> None:
-    """测试与运维用：清空全部计数窗口。"""
+    """测试与运维用：清空**全部**计数窗口。
+
+    v20.2.4（外审 F-19）：登录失败表已搬出共享的 _WINDOWS，这里必须一起清 ——
+    漏一个就是测试间状态泄漏，而症状是「另一条用例莫名其妙地红」。
+    """
+    global _login_win, _login_fails, _login_throttle_win
     with _LOCK:
         _WINDOWS.clear()
+        _login_win = -1
+        _login_fails = {}
+        _login_throttle_win = -1

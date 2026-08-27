@@ -338,7 +338,10 @@ def build_persona(
 
     # 落库（grounded 模式在此做零幻觉硬校验：无 source_ref 的条目丢弃）
     try:
-        counts = _store_memories(bank_id, data, mode=mode)
+        counts = _store_memories(
+            bank_id, data, mode=mode,
+            valid_refs=_valid_material_refs(source_material) if mode == "grounded" else None,
+        )
     except Exception as e:
         _mark_failed(bank_id)
         return {"status": "error", "detail": f"记忆落库失败: {e}", "bank_id": bank_id}
@@ -415,8 +418,27 @@ def _rule_fallback(persona_card: str) -> dict:
     return {"life_periods": periods, "general_events": events, "experiences": []}
 
 
-def _store_memories(bank_id: int, data: dict, *, mode: str) -> dict[str, int]:
-    """把 LLM 输出落库。grounded 模式丢弃所有无 source_ref 的条目（零幻觉硬校验）。"""
+def _valid_material_refs(source_material) -> set:
+    """本次素材的**有效段落编号集合**（v20.2.4 · 外审 F-24）。
+
+    `_numbered_material()` 用 `[1] [2] …` 给素材编号，所以有效编号就是 1..N。
+    """
+    txt = _as_str(source_material) or ""
+    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    return {str(i + 1) for i in range(len(lines))}
+
+
+def _store_memories(bank_id: int, data: dict, *, mode: str,
+                    valid_refs: set | None = None) -> dict[str, int]:
+    """把 LLM 输出落库。grounded 模式丢弃所有无 source_ref 的条目（零幻觉硬校验）。
+
+    v20.2.4（外审 F-24）：此前的校验只是 `bool(refs)` —— **非空即通过**，
+    不看编号是否真的属于本次素材。外审用一条完全不在素材里的输出配
+    `source_refs=["999"]` 成功入库，status=ok、counts.L=1。
+    于是 grounded 模式承诺的「零虚构、每条可回溯」退化成一个形式标签：
+    LLM 只要随便填个数字，编造的内容就能拿到「有出处」的身份。
+    现在 refs 必须**落在本次素材的编号集合内**，越界即丢弃。
+    """
     conn = _get_conn()
     counts = {"L": 0, "G": 0, "E": 0}
     total = 0
@@ -434,6 +456,15 @@ def _store_memories(bank_id: int, data: dict, *, mode: str) -> dict[str, int]:
                 if mode == "grounded" and not source_refs:
                     logger.debug("persona grounded: 丢弃无 source_ref 的条目 → %s", content[:60])
                     continue
+                # v20.2.4（F-24）：编号必须真的属于本次素材，不能是凭空的数字
+                if mode == "grounded" and valid_refs is not None:
+                    bad = [r for r in _norm_refs(source_refs) if str(r).strip() not in valid_refs]
+                    if bad:
+                        logger.warning(
+                            "persona grounded: 丢弃越界 source_refs=%s（有效编号 1..%d）→ %s",
+                            bad, len(valid_refs), content[:60],
+                        )
+                        continue
                 conn.execute(
                     "INSERT INTO persona_memories "
                     "(bank_id, level, content, payload, source_refs, provenance, age_range, theme, recorded_at) "

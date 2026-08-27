@@ -195,6 +195,7 @@ class RecallEngine:
             query,
             candidates,
             user_id=user_id,
+            bank_id=bank_id,          # v20.2.4 F-15：此前断在这里
             limit=limit,
             weights=weights or DEFAULT_WEIGHTS,
             memory_type_filter=memory_type,

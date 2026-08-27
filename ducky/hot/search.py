@@ -24,7 +24,8 @@ from ducky.bank_contract import (
 logger = logging.getLogger("aiduMEM.hot")
 
 
-def _annotate_memory_types(results: list) -> None:
+def _annotate_memory_types(results: list, *, user_id: str = "default",
+                           bank_id: str = "default") -> None:
     """把六型分类结果回填到检索结果（P2-3 / v19.2.0：单次 SQL 批量加载，消除 N+1 读查询）。
 
     - 只读账本，单次 SQL 批量加载，不触发任何 LLM 调用，检索性能不受影响；
@@ -35,19 +36,16 @@ def _annotate_memory_types(results: list) -> None:
     if not results:
         return
     try:
-        from ducky.memory_types import get_batch_memory_types
+        # v20.2.4（外审 F-15）：键构造收敛到 memory_type_ref（此前这里和 scoring
+        # 各写一份，规则不同），查询带上 scope（此前用默认 scope，命名 bank 查不到）。
+        from ducky.memory_types import get_batch_memory_types, memory_type_ref
 
         ref_list = []
         item_ref_map = []
         for item in results:
             if not isinstance(item, dict):
                 continue
-            meta = item.get("metadata") or {}
-            ref = ""
-            if isinstance(meta, dict) and meta.get("fact_id") is not None:
-                ref = f"fact:{meta['fact_id']}"
-            if not ref:
-                ref = item.get("id") or item.get("memory_id") or ""
+            ref = memory_type_ref(item)
             if ref:
                 ref_str = str(ref)
                 ref_list.append(ref_str)
@@ -56,7 +54,7 @@ def _annotate_memory_types(results: list) -> None:
                 item["memory_type"] = "FACTS"
 
         if ref_list:
-            type_map = get_batch_memory_types(ref_list)
+            type_map = get_batch_memory_types(ref_list, user_id=user_id, bank_id=bank_id)
             for item, ref_str in item_ref_map:
                 item["memory_type"] = type_map.get(ref_str, "FACTS")
     except Exception:
@@ -317,7 +315,8 @@ def register_search_routes(app: FastAPI) -> None:
                 logger.info(f"🔍 mem0 裸搜: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
 
             boost_salience_for_results(results)
-            _annotate_memory_types(results)
+            _annotate_memory_types(results, user_id=_normalize_user_id(req.user_id),
+                                   bank_id=getattr(req, "bank_id", "default") or "default")
 
             # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文证据融合
             # 在既有召回结果之上，并行检索原文层并融合返回（主干优先、保留配额、

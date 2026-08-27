@@ -27,7 +27,10 @@ logger = logging.getLogger("aiduMEM.scoring")
 # 写错一个字符，整条召回链跟着消失。回退默认 + 出声，见 ducky/env_config.py。
 RECENCY_LAMBDA = float_env("AIDUMEM_RECENCY_LAMBDA", 0.05, minimum=0.0)
 RERANK_WEIGHT = float_env("AIDUMEM_RERANK_WEIGHT", 0.4, minimum=0.0, maximum=1.0)
-SIGMOIDAL_TEMPERATURE = float_env("AIDUMEM_SIGMOIDAL_TEMP", 10.0, minimum=0.0)
+# v20.2.4（外审 F-20）：温度必须**严格大于零** —— 取 0 时 normalize_score 的
+# math.exp(-s / T) 直接 ZeroDivisionError。exclusive_minimum 这个能力 v20.2.3
+# 的 A-2 就加进 env_config 了，当时**没用在这一行**。
+SIGMOIDAL_TEMPERATURE = float_env("AIDUMEM_SIGMOIDAL_TEMP", 10.0, exclusive_minimum=0.0)
 
 DEFAULT_WEIGHTS = {
     "vector": 0.35,
@@ -43,14 +46,26 @@ _FACT_SEEKING_KEYWORDS = re.compile(
 )
 
 
+def finite_or(value: Any, default: float = 0.0) -> float:
+    """外部数值的有限性闸门（v20.2.4 · 外审 F-20）。
+
+    v20.2.3 的 A-1 在 env_config 拦住了**配置面**的 nan/inf，却漏了**数据面**：
+    向量库、reranker、metadata 送进来的分数同样可能是 nan，而
+    `not (v < 0 or v > 1)` 对 nan 恒真 —— 于是 nan 一路进 _hybrid_score，
+    排序彻底失效而系统报健康。**同一个后果，两条入口，上一版只堵了一条。**
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def normalize_score(score: Any) -> float:
-    """归一化分数到 [0.0, 1.0] 区间。"""
+    """归一化分数到 [0.0, 1.0] 区间。非有限值（nan/inf）按 0 处理，不污染融合分。"""
     if score is None:
         return 0.0
-    try:
-        s = float(score)
-    except (ValueError, TypeError):
-        return 0.0
+    s = finite_or(score, 0.0)
     if s < 0:
         return 0.0
     if s > 1.0:
@@ -176,6 +191,11 @@ def score_and_rank_candidates(
     candidates: List[dict],
     *,
     user_id: str = "default",
+    # v20.2.4（外审 F-15）：**此前连这个参数都没有**，于是类型账本查询用默认
+    # scope，命名 bank 下一条都查不到 —— 六型加权与差异化衰减在那些部署上
+    # 整体失效（实测偏好类记忆的时效分 1.0000 → 0.0111，被当 FACTS 打折 90 倍），
+    # 而检索照常返回、没有任何告警。
+    bank_id: str = "default",
     limit: int = 10,
     weights: Optional[Dict[str, float]] = None,
     memory_type_filter: Optional[str] = None,
@@ -203,8 +223,11 @@ def score_and_rank_candidates(
     # 2. 批量查询 Memory Types（单次 SQL 批量加载，彻底消除 N+1 数据库往返）
     type_map: Dict[str, str] = {}
     try:
-        from ducky.memory_types import get_batch_memory_types
-        type_map = get_batch_memory_types(mem_ids)
+        from ducky.memory_types import get_batch_memory_types, memory_type_ref
+        # 类型账本的键与 salience 的键**不同源**：账本认 fact:{fact_id} 或 UUID，
+        # salience 只认 UUID。共用一个列表就会让带 fact_id 的记忆查不到类型。
+        type_refs = [r for r in (memory_type_ref(it) for it in candidates) if r]
+        type_map = get_batch_memory_types(type_refs, user_id=user_id, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"批量查询 memory_types 跳过: {e}")
 
@@ -214,7 +237,11 @@ def score_and_rank_candidates(
             continue
 
         mid = str(item.get("id") or item.get("memory_id") or "")
-        mtype = item.get("memory_type") or (item.get("metadata") or {}).get("memory_type") or type_map.get(mid) or "FACTS"
+        from ducky.memory_types import memory_type_ref as _mt_ref
+        mtype = (item.get("memory_type")
+                 or (item.get("metadata") or {}).get("memory_type")
+                 or type_map.get(_mt_ref(item))
+                 or "FACTS")
 
         # 六型过滤
         if memory_type_filter and memory_type_filter.upper() != "ALL":
@@ -227,7 +254,8 @@ def score_and_rank_candidates(
         # BM25 分
         content_text = str(item.get("memory") or item.get("content") or item.get("fact_value") or "")
         bm25_s = (item.get("metadata") or {}).get("bm25_score", 0) or calc_bm25_score(query, content_text)
-        bm25_s = min(float(bm25_s), 1.0)
+        # v20.2.4（F-20）：外部数值一律过有限性闸门 —— min(nan, 1.0) 返回 nan
+        bm25_s = min(finite_or(bm25_s, 0.0), 1.0)
 
         # 统一时效分
         created_ts = extract_timestamp(item)
@@ -236,12 +264,12 @@ def score_and_rank_candidates(
 
         # 可靠性分
         reliability = (item.get("metadata") or {}).get("reliability", 0.5) or 0.5
-        reliability_s = min(float(reliability), 1.0)
+        reliability_s = min(finite_or(reliability, 0.5), 1.0)
 
         # 访问热度分（批量缓存读取）
         sal_rec = salience_map.get(mid, {})
         access_count = (item.get("metadata") or {}).get("access_count") or sal_rec.get("access_count", 1)
-        heat_s = min(float(access_count or 1) / 100.0, 1.0)
+        heat_s = min(finite_or(access_count, 1.0) / 100.0, 1.0)
 
         # 基础综合得分
         base_score = (
@@ -274,7 +302,14 @@ def score_and_rank_candidates(
         if rr:
             for r in rr:
                 idx = r.get("index", -1)
-                rr_score = r.get("relevance_score", 0) or 0
+                # v20.2.4（F-20）：reranker 送来非有限分时**丢弃这个信号**，
+                # 保留融合分原值 —— 不是当 0 处理（那会把一条好候选压到底，
+                # 等于让外部服务的一次抽风改变排序）。
+                raw_rr = r.get("relevance_score", 0)
+                rr_score = finite_or(raw_rr, float("nan"))
+                if not math.isfinite(rr_score):
+                    logger.debug("rerank 返回非有限分，跳过该条回写: idx=%s raw=%r", idx, raw_rr)
+                    continue
                 if 0 <= idx < len(scored):
                     old = scored[idx].get("_hybrid_score", 0) or 0
                     scored[idx]["_hybrid_score"] = round(old * (1 - RERANK_WEIGHT) + rr_score * RERANK_WEIGHT, 4)

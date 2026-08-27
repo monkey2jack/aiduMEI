@@ -63,7 +63,49 @@
 
 新增 `tests/test_v20_2_4_type_decay_and_correction.py`（50 条用例）。计划书原写的一次性变异探针**焊成了常驻守卫**
 （投毒表 / 压平表 / 剪断接线的前提反证），不靠下一个人记得手工验；另有
-3 处变异探针逐一验红后还原。用例总数 1367 → 1417。
+3 处变异探针逐一验红后还原。用例总数 1367 → 1432。
+
+### 第三方安全复审全量整改（马院士第三方复审 · 评级 C「有条件不通过」）
+
+27 项逐条核验，**零误报，全部认账**。做法不是「改 27 个地方」，是把 27 个症状
+收敛到 **5 条原则**上，每条配一个结构守卫，让下一个同类缺陷在进仓前就变红：
+① 单一真相源，不靠调用点自觉 ② 补能力，不改措辞 ③ fail-closed 是默认
+④ 边界靠编码，不靠检测 ⑤ 守卫必须能抓住下一个同类。
+
+- **入口（F-01）**：公网门禁此前只长在 `main()` 里，而 `uvicorn api_server:app` /
+  gunicorn 不经过它 —— `_lifespan` 的 docstring 讲的正是这条路，v20 的 P1-6
+  修了后台能力却漏了安全门禁。三道保险：argv 探测（`uvicorn --host` 是**别人的**
+  命令行参数，环境变量看不到）+ lifespan 拒启 + 无凭据实例**只服务回环**。
+- **隐私（F-03）**：`local` 档的云出口改在**最底层**阻断（`call_llm` / `rerank` /
+  Vision）。此前档位谓词只接在 add/search 主链上，九个模块直接调 `call_llm`，
+  而双语 README 写着「零 token、零外部网络」——**那是假宣称**。Vision 那一处
+  是门槛测试当场抓出来的漏项：我按顶层目录 grep 出口时漏了 `ducky/pipeline/`。
+- **域隔离（F-04/05/06/07/08/09/11/15/16/17）**：`ducky/extended/routes.py` 这批次级事实端点在
+  v20.0 的全量域隔离里**整体漏了**（`UPDATE facts … WHERE id=?` 零 scope、
+  `SELECT fact_value` 全库返回正文）；治理审批只比 bank 不比 user；coalesce 键
+  缺 bank 且回调靠闭包捕获 scope。统一改用 `tenant_clause` 作唯一 scope 谓词，
+  batch 自带**不可变** scope，`all_scopes` 从 HTTP 契约整个移除。统一改用
+  `ducky/facts_recall.py` 的 `tenant_clause` 作唯一 scope 谓词。
+- **注入边界（F-12）**：改成**编码**——nonce 化闭合标记 + 正文边界中和。此前
+  `wrap_inject_frame` 只要在正文里看到 `<memory>` 就认为「已包装」直接返回，
+  **一道能被它保护的内容自己关掉的防御**；沙箱的 delimiter 也零转义。
+- **fail-closed（F-13/14/18）**：`attr_re` 三处解包全被丢掉，于是通用状态词成了
+  域内广谱杀虫剂（实测「请关闭通知」让两条无关事实同时失效）；严格租户判定
+  任何异常一律放行；`GUARD_MODE` 拼错静默降级为 log-only。三条都改成
+  「不确定就从严」。
+- **本版自己的缺陷（F-15/F-19/F-20）**：类型分档在命名 bank 下完全失效
+  （偏好类记忆时效分 1.0000 → 0.0111，被当 FACTS 打折 90 倍）；登录表重写后
+  10,000 IP 从 0.433s/无界变成 0.011s/4096 条硬上限；A-1 修了配置面的 nan
+  却漏了**数据面**，而 `exclusive_minimum` 那个能力 A-2 就加好了、没用在那一行。
+- **新守卫（自加）**：测试替身签名**逐参数对齐**生产签名。F-15 之所以躲过 50 条
+  用例，就是替身写成 `lambda ids: types`，比生产少两个参数——替身比生产宽松，
+  缺陷就隐形。守卫上线**一次抓出 8 处**同类隐患。
+
+其余：`.dockerignore` 排除密钥（F-02）· Cursor hook 停止把 user id 插进 Python
+源码 + `mktemp` 0600（F-25）· `.env` 早期加载与 `AIDUMEM_CONFIG_FILE` 真正生效
+（F-22，那个开关**从来没有任何代码读过**）· persona provenance 校验 ref 真实性
+（F-24）· README 概括表述改精确列举、`delete_all` 响应带 `not_cleared` 如实告知
+豁免清单（F-23）· wheel 资产（F-26）· `pydantic-settings` 升级（F-27）。
 
 ---
 

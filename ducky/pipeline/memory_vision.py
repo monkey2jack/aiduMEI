@@ -79,6 +79,13 @@ def extract_vision_caption(media_url_or_base64: str) -> str:
     }
     
     try:
+        # v20.2.4（外审 F-03 / 门槛 3）：Vision 也是云出口。
+        # 这处是本轮**门槛测试当场抓出来的漏项** —— 我按 `ducky/*.py` 顶层
+        # grep 出口时漏了 ducky/pipeline/ 这一层，而外审的门槛 3 恰好点名了
+        # Vision。守卫比清点可靠。
+        from ducky.engine_mode import cloud_egress_allowed
+        if not cloud_egress_allowed("vision"):
+            return None
         resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=30)
         resp.raise_for_status()
         res_json = resp.json()
