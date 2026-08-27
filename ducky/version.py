@@ -76,7 +76,10 @@ v20.2.3 (外部审计整改 · 2026-08-27)
        正在服役。改报 disabled_by_policy 并保留熔断器内态；**只动探针面**，
        current_mode() 维持 full|lite 二值（ducky/hot/add.py 据其分流），
        ducky/hot/search.py 的 engine_mode 改为先看部署配置。
-    15. 测试：新增 2 个点名文件 22 条用例
+    15. README 门面双语重构：以三档为主结构（原「两种动力」二档表已与
+       v20.2.3 的三档可选不匹配），并把消耗说到底——151MB 去向逐项摊开、
+       四种失败的优化尝试逐个列名、备胎常驻的取舍单列。卖点与短板同屏。
+    16. 测试：新增 2 个点名文件 22 条用例
        （tests/test_v20_runtime_deps_declaration.py 依赖双清单守卫 +
        tests/test_v20_2_3_audit_remediation.py 配置雷子进程验证与登录护栏），
        5 处变异探针逐一验红后还原。配置雷用例**跑子进程**是刻意的：

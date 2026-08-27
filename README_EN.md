@@ -45,23 +45,64 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ## 🚗 Wisdom Engine Autoshift (official in v20.2)
 
-**One engine, two power sources, automatic shifting** — the first open-source memory system to turn a "local fallback" into full-pipeline automatic downshifting:
+**One engine, three gears, automatic shifting** — the first open-source memory system to turn a
+"local fallback" into full-pipeline automatic downshifting. But we don't force it on you:
+**pick your gear, and we'll tell you exactly what it costs.**
 
-| | ☁️ Full gear | 🔋 Lite gear |
-|---|---|---|
-| Power | LLM distillation + cloud embeddings | pure local ONNX embeddings (512-dim) + deterministic extraction + extractive consolidation |
-| Cost | normal billing | **zero tokens · zero network · zero external deps** |
-| When | normally | every second your embedding service is down — you do nothing |
+### Pick your gear
+
+The gear is **your deployment decision**, not an assumption we make for you. One line in `.env`:
+
+| | ☁️ Cloud `cloud` | ⚙️ Autoshift `auto` (default) | 🔋 Local `local` |
+|---|---|---|---|
+| **Semantic recall** | full cloud embeddings | cloud-first, **auto-fails over to local** | local ONNX only (512-dim) |
+| **Memory distillation** | LLM distillation | LLM, falls back to deterministic | deterministic only, **no LLM** |
+| **When the service dies** | no spare tire; reports `degraded` | **keeps running**, upshifts on recovery | nothing external to lose |
+| **Token spend** | normal | normal (zero while downshifted) | **always zero** |
+| **API keys** | required | required (without them it stays local) | **none at all** |
+| **How to switch** | `AIDUMEI_ENGINE_MODE=cloud` | default, or `=auto` | `=local` |
+
+All three share **the same data and the same contract** — switching gears migrates nothing,
+rebuilds no index, and changes no caller code. The two legs (cloud / local) are **independent
+switches** rather than a rigid three-way branch: adding a fourth shape later would not touch a
+single call site.
+
+### We tell you exactly what it costs
+
+"Saving memory" and "letting you choose" are **the same thing** here, because we measured first:
+
+| | Cloud gear | Autoshift / Local gear | Difference |
+|---|---|---|---|
+| Resident memory | **~280 MB** | ~430 MB | **151 MB** |
+| Dependency disk | ~275 MB | ~353 MB + 91 MB model | ~169 MB |
+
+And we account for those 151 MB out loud: **onnxruntime itself costs 75 MB just to import, and the
+model session and weights about 122 MB.** We tried to shrink it — `threads=1`, on-demand ONNX arena
+allocation, `malloc_trim`, `MALLOC_ARENA_MAX=2` — and **all four knobs measured as no-ops**
+(206–215 MB, within noise); the model is already the smallest usable Chinese-capable option.
+So we **didn't pretend to optimize — we made it a switch**: skip the spare tire and those 151 MB
+cost you nothing.
+
+> Why the spare tire stays resident rather than loading "only during an outage": the dual index
+> computes a local vector on **every write**. Skip that and there is no local data — loading the
+> model at the moment of an outage would recall nothing. **The spare tire is prepared in advance,
+> not fetched on demand.** A deliberate trade-off, stated here so you can judge it yourself.
+> Full measurements (cold start, latency, CPU) are in the Deployment Footprint section below.
+
+### How the autoshift actually works
 
 - **Auto downshift**: consecutive embedding failures trip a circuit breaker; and the fallback happens **within the same request** — when the cloud leg dies mid-query, that very query lands on the local index. Seamless, not "the next user gets the downgrade".
-- **Auto upshift**: half-open probing uses real traffic; only consecutive successes shift back up (a lucky single success cannot fake a recovery). LLM distillation debt accumulated while downshifted is replayed automatically — nothing is lost.
-- **Honest gear**: `/search` responses carry `engine_mode` (reported per the leg actually used this request); lite scores are scale-annotated; every shift lands in the event ledger — "when were we on the spare tire" is auditable. Mind the field-shape difference: a lite-gear `/add` acknowledgement is a write-path contract (`status` / `action: deferred_distillation` / `engine_mode`) and does **not** carry the `/search` recall-verdict field family (`recall_verdict` etc.) — accepting debt is not recalling; don't parse it with the `/search` contract.
-- **Production-proven**: the outage drill ran against the real production box — embedding endpoints firewalled → auto downshift after three failures → writes during the outage land and are **semantically recallable** (`vector_leg=local`, verified) → auto upshift on recovery → debt drained to zero.
-- **Honestly labelled**: lite is a survival gear, not a drop-in equal — across 20 real queries, local-vs-cloud top-5 overlap is ~9% (the metric includes verbatim-vector dilution and small-vs-large model ranking divergence). During an outage you find what must be found; ranking quality is explicitly below the cloud gear.
-- **Three gears, your call** (v20.2.3): autoshift is good, but it should not be the only option. One line of `AIDUMEI_ENGINE_MODE` switches between **cloud** (cloud only, saving the spare tire's 151 MB), **auto** (the default — seamless failover), and **local** (zero tokens, zero outbound network, no API keys). The two legs are independent switches, not a rigid three-way choice.
-- **The LLM distillation leg has a gear too** (v20.2.2): when the distillation service goes down, writes degrade to deterministic direct storage within seconds — verbatim text, hard facts and cloud vectors all land and stay recallable; only the distillation polish is owed, and the debt is auditable. Consecutive failures trip the breaker (no more per-request timeout hits while open); recovery upshifts via half-open probing with real writes. Transport-level blind retries are clipped (a gateway Retry-After can no longer hang a single write for minutes). Responses carry a `distillation` note; `/health` exposes an `llm_gear` probe.
+- **Auto upshift**: half-open probing uses real traffic; only consecutive successes shift back up (a lucky single success cannot fake a recovery). Distillation debt accrued while downshifted is replayed automatically — nothing lost, and a restart doesn't write it off either.
+- **The LLM distillation leg has a gear too**: when distillation goes down, writes degrade to deterministic direct storage within seconds — verbatim text, hard facts and cloud vectors all land and stay recallable; only the polish is owed, and the debt is auditable. Transport-level blind retries are clipped (a gateway `Retry-After` can no longer hang a single write for minutes). Measured during an outage: a single write went from **4.5 minutes to 0.15 s**.
+- **Honest gear**: `/search` responses carry `engine_mode` reported per the leg actually used this request, not per the system gear; lite scores are scale-annotated; every shift lands in the event ledger. `/health` exposes `engine_mode_policy`, `engine_gear` and `llm_gear`, and a leg switched off by configuration **reports `disabled_by_policy`** rather than pretending to be in service.
+- **Production-proven, not a design doc**: the outage drill ran against the real production box — endpoints firewalled → auto downshift after three failures → writes during the outage land and are **semantically recallable** (`vector_leg=local`, verified) → auto upshift on recovery → debt drained to zero. Two real external gateway outages happened to hit during the drills; the machinery caught both.
+- **Honest about the downside**: lite is a survival gear, not a drop-in equal — across 20 real queries, local-vs-cloud top-5 overlap is ~9% (the metric includes verbatim-vector dilution and small-vs-large model ranking divergence). **During an outage you find what must be found; ranking quality is explicitly below the cloud gear.**
+- **Contract differences stated too**: a lite-gear `/add` acknowledgement is a write-path contract (`status` / `action` / `engine_mode`) and does **not** carry the `/search` recall-verdict field family — accepting debt is not recalling.
 
-A bare install (no cloud keys) simply runs on the lite gear forever — **a zero-dependency memory library out of the box**; add keys and it upshifts automatically. One package, self-adapting.
+A bare install (no cloud keys) simply runs on the local gear forever — **a zero-dependency memory
+library out of the box**; add keys and it upshifts automatically. One package, three ways to live
+with it, your call.
+
 
 ## Why v20.0 Is a Major Release
 
