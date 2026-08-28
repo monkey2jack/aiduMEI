@@ -157,6 +157,18 @@ _AXES = (
         "doc_en": "`fastembed` installed",
     },
     {
+        # v20.2.5：第十二条轴。ruff 只在 dev extra 里，生产 venv 不装 lint
+        # 工具 —— 沙箱用生产 venv 跑套件，于是那两条 lint 守卫在那里跳过。
+        # **第一版不是跳过而是静默返回「无命中」**，守卫因此永远绿；
+        # 沙箱实测把它抓出来了，改成 find_spec 探测 + 显式 skip。
+        "key": "ruff_installed",
+        "file": "test_v20_2_5_audit_remediation.py",
+        "scope": "callsite",
+        "match": r'pytest\.skip\("ruff 不可用',
+        "doc_zh": "`ruff` 已安装",
+        "doc_en": "`ruff` installed",
+    },
+    {
         "key": "git_binary",
         "file": "test_v20_gitignore_guard.py",
         "scope": "file",
@@ -247,19 +259,45 @@ def _matched_sites(fname, match=None):
 
 
 def _callsite_gated_cases(fname, match=None):
-    """调用点跳过：数「包含跳过语句的测试函数」有几个（AST 实测，不数行）。"""
+    """调用点跳过：数「会被这条轴门控的测试函数」有几个（AST 实测，不数行）。
+
+    v20.2.5 起支持**辅助函数间接门控**：跳过语句写在共用辅助函数里（`_ruff()`
+    就是这样）时，直接按行号归属去数会得到 0 —— 而实际被门控的用例明明有两条。
+    那种 0 会让「每条轴至少门控一条用例」那条守卫亮红，报错却指向「位点搬家」，
+    **看起来像轴废了，其实是数法不认得间接调用**。所以这里做一次不动点传播：
+    含跳过点的函数是门控源，调用了门控函数的函数也被门控，直到不再增长。
+    """
     path = pathlib.Path(_TESTS_DIR, fname)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     sites = _matched_sites(fname, match)
-    gated = set()
+
+    funcs = {}      # 函数名 → (起, 止)
+    calls = {}      # 函数名 → 它调用的名字集合
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not node.name.startswith("test_"):
-                continue
-            lo, hi = node.lineno, getattr(node, "end_lineno", node.lineno)
-            if any(lo <= s <= hi for s in sites):
-                gated.add(node.name)
-    return len(gated)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        lo, hi = node.lineno, getattr(node, "end_lineno", node.lineno)
+        funcs[node.name] = (lo, hi)
+        names = set()
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                fn = sub.func
+                if isinstance(fn, ast.Name):
+                    names.add(fn.id)
+                elif isinstance(fn, ast.Attribute):
+                    names.add(fn.attr)
+        calls[node.name] = names
+
+    # 门控源：函数体内直接含本轴的跳过点。嵌套函数会让内外层同时命中，
+    # 不影响结论（内层必然被外层调用或包含）。
+    gated = {name for name, (lo, hi) in funcs.items()
+             if any(lo <= s <= hi for s in sites)}
+    while True:                      # 不动点：调用了门控函数的也算门控
+        grown = {name for name, names in calls.items() if names & gated}
+        if grown <= gated:
+            break
+        gated |= grown
+    return len({n for n in gated if n.startswith("test_")})
 
 
 @functools.lru_cache(maxsize=1)
@@ -470,9 +508,19 @@ def test_every_registered_skip_axis_has_a_probe():
     if shutil.which("git") is not None:
         present.append("git_binary")
 
+    try:
+        # 问闸门自己的判据（`ruff_available`），不在这里另写一次 find_spec ——
+        # 上面那段注释记的就是「判据与被判之物射程不同」踩出来的坑。
+        import test_v20_2_5_audit_remediation as _rem
+        if _rem.ruff_available():
+            present.append("ruff_installed")
+    except Exception:
+        pass  # 导不进来 = 无从判定，按不齐备处理（宁可少报齐备）
+
     probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
               "bench_dep_regex", "bench_dep_numpy", "bench_dep_nltk",
-              "locomo_dataset", "git_binary", "mem0_base", "fastembed_local"}
+              "locomo_dataset", "git_binary", "mem0_base", "fastembed_local",
+              "ruff_installed"}
     unprobed = {axis["key"] for axis in _AXES} - probed
     assert not unprobed, (
         f"这些轴没有探测器：{sorted(unprobed)} —— 少一个探测器，"

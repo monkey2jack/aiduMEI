@@ -185,11 +185,43 @@ _RUFF_TARGETS = ["ducky/", "api_server.py", "mcp_server.py", "scripts/", "confte
 _F841_BASELINE = 10        # 存量「算了不用」；新增请优先修，确实要留就改这个数并写明理由
 
 
+def ruff_available() -> bool:
+    """ruff 在不在场 —— **闸门与跳过轴探测器共用的唯一判据**（v20.2.5）。
+
+    抽成公开函数是因为普查那边的探测器必须问闸门本身。v20 有过前车之鉴：
+    探测器自己另写一套判据（硬查一个写死的路径），闸门收紧后两边射程不同，
+    于是探测器报「齐备」而同一轮里那条轴实实在在门控掉了 12 条用例。
+    判据只留一份，就不存在「两边不同步」这种失效方式。
+    """
+    import importlib.util
+    return importlib.util.find_spec("ruff") is not None
+
+
 def _ruff(rules: str) -> list:
+    """跑 ruff 并返回命中行。**工具不在就跳过，绝不静默当成「无命中」。**
+
+    这条修正是沙箱实测逼出来的：生产 venv 没装 ruff，第一版实现直接返回空
+    列表 —— 于是 F821/F811 那条守卫在工具缺失的环境里**永远通过**。
+    一个守卫在依赖缺失时静默变绿，比没有守卫更危险：它让「扫过了」和
+    「扫不动」看起来一模一样（S-2 那条教训的又一种形态）。
+
+    判据用**模块探测**而不是退出码：第一版写的是「returncode not in (0,1) 就
+    跳过」，而 `python -m ruff` 在模块缺失时返回码**也是 1** —— 与「有命中」
+    撞在一起，区分不开。这个漏洞是「把 ruff 目录藏起来再跑」这条负向对照
+    当场抓出来的：期望 2 skipped，实得 1 failed。**判据必须有区分力。**
+    """
+    if not ruff_available():
+        # 轴标识（`ruff 不可用`）必须落在 `pytest.skip(` 这一行上：
+        # 跳过轴普查按**原始行**认领跳过点，标识跑到续行去就没人认领它。
+        pytest.skip("ruff 不可用（本环境未装 dev 依赖）—— "
+                    "静态关在 push_gate 侧仍然拦，这里诚实跳过而不是假装通过")
     proc = subprocess.run(
         [sys.executable, "-m", "ruff", "check", *_RUFF_TARGETS,
          "--select", rules, "--output-format", "concise"],
         cwd=_ROOT, capture_output=True, text=True, timeout=180,
+    )
+    assert proc.returncode in (0, 1), (
+        f"ruff 装着却跑不起来（rc={proc.returncode}）：{proc.stderr.strip()[:200]}"
     )
     return [ln for ln in proc.stdout.splitlines() if re.search(r":\d+:\d+: [A-Z]+\d+", ln)]
 
