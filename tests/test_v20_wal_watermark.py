@@ -27,12 +27,32 @@ def _mk(d, name, main_mb, wal_mb):
         open(os.path.join(d, name + "-wal"), "wb").write(b"y" * int(wal_mb * (1 << 20)))
 
 
-def test_wal_bigger_than_main_is_flagged(tmp_path):
-    """★ 复刻生产形态：主库 3.3MB / WAL 4.1MB 必须报警。"""
+def test_production_shape_is_no_longer_flagged(tmp_path):
+    """★ 语义反转（v20.2.5 · 用户实测 Y-NEW4）：主库 3.3MB / WAL 4.1MB **不再报警**。
+
+    这条用例原先断言的是「必须报警」，理由是 WAL 比主库还大。**用户实机把这个
+    判断推翻了**：那个形态下 `PRAGMA wal_checkpoint(PASSIVE)` 返回 (0, N, N) ——
+    数据早已落盘，SQLite 只是不主动回收 WAL 占的空间。也就是说旧判据报的不是
+    「有问题」，是「SQLite 就这么工作」，于是 /health 上三条告警常年亮着。
+
+    **告警恒真等于没有告警**：用户学会耸肩放过，真出事时反而没人看。
+    所以判据改成绝对阈值 —— WAL 真正的代价是崩溃恢复时间，那跟绝对量成正比。
+    """
     _mk(tmp_path, "facts.db", 3.3, 4.1)
     s = W.snapshot(str(tmp_path))
-    assert s["alerts"] == ["facts.db"], s
-    assert s["total_wal_bytes"] > 4 * (1 << 20)
+    assert s["alerts"] == [], f"生产常态形态不该再告警：{s}"
+    assert s["total_wal_bytes"] > 4 * (1 << 20), "体积信息仍要如实上报，只是不构成告警"
+
+
+def test_large_wal_is_still_flagged(tmp_path):
+    """★ 承重对照：提高阈值**不许把监控废掉**。
+
+    改判据最容易犯的错是「为了压噪声顺手把告警关了」。这条钉住另一端：
+    WAL 真的涨到 64MB 以上（崩溃恢复时间已经可观）时必须照报。
+    """
+    _mk(tmp_path, "facts.db", 20, 80)
+    s = W.snapshot(str(tmp_path))
+    assert s["alerts"] == ["facts.db"], f"大 WAL 必须仍然告警，否则监控形同虚设：{s}"
 
 
 def test_healthy_wal_is_not_flagged(tmp_path):
