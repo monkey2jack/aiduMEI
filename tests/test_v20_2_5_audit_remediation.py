@@ -437,3 +437,272 @@ class TestA3RuntimeDirs:
         src = (_ROOT / "ducky" / "hot" / "health.py").read_text(encoding="utf-8")
         for key in ("runtime_paths", "data_dir_writable", "data_dir_inside_package"):
             assert key in src, f"/health 缺少运行目录探针字段：{key}"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# v20.2.5-b：生产实机冒烟抓出的两条（D1 句柄删不掉、D2 单条删除没有三态）
+#
+# 这一组存在的理由要写清楚：**改契约的时候整套 1460 条一条都没红。**
+# 也就是说，单条删除的返回状态**从来没有任何测试盯着**——
+# 与 F-03 那笔假账、与 Ruff 守卫的假绿灯，是同一种缺席。
+# ══════════════════════════════════════════════════════════════════════════
+
+class _FakeMem0:
+    """mem0 替身。**签名逐字对齐生产调用点**（F-15 的教训）：
+
+    `_scoped_vector_items` 先试 `get_all(filters=…, top_k=…)`，
+    `TypeError` 才退到 `limit=`。替身若只接 `*a, **kw`，就永远走不到那条
+    回退分支、也测不出参数名写错——**替身比生产宽，缺陷就隐形**。
+    """
+
+    def __init__(self, items):
+        self._items = list(items)
+        self.deleted = []
+
+    def get_all(self, filters=None, top_k=None, **kw):
+        return {"results": list(self._items)}
+
+    def delete(self, mid):
+        self.deleted.append(str(mid))
+
+    def delete_all(self, *a, **kw):        # pragma: no cover —— 调到即失败
+        raise AssertionError("单条删除绝不许触发无作用域 delete_all")
+
+
+def _raw_items(content_hash, vector_id, bank="default"):
+    """一条 `/add/raw` 写出来的向量点：id 是 mem0 自己铸的 UUID，
+    与调用方手上的 `raw-…` 句柄**没有任何字面关系**，只靠 content_hash 相连。
+    """
+    return [{
+        "id": vector_id,
+        "memory": "原文正文",
+        "metadata": {"bank_id": bank, "content_hash": content_hash,
+                     "memory_tier": "verbatim"},
+    }]
+
+
+def test_raw_handle_maps_to_its_content_hash():
+    """`raw-<hash>-<rand>` → `<hash>`；其它形态一律返回空串。
+
+    负向对照就在同一条用例里：`verbatim:1` / 裸 UUID / 空值都必须返回 ""，
+    否则这个换算会把不相干的 id 也当成 raw 句柄去反查。
+    """
+    from ducky.wal_engine import _raw_handle_hash
+
+    h = "0123456789abcdef"
+    assert _raw_handle_hash(f"raw-{h}-deadbeef") == h
+    assert _raw_handle_hash(f"raw-{h.upper()}-deadbeef") == h, "大小写要归一"
+    for other in ("verbatim:12", "496065f9-26cd-4105-8183-b563a29f9e6b",
+                  "raw-短-x", "", None, "rawnodash"):
+        assert _raw_handle_hash(other) == "", f"{other!r} 不该被当成 raw 句柄"
+
+
+def test_raw_handle_delete_actually_removes_the_vector(monkeypatch):
+    """D1 的判据：拿 `/add/raw` 返回的句柄删，**mem0 那个点必须真的被删掉**。
+
+    实机形态：`DELETE /delete?memory_id=raw-00632d1f1383` 回 200 `{"status":"ok"}`，
+    而向量、facts、fts 全留着、原文照旧可召回。根因是这一层只比 id ——
+    而 `/add/raw` 走 `mem.add(infer=False)`，mem0 自己铸 UUID。
+
+    判据是**删掉的 id 集合相等**，不是「调用过 delete」：后者对「删错了别的点」
+    毫无区分力，而删错点是不可挽回的。
+    """
+    from ducky import wal_engine
+
+    h = "00632d1f1383abcd"
+    vid = "496065f9-26cd-4105-8183-b563a29f9e6b"
+    fake = _FakeMem0(_raw_items(h, vid))
+    monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: fake)
+
+    out = wal_engine.cascade_delete_memory(f"raw-{h}-deadbeef",
+                                          user_id="t_raw_d1", bank_id="default")
+    assert fake.deleted == [vid], (
+        f"该删的是 mem0 的 UUID {vid}，实际删了 {fake.deleted} —— "
+        "句柄没被解析（D1 原形），或者解析出了不该删的点"
+    )
+    assert out["details"]["mem0_vector"] is True
+    assert out["details"]["raw_handle_resolved_ids"] == [vid]
+    assert out["status"] in ("committed", "partial"), out
+
+
+def test_raw_handle_delete_does_not_touch_other_banks(monkeypatch):
+    """反查必须留在域内：同一个 content_hash 在别的域里也有点时，不许连坐。
+
+    没有这条，上一条用例对「反查越域」是零区分力的 —— 而越域删除不可挽回。
+    """
+    from ducky import wal_engine
+
+    h = "00632d1f1383abcd"
+    mine, theirs = "vec-mine", "vec-theirs"
+    fake = _FakeMem0(_raw_items(h, mine, bank="default")
+                     + _raw_items(h, theirs, bank="work"))
+    monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: fake)
+
+    wal_engine.cascade_delete_memory(f"raw-{h}-deadbeef",
+                                     user_id="t_raw_bank", bank_id="default")
+    assert fake.deleted == [mine], f"只该删本域那个点，实际 {fake.deleted}"
+
+
+def test_single_delete_reports_three_states_and_both_lists(monkeypatch):
+    """D2 的判据：单条删除返回三态 + `failed_layers` + `not_cleared`。
+
+    改这个契约时，整套 1460 条**一条都没红** —— 单条删除的状态从来没人盯。
+    """
+    from ducky import wal_engine
+
+    h = "abcdefabcdef0011"
+    vid = "vec-3state"
+
+    # ① 全绿 → committed，两个清单都在
+    fake = _FakeMem0(_raw_items(h, vid))
+    monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: fake)
+    ok = wal_engine.cascade_delete_memory(f"raw-{h}-00000001",
+                                          user_id="t_3s_ok", bank_id="default")
+    assert ok["status"] == "committed", ok
+    assert ok["failed_layers"] == [], ok
+    assert "not_cleared" in ok, "矩阵预声明豁免必须到达调用方（F-02 的另一半）"
+    assert ok["details"]["matched"] is True
+
+    # ② 关键层抛异常 → failed（不是 ok，也不是 partial）
+    class _Boom(_FakeMem0):
+        def delete(self, mid):
+            raise RuntimeError("向量后端连不上（模拟）")
+
+    boom = _Boom(_raw_items(h, vid))
+    monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: boom)
+    bad = wal_engine.cascade_delete_memory(f"raw-{h}-00000002",
+                                           user_id="t_3s_bad", bank_id="default")
+    assert bad["status"] == "failed", bad
+    assert {f["layer"] for f in bad["failed_layers"]} == {"mem0_vector"}, bad
+
+
+def test_enumeration_failure_is_a_failure_not_a_success(monkeypatch):
+    """向量枚举失败 ≠「没有这条」。**它是「问不出来」，必须算失败。**
+
+    这正是 F-02 的原病：生产 Qdrant 一断，删除报成功。
+    """
+    from ducky import wal_engine
+
+    class _Blind(_FakeMem0):
+        def get_all(self, filters=None, top_k=None, **kw):
+            raise RuntimeError("向量后端不可用（模拟）")
+
+    blind = _Blind([])
+    monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: blind)
+    out = wal_engine.cascade_delete_memory("some-uuid-1234",
+                                           user_id="t_blind", bank_id="default")
+    assert out["status"] == "failed", out
+    assert {f["layer"] for f in out["failed_layers"]} == {"mem0_vector"}, out
+    assert blind.deleted == [], "归属没确认就不许删"
+
+
+def test_nothing_matched_says_not_found_instead_of_ok(monkeypatch):
+    """一层都没命中时，状态必须是 `not_found` —— **D1 当初就藏在那句 ok 底下**。
+
+    判据基于「真删掉了几个」，不是「SQL 跑过了」：`details["fts"]` 是布尔
+    「执行过」，拿它判命中会把「跑了但 0 行」算成命中，守卫立刻变白护栏。
+    """
+    from ducky import wal_engine
+
+    fake = _FakeMem0([])          # 域内什么都没有
+    monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: fake)
+    out = wal_engine.cascade_delete_memory("raw-ffffffffffffffff-99999999",
+                                           user_id="t_none", bank_id="default")
+    assert out["status"] == "not_found", out
+    assert out["details"]["matched"] is False, out
+    assert fake.deleted == []
+
+
+def test_every_handle_form_the_product_mints_has_a_delete_path():
+    """**P5 守卫**：产品铸出来发给调用方的每一种 id 形态，删除链都要认得。
+
+    D1 的根因不是某一行写错，是 v19.4.1 修 `verbatim:` 句柄时**只加了一个
+    前缀分支，没问「还有哪些句柄形态」**。所以这里把问题问成守卫：扫源码里
+    「给 memory_id 赋一个带字面前缀的值」的位点，逐个要求删除链有对应处理。
+    下一种句柄进来时，这条会红。
+    """
+    minted = {}
+    for path in sorted((_ROOT / "ducky").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if "memory_id" not in names:
+                continue
+            if not isinstance(node.value, ast.JoinedStr):
+                continue
+            head = node.value.values[0] if node.value.values else None
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                m = re.match(r"^([A-Za-z_]+[-:])", head.value)
+                if m:
+                    minted[m.group(1)] = f"{path.name}:{node.lineno}"
+
+    engine = (_ROOT / "ducky" / "wal_engine.py").read_text(encoding="utf-8")
+    unhandled = {}
+    for prefix, where in minted.items():
+        bare = prefix.rstrip("-:")
+        # 删除链认得它 = 有前缀分支，或有专门的换算函数
+        if re.search(rf'startswith\(["\']{re.escape(prefix)}', engine):
+            continue
+        if re.search(rf'_{bare}_handle_hash|r"\^{re.escape(bare)}-', engine):
+            continue
+        unhandled[prefix] = where
+    assert not unhandled, (
+        f"这些句柄形态产品发得出去，删除链却不认：{unhandled} —— "
+        "拿它删会一层都命不中而回一句成功（D1 原形）"
+    )
+    assert "raw-" in minted, (
+        "扫不到 raw- 这个位点了 —— 要么铸法改了（守卫失去着力点），"
+        "要么 /add/raw 没了（那 README 得跟着改）"
+    )
+
+
+def test_raw_handle_delete_removes_the_facts_row(tmp_path, monkeypatch):
+    """D3 的判据：`/add/raw` 登记的 facts 行必须被同一次删除带走。
+
+    实机形态：即使换成正确的 mem0 UUID 删成功，`details["facts"]` 仍是 **0**。
+    因为 `/add/raw` 落的键是 `raw:<content_hash>`（raw_drawer.py），
+    而删除链拼的是 `raw:<完整句柄>` —— 与库里的键永远差一截。
+
+    判据是 rowcount 与**留下来的行**两头都验：只看「删了 1 行」对
+    「顺手删了别人的行」没有区分力。
+    """
+    from ducky import wal_engine
+
+    h = "112233445566aabb"
+    db = tmp_path / "facts.db"
+    conn = _make_facts_db(db)
+    conn.execute(
+        """INSERT INTO facts (category, fact_key, fact_value, source,
+                              memory_tier, agent_id, user_id, bank_id)
+           VALUES (?,?,?,?,'verbatim',?,?,?)""",
+        ("verbatim", f"raw:{h}", "原文正文", "raw_drawer",
+         "t_facts_d3", "t_facts_d3", "default"))
+    # 负向对照行：同一个租户、同一个域，键不同 —— 绝不许被连坐删掉
+    conn.execute(
+        """INSERT INTO facts (category, fact_key, fact_value, source,
+                              memory_tier, agent_id, user_id, bank_id)
+           VALUES (?,?,?,?,'verbatim',?,?,?)""",
+        ("verbatim", "raw:ffffffffffffffff", "别人的原文", "raw_drawer",
+         "t_facts_d3", "t_facts_d3", "default"))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr("ducky.wal_engine.get_facts_conn",
+                        lambda: sqlite3.connect(db))
+    fake = _FakeMem0([])
+    monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: fake)
+
+    out = wal_engine.cascade_delete_memory(f"raw-{h}-0badc0de",
+                                          user_id="t_facts_d3", bank_id="default")
+    assert out["details"]["facts"] == 1, (
+        f'facts 应删掉 1 行，实际 {out["details"]["facts"]} —— '
+        "键形没换算（D3 原形）"
+    )
+    left = sqlite3.connect(db)
+    keys = {r[0] for r in left.execute("SELECT fact_key FROM facts")}
+    left.close()
+    assert keys == {"raw:ffffffffffffffff"}, (
+        f"剩下的键应当只有那条对照行，实际 {keys} —— 删多了或删少了"
+    )
