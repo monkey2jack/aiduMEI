@@ -133,7 +133,19 @@ def upsert_local_verbatim(user_id: str, bank_id: str, text: str,
 
 
 def delete_local(point_ids: List[str], client=None) -> int:
-    """删除链的本地腿：按 id 精确删（与云侧同一把钥匙）。"""
+    """删除链的本地腿：按 id 精确删（与云侧同一把钥匙）。返回**真的删掉了几个**。
+
+    🔴v20.2.5-b：原实现 `return len(point_ids)` —— 报的是**请求了几个**，
+    不是删掉了几个。于是删一个从来不存在的 id 也会回 1，
+    `res["local_vector_deleted"]` 恒为 True，把「一层都没命中」这个判据
+    整个作废（生产实测：删 `raw-eeee…` 这种不存在的 id，status 仍是
+    committed）。同一个模块里的 `delete_local_by_scope` 一直是对的
+    —— 它先 count 再删、返回 count。**两个孪生函数，一个诚实一个不诚实。**
+
+    验存在性用 `retrieve`；拿不到这个 API 时（老客户端/测试替身）**照旧执行
+    删除**，但计数标为不可核实并回落到请求数 —— 宁可多报一个数字，不许
+    悄悄少删一个点。调用方要区分这两种情形就看日志。
+    """
     if not point_ids:
         return 0
     try:
@@ -141,8 +153,20 @@ def delete_local(point_ids: List[str], client=None) -> int:
         existing = {c.name for c in client.get_collections().collections}
         if LOCAL_COLLECTION not in existing:
             return 0
+        present = None
+        if hasattr(client, "retrieve"):
+            try:
+                got = client.retrieve(collection_name=LOCAL_COLLECTION,
+                                      ids=list(point_ids), with_payload=False)
+                present = len(got or [])
+            except Exception as re_exc:
+                logger.debug("本地向量存在性核实失败，计数回落请求数: %s", re_exc)
         client.delete(collection_name=LOCAL_COLLECTION, points_selector=point_ids)
-        return len(point_ids)
+        if present is None:
+            logger.debug("本地向量删除计数不可核实（客户端无 retrieve），回落请求数 %d",
+                         len(point_ids))
+            return len(point_ids)
+        return int(present)
     except Exception as exc:
         logger.warning("本地向量删除失败（%d 点）: %s", len(point_ids), exc)
         return 0
