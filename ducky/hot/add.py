@@ -288,6 +288,9 @@ def register_add_routes(app: FastAPI) -> None:
                     from ducky.gear import record_llm_failure
                     record_llm_failure(str(_de))
                     logger.warning(f"直写内层 LLM 失败，就地降为确定性直写: {_de}")
+                    # v20.2.5（用户实测 🟢）：把降级语义说人话 —— 用户看到 skipped_llm_error
+                    # 不知道自己的内容到底存没存进去。原文已落库、蒸馏待补，
+                    # 这两件事都得说出来。机器可读的枚举值保留在 code 里。
                     note = note or "skipped_llm_error"
                     add_result = mem.add(msgs, user_id=uid, metadata=meta,
                                          infer=False)
@@ -313,6 +316,19 @@ def register_add_routes(app: FastAPI) -> None:
                 if note:
                     # 诚实注记（additive，不动既有契约）：这条写入没做蒸馏。
                     out["distillation"] = note
+                    # v20.2.5（用户实测 🟢）：机器可读的枚举值留在 `distillation`
+                    # 不动（既有调用方在判等），人话另开一个字段。
+                    # 用户看到裸的 `skipped_llm_error` 不知道自己的内容到底存没存
+                    # 进去 —— 而答案是「原文已落库、蒸馏待补」，这两件事都得说。
+                    _human = {
+                        "skipped_llm_error": "LLM 暂不可用：原文与硬事实已落库，"
+                                             "语义蒸馏待恢复后补算",
+                        "deferred_distillation": "LLM 挡位打开：本次跳过蒸馏，"
+                                                 "原文已落库，恢复后补算",
+                        "local_only": "本地档：仅写本地索引，未使用任何云端服务",
+                    }.get(note)
+                    if _human:
+                        out["distillation_note"] = _human
                 return out
 
             def _run_pipeline(uid, msgs, meta, *, bank_id=None):
