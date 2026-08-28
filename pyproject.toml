@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "20.2.4"
+version = "20.2.5"
 description = "aiduMEI: self-hosted multi-tier AI wisdom engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
@@ -105,5 +105,25 @@ py-modules = ["api_server", "mcp_server", "mem0_sync"]
 # 生产机采用保留式备份与并行候选目录；pytest 不应把这些运行期副本当成第二份
 # 测试套件收集，否则同名 test_*.py 会 import mismatch，或把备份里的旧代码当成
 # 当前产品扫描。真正的源码范围仍由各守卫自己的射程地板负责。
+# v20.2.5（外审工具面）：Ruff 此前**根本没装** —— 而 F-03（算了 SQL 子句却
+# 没拼进 SELECT）正是 F841 一秒能抓的形态，F821 抓到的 `_os` 未定义更是一条
+# 被 except 吞掉、从来没成功执行过的配置读取。工具能抓的错不该靠人眼。
+#
+# 两档处置：**真缺陷类进第四道关阻塞**（F821 未定义名 / F811 重复定义），
+# F841（算了不用）走**登记制**（见 tests 里的基线守卫）—— 存量 10 处里混着
+# 无害残留与疑似真缺陷，一次全清会淹没真信号。风格类（BLE001 573 条、
+# I001 266 条、F401 138 条）**不接**：它们与缺陷无关，接了只会让门禁失去信噪比。
+[tool.ruff]
+line-length = 120
+extend-exclude = ["frontend", "deploy", "benchmarks/fixtures"]
+
+[tool.ruff.lint]
+select = ["F821", "F811", "F841"]
+
 [tool.pytest.ini_options]
 norecursedirs = [".*", "venv*", "backups", ".upgrade-artifacts", "data", "logs", "build", "dist"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16",
+]

@@ -175,6 +175,11 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/memory_types.py", "owner_sql"), ("ducky/memory_types.py", "placeholders"),
     ("ducky/recall_funnel.py", "placeholders"),
     ("ducky/reflect.py", "ph"),
+    # v20.2.5（外审 F-03 真修）：refine 候选的 bank 收窄子句。
+    # 来源核对：`_bank_clause()` 只返回两种字面量 —— "" 或 " AND bank_id=?"，
+    # bank 值本身走 ? 参数（_bparams），**没有任何调用方输入进入 SQL 文本**。
+    # 这正是本登记制要的那种「结构性拼接、值仍参数化」。
+    ("ducky/refine_memory.py", "_bclause"),
     ("ducky/routes_p1.py", "f_owner_sql"), ("ducky/routes_p1.py", "mt_owner_sql"),
     ("ducky/salience/core.py", "placeholders"),
     ("ducky/schema_bootstrap.py", "DEFAULT_AGENT_ID"), ("ducky/schema_bootstrap.py", "DEFAULT_USER_ID"),

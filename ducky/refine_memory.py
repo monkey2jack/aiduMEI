@@ -128,6 +128,28 @@ def ensure_refine_schema() -> None:
         conn.close()
 
 
+def _bank_clause(conn, bank_id: str) -> tuple[str, list]:
+    """只收 **bank 轴**的 SQL 子句（v20.2.5 · 外审 F-03 真修）。
+
+    为什么不直接用 `facts_recall.tenant_clause`：它对具名租户返回
+    `AND bank_id=? AND user_id=?`，而本模块的候选选择历史上按 `source=?` 过滤
+    身份（facts 表有 user_id / source / agent_id 三个身份列，老数据里它们不一定
+    一致）。两者叠加会在老库上把候选直接打成 0 条 —— 那正是本文件上方
+    v19.4.2 注释记过的事故形态：**refine 静默退化，返回一句合法的 skipped，
+    不报错、不告警**（当年候选从 1133 条缩到 130 条）。
+
+    所以这里只补**缺的那一轴**，身份轴保持各分支原有语义。列不存在时不收窄
+    （v19 老库没有 bank_id 列，硬写会 SQL 报错）。
+    """
+    try:
+        if "bank_id" not in table_columns(conn, "facts"):
+            return "", []
+    except Exception as exc:
+        logger.debug("bank 列探测失败，不收窄: %s", exc)
+        return "", []
+    return " AND bank_id=?", [bank_id or DEFAULT_BANK_ID]
+
+
 def _load_candidates(conn, user_id: str, category: str, limit: int,
                      *, bank_id: str = "default") -> list[dict]:
     """取候选事实：默认身份 = 全库通配，具名租户 = 按 source 收窄。
@@ -140,30 +162,32 @@ def _load_candidates(conn, user_id: str, category: str, limit: int,
     改为字面量与 DEFAULT_USER_ID 都认：老部署逐字节不变，新部署恢复原意。
     """
     if user_id in ("default", DEFAULT_USER_ID):
-        # v20.2.4（外审 F-10）：bank 轴收窄。此前只按 user + category 取候选，
-        # 于是同一用户 bank-a 与 bank-b 的事实被合成一条摘要（实测 3+3 → 六条）。
-        _bclause, _bparams = ("", [])
-        try:
-            from ducky.facts_recall import tenant_clause
-            _bclause, _bparams = tenant_clause(user_id, bank_id=bank_id, conn=conn)
-        except Exception as _e:
-            logger.debug("refine 候选 bank 收窄跳过: %s", _e)
+        # v20.2.5（外审 F-03）：bank 轴收窄 —— **这次真的拼进 SQL 了**。
+        #
+        # v20.2.4 这里算出了 clause 和 params 却一个字都没拼进 SELECT，而上面
+        # 那行注释写着「bank 轴收窄」、结案陈词把它列为已修。**注释宣称修了、
+        # 代码没修、还没有测试盯着**，是外审 F-03 抓出来的。跨 bank 集合断言
+        # 见 tests/test_v20_2_5_audit_remediation.py，变异探针打在这两行上。
+        _bclause, _bparams = _bank_clause(conn, bank_id)
         rows = conn.execute(
-            """
+            f"""
             SELECT id, category, fact_key, fact_value FROM facts
-            WHERE archived=0 AND category=?
+            WHERE archived=0 AND category=?{_bclause}
             ORDER BY updated_at DESC LIMIT ?
             """,
-            (category, limit),
+            (category, *_bparams, limit),
         ).fetchall()
     else:
+        # v20.2.5（外审 F-03）：具名租户分支此前**连 bank 参数都没用到** ——
+        # 只按 source 收身份轴，同一 source 的两个库照样混批。
+        _bclause, _bparams = _bank_clause(conn, bank_id)
         rows = conn.execute(
-            """
+            f"""
             SELECT id, category, fact_key, fact_value FROM facts
-            WHERE archived=0 AND category=? AND source=?
+            WHERE archived=0 AND category=? AND source=?{_bclause}
             ORDER BY updated_at DESC LIMIT ?
             """,
-            (category, user_id, limit),
+            (category, user_id, *_bparams, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -467,9 +491,15 @@ def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") ->
         # 库 —— 这条限制记账（9c），不在这里凭空发明一个域。
         # 列存在性用 table_columns 兜：v19 老库上 facts 没有这两列，硬写会 SQL 报错。
         owner = str(row_dict.get("user_id") or DEFAULT_USER_ID)
+        # v20.2.5（外审 F-03/F-04 摘要错域）：bank 也从**账本行自己**继承。
+        # 上面那段 v20.0 注释说「refined_memories 压根没记 bank，只能落默认库」——
+        # 那条限制在 v20.2.4 已经解除（本表加了 bank_id 列、refine_group 写入时
+        # 记了），但这里的硬写没跟着改。于是外审实测：账本记 alice/work，
+        # apply 出来的摘要行落 alice/**default** —— 摘要跑到了另一个库里。
+        owner_bank = str(row_dict.get("bank_id") or DEFAULT_BANK_ID)
         _cols = table_columns(conn, "facts")
         _scope_cols = [c for c in ("user_id", "bank_id") if c in _cols]
-        _scope_vals = [owner if c == "user_id" else DEFAULT_BANK_ID for c in _scope_cols]
+        _scope_vals = [owner if c == "user_id" else owner_bank for c in _scope_cols]
         conn.execute(
             "INSERT INTO facts (category, fact_key, fact_value, source"
             + "".join(f", {c}" for c in _scope_cols)

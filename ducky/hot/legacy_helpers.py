@@ -369,7 +369,12 @@ def _background_consolidation_loop():
     if interval_h is None:
         try:
             import json as _json
-            _mp = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "manifest.json")
+            # v20.2.5（Ruff F821）：这里原先写的是 `_os`，而本模块只 import 了
+            # `os` —— 那是个 NameError，被外层 except 吞掉，于是**这段读
+            # manifest 的逻辑从来没成功执行过**，interval_h 一直走下面的兜底。
+            # 与 MCP 的 facts_add 同型：功能静默失效，请求照常、结果全丢。
+            # 这类错误 Ruff 的 F821 一秒能抓 —— 本版把它接进第四道关。
+            _mp = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "manifest.json")
             _cfg = (_json.load(open(_mp, encoding="utf-8")).get("capabilities", {}) or {}).get("config", {})
             interval_h = float(_cfg.get("consolidation_interval_hours", {}).get("default", 24))
         except Exception:

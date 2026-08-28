@@ -25,6 +25,8 @@
 · **计数只增不减、进程内、不落盘。** 目标是「事故当时看得见」，不是「事后审计」。
 """
 from __future__ import annotations
+import datetime as _dt
+import time as _time
 
 import logging
 import threading
@@ -35,6 +37,7 @@ _LOUD_FIRST = 3        # 前几次一律 warning
 _SUMMARY_EVERY = 100   # 之后每多少次打一条汇总
 
 _counts: dict[str, int] = {}
+_last_at: dict = {}
 _lock = threading.Lock()
 
 
@@ -49,6 +52,13 @@ def feature_failed(feature: str, exc: BaseException | None = None,
         with _lock:
             _counts[feature] = _counts.get(feature, 0) + 1
             n = _counts[feature]
+            # v20.2.5（用户实测 🟢）：记下**最近一次**的时间。
+            # 计数器只增不减，用户在 /health 看到 feature_failures=2 无从判断
+            # 那是「刚刚在炸」还是「三天前网关抖了一下、早就好了」，于是要么
+            # 白担心，要么学会忽略。**给数字配一个时间，它才有意义。**
+            # 不做「N 小时后归零」是刻意的：归零会把「发生过」抹掉，而那正是
+            # 事后追因要的东西。让读者自己判断新鲜度，比替他判断更诚实。
+            _last_at[feature] = _time.time()
         if n <= _LOUD_FIRST or n % _SUMMARY_EVERY == 0:
             logger.warning(
                 "特性 %s 第 %d 次失败：%s%s —— 主链路已降级继续，但这件事没有发生",
@@ -70,7 +80,16 @@ def snapshot() -> dict:
     """
     with _lock:
         by = dict(_counts)
-    return {"total": sum(by.values()), "by_feature": by}
+        last = dict(_last_at)
+    newest = max(last.values()) if last else None
+    return {
+        "total": sum(by.values()),
+        "by_feature": by,
+        # 绝对时间给追因用，相对秒数给「还新鲜吗」一眼看的人用。
+        "last_failure_at": (_dt.datetime.fromtimestamp(newest, _dt.timezone.utc).isoformat()
+                            if newest else None),
+        "seconds_since_last": (round(_time.time() - newest) if newest else None),
+    }
 
 
 def reset() -> None:

@@ -100,6 +100,14 @@ WorkingDirectory=/opt/aidumem
 
 # 环境变量集中放在 .env，`-` 前缀表示文件缺失不阻止启动
 EnvironmentFile=-/opt/aidumem/.env
+# v20.2.5（外审 F-01）：显式交接运行目录 —— 与 Dockerfile 同款理由。
+# 包按 wheel 装进 site-packages 时，靠 __file__ 推导的 DATA_DIR 会落在包目录，
+# 而 ReadWritePaths 授权的是下面这几个。不写这几行，症状是「服务起来了、
+# 数据写别处去了」，且没有任何告警。
+Environment=AIDUMEM_HOME=/var/lib/aidumem
+Environment=AIDUMEM_DATA_DIR=/var/lib/aidumem/data
+Environment=AIDUMEM_LOG_DIR=/var/lib/aidumem/logs
+Environment=AIDUMEM_CONFIG_FILE=/var/lib/aidumem/mem0_config_local.json
 Environment=MEM0_API_PORT=8767
 Environment=MEM0_TELEMETRY=false
 

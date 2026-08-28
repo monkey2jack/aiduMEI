@@ -250,6 +250,23 @@ def register_search_routes(app: FastAPI) -> None:
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
         """搜索记忆 — Workspace 优先 → 混合召回（Hybrid）→ Salience boost"""
+        # v20.2.5（用户实测 Y-NEW1）：空 query 不再返回随机记忆。
+        #
+        # 实测 `POST /search {"query":""}` → HTTP 200 + 1 条 score 0.496 的结果。
+        # 用户搜了个空却拿到一条记忆，第一反应是「我搜了个寂寞？」，第二反应是
+        # 怀疑召回是不是一直在瞎给。gate 端点早有 empty_query 处理，主路由没有。
+        #
+        # 用**判语**而不是 422：空搜索不是客户端错误，它是一次「没有可查的东西」
+        # —— 与既有三态（found / not_found / degraded）同一个体系，调用方
+        # 一处判断全覆盖，不必为它单开一条异常分支。
+        if not (req.query or "").strip():
+            return {
+                "status": "ok",
+                "results": [],
+                "recall_verdict": "empty_query",
+                "recall_confidence": 0.0,
+                "verdict_basis": "query 为空，未执行召回",
+            }
         try:
             # 注意：/search 是显式搜索 API，不走 relevance gate（gate 用于对话上下文注入）
             # v20 P0-4：每请求重置 rerank 遥测——线程复用时上一请求的残留

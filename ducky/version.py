@@ -3,6 +3,52 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.2.5 (两份审计整改 · 2026-08-28)
+    主题：用户视角实机审计（20 项）+ 第三方独立外审（评级「有条件不通过」）。**六项落点全是修复，没有新能力** —— 所以版本号只走三级。
+    公开 Tag/Release 停 v20.2；**小仓打 Tag v20.2.5 + Release**（本版起的
+    SOP 增补：小仓承担版本历史可回看的职责）。
+    1. A1 外审 F-03（P0）：**v20.2.4 那条「refine 候选跨 bank 收窄」是假修复**
+       —— 算出了 tenant_clause 的子句和参数，**SQL 里一个字都没拼**，而注释
+       写着已修、结案陈词列为已修、且没有任何测试盯着。本版两个分支（默认
+       身份 + 具名租户，后者此前连 bank 参数都没用到）都真的拼进 SQL；
+       apply 的摘要行从账本继承 bank，不再硬写默认域。判据全部是**集合相等**
+       （{A,C} 而不是「返回了 A」—— 后者对「B、D 也混进来」毫无区分力）。
+    2. A2 外审 F-02（P0）：删除结果三态 committed/partial/failed。此前任何层
+       失败都 mark_status(committed) + status="ok"。**出口那端还断了第二次**：
+       HTTP 层硬编码 `{"status": "ok"}`，连 v20.2.4 加的 not_cleared 都从没
+       到达过调用方 —— 那条修复因此也是半假的。现在 committed→200 /
+       partial→207 / failed→500；failed_layers（实际失败）与 not_cleared
+       （预声明豁免）分开报；WAL 只在全绿时 committed，否则留 pending 可重放。
+    3. A3 外审 F-01（P0）：运行目录交接。Dockerfile / systemd 显式设
+       AIDUMEM_HOME / DATA_DIR / LOG_DIR / CONFIG_FILE —— 变量支持 utils.py
+       一直有，**缺的是交付模板没设**：wheel 装进 site-packages 后数据落进
+       包目录，而 bind-mount 的是 /app/data，两者不一致**没有任何症状**。
+       /health 新增 runtime_paths 报实际打开的路径与可写性；CI 加
+       wheel-runtime-dirs job（只读 site-packages 下真写一次库）。
+    4. A4 用户实测 4🟡 + 3🟢：空 query 返回 recall_verdict="empty_query" 而非随机
+       记忆；limit 加 Field(ge=1,le=100)、query 加 max_length（此前 limit=-5
+       与 999999 都直通）；DELETE /delete 别名**收 query 参数**（只加装饰器
+       是假修 —— DeleteRequest 是 body 模型而 DELETE 按惯例不带 body）；
+       WAL 告警阈值 1MB→64MB（用户实测 checkpoint 返回 (0,N,N) 数据早已落盘，
+       旧判据报的是「SQLite 就这么工作」，**告警恒真等于没有告警**）；
+       feature_failures 带 last_failure_at；window=-1 显示为 idle；
+       distillation 加人话字段（机器可读的 code 不动）。
+    5. A5 工具面：**Ruff 此前根本没装**。装上当场抓到 F821 —— legacy_helpers
+       用了未定义的 `_os`，那行一执行就 NameError、被 except 吞掉，于是那段读
+       manifest 的配置逻辑**从来没成功执行过**（与 MCP facts_add 同型）。
+       F821/F811 进 push_gate 第四道关阻塞，F841 走登记制（基线 10，存量里
+       混着无害残留与疑似真缺陷）；风格类不接，接了只会毁掉门禁信噪比。
+    6. A6 README 测试数字口径：1445/12 是完整 extras 环境；外审按 README 教的
+       基础安装路径实测 1415/27 —— 数字没错，**口径没写**。两套都写明。
+    7. 判据坑一（自查）：把「表不存在」当成层失败 —— 那会让任何没启用观察库/
+       场景库的部署**永远拿到 partial**，与本版修的 WAL 告警是同一种病：
+       告警恒真等于没有告警。改用仓里现成的 bank_contract.is_legacy_schema_error。
+    8. 判据坑二（被自己的故障注入用例当场戳穿）：用「配置文件是否存在」判断
+       后端未配置 —— mock 掉删除函数让它抛异常时，判据却因为本机没有配置文件
+       而放行。**那等于生产上 Qdrant 一断，删除就报成功，正是 F-02 的原病。**
+       改为看**异常来源**：取后端失败＝未启用，拿到后端删除失败＝真失败，
+       两个 try 分开，两半各有一条用例盯着。用例总数 1442 → 1460。
+
 v20.2.4 (差异化时效衰减 + 纠正语登记 · 2026-08-27)
     主题：借鉴一个同源分支的两样东西——差异化时效衰减与纠正语检测，
     **借参数不借表结构**。公开 Tag/Release 停在 v20.2，版本号仅服务侧
@@ -1234,7 +1280,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.2.4"
+SERVICE_VERSION = "20.2.5"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1248,6 +1294,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.2.5", "", "", "两份审计整改 · F-03 假修复真修 · 删除三态 · Ruff 进门禁"),
     ("20.2.4", "", "", "差异化时效衰减 · 纠正语只登记不判决 · 收益面如实标注"),
     ("20.2.3", "", "", "外部审计整改 · 入门依赖补齐/配置雷全仓拆除/登录爆破护栏"),
     ("20.2.2", "", "", "LLM 蒸馏腿挡位化 · 传输层盲重试掐除 · 断供写入确定性直写秒回"),

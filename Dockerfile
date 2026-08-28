@@ -42,4 +42,22 @@ EXPOSE 8767
 ENV AIDUMEM_HOST="127.0.0.1"
 ENV AIDUMEM_API_PORT="8767"
 
+# ★ v20.2.5（外审 F-01）：**显式交接运行目录**。
+#
+#   ducky/utils.py 用 `__file__` 的上两级推导 BASE_DIR，DATA_DIR/LOG_DIR 随之
+#   落在**包目录**。源码运行时那恰好就是仓库根，看不出问题；一旦按 wheel 安装，
+#   包在 site-packages 里 —— 于是 DATA_DIR = site-packages/data，而这个
+#   Dockerfile 上面只 chown 了 /app/data 与 /app/logs。
+#
+#   后果不是「权限提示不友好」：bind-mount 进来的 ./data 根本不是实际使用的
+#   目录，数据落进容器层、重建即丢；site-packages 只读时首次写入直接
+#   `attempt to write a readonly database`。**交付形态与源码形态的路径语义不一致。**
+#
+#   这三个变量把语义钉死，不依赖包装到哪儿。/health 会报出实际打开的库路径，
+#   「以为挂载生效了其实没有」只能靠那个发现。
+ENV AIDUMEM_HOME="/app"
+ENV AIDUMEM_DATA_DIR="/app/data"
+ENV AIDUMEM_LOG_DIR="/app/logs"
+ENV AIDUMEM_CONFIG_FILE="/app/mem0_config_local.json"
+
 CMD ["aidumem"]

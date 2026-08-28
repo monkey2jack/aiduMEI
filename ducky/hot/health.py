@@ -92,6 +92,37 @@ def register_health_routes(app: FastAPI) -> None:
             "injection_guard_ok": True,
         }
 
+        # v20.2.5（外审 F-01）：报出**实际打开的**运行目录与可写性。
+        #
+        # DATA_DIR 由 `__file__` 上两级推导（除非 AIDUMEM_DATA_DIR 显式覆盖）。
+        # 按 wheel 安装时包在 site-packages 里，于是数据落进 site-packages/data
+        # —— 而 Docker bind-mount 的是 /app/data。两者不一致时**没有任何症状**：
+        # 服务正常起、接口正常答，数据写进容器层，重建即丢。
+        #
+        # 所以这几行不是锦上添花：「以为挂载生效了其实没有」只能靠它发现。
+        # 顺带报可写性 —— 只读 site-packages 上的首次写入会直接
+        # `attempt to write a readonly database`，早知道一秒胜过事后翻日志。
+        try:
+            import os as _o
+            from ducky.utils import BASE_DIR as _BD, DATA_DIR as _DD, LOG_DIR as _LD
+            probes["runtime_paths"] = {
+                "base_dir": _o.path.abspath(_BD),
+                "data_dir": _o.path.abspath(_DD),
+                "log_dir": _o.path.abspath(_LD),
+                "facts_db": _o.path.abspath(FACTS_DB),
+                "data_dir_writable": _o.access(_DD, _o.W_OK),
+                # 落在包目录里 = 交付形态与源码形态的路径语义没对齐（外审 F-01）
+                "data_dir_inside_package": _o.path.abspath(_DD).startswith(
+                    _o.path.dirname(_o.path.dirname(_o.path.abspath(__file__)))),
+                "explicitly_configured": bool(_o.environ.get("AIDUMEM_DATA_DIR")),
+            }
+            probes["runtime_paths"]["writable_warning"] = (
+                None if probes["runtime_paths"]["data_dir_writable"]
+                else "数据目录不可写：%s —— 首次写入会以 readonly database 失败"
+                     % probes["runtime_paths"]["data_dir"])
+        except Exception as _rp_exc:
+            probes["runtime_paths"] = {"error": str(_rp_exc)[:120]}
+
         # v20.2.4（外审 F-18）：报**生效模式**，不是「模块可导入」。
         # GUARD_MODE 拼错时旧代码静默降级为 log-only，而 injection_guard_ok
         # 照样是 True —— 探针说「守卫在」，守卫其实只在记日志。
@@ -313,6 +344,13 @@ def register_health_routes(app: FastAPI) -> None:
 
         # 实体词表探针
         warnings: list[str] = []
+        # v20.2.5（外审 F-01）：运行目录不可写要进 warnings 面。
+        # 探针阶段（在上面）算好挂在 runtime_paths 里，因为 warnings 这个名字
+        # 到这一行才存在 —— Ruff 的 F821 当场抓住了我第一版直接 append 的写法，
+        # 那正是本版接这道关要防的形态。
+        _rp_warn = (probes.get("runtime_paths") or {}).get("writable_warning")
+        if _rp_warn:
+            warnings.append(_rp_warn)
         try:
             from ducky.pipeline.memory_gate import entity_keywords_status
             ek = entity_keywords_status()

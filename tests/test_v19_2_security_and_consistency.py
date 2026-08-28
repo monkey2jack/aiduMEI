@@ -276,7 +276,9 @@ def test_cascade_delete_all_guards():
     from ducky.schema_bootstrap import ensure_core_schema
     ensure_core_schema()
     res = cascade_delete_all(user_id="test_sandbox_user", confirm=False)
-    assert res["status"] == "ok"
+    # v20.2.5：契约变更 ok → committed（外审 F-02 三态）。本机取不到 mem0
+    # 后端属于「未启用」而非删除失败，所以这里仍应是 committed。
+    assert res["status"] == "committed"
     assert res["details"]["user_id"] == "test_sandbox_user"
 
 

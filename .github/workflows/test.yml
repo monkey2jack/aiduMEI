@@ -208,3 +208,60 @@ jobs:
             exit 1
           fi
           echo "✅ 假密钥未进入镜像"
+
+  # ── v20.2.5（外审 F-01，P0）：wheel 安装形态的运行目录 ─────────────
+  # 源码运行时 BASE_DIR 恰好是仓库根，路径问题看不出来；按 wheel 安装后包在
+  # site-packages 里，DATA_DIR 就落进 site-packages/data —— 而 Docker
+  # bind-mount 的是 /app/data。两者不一致**没有任何症状**：服务正常起、
+  # 接口正常答，数据写进容器层、重建即丢。site-packages 只读时更直接：
+  # 首次写入报 attempt to write a readonly database。
+  # 这个 job 就是把「交付形态」和「源码形态」的路径语义摆到一起对。
+  wheel-runtime-dirs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 构建并装进独立环境
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist_rt
+          python -m venv /tmp/rtenv
+          /tmp/rtenv/bin/pip install --quiet dist_rt/*.whl
+      - name: 前提反证——不设变量时 DATA_DIR 确实落在包目录
+        # 若哪天 utils.py 改了推导方式让这个前提不成立，本 job 就不再检验
+        # 它自称检验的东西。先把前提钉死。
+        run: |
+          /tmp/rtenv/bin/python - <<'PY'
+          import os
+          from ducky.utils import DATA_DIR
+          import ducky
+          pkg = os.path.dirname(os.path.dirname(os.path.abspath(ducky.__file__)))
+          assert os.path.abspath(DATA_DIR).startswith(pkg), (
+              f"前提不再成立：DATA_DIR={DATA_DIR} 已不在包目录，本 job 需要重写")
+          print(f"✅ 前提成立：未交接时 DATA_DIR={DATA_DIR}")
+          PY
+      - name: 只读 site-packages + 显式数据目录，必须能建库并写入
+        run: |
+          mkdir -p /tmp/aidumei-run/data /tmp/aidumei-run/logs
+          SP=$(/tmp/rtenv/bin/python -c "import ducky,os;print(os.path.dirname(os.path.dirname(ducky.__file__)))")
+          chmod -R a-w "$SP"
+          AIDUMEM_HOME=/tmp/aidumei-run \
+          AIDUMEM_DATA_DIR=/tmp/aidumei-run/data \
+          AIDUMEM_LOG_DIR=/tmp/aidumei-run/logs \
+          /tmp/rtenv/bin/python - <<'PY'
+          import os, sqlite3
+          from ducky.utils import DATA_DIR, LOG_DIR, FACTS_DB
+          assert DATA_DIR == "/tmp/aidumei-run/data", f"交接失效：{DATA_DIR}"
+          assert LOG_DIR == "/tmp/aidumei-run/logs", f"交接失效：{LOG_DIR}"
+          # 真写一次：只读 site-packages 下这一步是 F-01 的实际爆点
+          conn = sqlite3.connect(FACTS_DB)
+          conn.execute("CREATE TABLE IF NOT EXISTS smoke (id INTEGER PRIMARY KEY)")
+          conn.execute("INSERT INTO smoke DEFAULT VALUES")
+          conn.commit(); conn.close()
+          assert os.path.exists(FACTS_DB) and os.path.getsize(FACTS_DB) > 0
+          print(f"✅ 只读包目录下写入成功：{FACTS_DB}")
+          PY
+          chmod -R u+w "$SP"

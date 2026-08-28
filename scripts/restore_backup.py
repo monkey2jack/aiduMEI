@@ -1,5 +1,5 @@
 import os
-import sqlite3, json, requests, shutil, tempfile, os, sys, time
+import sqlite3, json, requests, shutil, tempfile, sys, time
 
 sys.path.insert(0, 'venv/lib/python3.12/site-packages')
 from qdrant_client import QdrantClient

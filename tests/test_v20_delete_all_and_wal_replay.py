@@ -176,7 +176,7 @@ def test_delete_all_facts_and_fts_only_touch_requested_bank(monkeypatch):
     monkeypatch.setattr(rt, "get_memory", lambda: fake)
 
     out = we.cascade_delete_all(user_id="alice", bank_id="work")
-    assert out["status"] == "ok"
+    assert out["status"] == "committed"  # v20.2.5：契约变更 ok → committed（外审 F-02 三态）
 
     conn = sqlite3.connect(_DB)
     fact_survivors = {r[0] for r in conn.execute("SELECT fact_value FROM facts")}
