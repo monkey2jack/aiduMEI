@@ -1,6 +1,6 @@
 """后台恢复：从facts.db写回Qdrant（慢速，每条约1.5秒）"""
 import os
-import sys, os, json, requests, time
+import sys, json, requests, time
 
 _REPO = os.environ.get("AIDUMEM_HOME") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))

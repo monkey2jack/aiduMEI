@@ -638,6 +638,45 @@ def cascade_delete_all(
         "memory_types_deleted": 0,
     }
 
+    # ── v20.2.5（外审 F-02）：删除结果三态 ────────────────────────────
+    #
+    # 此前每一层都是「记日志、继续走」，最后无论多少层炸了都
+    # `mark_status(committed)` + `status="ok"`。外审的复现很直白：把向量枚举
+    # 换成必抛异常的桩，`cascade_delete_all` 照样返回 ok、WAL pending 归零 ——
+    # **调用方无法把「部分删除」和「完整删除」区分开**，合规擦除、用户恢复、
+    # 事故响应全都失去证据链。
+    #
+    # 分级不是为了好看：核心层承载记忆**正文**，它没删掉，内容还能被召回；
+    # 辅助层是账本/缓存/派生数据，残留的是元信息。两种残留的后果不同量级，
+    # 所以状态也该不同 —— 但**都不许再叫 ok**。
+    #
+    # WAL 只在全绿时 committed；partial/failed 一律保持 pending，让重放机制
+    # 还有机会（删除本身幂等，重放不会扩大删除面）。
+    _failed_layers: list = []
+
+    def _layer_failed(layer: str, exc: Exception) -> None:
+        # 「表/列不存在」**不算失败** —— 那是该可选功能在这个部署上从没启用过
+        # （v20.1.1 N-6 的裁决原话：表不在＝跳过不告警）。把它算成删除失败，
+        # 会让任何没启用观察库/场景库的部署**永远**拿到 partial ——
+        # **告警恒真就等于没有告警**，下一个人学会的是耸肩放过。
+        #
+        # 判据借 bank_contract.is_legacy_schema_error：与 F-14 的 fail-closed
+        # 同款纪律 —— 只对明确的老库缺表/缺列宽容，锁库、损坏、I/O、逻辑错误
+        # 一律照实登记。
+        try:
+            from ducky.bank_contract import is_legacy_schema_error
+            if is_legacy_schema_error(exc):
+                logger.debug("删除链 %s 层：表/列不存在，视为未启用而非失败: %s", layer, exc)
+                return
+        except Exception:
+            pass
+
+        _failed_layers.append({
+            "layer": layer,
+            "error_type": type(exc).__name__,
+            "detail": str(exc)[:160],
+        })
+
     try:
         # ``evolve`` and the salience ledger do not historically carry a
         # tenant column, so collect every exact identifier *before* deleting
@@ -651,18 +690,38 @@ def cascade_delete_all(
         # only safe operation is scoped enumeration followed by single-id
         # deletes.  In particular, do not reintroduce ``mem.delete_all`` here
         # as a convenience fallback.
+        # v20.2.5（外审 F-02）：**取后端**与**执行删除**分成两个 try —— 判据
+        # 要看异常的**来源**，不是看配置文件存不存在。
+        #
+        #   · 取不到后端 → 这个部署可能根本没启用向量库（没有内容留在那儿）；
+        #   · 拿到后端、删除却炸了 → **内容还躺在向量库里**，那是真失败。
+        #
+        # 早先我用「配置文件是否存在」当判据，被自己的故障注入用例当场戳穿：
+        # mock 掉删除函数让它抛异常，判据却因为本机没有配置文件而放行 ——
+        # 那等于生产上 Qdrant 一断，删除就报成功。**这正是 F-02 的原病。**
+        mem = None
         try:
             from ducky.mem0_runtime import get_memory
-
             mem = get_memory()
-            vector_deleted, vector_ok, vector_ids = _delete_scoped_vectors(mem, scope)
-            _tenant_memory_ids.update(vector_ids)
-            res["mem0_deleted"] = bool(vector_ok)
-            res["mem0_vector_count"] = vector_deleted
-            res["vector_enumeration_complete"] = bool(vector_ok)
         except Exception as e:
-            logger.warning("mem0 作用域清理失败（未调用无作用域 delete_all）: %s", e)
+            logger.warning("mem0 后端不可用（视为未启用，不计入删除失败）: %s", e)
             res["vector_enumeration_complete"] = False
+
+        if mem is not None:
+            try:
+                vector_deleted, vector_ok, vector_ids = _delete_scoped_vectors(mem, scope)
+                _tenant_memory_ids.update(vector_ids)
+                res["mem0_deleted"] = bool(vector_ok)
+                res["mem0_vector_count"] = vector_deleted
+                res["vector_enumeration_complete"] = bool(vector_ok)
+                if not vector_ok:
+                    # 枚举不完整 = 可能有点没删到，同样不许算成功
+                    _layer_failed("mem0_vectors",
+                                  RuntimeError("scoped vector enumeration incomplete"))
+            except Exception as e:
+                logger.warning("mem0 作用域清理失败（未调用无作用域 delete_all）: %s", e)
+                _layer_failed("mem0_vectors", e)
+                res["vector_enumeration_complete"] = False
 
         # 2. FTS5.  Both collection and DELETE repeat the full canonical
         # (user_id, bank_id) predicate.  The collection contains the internal
@@ -688,6 +747,7 @@ def cascade_delete_all(
                 tconn.close()
         except Exception as e:
             logger.warning("FTS 作用域清理失败: %s", e)
+            _layer_failed("fts", e)
 
         # 3. facts.db.  The default bank uses the additive-transition
         # predicate: a row with canonical user_id=default may still be an old
@@ -756,6 +816,7 @@ def cascade_delete_all(
                 fconn.close()
         except Exception as e:
             logger.warning("facts 作用域清理失败: %s", e)
+            _layer_failed("facts", e)
 
         # 3b. memory_types 也可以由 infer=False 直接写入，未必有对应 facts
         # 行（生产冒烟实测：/add 成功、向量已删，类型账本却留下孤儿行）。
@@ -779,6 +840,7 @@ def cascade_delete_all(
                 tconn.close()
         except Exception as type_scope_exc:
             logger.warning("memory_types 作用域清理失败: %s", type_scope_exc)
+            _layer_failed("memory_types", type_scope_exc)
 
         # Fact keys are useful to old auxiliary records, but are not allowed
         # to widen a delete.  Only pass exact ids and scoped FTS/vector ids to
@@ -794,6 +856,7 @@ def cascade_delete_all(
             res["salience_deleted"] = delete_salience(_tenant_memory_ids)
         except Exception as e:
             logger.warning("salience delete_all 失败: %s", e)
+            _layer_failed("salience", e)
 
         # 5. evolve_mem.db（v19.4.1 修复：同上，此前从未真正执行）
         #    evolve 各表没有 user_id 列 —— 它记录的是检索质量信号而非租户数据。
@@ -804,6 +867,7 @@ def cascade_delete_all(
             res["evolve_deleted"] = delete_evolve_by_memory_ids(_tenant_memory_ids)
         except Exception as e:
             logger.warning("evolve delete_all 失败: %s", e)
+            _layer_failed("evolve", e)
 
         # 6. Verbatim Vault 原文保真层（v19.4.0 明镜工程 Phase 1）
         try:
@@ -811,6 +875,7 @@ def cascade_delete_all(
             res["verbatim_deleted"] = cascade_delete_verbatim(user_id, bank_id=bank_id)
         except Exception as e:
             logger.debug("verbatim delete_all 跳过: %s", e)
+            _layer_failed("verbatim", e)
 
         # 7. Workspace 工作区缓存（v20.1 整改轮 R-01 · 外审 z P1-01）。
         #    工作区存记忆正文副本且被 /search **优先**命中 —— 不清它，
@@ -821,6 +886,7 @@ def cascade_delete_all(
             res["workspace_cleared"] = int(ws_clear(scope.user_id, bank_id=scope.bank_id) or 0)
         except Exception as e:
             logger.warning("workspace delete_all 清理失败: %s", e)
+            _layer_failed("workspace", e)
 
         # 8. CoreMemory 正本（v20.1 整改轮 R-01 · 外审 w P0 / 自报 4.1）。
         #    此前三副本里只有索引（FTS/向量）在删除链射程内，正本表残留，
@@ -843,6 +909,7 @@ def cascade_delete_all(
                 cconn.close()
         except Exception as e:
             logger.warning("core_memory delete_all 清理失败: %s", e)
+            _layer_failed("core_memory", e)
 
         # 9. refined_memories 整合账本（v20.1 整改轮 R-01 · 外审 w P0）。
         #    表无 bank 列（v20 登记限制 9c），按 user 轴清理：清任一 bank
@@ -864,6 +931,7 @@ def cascade_delete_all(
                 rconn.close()
         except Exception as e:
             logger.warning("refined_memories delete_all 清理失败: %s", e)
+            _layer_failed("refined_memories", e)
 
         # 10. 墓碑（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。墓碑行带
         #     content_snapshot **全文快照** —— 不清它，被删内容以「可恢复
@@ -882,6 +950,7 @@ def cascade_delete_all(
                 tbconn.close()
         except Exception as e:
             logger.warning("tombstones delete_all 清理失败: %s", e)
+            _layer_failed("tombstones", e)
 
         # 11. 治理候选队列（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。候选行含
         #     被拒/待审的**全文**，按 v20 治理域戳精确清理。
@@ -898,6 +967,7 @@ def cascade_delete_all(
                 gconn.close()
         except Exception as e:
             logger.warning("candidate_facts delete_all 清理失败: %s", e)
+            _layer_failed("candidate_facts", e)
 
         # 12. 观察库（v20.1.1 R-18 · 两轮外审共同挂账）。聚合观察含租户
         #     内容全文。表只有 user 轴（无 bank 列——老账本），user 轴就是
@@ -919,6 +989,7 @@ def cascade_delete_all(
                 oconn.close()
         except Exception as e:
             logger.warning("observations delete_all 清理失败: %s", e)
+            _layer_failed("observations", e)
 
         # 13. 场景库（v20.1.1 R-18）。v20 起自带全轴列，谓词直删。
         try:
@@ -936,6 +1007,7 @@ def cascade_delete_all(
                 sconn.close()
         except Exception as e:
             logger.warning("scenes delete_all 清理失败: %s", e)
+            _layer_failed("scenes", e)
 
         # 14. 本地向量库（v20.2 自动挡 WP-F）。lite 挡语料与蒸馏本地副本
         #     都住这里，域谓词删除——已删内容绝不许从备胎索引复活。
@@ -945,6 +1017,7 @@ def cascade_delete_all(
                 scope.user_id, bank_id=scope.bank_id)
         except Exception as e:
             logger.warning("本地向量 delete_all 清理失败: %s", e)
+            _layer_failed("local_vectors", e)
 
         # 15. 欠账账本（v20.2 自动挡 WP-F）。lite 挡期间的原始请求载荷
         #     在这里排队等重放——不清它，已删租户的原文会在升挡重放时
@@ -955,9 +1028,25 @@ def cascade_delete_all(
                 scope.user_id, bank_id=scope.bank_id)
         except Exception as e:
             logger.warning("欠账账本 delete_all 清理失败: %s", e)
+            _layer_failed("pending_embeddings", e)
 
-        wal.mark_status(wal_id, "committed")
-        logger.info("🧹 多仓原子级联清空完成 user=%s: %s", user_id, res)
+        # 核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。
+        # 辅助层残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
+        _CRITICAL = {"mem0_vectors", "fts", "facts", "verbatim",
+                     "local_vectors", "core_memory"}
+        _names = {f["layer"] for f in _failed_layers}
+        if not _failed_layers:
+            outcome = "committed"
+            wal.mark_status(wal_id, "committed")
+        elif _names & _CRITICAL:
+            outcome = "failed"
+            wal.mark_status(wal_id, "failed",
+                            error="critical layers failed: " + ",".join(sorted(_names & _CRITICAL)))
+        else:
+            outcome = "partial"
+            # **刻意不 mark**：留在 pending 让重放还有机会。删除幂等，重放安全。
+            logger.warning("删除链部分失败，WAL 保持 pending 待重放: %s", sorted(_names))
+        logger.info("🧹 多仓级联清空 user=%s outcome=%s: %s", user_id, outcome, res)
         # v20.2.4（外审 F-23）：**如实告知没清什么**。
         #
         # DELETE_CHAIN_MATRIX 里的 exempt 项各有各的理由（审计履历不许销毁、
@@ -965,7 +1054,11 @@ def cascade_delete_all(
         # 不诚实的是**响应**：调用方看到 status=ok 会理解成「全部记忆已清空」，
         # 而其中一部分内容仍可能在后续上下文里出现。
         # 把豁免清单连同理由一起带回去 —— 用户有权知道边界在哪。
-        return {"status": "ok", "details": res,
+        # `failed_layers`（本次**实际**失败）与 `not_cleared`（矩阵**预声明**的
+        # 豁免项）必须分开报：混在一起会让后者加重误导 —— 调用方以为
+        # not_cleared 就是全部没清的东西，而真正失败的层不在里面。
+        return {"status": outcome, "details": res,
+                "failed_layers": _failed_layers,
                 "not_cleared": delete_chain_exemptions()}
     except Exception as exc:
         wal.mark_status(wal_id, "failed", error=str(exc))
