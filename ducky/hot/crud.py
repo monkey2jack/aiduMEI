@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from ducky.api_models import (
     DeleteAllRequest,
@@ -191,7 +192,28 @@ def register_crud_routes(app: FastAPI) -> None:
 
         try:
             res = cascade_delete_all(user_id=user_id, bank_id=scope.bank_id, confirm=getattr(req, "confirm", False))
-            return {"status": "ok", "details": res.get("details", {})}
+            # v20.2.5（外审 F-02）：**透传底层的三态判决**。
+            #
+            # 这一行原先硬编码 `{"status": "ok"}` —— 底层无论返回什么都被抹平成
+            # ok，连 v20.2.4 加的 `not_cleared` 也**从没到达过调用方**（那条
+            # 「如实告知没清什么」的修复因此是半假的：底层加了，出口没透）。
+            # 与 F-03 同型：改了代码，但在链路的另一端断掉。
+            #
+            # HTTP 状态跟着业务状态走 —— 外审门槛要的是「注入任意一层故障，
+            # HTTP 与业务状态都必须显式失败」。207 会强制调用方注意到
+            # 「不是完全成功」，而 200 + 一个藏在 body 里的字段不会。
+            outcome = res.get("status", "failed")
+            body = {
+                "status": outcome,
+                "details": res.get("details", {}),
+                "failed_layers": res.get("failed_layers", []),
+                "not_cleared": res.get("not_cleared", []),
+            }
+            if outcome == "committed":
+                return body
+            if outcome == "partial":
+                return JSONResponse(status_code=207, content=body)
+            return JSONResponse(status_code=500, content=body)
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
@@ -200,6 +222,24 @@ def register_crud_routes(app: FastAPI) -> None:
         except Exception as e:
             logger.error(f"delete_all 失败: {e}")
             raise HTTPException(500, str(e))
+
+    # v20.2.5（用户实测 Y-NEW3）：DELETE 方法别名。
+    #
+    # RESTful 惯例删除用 DELETE，集成方按惯例调 `DELETE /delete?memory_id=xxx`
+    # 直接吃 405 —— 会以为接口坏了。
+    #
+    # 但**光加一个 `@app.delete` 装饰器是假修**：`DeleteRequest` 是 body 模型，
+    # 而 DELETE 按惯例不带 body（httpx / requests 的 delete() 连 json= 参数都
+    # 不给）。用户实机实测用的正是 query 参数。所以别名必须**收 query**，
+    # 再转调同一个处理函数 —— 一份删除逻辑，两种调法。
+    @app.delete("/delete")
+    def delete_via_http_method(
+        memory_id: str = Query(..., description="要删除的记忆 id"),
+        user_id: str = Query(DEFAULT_USER_ID),
+        bank_id: str = Query(DEFAULT_BANK_ID),
+    ):
+        """`DELETE /delete?memory_id=…` —— 与 `POST /delete` 行为逐字相同。"""
+        return delete(DeleteRequest(memory_id=memory_id, user_id=user_id, bank_id=bank_id))
 
     # 🪦 tombstone 遗忘层（v19.4.0 Mímir 借鉴 B3）：遗忘不是删除，留痕可恢复
     @app.get("/tombstones")
