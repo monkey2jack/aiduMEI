@@ -156,7 +156,28 @@ def register_crud_routes(app: FastAPI) -> None:
             scope = make_scope(req.user_id, req.bank_id)
             user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
             res = cascade_delete_memory(req.memory_id, user_id=user_id, bank_id=scope.bank_id)
-            return {"status": "ok", "details": res.get("details", {})}
+            # v20.2.5-b（生产实机冒烟 D2）：**透传底层三态**。
+            #
+            # 这一行原先硬编码 `{"status": "ok"}` —— 与 `delete_all` 出口曾经
+            # 犯的是同一个错，而本版只修了那一个。于是 README 写着「删除结果
+            # 三态」，对**单条删除**不成立：调用方拿不到 failed_layers，
+            # 也拿不到 not_cleared，任何一层失败都被抹平成 ok。
+            #
+            # `not_found` 走 200：DELETE 按 REST 惯例幂等，删一个已经不在的
+            # 东西不是错误（consolidator 正在批量做这件事）。变的是**状态字段
+            # 不再说谎** —— 「一层都没命中」是可读出来的事实。
+            outcome = res.get("status", "failed")
+            body = {
+                "status": outcome,
+                "details": res.get("details", {}),
+                "failed_layers": res.get("failed_layers", []),
+                "not_cleared": res.get("not_cleared", []),
+            }
+            if outcome in ("committed", "not_found"):
+                return body
+            if outcome == "partial":
+                return JSONResponse(status_code=207, content=body)
+            return JSONResponse(status_code=500, content=body)
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。

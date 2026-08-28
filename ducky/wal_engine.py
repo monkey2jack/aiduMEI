@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import re
 import threading
 import time
 import uuid
@@ -59,6 +60,121 @@ def _vector_item_id(item: dict[str, Any]) -> str:
     return str(value).strip() if value is not None else ""
 
 
+# 删除链里「哪些层失败了算真失败」的判据 —— **只许有一份**。
+#
+# v20.2.5-b：这个登记器原先是 `cascade_delete_all` 里的一个闭包，而单条删除
+# 路径**根本没有失败登记**（两个 return 都硬写 `{"status": "ok"}`）。补单条时
+# 若照抄一份闭包，就重演本文件里已经记过的那个教训：作用域谓词曾被手抄一遍，
+# 共享函数放宽之后手抄件没跟上，单条删除对存量行继续失明。**契约抄两遍，
+# 就一定会改一遍漏一遍。** 所以提到模块级，两条路径共用。
+def _make_layer_failure_recorder(sink: List[Dict[str, Any]]):
+    """造一个把「某层删除失败」登记进 ``sink`` 的函数。
+
+    「表/列不存在」**不算失败** —— 那是该可选功能在这个部署上从没启用过
+    （v20.1.1 N-6 的裁决原话：表不在＝跳过不告警）。把它算成删除失败，
+    会让任何没启用观察库/场景库的部署**永远**拿到 partial ——
+    **告警恒真就等于没有告警**，下一个人学会的是耸肩放过。
+
+    判据借 bank_contract.is_legacy_schema_error：与 F-14 的 fail-closed
+    同款纪律 —— 只对明确的老库缺表/缺列宽容，锁库、损坏、I/O、逻辑错误
+    一律照实登记。
+    """
+
+    def _layer_failed(layer: str, exc: Exception) -> None:
+        try:
+            from ducky.bank_contract import is_legacy_schema_error
+            if is_legacy_schema_error(exc):
+                logger.debug("删除链 %s 层：表/列不存在，视为未启用而非失败: %s", layer, exc)
+                return
+        except Exception:
+            pass
+        sink.append({
+            "layer": layer,
+            "error_type": type(exc).__name__,
+            "detail": str(exc)[:160],
+        })
+
+    return _layer_failed
+
+
+# 关键层：这些层失败 = 整体 failed（非关键层失败 = partial）。
+# 两套拼写是历史遗留 —— 全量删除用复数（`mem0_vectors`），单条删除用单数
+# （`mem0_vector`）。不去改名是因为已发布的响应字段被测试和调用方钉着；
+# 但「什么算关键」这个判断只许有一处，所以两套拼写都收在这一个集合里。
+_CRITICAL_LAYERS = frozenset({
+    "mem0_vectors", "mem0_vector", "fts", "facts", "verbatim",
+    "local_vectors", "local_vector", "core_memory",
+})
+
+
+def _raw_handle_hash(memory_id: Any) -> str:
+    """从 ``/add/raw`` 铸的句柄里取出 content_hash；不是那种句柄就返回 ""。
+
+    🔴v20.2.5-b（生产实机冒烟 D1）：`/add/raw` 回给调用方的 id 形如
+    ``raw-<content_hash>-<rand8>``，而它在各层落的键**都是裸 hash**——
+    facts 的 ``fact_key = raw:<hash>``、mem0 metadata 的 ``content_hash``。
+    于是拿这个句柄来删，向量层与 facts 层**一条都命不中**，
+    而删除照旧回 ``{"status": "ok"}``，原文继续可召回。
+
+    这是 v19.4.1 修 ``verbatim:<n>`` 句柄那次留下的另一半：那次只加了一个
+    前缀分支，没有问「产品还发出过哪些句柄形态」。所以这里把「句柄 → 落键」
+    的换算独立成函数，下一种句柄进来时有一处可加、有一处可测。
+    """
+    s = str(memory_id or "")
+    m = re.match(r"^raw-([0-9a-fA-F]{8,64})-", s)
+    return m.group(1).lower() if m else ""
+
+
+def _scoped_vector_items(mem: Any, scope: Any) -> tuple[list[dict], bool]:
+    """枚举 ``scope`` 域内的向量条目（**带 metadata**），与安全规则同源。
+
+    单独抽出来是因为按 ``content_hash`` 反查句柄需要 metadata，而
+    :func:`_list_scoped_vector_ids` 只吐 id。两者必须共用同一套枚举与
+    「枚举失败绝不当成空集」的规则 —— 那条规则正是防止依赖抖动被看成
+    「清空成功」的东西，抄第二遍就等于给它开了个后门。
+    """
+    filters = vector_scope_filters(scope.user_id, scope.bank_id)
+    try:
+        try:
+            raw = mem.get_all(filters=filters, top_k=VECTOR_ENUM_LIMIT)
+        except TypeError:
+            raw = mem.get_all(filters=filters, limit=VECTOR_ENUM_LIMIT)
+        items = _vector_items(raw)
+    except Exception as exc:
+        logger.warning(
+            "无法枚举向量作用域 user=%s bank=%s，拒绝调用无作用域 delete_all: %s",
+            scope.user_id, scope.bank_id, exc,
+        )
+        return [], False
+    if len(items) >= VECTOR_ENUM_LIMIT:
+        logger.error(
+            "向量枚举达到上限 %s，无法证明结果完整 user=%s bank=%s",
+            VECTOR_ENUM_LIMIT, scope.user_id, scope.bank_id,
+        )
+        return items, False
+    return items, True
+
+
+def _vector_ids_by_content_hash(items: list, bank_id: Any, content_hash: str) -> list[str]:
+    """域内按 metadata.content_hash 反查向量 id（``/add/raw`` 的唯一连接）。"""
+    if not content_hash:
+        return []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or not vector_item_in_bank(item, bank_id):
+            continue
+        got = ""
+        for holder in (item, item.get("metadata"), item.get("payload")):
+            if isinstance(holder, dict) and holder.get("content_hash"):
+                got = str(holder["content_hash"]).lower()
+                break
+        if got and got == content_hash:
+            mid = _vector_item_id(item)
+            if mid and mid not in out:
+                out.append(mid)
+    return out
+
+
 def _list_scoped_vector_ids(mem: Any, scope: Any) -> tuple[list[str], bool]:
     """Return vector ids belonging to exactly ``scope``.
 
@@ -69,21 +185,11 @@ def _list_scoped_vector_ids(mem: Any, scope: Any) -> tuple[list[str], bool]:
     what prevents a health/dependency hiccup from looking like a successful
     purge).
     """
-    filters = vector_scope_filters(scope.user_id, scope.bank_id)
-    try:
-        try:
-            raw = mem.get_all(filters=filters, top_k=VECTOR_ENUM_LIMIT)
-        except TypeError:
-            # A small number of test doubles and older wrappers called this
-            # argument ``limit``.  Supporting that shape costs nothing and
-            # keeps the safety rule identical.
-            raw = mem.get_all(filters=filters, limit=VECTOR_ENUM_LIMIT)
-        items = _vector_items(raw)
-    except Exception as exc:
-        logger.warning(
-            "无法枚举向量作用域 user=%s bank=%s，拒绝调用无作用域 delete_all: %s",
-            scope.user_id, scope.bank_id, exc,
-        )
+    # v20.2.5-b：枚举与「失败绝不当空集」的规则搬到 _scoped_vector_items，
+    # 本函数只做「取 id」这一层。按 content_hash 反查句柄需要 metadata，
+    # 两处各写一份枚举就等于给那条安全规则开后门。
+    items, enum_ok = _scoped_vector_items(mem, scope)
+    if not enum_ok and not items:
         return [], False
 
     ids: list[str] = []
@@ -285,6 +391,19 @@ def cascade_delete_memory(
         "tombstone_id": None,
     }
 
+    # v20.2.5-b：单条删除此前**没有任何失败登记** —— 每一层的 except 都只写
+    # 一行 debug/warning，两个 return 都硬写 `{"status": "ok"}`。外审 F-02 点的是
+    # `delete_all`，我就只修了被点名的那一条链路，没问「这个形状还活在哪」。
+    # 那正是本版自己写进 README 的原则 P5（守卫要能抓住下一个同类）
+    # **在修复层面**失效：原则写对了，执行时只照着清单打钩。
+    _failed_layers: List[Dict[str, Any]] = []
+    _layer_failed = _make_layer_failure_recorder(_failed_layers)
+
+    # `/add/raw` 的句柄带着 content_hash，而各层落的是裸 hash（见
+    # _raw_handle_hash 的说明）。空串表示「这不是 raw 句柄」，后续按常规链走。
+    _raw_hash = _raw_handle_hash(memory_id)
+    res["raw_handle_hash"] = _raw_hash or None
+
     try:
         # 0z. 🔴P0-4b（v19.4.1 实机冒烟）：memory_id 形如 "verbatim:<n>" 时，
         #     这是 /search 返回原文证据时给出的句柄 —— 调用方手里只有它。
@@ -308,9 +427,22 @@ def cascade_delete_memory(
                 res["verbatim"] = delete_verbatim_by_id(user_id, memory_id, bank_id=bank_id)
             except Exception as ve:
                 logger.warning("原文层按 id 删除失败: %s", ve)
-            wal.mark_status(wal_id, "committed")
+                _layer_failed("verbatim", ve)
+            # v20.2.5-b：这条早退分支同样不许硬写 ok —— 两个出口一个改一个不改，
+            # 就是本版反复记过的「链路的另一端断掉」。
+            res["matched"] = int(res.get("verbatim") or 0) > 0
+            if _failed_layers:
+                _outcome = ("failed" if {f["layer"] for f in _failed_layers}
+                            & _CRITICAL_LAYERS else "partial")
+                if _outcome == "failed":
+                    wal.mark_status(wal_id, "failed", error="verbatim")
+            else:
+                _outcome = "committed" if res["matched"] else "not_found"
+                wal.mark_status(wal_id, "committed")
             logger.info("🧹 原文条目删除完成 %s: %s", memory_id, res)
-            return {"status": "ok", "details": res}
+            return {"status": _outcome, "details": res,
+                    "failed_layers": _failed_layers,
+                    "not_cleared": delete_chain_exemptions()}
 
         # 0a. 🔴P0-4：先把这条记忆的正文抓出来（用于定位原文层对应行）。
         #     必须在物理删除之前做 —— 一旦 facts/FTS 行被删，就再也无从
@@ -345,10 +477,32 @@ def cascade_delete_memory(
         try:
             from ducky.mem0_runtime import get_memory
             mem = get_memory()
-            scoped_ids, enumeration_ok = _list_scoped_vector_ids(mem, scope)
+            _items, enumeration_ok = _scoped_vector_items(mem, scope)
+            scoped_ids = [
+                _vector_item_id(it) for it in _items
+                if isinstance(it, dict) and vector_item_in_bank(it, bank_id)
+            ]
+            scoped_ids = [i for i in scoped_ids if i]
             if enumeration_ok and str(memory_id) in scoped_ids:
                 mem.delete(memory_id)
                 res["mem0_vector"] = True
+            elif enumeration_ok and _raw_hash:
+                # 🔴v20.2.5-b（实机冒烟 D1）：`raw-…` 句柄在 mem0 里**不是 id**
+                # —— `/add/raw` 走 `mem.add(infer=False)`，mem0 自己铸 UUID，
+                # 两者唯一的连接是 metadata.content_hash。此前这里只比 id，
+                # 于是这一层永远命不中，而删除照旧回 ok、原文继续可召回。
+                # 反查仍在**同一作用域的枚举结果内**做，一个未验证的 id 都不会
+                # 交给全局 delete 原语 —— 这条纪律不因为多了一种句柄而放宽。
+                _hits = _vector_ids_by_content_hash(_items, bank_id, _raw_hash)
+                for _vid in _hits:
+                    mem.delete(_vid)
+                res["mem0_vector"] = bool(_hits)
+                res["raw_handle_resolved_ids"] = _hits
+                if not _hits:
+                    logger.info(
+                        "raw 句柄在本域向量里没有对应点 user=%s bank=%s handle=%s",
+                        user_id, bank_id, memory_id,
+                    )
             elif enumeration_ok:
                 logger.info(
                     "向量 id 不属于请求作用域，跳过删除 user=%s bank=%s id=%s",
@@ -359,28 +513,43 @@ def cascade_delete_memory(
                     "向量归属无法确认，跳过删除 user=%s bank=%s id=%s",
                     user_id, bank_id, memory_id,
                 )
+                # 枚举失败不是「没有这条」——它是「问不出来」。留孤儿可重试，
+                # 报成功不可挽回，所以这里必须进失败账本（F-02 原病）。
+                _layer_failed("mem0_vector", RuntimeError(
+                    "向量作用域枚举失败，归属无法确认，未执行删除"))
         except Exception as e:
-            logger.debug("mem0.delete 跳过或失败: %s", e)
+            logger.warning("mem0.delete 失败: %s", e)
+            _layer_failed("mem0_vector", e)
 
         # 2. FTS5 索引剔除（带 user_id 作用域）
         try:
             from ducky.text_fts import get_text_conn
             tconn = get_text_conn()
             storage_id = scoped_storage_key(memory_id, scope)
-            tconn.execute(
+            _fc = tconn.execute(
                 "DELETE FROM memories WHERE id IN (?, ?) AND user_id=? AND bank_id=?",
                 (storage_id, f"fact:{storage_id}", user_id, bank_id),
-            )
+            ).rowcount
             tconn.commit()
             tconn.close()
             res["fts"] = True
+            # v20.2.5-b：`fts` 一直是「这条 SQL 跑过了」的布尔，不是「删掉了几行」。
+            # 判「什么都没命中」需要真行数，所以另起一个字段而不改它的类型
+            # （已发布字段被测试和调用方钉着）。
+            res["fts_rows"] = _fc if _fc and _fc > 0 else 0
         except Exception as e:
-            logger.debug("FTS unindex 跳过: %s", e)
+            logger.warning("FTS unindex 失败: %s", e)
+            _layer_failed("fts", e)
 
         # 3. facts.db 清理（🔴P0-1 严格归属校验 + 🔴P0-2 精确匹配，彻底消除 LIKE 误删）
         try:
             conn = get_facts_conn()
+            # v20.2.5-b：第四个键是 `raw:<content_hash>` —— `/add/raw` 落的就是
+            # 这个形状（raw_drawer.py 里 `fact_key = f"raw:{content_hash}"`），
+            # 而前三个键拿的是完整句柄，于是拼出 `raw:raw-<hash>-<rand>`，
+            # 与库里的键永远差一截。实机冒烟里 `"facts": 0` 就是它。
             exact_keys = (memory_id, f"fact:{memory_id}", f"raw:{memory_id}")
+            _raw_fact_key = f"raw:{_raw_hash}" if _raw_hash else None
             # 本地自算，**不复用第 2 步里的同名变量**：那一个定义在 FTS 的
             # try 内部，一旦 get_text_conn() 抛错就根本没被赋值，这里再引用
             # 就是 NameError —— 而它会被本块的 except 吞掉，表现为
@@ -418,9 +587,11 @@ def cascade_delete_memory(
             scope_sql, own_params = legacy_fact_scope_predicate(scope)
             c1 = conn.execute(
                 f"""DELETE FROM facts
-                   WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=?)
+                   WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=? OR
+                          (? IS NOT NULL AND fact_key=?))
                      AND (1=1{scope_sql})""",
-                (memory_id, exact_keys[0], exact_keys[1], exact_keys[2], *own_params),
+                (memory_id, exact_keys[0], exact_keys[1], exact_keys[2],
+                 _raw_fact_key, _raw_fact_key, *own_params),
             ).rowcount
             try:
                 # memory_types.memory_ref 存的是**带作用域的**键（见
@@ -455,6 +626,7 @@ def cascade_delete_memory(
             res["facts"] = c1
         except Exception as e:
             logger.warning("facts.db 清理失败: %s", e)
+            _layer_failed("facts", e)
 
         # 4. salience.db 清理（v19.4.1 修复：此前同样从未真正执行）
         #
@@ -472,6 +644,7 @@ def cascade_delete_memory(
             res["salience"] = delete_salience([memory_id])
         except Exception as e:
             logger.warning("salience.db 清理失败: %s", e)
+            _layer_failed("salience", e)
 
         # 5. evolve_mem.db 清理（v19.4.1 修复：此前这一步从未真正执行过）
         #
@@ -486,6 +659,7 @@ def cascade_delete_memory(
             res["evolve"] = delete_evolve_by_memory_ids([memory_id])
         except Exception as e:
             logger.warning("evolve_mem.db 清理失败: %s", e)
+            _layer_failed("evolve", e)
 
         # 6. 📼 原文保真层清理（🔴P0-4 v19.4.1）：删除权必须兑现到逐字原文。
         #    以 content_hash 精确匹配（延续 v19.2.0 精确匹配铁律，杜绝 LIKE 误伤）。
@@ -499,6 +673,7 @@ def cascade_delete_memory(
                 logger.debug("原文层清理跳过：未能定位该记忆正文 (%s)", memory_id)
         except Exception as ve:
             logger.debug("原文层清理跳过: %s", ve)
+            _layer_failed("verbatim", ve)
 
         # 7. Workspace 单条驱逐（v20.1 整改轮 R-01 · 外审 z P1-01）。
         #    只清全域不清单条的话，/delete 之后同一条还能从缓存里搜出来。
@@ -507,6 +682,7 @@ def cascade_delete_memory(
             res["workspace_evicted"] = bool(ws_evict(user_id, memory_id, bank_id=bank_id))
         except Exception as we:
             logger.warning("workspace 单条驱逐失败: %s", we)
+            _layer_failed("workspace", we)
 
         # 8. 本地向量单删（v20.2 自动挡 WP-F）。双索引同源 id ——
         #    云侧删了本地不删，降挡时已删内容会从备胎索引复活。
@@ -530,8 +706,53 @@ def cascade_delete_memory(
         except Exception as e:
             logger.debug("verbatim 本地点单删跳过: %s", e)
 
-        wal.mark_status(wal_id, "committed")
-        return {"status": "ok", "details": res}
+        # ── 三态判决（v20.2.5-b：与 cascade_delete_all 同一套判据） ──
+        #
+        # 这一行原先是 `return {"status": "ok", ...}` —— 任何层失败都被抹平成
+        # ok，且 WAL 无条件标 committed。外审 F-02 修的是全量删除那条链路，
+        # 单条删除（**调用方最常走的那条**）原样留着。
+        _names = {f["layer"] for f in _failed_layers}
+        if not _failed_layers:
+            outcome = "committed"
+            wal.mark_status(wal_id, "committed")
+        elif _names & _CRITICAL_LAYERS:
+            outcome = "failed"
+            wal.mark_status(wal_id, "failed",
+                            error="; ".join(sorted(_names)) or "unknown")
+        else:
+            # **刻意不 mark**：留在 pending，让重放还有机会（与全量删除一致）。
+            outcome = "partial"
+
+        # 「一层都没命中」要说出来 —— 这正是 D1 藏身的地方。
+        #
+        # 判据用**真的删掉了几个**，不用「SQL 跑过了」：`res["fts"]` 是布尔
+        # 「执行过」，拿它判命中会把「跑了但 0 行」算成命中，等于把守卫做成
+        # 白护栏。所以只看计数字段与向量布尔。
+        _removed = (
+            bool(res.get("mem0_vector"))
+            or int(res.get("fts_rows") or 0) > 0
+            or int(res.get("facts") or 0) > 0
+            or int(res.get("salience") or 0) > 0
+            or int(res.get("evolve") or 0) > 0
+            or int(res.get("verbatim") or 0) > 0
+            or bool(res.get("workspace_evicted"))
+            or bool(res.get("local_vector_deleted"))
+        )
+        res["matched"] = _removed
+        if outcome == "committed" and not _removed:
+            # HTTP 仍走 200：DELETE 按 REST 惯例是幂等的，删一个已经不在的东西
+            # 不该是错误（consolidator 就在批量删「早就不存在的东西」）。
+            # 变的是**状态字段不再说谎** —— 「我一层都没命中」必须是可读出来的
+            # 事实，而不是一句 ok。D1 当初就是被这句 ok 盖住的。
+            outcome = "not_found"
+            logger.info(
+                "删除未命中任何层 user=%s bank=%s id=%s（句柄形态不被识别？）",
+                user_id, bank_id, memory_id,
+            )
+
+        return {"status": outcome, "details": res,
+                "failed_layers": _failed_layers,
+                "not_cleared": delete_chain_exemptions()}
     except Exception as exc:
         wal.mark_status(wal_id, "failed", error=str(exc))
         logger.error("级联删除记忆失败: %s", exc)
@@ -654,28 +875,7 @@ def cascade_delete_all(
     # 还有机会（删除本身幂等，重放不会扩大删除面）。
     _failed_layers: list = []
 
-    def _layer_failed(layer: str, exc: Exception) -> None:
-        # 「表/列不存在」**不算失败** —— 那是该可选功能在这个部署上从没启用过
-        # （v20.1.1 N-6 的裁决原话：表不在＝跳过不告警）。把它算成删除失败，
-        # 会让任何没启用观察库/场景库的部署**永远**拿到 partial ——
-        # **告警恒真就等于没有告警**，下一个人学会的是耸肩放过。
-        #
-        # 判据借 bank_contract.is_legacy_schema_error：与 F-14 的 fail-closed
-        # 同款纪律 —— 只对明确的老库缺表/缺列宽容，锁库、损坏、I/O、逻辑错误
-        # 一律照实登记。
-        try:
-            from ducky.bank_contract import is_legacy_schema_error
-            if is_legacy_schema_error(exc):
-                logger.debug("删除链 %s 层：表/列不存在，视为未启用而非失败: %s", layer, exc)
-                return
-        except Exception:
-            pass
-
-        _failed_layers.append({
-            "layer": layer,
-            "error_type": type(exc).__name__,
-            "detail": str(exc)[:160],
-        })
+    _layer_failed = _make_layer_failure_recorder(_failed_layers)
 
     try:
         # ``evolve`` and the salience ledger do not historically carry a
