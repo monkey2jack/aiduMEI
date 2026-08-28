@@ -1219,6 +1219,46 @@ def _git_gated_cases():
     return n
 
 
+# 生产机沙箱**缺席**的跳过轴。沙箱 = 生产部署树 + 生产 venv：
+#   · 无 `.git` 工作区 → 品牌/gitignore 那类要 diff 的守卫跳过；
+#   · 生产 venv 不装 lint 工具（ruff 只在 dev extra）→ 两条 lint 守卫跳过。
+# 其余十条轴（mem0ai / fastembed / 宿主 Hermes …）在沙箱里都**在场**，
+# 所以不进这个集合。
+_SANDBOX_ABSENT_AXES = ("ruff_installed",)
+
+
+@functools.lru_cache(maxsize=1)
+def _sandbox_gated_cases():
+    """生产机沙箱里会跳过的用例总数（源码测量）。
+
+    🔴v20.2.5：原先这里只减 git 那一条轴，把 `git_cases` 直接当成了「沙箱跳过数」。
+    第十二条轴（ruff 未安装）一出现，算式就落后于现实 —— 守卫报出来的样子像是
+    「README 数字写错了」，其实是**守卫自己的世界模型缺了一条轴**。假红灯与
+    假绿灯同样害人，所以这里改成显式列出沙箱缺席的轴，加轴时必须回来登记。
+    """
+    import importlib.util
+
+    path = os.path.join(_REPO_ROOT, "tests", "test_v20_skip_axis_census.py")
+    spec = importlib.util.spec_from_file_location("_v20_census_axes", path)
+    assert spec is not None and spec.loader is not None, f"载入普查模块失败：{path}"
+    census = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(census)
+
+    counts = census._measured_axis_counts()
+    total = _git_gated_cases()
+    for key in _SANDBOX_ABSENT_AXES:
+        assert key in counts, (
+            f"沙箱缺席轴 {key!r} 不在普查登记表里 —— "
+            "轴被改名或删了，这个算式立刻失去着力点，必须同步"
+        )
+        assert counts[key] > 0, (
+            f"普查测得轴 {key!r} 门控 0 条用例 —— "
+            "位点搬了家（守卫失去着力点），或该轴已废（README 得跟着改）"
+        )
+        total += counts[key]
+    return total
+
+
 @functools.lru_cache(maxsize=1)
 def _collected_counts():
     """从 pytest 自身取真值：(用例总数, 需宿主 Hermes 的用例数)。
@@ -1305,8 +1345,8 @@ def test_doc_numbers_are_consistent_across_both_readmes():
 
     actual_total, hermes_cases = _collected_counts()
     passed = actual_total - hermes_cases   # 纯净开发机（无宿主，有 git 工作区）应有的通过数
-    git_cases = _git_gated_cases()
-    deployed_passed = actual_total - git_cases   # 生产部署树（有宿主，无 git 工作区）应有的通过数
+    git_cases = _sandbox_gated_cases()
+    deployed_passed = actual_total - git_cases   # 生产部署树（有宿主，无 git 工作区、无 lint 工具）应有的通过数
 
     def _read(name):
         return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")
