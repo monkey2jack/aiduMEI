@@ -148,7 +148,7 @@ v19.5.0 and this release do **not** change the same layer.
 | What changed | The release process — **zero runtime behaviour change** | The **ownership model** of memory (a data-plane contract) |
 | One-line theme | Don't let out what shouldn't be said | Don't let mix what shouldn't be mixed |
 | Should you upgrade | Optional; nothing functional depends on it | **Recommended** — it fixes a class of silent data loss |
-| Total test cases | ~700 | **1442** |
+| Total test cases | ~700 | **1460** |
 
 Three reasons, each harder than the last:
 
@@ -712,17 +712,39 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **1442** (measured via `pytest --collect-only`) |
-| Clean dev machine | 1430 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 1441 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1442 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
-| All axes present | 1442 all green · 0 skipped — **measured on the production box, 2026-08-27** (candidate tree cloned from a bundle, `.git` present, all eleven axes available) |
+| Total cases | **1460** (measured via `pytest --collect-only`) |
+| Clean dev machine | 1448 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Sandbox on the production box | 1459 passed · **1 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1460 minus the 1 case gated on the git-worktree axis. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
+| All axes present | 1460 all green · 0 skipped — **measured on the production box, 2026-08-27** (candidate tree cloned from a bundle, `.git` present, all eleven axes available) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
-> **Why report both 1430 and 1441**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. 1430 is measured here; 1441 is **axis-derived** (1442 minus
+> **⚠️ These numbers assume the optional extras are installed** (added in v20.2.5,
+> a gap the external audit pointed out).
+>
+> The 1460/1448/12 above were measured with `regex`, `nltk`, `numpy`,
+> `qdrant_client`, `mem0ai` and `fastembed` all present. The "30-second start"
+> path in this README installs only `requirements.txt`, so those optional
+> dependencies are absent and their skip axes drop out together — fewer passed,
+> more skipped. The third-party audit measured **1415 passed · 27 skipped** on
+> that path (their environment was Python 3.14).
+>
+> **Both numbers are real; only the environment differs.** Previously only one
+> was published, so anyone following the README and seeing a different number
+> would assume something was broken. That was an unstated baseline, not a
+> fabricated figure. To reproduce:
+>
+> ```bash
+> # full environment (the table above)
+> uv sync --all-extras && uv run pytest tests/ -q
+> # base path (what "30-second start" installs)
+> pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
+> ```
+
+> **Why report both 1448 and 1459**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. 1448 is measured here; 1459 is **axis-derived** (1460 minus
 > the git-worktree axis) — the last real sandbox measurement was 859, on the v20.0 committed tree when the
 > total was 860. For every number, say whether it was measured or derived.
 > Always state the environment alongside a test count.
@@ -746,8 +768,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` installed | 20 | all of `tests/test_v20_mem0_patch_layer.py` (patch-layer therapy tests need the real base; a missing mem0 used to be 20 ERRORs masquerading as real defects — now an honest skip) |
 > | `fastembed` installed | 1 | `tests/test_v20_2_autoshift.py` (real-model test for the autoshift fallback leg; honest skip when the dependency or model file is absent) |
 >
-> A dev machine lacks the first → 1430 + 12. The sandbox on the production box lacks the second (whitelist copy, no
-> `.git`) → 1441 + 1. **Each is missing one, so neither partial environment produces 1442 all green** — the
+> A dev machine lacks the first → 1448 + 12. The sandbox on the production box lacks the second (whitelist copy, no
+> `.git`) → 1459 + 1. **Each is missing one, so neither partial environment produces 1460 all green** — the
 > is a derived number. The previous README claimed it was "verified on production", and the very
 > production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
 > must survive the measurement it cites.**
@@ -766,20 +788,20 @@ python -m compileall ducky api_server.py mcp_server.py
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 1430 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1442 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1430 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 1448 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1460 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1448 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 1441 passed, 1 skipped
+> our own production box is exactly that), the first command above actually prints 1459 passed, 1 skipped
 > (**axis-derived**; the last real sandbox measurement was 859 passed, 1 skipped on the v20.0 committed tree,
 > when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1442 passed` line in
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1460 passed` line in
 > the code block above requires *all eleven* axes present at once; that complete-axis result was measured on
-> the production box on 2026-08-27 (candidate tree, total 1442, zero skips).
+> the production box on 2026-08-27 (candidate tree, total 1460, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >

@@ -165,7 +165,9 @@ def login_table_status() -> dict:
         return {
             "tracked_ips": len(_login_fails),
             "max_tracked_ips": login_max_tracked_ips(),
-            "window": _login_win,
+            # v20.2.5（用户实测 🟢）：-1 是「还没有过登录失败」的哨兵，直接显示给用户
+            # 看不出这层意思。空闲态说人话。
+            "window": _login_win if _login_win >= 0 else "idle",
             # 判据必须带 `_login_win >= 0`：两者的初始值都是 -1，于是**刚启动、
             # 表还是空的**时候相等 —— 探针会报「全局节流已激活」。
             # 探针自己撒的谎和缺陷一样害人，而且更难查（它看起来像证据）。

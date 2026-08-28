@@ -87,10 +87,15 @@ class AddRequest(BaseModel):
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    query: str
+    # v20.2.5（用户实测 Y-NEW2）：此前 limit 无任何约束 —— 实测 limit=-5 与
+    # limit=999999 都直通 HTTP 200。当前数据量小所以没炸，量大了
+    # limit=999999 就是一次全表扫描。query 同理：10 万字不拒、1.166s 才返回。
+    # 校验落在**模型**上而不是路由里：模型是所有调用方的共同入口，
+    # 放路由里就得每条路由各写一遍，而漏掉的那条不会有人发现。
+    query: str = Field(default=..., max_length=10000)
     user_id: str = DEFAULT_USER_ID
     bank_id: str = DEFAULT_BANK_ID
-    limit: int = 5
+    limit: int = Field(default=5, ge=1, le=100)
     # MCP 等调用方传的是 top_k；显式接收，避免被 Pydantic 静默丢弃
     # 导致调用方指定数量永远不生效（P2-1 审计发现）。
     top_k: int = 0
