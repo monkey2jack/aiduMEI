@@ -104,7 +104,7 @@ library out of the box**; add keys and it upshifts automatically. One package, t
 with it, your call.
 
 
-## 🛡️ Security boundary: audited against our own contract (v20.2.4)
+## 🛡️ Security boundary: audited against our own contract, twice (v20.2.4 / v20.2.5)
 
 An independent third-party security review graded this tree **C (conditional fail)** on 27 findings. Every one was **verified against the code, none was a false positive, and all are now remediated**.
 
@@ -134,6 +134,25 @@ It did not audit for SaaS-grade isolation — the README has always said this is
 - Login failure table: 10,000 distinct IPs went from **0.433 s / unbounded** to **0.011 s / 4096 entries**, with a per-window global throttle that releases itself the next minute;
 - Generic state-word collateral: "please turn off notifications (unrelated to email and lights)" used to invalidate two unrelated facts; now **zero**;
 - Type-aware decay was entirely inert under a named bank (0.0111 instead of 1.0000 — discounted ninefold-times-ten as if it were a plain fact). **That was this version's own defect**, and it slipped past this version's own 50 cases because the test double was looser than production.
+
+### Round two (v20.2.5): the first thing it found was **our own false fix**
+
+The same reviewer audited the remediation and graded it **conditional fail** again. The heaviest finding is not a new defect — it is **our own bookkeeping**:
+
+> That "narrow refine candidates to the memory bank" fix from round one — the code **computed** the SQL scope clause and its parameters and **spliced not one character of it into the SQL**. The comment on the line above said "narrowed by bank axis", the closing statement listed it as fixed, **and no test was watching it**.
+
+The comment, the closing statement and the self-review all let it through for one shared reason: **there was no test**. So every predicate in this round is **set equality** (`{A,C}`, not "it returned A" — the latter has no discriminating power against "B and D came along too", which is exactly the shape of this defect).
+
+The other two P0s are both of the **"no symptoms" kind**:
+
+| Defect | Why it was hard to see |
+|---|---|
+| Deletion had only one outcome: success | Any failing layer still recorded `committed` and returned `{"status":"ok"}`; the HTTP exit hardcoded that literal, so even round one's `not_cleared` field never reached the caller — **which made that fix half-false too** |
+| Delivery templates never set the runtime directories | Installed as a wheel, data landed in the package directory inside `site-packages` while `/app/data` was the mount. The service starts, the API answers, data is written to the container layer and **lost on rebuild** — no error anywhere |
+
+Now: deletion is three-state — **`committed`→200 / `partial`→**207** / `failed`→500**. 207 is deliberate: it forces the caller to notice "not fully successful". `failed_layers` (what actually failed this call) and `not_cleared` (what the delete-chain matrix exempts by declaration) are reported separately. On `partial` the WAL is **not** marked committed and stays replayable. The Dockerfile and the systemd unit now hand over all four runtime-directory variables explicitly, and `/health` reports `runtime_paths` — **the paths actually opened, and whether they are writable**.
+
+**And one of our own guards was lying to us**: this round put Ruff into the push gate (it had never been installed; the moment it was, it caught an `F821` — a config-reading path used an undefined name, the exception was swallowed, and that logic had therefore **never once executed successfully**). But the gate's first implementation returned "zero hits" **in an environment where ruff was not installed**, so it reported "scanned, passed". "Scanned it" and "could not scan" looked identical — **a guard that silently turns green when its dependency is missing is more dangerous than no guard: it also signs off for you.** It now skips honestly when the tool is absent, and the predicate is shared with the skip-axis probe as a single implementation.
 
 **One thing stated plainly**: `checkpoints`, the persona store and the observation store are **not on the two-dimensional tenant axis** (see the "Precise boundary" table above for what each actually keys on). That is a pre-existing design decision, explicitly marked in the in-repo delete-chain matrix. What this version did was bring it into the open — the README's sweeping claim is gone, those endpoints are labelled system interfaces, and `delete_all` now returns a `not_cleared` field listing what it did not touch and why. **The "I thought it was all wiped" misreading is gone; the capability boundary itself is unchanged.**
 
@@ -449,8 +468,16 @@ BM25 trigram (zero-latency fallback) + vector embedding vectors + Reranker + rec
 | `POST` | `/search_trace` | Search with full execution trace |
 | `POST` | `/add` | Add memories (async tidal coalescing by default) |
 | `POST` | `/add/raw` | Raw Drawer — zero-LLM verbatim storage |
-| `DELETE` | `/delete` | Delete a memory by ID |
-| `GET` | `/health` | Health check with full probe diagnostics |
+| `DELETE` | `/delete` | Delete a memory by ID (parameters go in the query string; **three-state response** below) |
+| `GET` | `/health` | Health check with full probe diagnostics (including `runtime_paths`: the data/log paths actually opened, and their writability) |
+
+> **Deletion is three-state, not success/error** (v20.2.5): `committed`→**200**, `partial`→**207**, `failed`→**500**.
+> 207 is deliberate — it forces the caller to notice "not fully successful". In the response, `failed_layers` is what
+> **actually failed on this call**; `not_cleared` is what the **delete-chain matrix exempts by declaration**. They are
+> reported separately, never collapsed into one "ok". On `partial` the WAL is **not** marked committed and stays replayable.
+>
+> `/search` has hard input bounds: `limit` is `1..100` and `query` has a maximum length; an empty `query` returns
+> `recall_verdict="empty_query"` instead of handing back arbitrary memories.
 
 ### Code Graph (Zeus v18.0)
 
