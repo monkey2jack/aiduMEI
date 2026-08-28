@@ -714,7 +714,7 @@ python -m compileall ducky api_server.py mcp_server.py
 |-----------|--------|
 | Total cases | **1460** (measured via `pytest --collect-only`) |
 | Clean dev machine | 1448 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 1457 passed · **3 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **This row is axis-derived**: 1460 minus the **two axes absent in the sandbox** — git worktree (1 case) and `ruff` not installed (2 cases; the production venv carries no lint tooling), 3 in total. The last real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree, when the total was 860 |
+| Sandbox on the production box | 1457 passed · **3 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **Measured on the production box, 2026-08-28** (whitelist copy with `.git` removed and no lint tooling; the `pytest -rs` skip reasons line up case by case: 2 on the `ruff` axis, 1 on the git-worktree axis). The previous real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree when the total was 860 — for several releases in between this row was **axis-derived**; from this release it is measured again |
 | All axes present | 1460 all green · 0 skipped — **measured on the production box, 2026-08-28** (candidate tree cloned from a bundle, `.git` present, all twelve axes available; the twelfth axis is satisfied by side-loading `ruff` via `pip install --target`, **without writing to the production venv**). The previous all-axes measurement was **1440 all green** on 2026-08-27, against v20.2.4's eleven axes — both the axis count and the total changed, so this release re-measured instead of editing the old conclusion's numbers |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
@@ -744,9 +744,11 @@ python -m compileall ducky api_server.py mcp_server.py
 > ```
 
 > **Why report both 1448 and 1457**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. 1448 is measured here; 1457 is **axis-derived** (1460 minus
-> the two axes absent in the sandbox: git worktree 1 + `ruff` not installed 2) — the last real sandbox measurement was 859, on the v20.0 committed tree when the
-> total was 860. For every number, say whether it was measured or derived.
+> and quoting only one of them misleads the reader. **both 1448 and 1457 are measured** (2026-08-28, on the dev
+> machine and the production box respectively), and 1460 is the all-axes measurement taken the same day on the
+> production candidate tree — each number's environment is stated in the table above. The previous sandbox
+> measurement was 859, on the v20.0 committed tree when the total was 860; for several releases in between this
+> row was axis-derived. For every number, say whether it was measured or derived.
 > Always state the environment alongside a test count.
 >
 > **Skips have more than one axis** (corrected by measurement in v20.0): this section used to recognise
