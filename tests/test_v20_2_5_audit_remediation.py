@@ -706,3 +706,47 @@ def test_raw_handle_delete_removes_the_facts_row(tmp_path, monkeypatch):
     assert keys == {"raw:ffffffffffffffff"}, (
         f"剩下的键应当只有那条对照行，实际 {keys} —— 删多了或删少了"
     )
+
+
+def test_delete_local_counts_what_it_removed_not_what_was_asked():
+    """`delete_local` 必须报**真删掉了几个**，不是**请求了几个**。
+
+    生产实测抓到：删一个从来不存在的 id 也回 1（原实现 `return len(point_ids)`），
+    于是 `local_vector_deleted` 恒为真，把「一层都没命中」的判据整个作废 ——
+    单条删除对不存在的 id 仍报 `committed`。
+
+    同一个模块里的 `delete_local_by_scope` 一直是对的（先 count 再删、返回 count）。
+    **两个孪生函数，一个诚实一个不诚实** —— 这条把不诚实那个钉住。
+
+    替身实现 `retrieve` 是**对齐生产 API 面**：新版 qdrant-client 有它，
+    生产走的就是那条路。替身少一个方法，测的就是回落分支而不是主路径。
+    """
+    from ducky import dual_index
+
+    class _Col:
+        def __init__(self, names):
+            self.collections = [type("C", (), {"name": n})() for n in names]
+
+    class _FakeQ:
+        def __init__(self,存在):
+            self.存在 = set(存在)
+            self.deleted = []
+
+        def get_collections(self):
+            return _Col([dual_index.LOCAL_COLLECTION])
+
+        def retrieve(self, collection_name, ids, **kw):
+            return [type("P", (), {"id": i})() for i in ids if str(i) in self.存在]
+
+        def delete(self, collection_name, points_selector):
+            self.deleted.extend(str(p) for p in points_selector)
+
+    q = _FakeQ({"pid-real"})
+    assert dual_index.delete_local(["pid-real"], client=q) == 1
+    # 负向对照：不存在的 id 必须回 0 —— 这一条才是判据的区分力所在
+    assert dual_index.delete_local(["pid-ghost"], client=q) == 0, (
+        "删一个不存在的点回了非 0 —— 报的是请求数而不是删除数（原缺陷形态）"
+    )
+    assert dual_index.delete_local(["pid-real", "pid-ghost"], client=q) == 1
+    # 删除本身仍要发出去（少删一个点比多报一个数字严重得多）
+    assert q.deleted == ["pid-real", "pid-ghost", "pid-real", "pid-ghost"]
