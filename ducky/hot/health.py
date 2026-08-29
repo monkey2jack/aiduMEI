@@ -37,6 +37,54 @@ from ducky.degradation import DegradationTracker
 logger = logging.getLogger("aiduMEM.hot")
 
 
+def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
+    """让 `degraded_details` 解释 `degraded` 里的**每一项**。
+
+    🔴 参赛前自查 N-2：这两个字段此前**不同源** —— `degraded` 由健康探针算出，
+    `degraded_details` 却只来自 `DegradationTracker`（运行时被显式 mark 过、
+    且 300 秒内的事件）。于是零配置首跑时出现了这种输出：
+
+        degraded         = ['vector_backend', 'entity_keywords']
+        degraded_details = None
+
+    **明细通道恰好在最需要它的时候是空的。** 一个字段说「这两样坏了」，
+    另一个字段对这两样只字不提 —— 调用方无从判断该去修什么。
+    这与本仓反复修过的「两个真相源」是同一个形态。
+
+    现在的契约：`degraded` 里每一项都必须在 details 里有一条。理由的来源
+    按优先级取 —— 追踪器的运行时记录（带时间戳，信息最全）→ 探针留下的
+    `<组件>_error` → 兜底一句「探针判定为不可用，未留下具体原因」。
+    **兜底那句本身也是有用的信息**：它说明这条降级没有人给出理由，
+    而不是让调用方对着一个 `null` 猜。
+    """
+    tracked = {}
+    try:
+        for rec in (DegradationTracker.get_degraded_details() or []):
+            name = rec.get("component") or rec.get("name")
+            if name:
+                tracked[str(name)] = rec
+    except Exception as exc:            # 明细拿不到不该把 /health 带崩
+        logger.debug("降级明细读取失败，回落到探针理由: %s", exc)
+
+    out = []
+    for comp in degraded:
+        rec = tracked.get(comp)
+        if rec:
+            out.append(dict(rec, component=comp, source="tracker"))
+            continue
+        reason = probes.get(f"{comp}_error")
+        out.append({
+            "component": comp,
+            "reason": str(reason)[:200] if reason else "探针判定为不可用，未留下具体原因",
+            "source": "probe" if reason else "probe_no_reason",
+        })
+    # 追踪器里有、但不在 degraded 列表里的（例如已恢复但仍在 300s 窗口内）照旧带上
+    for name, rec in tracked.items():
+        if name not in degraded:
+            out.append(dict(rec, component=name, source="tracker_only"))
+    return out
+
+
 def register_health_routes(app: FastAPI) -> None:
     @app.get("/health")
     def health():
@@ -645,7 +693,7 @@ def register_health_routes(app: FastAPI) -> None:
             modules=module_ok,
             probes=probes,
             degraded=degraded,
-            degraded_details=DegradationTracker.get_degraded_details(),
+            degraded_details=_reconcile_degraded_details(degraded, probes),
             warnings=warnings,
             health_status=status,
         )
