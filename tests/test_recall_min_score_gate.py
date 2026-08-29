@@ -252,3 +252,70 @@ def test_the_three_score_gates_stay_distinguishable():
         "`scoring.py` 里必须留着对 ① 的交叉引用 —— 少了它，下一个人会把两道"
         "不同轴的闸门当重复实现「统一」掉"
     )
+
+
+# ── 9/10：实机实测逼出来的那一条（证据闸门在活库上几乎不触发）────────────
+
+def test_score_floor_falls_back_to_the_calibrated_verdict_threshold(monkeypatch):
+    """**这条是实机实测逼出来的，也是本次真正解决 Issue #5 的那一刀。**
+
+    单元测试里「零证据」写成 `vec=0`，可**活库里没有 vec=0** —— 向量检索对任何
+    候选都会给出一个大于零的相似度。实测（生产库三条样本）：
+
+        查询「复盘召回质量」        → 真相关 0.7165 · 无关 0.4062 · 无关 0.3870
+        查询「量子色动力学的渐近自由」 → 三条全无关 0.2862 / 0.2819 / 0.2362
+
+    所以证据闸门（双零出局）在生产上**几乎不触发**，它只在向量腿降级时兜底。
+    真正的矛盾在别处：部署方已经用 `AIDUMEI_RECALL_VERDICT_THRESHOLD` 声明了
+    「低于这个分不可信」（生产配的 0.46，拿真实分布标定），系统也照此把整批
+    结果判成 `not_found`，**却仍然原样返回**。「我知道这批不靠谱」与「我照样
+    给你」同时成立 —— 这才是 issue 描述的那个病。
+
+    修法是**回落到那个已标定的数**，不是新造一个默认值：一个部署对「多少分
+    算可信」只该有一个说法。
+    """
+    from ducky.hot import search as S
+
+    monkeypatch.delenv("AIDUMEM_RECALL_SCORE_FLOOR", raising=False)
+    monkeypatch.setenv("AIDUMEI_RECALL_VERDICT_THRESHOLD", "0.46")
+    assert S._score_floor() == 0.46, "未设下限时应当回落到已标定的置信阈值"
+
+    # 显式写 0 是逃生门，必须仍然能完全关掉过滤
+    monkeypatch.setenv("AIDUMEM_RECALL_SCORE_FLOOR", "0")
+    assert S._score_floor() == 0.0, "显式 0 必须能关掉过滤（逃生门）"
+
+    # 显式值优先于回落
+    monkeypatch.setenv("AIDUMEM_RECALL_SCORE_FLOOR", "0.7")
+    assert S._score_floor() == 0.7
+
+
+def test_calibrated_floor_reproduces_the_two_live_queries(monkeypatch):
+    """拿实机实测到的**真实分数**重放两个查询，判据用集合相等。
+
+    这条是 Issue #5 的验收：一个查询里只留真相关那条，另一个查询空手返回。
+    分数不是我编的，是 2026-08-29 在生产库上跑出来的。
+    """
+    from ducky.hot import search as S
+
+    monkeypatch.delenv("AIDUMEM_RECALL_SCORE_FLOOR", raising=False)
+    monkeypatch.setenv("AIDUMEI_RECALL_VERDICT_THRESHOLD", "0.46")
+
+    q1 = [{"id": "relevant", "score": 0.7165},
+          {"id": "pad_a", "score": 0.4062},
+          {"id": "pad_b", "score": 0.3870}]
+    st = S.annotate_recall_strength(q1)
+    assert {r["id"] for r in q1} == {"relevant"}, (
+        f"「有一条真相关 + 两条凑数」应当只留真相关那条，实得 {[r['id'] for r in q1]}"
+    )
+    assert st["dropped"] == 2
+
+    q2 = [{"id": "p1", "score": 0.2862}, {"id": "p2", "score": 0.2819},
+          {"id": "p3", "score": 0.2362}]
+    S.annotate_recall_strength(q2)
+    assert q2 == [], "全是凑数时必须空手返回 —— 空手回来好过松散注入"
+
+    # 负向对照：关掉过滤，两批都原样返回（证明上面两条断言确实由闸门产生）
+    monkeypatch.setenv("AIDUMEM_RECALL_SCORE_FLOOR", "0")
+    q3 = [{"id": "p1", "score": 0.2862}, {"id": "p2", "score": 0.2819}]
+    S.annotate_recall_strength(q3)
+    assert {r["id"] for r in q3} == {"p1", "p2"}, "关掉之后不该再过滤（否则逃生门是假的）"

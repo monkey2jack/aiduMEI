@@ -170,17 +170,40 @@ def test_route_embedding_down_is_degraded_not_not_found(search_client):
     assert "embedding" in body["_recall_legs"].get("error", "")
 
 
-def test_route_below_threshold_marks_not_found_but_keeps_results(search_client, monkeypatch):
-    """verdict 是判语不是过滤器：低分判 not_found，结果一条不许丢。"""
+def test_route_below_threshold_drops_the_results_it_distrusts(search_client, monkeypatch):
+    """**契约在 2026-08-29 反转了（社区 Issue #5）。**
+
+    这条用例原来叫 `..._marks_not_found_but_keeps_results`，断言的是
+    「verdict 是判语不是过滤器：低分判 not_found，结果一条不许丢」。
+    那个设计的本意是「判语不越权丢数据」，本身讲得通 —— 但它造出了一个
+    自相矛盾的输出：部署方已经用 `AIDUMEI_RECALL_VERDICT_THRESHOLD` 声明
+    「低于这个分不可信」，系统据此判了 `not_found`，**却把同一批结果原样返回**。
+    「我知道这批不靠谱」和「我照样给你」同时成立。
+
+    社区网友的 Agent 提的正是这个病（弱命中凑分填满结果集），
+    而实机实测坐实了它：生产库上问一个毫不相干的问题，三条全无关的记忆
+    （0.2862 / 0.2819 / 0.2362）照样被返回，verdict 同时写着 not_found。
+
+    所以现在：**低于已标定下限的结果不再返回**（`_score_floor` 未显式设置时
+    回落到该阈值）。要回到旧行为，显式写 `AIDUMEM_RECALL_SCORE_FLOOR=0`
+    —— 下面第二段就是在验这个逃生门，没有它这条反转就是不可回退的。
+    """
     client, mp = search_client
     hits = [{"id": "m1", "memory": "弱相关", "score": 0.2}]
     mp.setattr(hot_search, "lazy_import_hybrid",
                lambda: (lambda mem, q, uid, limit, **kw: list(hits)))
+    monkeypatch.delenv("AIDUMEM_RECALL_SCORE_FLOOR", raising=False)
     monkeypatch.setenv(_VERDICT_THRESHOLD_ENV, "0.6")
     body = _post(client).json()
     assert body["recall_verdict"] == "not_found"
-    assert body["verdict_basis"] == "below_threshold"
-    assert len(body["results"]) == 1, "verdict 越权把结果丢了"
+    assert body["results"] == [], "低于已标定下限的结果不该再返回（Issue #5）"
+
+    # 逃生门：显式关掉下限，旧行为完整回来（判语照旧、结果照旧给）
+    monkeypatch.setenv("AIDUMEM_RECALL_SCORE_FLOOR", "0")
+    body2 = _post(client).json()
+    assert body2["recall_verdict"] == "not_found"
+    assert body2["verdict_basis"] == "below_threshold"
+    assert len(body2["results"]) == 1, "关掉下限后必须回到「判语不丢数据」的旧行为"
 
 
 def test_route_workspace_hit_is_found(search_client, monkeypatch):
