@@ -25,6 +25,7 @@ from ducky.skill_crystallizer import (
     prune_low_utility_skills,
     approve_crystal,
 )
+from ducky.api_errors import api_error_detail
 
 logger = logging.getLogger("aiduMEM.OctopusRoutes")
 
@@ -75,7 +76,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             }
         except Exception as e:
             logger.error("🐙 /conflict/resolve 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/tree/nodes")
     def tree_nodes_endpoint(root_path: str = Query("/aidu", description="根节点路径")):
@@ -85,7 +86,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             return {"status": "ok", "root_path": root_path, "nodes": nodes, "count": len(nodes)}
         except Exception as e:
             logger.error("🐙 /tree/nodes 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/tree/node")
     def tree_node_add_endpoint(req: TreeNodeRequest):
@@ -99,7 +100,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error("🐙 /tree/node 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/crystals")
     def crystals_list_endpoint(status: str = "candidate"):
@@ -109,7 +110,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             return {"status": "ok", "crystals": crystals, "count": len(crystals)}
         except Exception as e:
             logger.error("🐙 /crystals 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/crystals/detect")
     def crystals_detect_endpoint():
@@ -119,7 +120,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             return {"status": "ok", "detected": detected, "count": len(detected)}
         except Exception as e:
             logger.error("🐙 /crystals/detect 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     # ── v19.0 P1-2 技能精炼：复用追踪 + 低效用淘汰 ─────────
     @app.post("/crystals/use")
@@ -129,7 +130,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             return record_skill_use(skill_name, success)
         except Exception as e:
             logger.error("🐙 /crystals/use 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/crystals/prune")
     def crystals_prune_endpoint():
@@ -139,7 +140,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             return {"status": "ok", "archived": archived, "count": len(archived)}
         except Exception as e:
             logger.error("🐙 /crystals/prune 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     # 🔴8：人工审批端点——此前 approve_crystal 零调用方，draft 永远转不了正。
     @app.post("/crystals/approve")
@@ -157,4 +158,4 @@ def register_octopus_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error("🐙 /crystals/approve 错误: %s", e)
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))

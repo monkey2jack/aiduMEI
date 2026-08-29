@@ -281,7 +281,7 @@ def _fact_feedback_impl(fact_id: int, helpful: bool,
     except HTTPException: raise
     except Exception as e:
         logger.error(f"feedback 失败: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, api_error_detail(e))
 
 # ── 6.6  矛盾检测 v1 ──
 CONTRADICTION_WORDS = [
@@ -330,6 +330,7 @@ from ducky.text_fts import (
     _like_search,
     _hybrid_search,
 )
+from ducky.api_errors import api_error_detail
 
 # ═══════════════════════════════════════════════
 # §8  Observations + Reflect（Hindsight 移植）

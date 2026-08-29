@@ -31,6 +31,7 @@ from ducky.mem0_runtime import (
 )
 from ducky.wal_engine import cascade_delete_memory, cascade_delete_all
 from ducky.failure_ledger import feature_failed
+from ducky.api_errors import api_error_detail
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -58,7 +59,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"recent 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/stats")
     def stats(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
@@ -145,7 +146,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"stats 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/delete")
     def delete(req: DeleteRequest):
@@ -185,7 +186,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"delete 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/delete_all")
     def delete_all(req: DeleteAllRequest):
@@ -242,7 +243,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"delete_all 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     # v20.2.5（用户实测 Y-NEW3）：DELETE 方法别名。
     #
@@ -278,7 +279,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"tombstones 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/tombstone/restore")
     def tombstone_restore(req: TombstoneRestoreRequest):
@@ -298,7 +299,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"tombstone/restore 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     # 📒 事件溯源账本（v19.4.0 Mímir 借鉴 B5）：任意记忆的完整变更史可查
     @app.get("/events/history")
@@ -347,7 +348,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"events/history 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     # 🏛️ 治理管线（v19.4.0 Mímir 借鉴 B1）：候选队列 + 人审入口
     @app.get("/governance/candidates")
@@ -366,7 +367,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"governance/candidates 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/governance/review")
     def governance_review(req: GovernanceReviewRequest):
@@ -392,7 +393,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"governance/review 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     # 🧭 信念层 Opinion（v19.4.0 Mímir 借鉴 B6）：三态信念写入 + 聚合判定
     @app.post("/opinions/set")
@@ -415,7 +416,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"opinions/set 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/opinions")
     def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID,
@@ -442,7 +443,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"opinions 查询失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/opinions/aggregate")
     def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID,
@@ -467,7 +468,7 @@ def register_crud_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"opinions/aggregate 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/update")
     def update(req: UpdateRequest):
@@ -528,7 +529,7 @@ def register_crud_routes(app: FastAPI) -> None:
         except Exception as e:
             feature_failed("index_memory", e)
             logger.error(f"update 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/usage")
     def usage(start: str = None, end: str = None):

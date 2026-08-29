@@ -16,6 +16,7 @@ from ducky.mem0_runtime import (
 )
 from ducky.bank_contract import ensure_bank_registered, make_scope
 from ducky.failure_ledger import feature_failed
+from ducky.api_errors import api_error_detail
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -526,7 +527,7 @@ def register_add_routes(app: FastAPI) -> None:
             feature_failed("index_memory", e)
             feature_failed("store_verbatim", e)
             logger.error(f"add 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/add/job/{job_id}")
     def add_job_status(job_id: str):
@@ -540,7 +541,7 @@ def register_add_routes(app: FastAPI) -> None:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/add/coalesce")
     def add_coalesce_status(user_id: str = ""):
@@ -555,7 +556,7 @@ def register_add_routes(app: FastAPI) -> None:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.get("/add/coalesce/stats")
     def add_coalesce_stats(reset: bool = False):
@@ -569,7 +570,7 @@ def register_add_routes(app: FastAPI) -> None:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
 
     @app.post("/add/coalesce/flush")
     def add_coalesce_flush(user_id: str = "", force: bool = True,
@@ -619,4 +620,4 @@ def register_add_routes(app: FastAPI) -> None:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
