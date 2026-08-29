@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from ducky.mem0_runtime import get_memory, MEM0_CONFIG
 from ducky.utils import get_facts_conn
+from ducky.api_errors import api_error_detail
 
 logger = logging.getLogger("aiduMEM.Obsidian")
 
@@ -116,4 +117,4 @@ def register_obsidian_routes(app: FastAPI) -> None:
             raise
         except Exception as e:
             logger.error(f"Obsidian sync failed: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))
