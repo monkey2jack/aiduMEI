@@ -801,6 +801,37 @@ python -m compileall ducky api_server.py mcp_server.py
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
 | Not covered | Real mem0/Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are covered by production smoke tests |
 
+### Environment matrix: one suite, five environments, every difference attributed (measured 2026-08-29)
+
+> **Why a matrix.** In v20.2.5 four tests were **green in the sandbox and red on the deployment box** —
+> the only variable being whether the rerank service was reachable (no credentials in the sandbox, so it
+> degrades and scores pass through; credentials on the deployment box, so the real fusion applies and the
+> numbers move). **A test whose conclusion depends on what an external service is doing today is a weather
+> forecast, not a predicate.** Reporting a single environment's number hides that class of defect.
+
+| # | Environment | Passed | Skipped | Attribution |
+|---|-------------|-------:|--------:|-------------|
+| ① | Clean dev machine · full extras | 1487 | 12 | host Hermes source absent ×12 |
+| ② | Fresh clone · **no config** · `.git` present (≈ someone seeing this project for the first time) | 1497 | 2 | `ruff` not installed ×2 |
+| ③ | Fresh clone · **with production config** · `.git` present (rerank reachable) | 1497 | 2 | `ruff` not installed ×2 |
+| ④ | Deployment-tree shape · with config · **no `.git`** | 1496 | 3 | `ruff` ×2 + not a git worktree ×1 |
+| ⑤ | All axes present · with config · `.git` · `ruff` side-loaded | **1499** | **0** | — |
+
+Every row satisfies `passed + skipped = 1499`, and each skip count matches its attribution line by line.
+**A difference that cannot be attributed means there is still a defect that only shows up when you change
+environments.**
+
+**Rows ② and ③ are identical, and that is the point.** Their only difference is rerank reachability; in
+v20.2.5 that cell read **4 failed**. The disappearance of that difference is *evidence* that the suite no
+longer depends on what an external service is doing today — not a promise that it doesn't.
+
+How: tests that assert on scores remove rerank by default, so the predicate depends only on the scoring
+formula; a separate group injects a controlled double with rerank *on* and asserts the gate still holds
+through the fusion path — **both environments are verified, not one or the other**. A meta-guard then
+requires every test asserting on scoring output to declare its rerank state. It caught a pre-existing case
+the day it landed (one that passes in both environments today, purely because the ordering happened to
+survive fusion).
+
 > **⚠️ These numbers assume the optional extras are installed** (added in v20.2.5,
 > a gap the external audit pointed out).
 >
