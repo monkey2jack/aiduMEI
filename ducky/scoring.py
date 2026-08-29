@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 
 from ducky.env_config import float_env
 import re
@@ -22,6 +23,49 @@ from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.scoring")
 
+# 召回闸门遥测（线程本地）。**拦了多少必须让调用方看得见** —— 这个仓的家训是
+# 腿断/降级都要如实下发（v20.1 WP-C）；一道悄悄过滤的闸门与静默失败同型。
+_gate_telemetry = threading.local()
+
+
+def reset_gate_telemetry() -> None:
+    _gate_telemetry.data = {}
+
+
+def last_gate_telemetry() -> dict:
+    return dict(getattr(_gate_telemetry, "data", {}) or {})
+
+
+def _set_gate_telemetry(**fields) -> None:
+    data = getattr(_gate_telemetry, "data", None)
+    if data is None:
+        data = {}
+        _gate_telemetry.data = data
+    data.update(fields)
+
+
+def _evidence_gate_on() -> bool:
+    """证据闸门开关；只有显式写 0/false/off 才关。
+
+    非法值按**开**处理并出声 —— 与铁律 13 同款：「设了个打错的值」不该
+    悄悄变成「关掉了一道安全闸门」。
+    """
+    raw = (os.environ.get(_EVIDENCE_GATE_ENV) or "").strip().lower()
+    if not raw:
+        return True
+    if raw in ("0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    logger.warning("%s=%r 无法识别，本次按**开启**处理（安全侧）", _EVIDENCE_GATE_ENV, raw[:20])
+    return True
+
+
+def _score_bucket(s: float) -> str:
+    """把分数落进 0.1 宽的桶 —— `score_histogram` 是给下一版定阈值用的原料。"""
+    b = max(0, min(9, int(float(s) * 10)))
+    return f"{b/10:.1f}-{(b+1)/10:.1f}"
+
 # 统一衰减率与映射参数（单一真相源，支持环境变量微调）
 # v20.2.3（外审 M-2 同族）：非法值曾让本模块 import 即崩 —— 打分参数
 # 写错一个字符，整条召回链跟着消失。回退默认 + 出声，见 ducky/env_config.py。
@@ -31,6 +75,45 @@ RERANK_WEIGHT = float_env("AIDUMEM_RERANK_WEIGHT", 0.4, minimum=0.0, maximum=1.0
 # math.exp(-s / T) 直接 ZeroDivisionError。exclusive_minimum 这个能力 v20.2.3
 # 的 A-2 就加进 env_config 了，当时**没用在这一行**。
 SIGMOIDAL_TEMPERATURE = float_env("AIDUMEM_SIGMOIDAL_TEMP", 10.0, exclusive_minimum=0.0)
+
+# ── 召回闸门（Issue #5：弱命中条目可凑分填满结果集）────────────────────
+#
+# **这个仓里一共有三道分数相关的闸门，轴与层位各不相同，别把它们当重复实现。**
+#
+#   ① `AIDUMEM_RECALL_SCORE_FLOOR`（`hot/search.py:_score_floor`）
+#      —— 注意前缀是 `AIDUMEM_`：那是为兼容既有部署**冻结**的老前缀。
+#      本次新加的两个变量按现行规范用 `AIDUMEI_`（品牌守卫会盯着）。
+#      —— 轴 = **向量分** `r["score"]`；层 = `/search` **响应层**；默认 0.0。
+#      只覆盖 `/search` 这一条路。
+#   ② `RECALL_MIN_HYBRID`（本文件，下面这一行）
+#      —— 轴 = **复合总分** `_hybrid_score`（rerank 融合后的终态分）；
+#      层 = **打分层**，两条调用链（engine / recall_funnel）与一切调用本函数的
+#      路径都受益（含 MCP）。默认 0.0。
+#   ③ `CHAIN_MIN_SCORE`（`pipeline/memory_broadcast.py`）与
+#      `MIN_SCORE_TO_PROMOTE`（`evolve_mem.py`）—— 不在召回链上，别混。
+#
+# **默认取 0.0 不是偷懒，是这个仓 v20.1 就下过的裁决**（原话在
+# `hot/search.py:_verdict_threshold` 的注释里）：本机没有足够的查询分布去定
+# 一个生产阈值，拍脑袋常数会把真记忆判成「没有」。校准值属于部署配置决策，
+# 要用生产侧的真实查询分布算分位数再设 —— 所以本次把**观测**做出来
+# （见下面回写的 `score_histogram`），值等数据够了再开。
+#
+# 实测支撑（2026-08-29，跑本函数现算，非推导）：
+#   · 零证据条目地板 0.2015；事实类查询 ×1.35 后 0.2720；
+#     高信任高热度可到 0.4000，叠事实类 0.5400，再叠 funnel 的
+#     `IGNITION_BOOST ×1.5` 到 **0.8100** —— **已越过「真相关」参照的 0.6065**。
+#   · 所以**单靠总分门槛治不了这个病**：拦得住 0.81 的阈值必然连真结果一起杀。
+#     承重的是下面那道**证据闸门**，总分门槛只是补充。
+#   · 而 issue 建议的 0.3 会误杀合法弱召回：三 token 查询命中一个
+#     （bm25=0.333）总分约 0.285，落在门槛下方。
+RECALL_MIN_HYBRID = float_env("AIDUMEI_RECALL_MIN_HYBRID", 0.0,
+                              minimum=0.0, maximum=1.0)
+
+# 证据闸门：向量分与 BM25 分**双零**的候选一律出局。
+# 关掉它需要显式设 `AIDUMEI_RECALL_EVIDENCE_GATE=0` —— 与总分门槛相反，
+# 这一道**默认开**：零证据条目与查询之间不存在任何可解释的关联，
+# 放它进结果集没有「可能是对的」这种情形，因此不存在误杀风险。
+_EVIDENCE_GATE_ENV = "AIDUMEI_RECALL_EVIDENCE_GATE"
 
 DEFAULT_WEIGHTS = {
     "vector": 0.35,
@@ -232,6 +315,8 @@ def score_and_rank_candidates(
         logger.debug(f"批量查询 memory_types 跳过: {e}")
 
     scored: List[dict] = []
+    _gate_on = _evidence_gate_on()
+    _evidence_filtered = 0
     for item in candidates:
         if not isinstance(item, dict):
             continue
@@ -271,6 +356,25 @@ def score_and_rank_candidates(
         access_count = (item.get("metadata") or {}).get("access_count") or sal_rec.get("access_count", 1)
         heat_s = min(finite_or(access_count, 1.0) / 100.0, 1.0)
 
+        # ── 证据闸门（Issue #5 · 承重）────────────────────────────────
+        # 向量分与 BM25 分**双零** = 这条候选与查询之间没有任何可解释的关联。
+        # 它此前照样能靠时效 + 可靠性 + 热度凑分进结果集：实测零证据条目
+        # 地板 0.2015，高信任高热度可到 0.4000，事实类查询再 ×1.35 到 0.5400，
+        # funnel 的 ignition 再 ×1.5 到 0.8100 —— **越过了「真相关」参照的 0.6065**。
+        #
+        # 放在这里（打分循环内、rerank 之前）有两个好处：垃圾候选不进重排，
+        # 省 token；两条调用链（engine / recall_funnel）同时受益，因为它们
+        # 共用本函数这一个出口。
+        #
+        # **ignited 条目不会被误杀**：`recall_funnel.py:176` 把 `_ignition_score`
+        # 并进了 `item["score"]`，走的就是向量分这个入口 —— 它有证据。
+        # **向量腿断掉时也不误判**：那时所有候选 vec_s=0，还剩 BM25；两者都 0
+        # 就是真的没有证据。返回空不会冒充腿断 —— v20.2.4 的 `vector_leg`
+        # 三态遥测（ok/degraded/not_found）区分得开。
+        if _gate_on and vec_s <= 0 and bm25_s <= 0:
+            _evidence_filtered += 1
+            continue
+
         # 基础综合得分
         base_score = (
             w["vector"] * vec_s
@@ -290,6 +394,12 @@ def score_and_rank_candidates(
         scored.append(item)
 
     if not scored:
+        # 全被闸门滤光也要如实回报 —— 否则「候选里一条有证据的都没有」
+        # 与「压根没有候选」在响应里长得一模一样，正是本仓反复修过的
+        # 「一个空列表说两件事」。
+        _set_gate_telemetry(evidence_filtered=_evidence_filtered, score_filtered=0,
+                            threshold=RECALL_MIN_HYBRID,
+                            evidence_gate=_gate_on, score_histogram={})
         return []
 
     # 3. Rerank 重排序
@@ -334,8 +444,45 @@ def score_and_rank_candidates(
         # 遥测不该把主查询带崩，所以照旧不抛，但必须留一笔。
         logger.debug("rerank 遥测回写失败，响应里看不到 applied: %s", exc)
 
-    # 4. 排序与截断
+    # 4. 排序、总分门槛、截断
     scored.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
+
+    # 分数直方图：**这是下一版给 RECALL_MIN_HYBRID 定值的原料**。
+    # 没有它，阈值只能继续拍脑袋 —— 而本仓已经为「拍脑袋常数」付过两次学费
+    # （WAL 告警阈值 1MB、核心记忆 30 天）。先量，再卡。
+    _hist: Dict[str, int] = {}
+    for it in scored:
+        _hist[_score_bucket(it.get("_hybrid_score", 0) or 0)] = \
+            _hist.get(_score_bucket(it.get("_hybrid_score", 0) or 0), 0) + 1
+
+    _score_filtered = 0
+    if RECALL_MIN_HYBRID > 0:
+        # 门槛必须卡在 **rerank 融合之后** —— `old*(1-W) + rr*W` 才是终态分，
+        # 卡在融合前等于对一个中间量设限。
+        #
+        # **ignited 条目豁免**：`recall_funnel.py:194` 在本函数返回**之后**才乘
+        # `IGNITION_BOOST = 1.5`，门槛在这里看到的是 boost 前的分。一条 boost 后
+        # 能到 0.33 的 ignited 条目，会在 0.22 时被这道门槛杀掉 —— 那是把
+        # 「显式的相关性信号」当成弱命中处理，方向正好反了。
+        kept = [it for it in scored
+                if it.get("_ignited")
+                or (it.get("_hybrid_score", 0) or 0) >= RECALL_MIN_HYBRID]
+        _score_filtered = len(scored) - len(kept)
+        scored = kept
+
+    # 拦了多少必须让调用方看得见（与 rerank 遥测同款纪律：回写自身失败
+    # 只记 debug，绝不把主查询带崩）。
+    try:
+        _set_gate_telemetry(
+            evidence_filtered=_evidence_filtered,
+            score_filtered=_score_filtered,
+            threshold=RECALL_MIN_HYBRID,
+            evidence_gate=_gate_on,
+            score_histogram=_hist,
+        )
+    except Exception as exc:
+        logger.debug("召回闸门遥测回写失败，响应里看不到过滤条数: %s", exc)
+
     final = scored[:limit]
 
     return final

@@ -104,7 +104,7 @@ library out of the box**; add keys and it upshifts automatically. One package, t
 with it, your call.
 
 
-## 🛡️ Security boundary: audited against our own contract, twice (v20.2.4 / v20.2.5)
+## 🛡️ Security boundary: audited against our own contract twice, plus one community report (v20.2.4 / v20.2.5)
 
 An independent third-party security review graded this tree **C (conditional fail)** on 27 findings. Every one was **verified against the code, none was a false positive, and all are now remediated**.
 
@@ -154,6 +154,34 @@ Now: deletion is three-state — **`committed`→200 / `partial`→**207** / `fa
 
 **And one of our own guards was lying to us**: this round put Ruff into the push gate (it had never been installed; the moment it was, it caught an `F821` — a config-reading path used an undefined name, the exception was swallowed, and that logic had therefore **never once executed successfully**). But the gate's first implementation returned "zero hits" **in an environment where ruff was not installed**, so it reported "scanned, passed". "Scanned it" and "could not scan" looked identical — **a guard that silently turns green when its dependency is missing is more dangerous than no guard: it also signs off for you.** It now skips honestly when the tool is absent, and the predicate is shared with the skip-axis probe as a single implementation.
 
+### Round three: a community member's agent found a bug we had missed
+
+[Issue #5](https://github.com/monkey2jack/aiduMEI/issues/5) (reported by 小赫, a Hermes agent, on behalf of 拾予, with 小克 as audit agent) pointed out that the hybrid recall chain has **no minimum-score gate at all**: zero-hit and weak-hit candidates can pad their way into the result set on recency, reliability and access heat, diluting genuinely relevant recall.
+
+**Correct.** We re-measured everything by running the production scoring function rather than deriving it on paper:
+
+| Case | Composite score |
+|---|---|
+| Zero-evidence item (vector and BM25 both zero), defaults | 0.2015 |
+| Zero-evidence + fact-seeking query ×1.35 | 0.2720 |
+| Zero-evidence + high trust + high access heat | 0.4000 |
+| Zero-evidence + high trust/heat + fact-seeking query | **0.5400** |
+| ↑ plus the ignition boost ×1.5 | **0.8100** |
+| Reference: a **genuinely relevant** item (vec .8 / bm25 .5) | 0.6065 |
+
+**The last two rows are what decided the fix**: a zero-evidence item's ceiling is already **above** a relevant one. That means the issue's suggested "set a minimum total-score threshold" **cannot work on its own** — any threshold high enough to stop 0.81 also kills real results.
+
+So the fix has two layers, both at the **single** scoring exit (both recall chains benefit):
+
+- **Evidence gate (on by default)**: candidates whose vector score *and* BM25 score are **both zero** are dropped before reranking (which also saves tokens). A zero-evidence item has no explicable relation to the query at all — there is no "it might be right" case here, so this gate carries no false-kill risk. Ignition hits are **not** affected: their score enters through the vector-score input.
+- **Composite threshold (default 0.0, i.e. off)**: the mechanism is built, configurable and instrumented, but **not active by default**. Why not the 0.3 the issue suggests: we measured that a three-token query matching one token (bm25 = 1/3) scores about **0.285** — that is a *legitimate* weak recall, not garbage. This threshold needs a percentile computed from real production query distribution; so this release ships the observation first (the response carries a score histogram) and the value gets set once the data exists. **A guessed constant will report real memories as "not found"** — that is a decision this repo already wrote down back in v20.1, not a new idea.
+
+> **Three score gates, on different axes and at different layers — do not treat them as duplicates**: `AIDUMEM_RECALL_SCORE_FLOOR` (**vector-score** axis, `/search` response layer), `AIDUMEI_RECALL_MIN_HYBRID` (**composite-score** axis, scoring layer, covers every caller including MCP), plus the propagation and self-evolution thresholds that are not on the recall chain at all. The source cross-references both, with a guard watching.
+
+**What we deliberately did not bundle in**: BM25's CJK matching is substring-based (querying 「量」 matches 「用量」). That is a real problem, but changing it is a **retrieval-behaviour change** requiring a benchmark comparison — not something to slip into a bug fix. Tracked separately.
+
+**Thanks to maoajun865, 小赫 and 小克.** Accurate report, clear reproduction path, and a purely peer-review contribution.
+
 **One thing stated plainly**: `checkpoints`, the persona store and the observation store are **not on the two-dimensional tenant axis** (see the "Precise boundary" table above for what each actually keys on). That is a pre-existing design decision, explicitly marked in the in-repo delete-chain matrix. What this version did was bring it into the open — the README's sweeping claim is gone, those endpoints are labelled system interfaces, and `delete_all` now returns a `not_cleared` field listing what it did not touch and why. **The "I thought it was all wiped" misreading is gone; the capability boundary itself is unchanged.**
 
 
@@ -167,7 +195,7 @@ v19.5.0 and this release do **not** change the same layer.
 | What changed | The release process — **zero runtime behaviour change** | The **ownership model** of memory (a data-plane contract) |
 | One-line theme | Don't let out what shouldn't be said | Don't let mix what shouldn't be mixed |
 | Should you upgrade | Optional; nothing functional depends on it | **Recommended** — it fixes a class of silent data loss |
-| Total test cases | ~700 | **1469** |
+| Total test cases | ~700 | **1481** |
 
 Three reasons, each harder than the last:
 
@@ -482,6 +510,11 @@ BM25 trigram (zero-latency fallback) + vector embedding vectors + Reranker + rec
 >
 > `/search` has hard input bounds: `limit` is `1..100` and `query` has a maximum length; an empty `query` returns
 > `recall_verdict="empty_query"` instead of handing back arbitrary memories.
+>
+> **Recall gates** (community Issue #5): candidates with **both** vector and BM25 scores at zero are dropped
+> (`AIDUMEI_RECALL_EVIDENCE_GATE=0` disables it); the composite threshold `AIDUMEI_RECALL_MIN_HYBRID`
+> is **0.0 (off) by default** — see the security-boundary section for why. Filter counts and a score histogram
+> ride along in telemetry: **how much was dropped is visible to the caller**.
 
 ### Code Graph (Zeus v18.0)
 
@@ -743,10 +776,10 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **1469** (measured via `pytest --collect-only`) |
-| Clean dev machine | 1457 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 1466 passed · **3 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **Measured on the production box, 2026-08-28** (whitelist copy with `.git` removed and no lint tooling; the `pytest -rs` skip reasons line up case by case: 2 on the `ruff` axis, 1 on the git-worktree axis). The previous real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree when the total was 860 — for several releases in between this row was **axis-derived**; from this release it is measured again |
-| All axes present | 1469 all green · 0 skipped — **measured on the production box, 2026-08-28** (candidate tree cloned from a bundle, `.git` present, all twelve axes available; the twelfth axis is satisfied by side-loading `ruff` via `pip install --target`, **without writing to the production venv**). The previous all-axes measurement was **1440 all green** on 2026-08-27, against v20.2.4's eleven axes — both the axis count and the total changed, so this release re-measured instead of editing the old conclusion's numbers |
+| Total cases | **1481** (measured via `pytest --collect-only`) |
+| Clean dev machine | 1469 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Sandbox on the production box | 1478 passed · **3 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **Measured on the production box, 2026-08-28** (whitelist copy with `.git` removed and no lint tooling; the `pytest -rs` skip reasons line up case by case: 2 on the `ruff` axis, 1 on the git-worktree axis). The previous real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree when the total was 860 — for several releases in between this row was **axis-derived**; from this release it is measured again |
+| All axes present | 1481 all green · 0 skipped — **measured on the production box, 2026-08-28** (candidate tree cloned from a bundle, `.git` present, all twelve axes available; the twelfth axis is satisfied by side-loading `ruff` via `pip install --target`, **without writing to the production venv**). The previous all-axes measurement was **1440 all green** on 2026-08-27, against v20.2.4's eleven axes — both the axis count and the total changed, so this release re-measured instead of editing the old conclusion's numbers |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
@@ -755,7 +788,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > **⚠️ These numbers assume the optional extras are installed** (added in v20.2.5,
 > a gap the external audit pointed out).
 >
-> The 1469/1457/12 above were measured with `regex`, `nltk`, `numpy`,
+> The 1481/1469/12 above were measured with `regex`, `nltk`, `numpy`,
 > `qdrant_client`, `mem0ai` and `fastembed` all present. The "30-second start"
 > path in this README installs only `requirements.txt`, so those optional
 > dependencies are absent and their skip axes drop out together — fewer passed,
@@ -774,9 +807,9 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
 > ```
 
-> **Why report both 1457 and 1466**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. **both 1457 and 1466 are measured** (2026-08-28, on the dev
-> machine and the production box respectively), and 1469 is the all-axes measurement taken the same day on the
+> **Why report both 1469 and 1478**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. **both 1469 and 1478 are measured** (2026-08-28, on the dev
+> machine and the production box respectively), and 1481 is the all-axes measurement taken the same day on the
 > production candidate tree — each number's environment is stated in the table above. The previous sandbox
 > measurement was 859, on the v20.0 committed tree when the total was 860; for several releases in between this
 > row was axis-derived. For every number, say whether it was measured or derived.
@@ -802,8 +835,8 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `fastembed` installed | 1 | `tests/test_v20_2_autoshift.py` (real-model test for the autoshift fallback leg; honest skip when the dependency or model file is absent) |
 > | `ruff` installed | 2 | `tests/test_v20_2_5_audit_remediation.py` (the fourth gate's real-defect rules F821/F811/F841; when absent it **skips honestly instead of silently reporting no hits** — the first implementation did exactly that and the sandbox run caught it: the production venv has no ruff, so the guard was permanently green. push_gate still blocks on it) |
 >
-> A dev machine lacks the first → 1457 + 12. The sandbox on the production box lacks the second (whitelist copy, no
-> `.git`) → 1466 + 3. **Each is missing one, so neither partial environment produces 1469 all green** — the
+> A dev machine lacks the first → 1469 + 12. The sandbox on the production box lacks the second (whitelist copy, no
+> `.git`) → 1478 + 3. **Each is missing one, so neither partial environment produces 1481 all green** — the
 > is a derived number. The previous README claimed it was "verified on production", and the very
 > production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
 > must survive the measurement it cites.**
@@ -822,20 +855,20 @@ python -m compileall ducky api_server.py mcp_server.py
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 1457 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1469 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1457 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 1469 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1481 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1469 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 1466 passed, 3 skipped
+> our own production box is exactly that), the first command above actually prints 1478 passed, 3 skipped
 > (**axis-derived**; the last real sandbox measurement was 859 passed, 1 skipped on the v20.0 committed tree,
 > when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1469 passed` line in
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1481 passed` line in
 > the code block above requires *all eleven* axes present at once; that complete-axis result was measured on
-> the production box on 2026-08-27 (candidate tree, total 1469, zero skips).
+> the production box on 2026-08-27 (candidate tree, total 1481, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
 >
