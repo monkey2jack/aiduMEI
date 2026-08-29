@@ -347,8 +347,18 @@ def test_scoring_fact_seeking_detection():
     assert is_fact_seeking_query("今天天气怎么样") is False
 
 
-def test_score_and_rank_candidates():
-    """测试统一候选打分与排序入口"""
+def test_score_and_rank_candidates(monkeypatch):
+    """测试统一候选打分与排序入口。
+
+    2026-08-29：显式摘掉 rerank。这条用例此前**没有声明重排状态** ——
+    它今天在两种环境下都过，纯属排序恰好没被融合分改变；而同一个疏漏在
+    `test_recall_min_score_gate.py` 第一版上就制造了「沙箱绿、部署机红」。
+    判据不该取决于外部服务今天在不在，所以这里把那条腿摘掉，
+    让断言只由打分公式决定。由该文件的元守卫
+    `test_every_score_asserting_test_declares_its_rerank_state` 盯着。
+    """
+    monkeypatch.setattr("ducky.mem0_runtime.rerank",
+                        lambda *a, **kw: [], raising=False)
     now = time.time()
     candidates = [
         {
