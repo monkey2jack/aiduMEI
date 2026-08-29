@@ -52,10 +52,14 @@ if llm_api_key == "__SF_KEY__" or not llm_api_key:
                 llm_api_key = f.read().strip()
                 break
 
-# LLM 探活候选：公网网关优先（便于用量统计），本地隧道兜底；超时放宽到 30s
+# LLM 探活候选：公网网关优先（便于用量统计），本地隧道兜底
 #   AIDUMEM_LLM_PUBLIC_BASE  公网 OpenAI-compatible 网关，如 https://your-gateway/v1
-#   AIDUMEM_LLM_TUNNEL_BASE  本地隧道/直连地址
-LOCAL_LLM_TUNNEL = os.environ.get("AIDUMEM_LLM_TUNNEL_BASE", "http://127.0.0.1:22012/v1")
+#   AIDUMEM_LLM_TUNNEL_BASE  本地隧道/直连地址（需显式设置；不再默认 127.0.0.1:22012）
+# 2026-08-29 修复：22012 是东京隧道时代遗留的幽灵端口，本机无任何服务监听。
+#   之前作为默认兜底导致 9r 抖动时探针 fallthrough 到 22012 报「连接被拒」，
+#   把真实故障（9r 超时）误报成误导性的 22012 拒连。现在默认不设兜底，
+#   显式设置 AIDUMEM_LLM_TUNNEL_BASE 时才启用。
+LOCAL_LLM_TUNNEL = os.environ.get("AIDUMEM_LLM_TUNNEL_BASE", "")
 PUBLIC_LLM_BASE = os.environ.get("AIDUMEM_LLM_PUBLIC_BASE", "")
 LLM_PROBE_TIMEOUT = 30
 llm_base_candidates = []

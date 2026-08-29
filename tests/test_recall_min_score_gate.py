@@ -29,6 +29,25 @@ NEUTRAL = "随便问点别的内容"
 FACT_Q = "他的生日是什么时候"        # 命中 is_fact_seeking_query → base *= 1.35
 
 
+@pytest.fixture(autouse=True)
+def _rerank_off(monkeypatch):
+    """默认关掉 rerank —— **本文件第一版就栽在没关它上**。
+
+    第一版的四条断分数的用例在**沙箱里绿、部署机上红**：沙箱没有
+    `mem0_config_local.json`，重排服务拿不到凭据 → 降级保分；部署机凭据齐全
+    → 真融合 `old*(1-W) + rr*W`，同一条候选的分数就变了
+    （实测 0.3641 = 0.6065×0.6 + 0×0.4，与 `RERANK_WEIGHT=0.4` 精确吻合）。
+
+    **一个在某些环境里静默变绿的测试，和它测的那个缺陷是同一种病。**
+    所以断分数的用例一律先把这条腿摘掉，让判据只由打分公式决定；
+    rerank 在场时的行为另有一组用例专门验（见文件末尾 `TestWithRerankAlive`），
+    **两种环境都必须验到**，不是二选一。
+    """
+    def _no_rerank(*a, **kw):
+        return []
+    monkeypatch.setattr("ducky.mem0_runtime.rerank", _no_rerank, raising=False)
+
+
 def _mk(mid, *, vec=0.0, bm25=0.0, rel=0.5, access=1, days=0, ignited=False):
     it = {
         "id": mid,
@@ -319,3 +338,153 @@ def test_calibrated_floor_reproduces_the_two_live_queries(monkeypatch):
     q3 = [{"id": "p1", "score": 0.2862}, {"id": "p2", "score": 0.2819}]
     S.annotate_recall_strength(q3)
     assert {r["id"] for r in q3} == {"p1", "p2"}, "关掉之后不该再过滤（否则逃生门是假的）"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# rerank 在场时也必须成立 —— **不是二选一**
+#
+# 上面那组用 autouse fixture 把 rerank 摘掉，判据只由打分公式决定，可复现。
+# 但「摘掉重排再验」如果是唯一的验法，那就只是把假绿灯换了个地方藏：
+# 生产上重排是**开着**的，融合后的分才是终态分，门槛卡的正是那个数。
+#
+# 这一组用**可控替身**把 rerank 打开，断言闸门逻辑在融合后依然正确。
+# 替身返回可预测的分，所以判据仍然可复现 —— 可复现与「测到真路径」不矛盾。
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestWithRerankAlive:
+
+    @staticmethod
+    def _fake_rerank(scores):
+        """返回固定重排分的替身。
+
+        签名逐字对齐生产调用点 `do_rerank(query, docs, top_n=...)`，
+        返回形状对齐 `{"index": i, "relevance_score": s}` —— 替身比生产窄或宽
+        都会制造假绿灯（v20.2.5 F-15 的教训）。
+        """
+        def _rr(query, docs, top_n=None, **kw):
+            return [{"index": i, "relevance_score": scores[i % len(scores)]}
+                    for i in range(len(docs))]
+        return _rr
+
+    def test_fusion_formula_is_what_the_gate_actually_sees(self, monkeypatch):
+        """先钉住融合式本身：门槛卡的是 `old*(1-W) + rr*W`，不是打分公式的原值。
+
+        这条是本组的地基 —— 后面两条都建立在「融合后分数会变」这个事实上。
+        数字现算，不写死。
+        """
+        monkeypatch.setattr("ducky.mem0_runtime.rerank",
+                            self._fake_rerank([0.0]), raising=False)
+        item = _mk("real", vec=0.8, bm25=0.5)
+        base = (DEFAULT_WEIGHTS["vector"] * 0.8 + DEFAULT_WEIGHTS["bm25"] * 0.5
+                + DEFAULT_WEIGHTS["time"] * 1.0 + DEFAULT_WEIGHTS["reliability"] * 0.5
+                + DEFAULT_WEIGHTS["heat"] * 0.01)
+        expected = base * (1 - scoring.RERANK_WEIGHT) + 0.0 * scoring.RERANK_WEIGHT
+
+        out = score_and_rank_candidates(NEUTRAL, [dict(item)], limit=5)
+        got = out[0]["_hybrid_score"]
+        assert abs(got - expected) < 0.002, (
+            f"融合后实得 {got}，按 old*(1-W)+rr*W 现算应为 {expected:.4f} "
+            f"（W={scoring.RERANK_WEIGHT}）—— 融合式变了，下面两条的前提就没了"
+        )
+        assert "_rerank_score" in out[0], "重排真跑过就该留下 _rerank_score 这个凭证"
+
+    def test_evidence_gate_still_fires_before_rerank(self, monkeypatch):
+        """证据闸门在 rerank **之前** —— 零证据条目根本不该被送去重排。
+
+        判据用**替身收到的文档数**，不是结果集：后者对「送去重排了但最后被
+        排掉」没有区分力，而「省 token」正是把闸门放在重排前的理由之一。
+        """
+        seen = {}
+
+        def _rr(query, docs, top_n=None, **kw):
+            seen["docs"] = list(docs)
+            return [{"index": i, "relevance_score": 0.9} for i in range(len(docs))]
+
+        monkeypatch.setattr("ducky.mem0_runtime.rerank", _rr, raising=False)
+        cands = [_mk("zero"), _mk("zero2"), _mk("real", vec=0.8, bm25=0.5)]
+        out = score_and_rank_candidates(NEUTRAL, [dict(c) for c in cands], limit=10)
+
+        assert _ids(out) == {"real"}, f"零证据条目混进结果集了：{_ids(out)}"
+        assert len(seen.get("docs", [])) == 1, (
+            f"送去重排的文档有 {len(seen.get('docs', []))} 份，应当只有 1 份 —— "
+            "零证据候选被白送去重排了，闸门位置不对（也白烧 token）"
+        )
+
+    def test_threshold_is_applied_to_the_fused_score_not_the_raw_one(self, monkeypatch):
+        """门槛必须卡在**融合后**：同一条候选，融合前过线、融合后不过线 → 应当被拦。
+
+        这条正是「沙箱绿部署机红」那个缺陷的正面形态：如果门槛卡在融合前，
+        它在有重排的环境里就形同虚设。
+        """
+        item = _mk("borderline", vec=0.8, bm25=0.5)
+        raw = _score_of(item)                       # 无重排时的原值
+        fused = raw * (1 - scoring.RERANK_WEIGHT)   # 重排给 0 分时的融合值
+        thr = (raw + fused) / 2                     # 卡在两者之间：现算，不写死
+        assert fused < thr < raw, (
+            f"用例前提要求 融合后 {fused:.4f} < 门槛 {thr:.4f} < 融合前 {raw:.4f}"
+        )
+
+        monkeypatch.setattr("ducky.mem0_runtime.rerank",
+                            self._fake_rerank([0.0]), raising=False)
+        monkeypatch.setattr(scoring, "RECALL_MIN_HYBRID", thr)
+        out = score_and_rank_candidates(NEUTRAL, [dict(item)], limit=5)
+        assert out == [], (
+            "融合后已低于门槛却仍被放行 —— 门槛卡在了融合之前，"
+            "在开着重排的生产环境里等于没有"
+        )
+
+        # 负向对照：把重排分给高，融合后重新过线，必须回来
+        monkeypatch.setattr("ducky.mem0_runtime.rerank",
+                            self._fake_rerank([1.0]), raising=False)
+        out2 = score_and_rank_candidates(NEUTRAL, [dict(item)], limit=5)
+        assert _ids(out2) == {"borderline"}, (
+            "重排给了高分、融合后过线，却仍被拦 —— 那就不是门槛，是黑名单"
+        )
+
+
+def test_every_score_asserting_test_declares_its_rerank_state():
+    """**元守卫**：凡是拿 `score_and_rank_candidates` 的输出做断言的用例，
+    必须显式声明 rerank 状态（摘掉它，或注入可控替身）。
+
+    这条守卫的由来：本文件第一版四条用例在**沙箱绿、部署机红** ——
+    唯一的变量是重排服务可不可达。一个测试的结论取决于外部服务今天在不在，
+    它就不是判据，是天气预报。
+
+    **判据是「有没有声明」，不是「跑起来红不红」** —— 后者只能在恰好没有
+    凭据的机器上发现问题，那正是当初漏掉它的原因。声明的方式有两种：
+    模块级 autouse fixture，或用例/类内 monkeypatch `mem0_runtime.rerank`。
+
+    豁免：只调用**纯函数**（如 `normalize_score`、`calc_bm25_score`）而不碰
+    打分主链的文件不在射程内 —— 它们的输出与重排无关。
+    """
+    import ast
+    import pathlib
+
+    tests_dir = pathlib.Path(__file__).resolve().parent
+    offenders = {}
+    for path in sorted(tests_dir.glob("test_*.py")):
+        src = path.read_text(encoding="utf-8")
+        if "score_and_rank_candidates(" not in src:
+            continue
+        tree = ast.parse(src, filename=str(path))
+        # 该文件里有没有「声明过 rerank 状态」的痕迹（模块级 fixture 或任意位点的 patch）
+        declares = ("mem0_runtime.rerank" in src) or ("ducky.mem0_runtime.rerank" in src)
+        if declares:
+            continue
+        # 逐个用例看：真的拿打分输出做了断言吗？只是调用不算
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not fn.name.startswith("test_"):
+                continue
+            body = ast.unparse(fn)
+            if "score_and_rank_candidates(" not in body:
+                continue
+            if "_hybrid_score" in body or "_rerank_score" in body:
+                offenders.setdefault(path.name, []).append(fn.name)
+    assert not offenders, (
+        f"这些用例拿打分输出做断言却没声明 rerank 状态：{offenders} —— "
+        "它们会在重排可达的机器上给出与沙箱不同的结论（沙箱绿、部署机红），"
+        "而那正是本文件第一版栽过的跟头。请加 autouse fixture 摘掉重排，"
+        "或注入可控替身。"
+    )

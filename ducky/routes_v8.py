@@ -23,6 +23,7 @@ from ducky.bank_contract import (
 )
 from ducky.utils import DEFAULT_USER_ID
 from ducky.mem0_runtime import get_memory
+from ducky.api_errors import api_error_detail
 
 logger = logging.getLogger("aiduMEM.routes")
 
@@ -249,4 +250,4 @@ def register_v8_routes(app: FastAPI) -> None:
             raise HTTPException(503, "Instinct Graduation 模块未就绪")
         except Exception as e:
             logger.error(f"graduate 失败: {e}")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, api_error_detail(e))

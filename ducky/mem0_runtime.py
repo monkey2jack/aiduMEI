@@ -603,7 +603,48 @@ def get_memory():
             return m
         except Exception as e:
             logger.error(f"mem0 初始化失败: {e}")
-            raise HTTPException(500, f"mem0 不可用: {e}")
+            raise HTTPException(503, _mem0_unavailable_detail(e))
+
+_CONFIG_EXAMPLE = "mem0_config_local.json.example"
+
+
+def _mem0_unavailable_detail(exc: Exception) -> str:
+    """把 mem0 初始化失败翻译成**调用方能照着做**的一句话。
+
+    🔴 参赛前自查 N-1：这里原先是 `f"mem0 不可用: {e}"` + HTTP 500，
+    于是第一次拿到这个项目的人，第一个动作（写一条记忆）换来的是：
+
+        500 {"detail":"mem0 不可用: Using SOCKS proxy, but the 'socksio'
+             package is not installed. Make sure to install httpx using ..."}
+
+    这句话**是真的，但对他没有用** —— 它说的是 httpx 内部的事，没说
+    「你还没配 key」，也没说「不配 key 也有一条路能走」。第一印象就此定型。
+
+    两处改动：
+      · 状态码 500 → **503**。这不是服务端故障，是**依赖未就绪**；
+        500 会让调用方以为撞上了 bug，503 才是「先去把依赖配好」。
+      · 正文给出**缺什么 / 去哪配 / 不配怎么办**三件事，原始异常保留在末尾
+        （运维还要靠它定位），但不再是唯一内容。
+    """
+    raw = str(exc)
+    low = raw.lower()
+    if "api" in low and "key" in low or "unauthorized" in low or "401" in low:
+        cause = "嵌入/LLM 服务的凭据缺失或无效"
+    elif "socks" in low or "proxy" in low:
+        cause = "出站代理配置导致 HTTP 客户端无法建立连接"
+    elif "connect" in low or "timeout" in low or "resolve" in low:
+        cause = "嵌入/LLM 服务地址不可达"
+    else:
+        cause = "mem0 初始化未能完成"
+    return (
+        f"记忆写入依赖的向量后端尚未就绪：{cause}。"
+        f"① 复制 {_CONFIG_EXAMPLE} 为 mem0_config_local.json 并填入你的 "
+        f"embedding / LLM 凭据；② 用 GET /health 查看 degraded 与 "
+        f"degraded_details 确认还缺什么；"
+        f"③ 暂时不想配也可以先用 POST /add/raw —— 那条路零 LLM、零向量，"
+        f"仍会写入原文并建全文索引。原始错误：{raw[:160]}"
+    )
+
 
 def reset_memory_singleton() -> None:
     """/reload 用：清空模块级 + sys 级单例。"""
