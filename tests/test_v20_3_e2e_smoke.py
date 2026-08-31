@@ -75,6 +75,37 @@ def test_missing_config_is_warning_not_silent_pass(smoke, monkeypatch):
     assert smoke.results[0]["status"] == "WARN"
     assert "cloud gears may be unavailable" in smoke.results[0]["detail"]
 
+def test_placeholder_config_is_warning_not_pass(smoke, tmp_path, monkeypatch):
+    """The shipped example must not be certified as a configured deployment."""
+    config = tmp_path / "mem0_config_local.json"
+    config.write_text(json.dumps({
+        "llm": {"config": {"api_key": "YOUR_LLM_API_KEY"}},
+        "embedder": {"config": {"api_key": "YOUR_EMBEDDING_API_KEY"}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("AIDUMEM_CONFIG_FILE", str(config))
+    smoke.config()
+    assert smoke.results[0]["status"] == "WARN"
+    assert smoke.results[0]["data"]["config_source"] == "AIDUMEM_CONFIG_FILE"
+    assert smoke.results[0]["data"]["placeholder_keys"] == ["embedder", "llm"]
+    assert smoke.results[0]["data"]["config_path"] == str(config)
+
+def test_valid_config_path_is_respected_and_passes(smoke, tmp_path, monkeypatch):
+    config = tmp_path / "custom-config.json"
+    config.write_text(json.dumps({
+        "llm": {"config": {"api_key": "real-llm-key"}},
+        "embedder": {"config": {"api_key": "real-embedding-key"}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("AIDUMEM_CONFIG_FILE", str(config))
+    smoke.config()
+    assert smoke.results[0]["status"] == "PASS"
+    assert smoke.results[0]["data"]["config_source"] == "AIDUMEM_CONFIG_FILE"
+    assert smoke.results[0]["data"]["config_path"] == str(config)
+
+def test_default_tenant_contains_random_suffix():
+    text = (_ROOT / "scripts" / "e2e_smoke.py").read_text(encoding="utf-8")
+    assert "secrets.token_hex" in text
+    assert 'default=f"e2e-smoke-{int(time.time())}-{secrets.token_hex(4)}"' in text
+
 
 def test_failed_recall_is_failure(smoke):
     class Response:

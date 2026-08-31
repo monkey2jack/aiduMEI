@@ -34,6 +34,8 @@ check "no hardcoded restore date" bash -c '! grep -q 20260727 scripts/restore_ba
 check "no hardcoded green probes" bash -c '! grep -q "\"injection_guard_ok\": True" ducky/hot/health.py && ! grep -q "\"port_service\": True" ducky/hot/health.py'
 check "MCP port is 8766 in README" bash -c '! grep -q ":8768" README.md && ! grep -q ":8768" README_EN.md'
 check "e2e script is executable" bash -c 'test -x scripts/e2e_smoke.py'
+check "e2e rejects example credentials" bash -c 'grep -q "_is_placeholder" scripts/e2e_smoke.py && grep -q "YOUR_LLM_API_KEY" tests/test_v20_3_e2e_smoke.py'
+check "e2e tenant has random suffix" bash -c 'grep -q "secrets.token_hex" scripts/e2e_smoke.py'
 
 if (( errors > 0 )); then
   printf '%d acceptance check(s) failed\n' "$errors" >&2

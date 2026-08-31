@@ -24,6 +24,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from ducky.utils import BASE_DIR
+
 logger = logging.getLogger("aiduMEM.code_graph")
 
 
@@ -172,7 +174,14 @@ class ImpactRequest(BaseModel):
     root_dir: str = ""
     changed_files: list[str] = Field(default_factory=list)
     max_depth: int = 3
-    max_files: int = 500
+    max_files: int = Field(default=500, ge=1, le=2000)
+
+def _workspace_root(root_dir: str) -> str:
+    candidate = os.path.abspath(root_dir or os.getcwd())
+    workspace = os.path.abspath(BASE_DIR)
+    if candidate != workspace and not candidate.startswith(workspace + os.sep):
+        raise HTTPException(400, "root_dir must stay inside AIDUMEM_HOME")
+    return candidate
 
 
 def register_code_graph_routes(app: FastAPI) -> None:
@@ -186,7 +195,7 @@ def register_code_graph_routes(app: FastAPI) -> None:
         if not req.changed_files:
             raise HTTPException(400, "changed_files 不能为空")
 
-        root_dir = req.root_dir or os.getcwd()
+        root_dir = _workspace_root(req.root_dir)
         if not os.path.isdir(root_dir):
             raise HTTPException(400, f"目录不存在: {root_dir}")
 
@@ -206,7 +215,7 @@ def register_code_graph_routes(app: FastAPI) -> None:
         """代码图谱统计"""
         t0 = time.time()
 
-        root_dir = root_dir or os.getcwd()
+        root_dir = _workspace_root(root_dir)
         if not os.path.isdir(root_dir):
             raise HTTPException(400, f"目录不存在: {root_dir}")
 
