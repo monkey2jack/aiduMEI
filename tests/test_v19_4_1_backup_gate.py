@@ -188,3 +188,15 @@ def test_tmp_backup_root_is_refused(wal_data_dir):
     )
     assert proc.returncode == 1
     assert "铁律拒绝" in proc.stdout + proc.stderr
+
+def test_backup_root_default_is_one_truth():
+    """v20.3 WP-A-05：backup_gate 与 pre-upgrade-check 的备份根默认值必须一致。
+
+    VOC 卡点 L：一个默认 repo/backups，另一个默认仓库父目录。备份成功、
+    升级门禁却找不到；这类“双真相源”不能靠人记。
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    a = (root / "scripts" / "backup_gate.sh").read_text(encoding="utf-8")
+    b = (root / "scripts" / "pre-upgrade-check.sh").read_text(encoding="utf-8")
+    assert 'BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-${REPO_ROOT}/backups}"' in a
+    assert 'BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-${REPO_ROOT}/backups}"' in b

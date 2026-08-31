@@ -3,6 +3,44 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.3.0 (优忆思 · 入口与可操作性 · 2026-08-31)
+    主题：修复 v20 的入口债。11 份双盲 VOC 给出同一个结论——
+    「代码是上游水平，文档是反 agent 的」：11/11 不建议投产、
+    部署度 50.5、运维度 37.1、推荐意愿 48.5。v20.3 不加新记忆能力，
+    只做一件事：让陌生 agent 和用户从仓库本身就能装好、验好、接好、
+    养好。验收以机械命令与退出码为准，不以文字描述为准。
+
+    预备阶段（基线卫生）：
+    1. 收编上一轮未入仓的账本记录（CHANGELOG 与本文件同步），
+       编号由漂移守卫强制连续。
+    2. WP-A 三条真投产阻断：rerank 样例从代码不认的扁平形状改为
+       嵌套形状，并用真实 loader 吃样例；/health 删除恒绿
+       injection_guard_ok，port_service 改为真实 socket 探测；
+       restore_backup.py 去掉 2026-07-27 硬编码路径，改为显式
+       snapshot 参数、支持 dry-run/limit、退出码可判定。
+    3. 一致性面：Python 版本、MCP 端口、鉴权口径、lite/云重叠
+       口径、AIDUMEM_BACKUP_ROOT 默认值、ECharts 加载口径全部
+       对齐源码/实测事实，并补守卫。
+    4. WP-B 生效自证：新增 scripts/e2e_smoke.py，走 HTTP 做写入 →
+       flush → 新请求召回 → trace → cleanup，输出 PASS/WARN/FAIL
+       与稳定 JSON，退出码 0/1；测试覆盖健康失败、配置缺失、
+       召回失败、partial 清理等分支。
+    5. WP-C 入口重构：新增 AGENTS.md（3.2KB）、llms.txt、
+       scripts/README.md；README 1102 行 → 595 行，主 README 只留
+       主路和导航，安全/竞品/跑分/谱系移入 docs/ 独立档案。
+    6. 历史叙事外移：docs/SECURITY-AUDIT-LEDGER.md、
+       docs/POSITIONING.md、docs/BENCHMARKING-POSTURE.md、
+       docs/VERSION-LINEAGE.md；主 README 留结论和链接。
+    7. WP-D/WP-F：新增 TROUBLESHOOTING.md（10 场景）、
+       docs/HEALTH.md、docs/OPERATIONS.md、
+       docs/AGENT_INTEGRATION.md、docs/BACKUP_RESTORE.md；
+       ARCHITECTURE.md 标注历史快照，不再冒充当前事实源。
+    8. 机械验收聚合脚本 scripts/acceptance_check.sh：入口文件、README
+       行数、AGENTS 体量、rerank 样例、假探针、恢复脚本、MCP 端口、
+       e2e 脚本可执行，一处失败即非零退出。
+       用例总数 1499 → 1516（本机 1504 passed + 12 skipped；
+       生产机沙箱按轴推导 1513 passed + 3 skipped）。
+
 v20.2.5 (两份审计整改 · 2026-08-28)
     主题：用户视角实机审计（20 项）+ 第三方独立外审（评级「有条件不通过」）。**六项落点全是修复，没有新能力** —— 所以版本号只走三级。
     公开 Tag/Release 停 v20.2；**小仓打 Tag v20.2.5 + Release**（本版起的
@@ -133,11 +171,36 @@ v20.2.5 (两份审计整改 · 2026-08-28)
         豁免 / 开关非法值改 fail-open / 门槛默认改 0.3 / 删交叉引用）**全部验红
         后还原**。其中一条盯着「三道闸门的交叉引用不许被删」—— 防止下一个人
         把不同轴的闸门当重复实现合并掉。
-    23. **改这个契约时整套 1499 条一条都没红** —— 单条删除的返回状态从来没有
-        测试盯着，与 F-03 假账、Ruff 假绿灯是同一种缺席。补 8 条守卫，含一条
-        **P5 守卫**：AST 扫「给 memory_id 赋带字面前缀的值」的位点，逐个要求
-        删除链有对应处理，下一种句柄进来时会红（变异探针实测：加一种 `blob:`
-        句柄立刻红）。五条变异探针全部验红后还原。用例总数 1442 → 1499。
+    23. 参赛前全面自查（仍不升版本号）：四条测试依赖「重排不可达」——
+        沙箱绿、部署机红，唯一变量是重排服务可不可达。修法三件套：默认摘掉
+        重排 + 用可控替身把重排打开另验融合后逻辑 + 元守卫（凡断言打分输出的
+        用例必须声明重排状态），守卫当场抓出一个存量用例。
+    24. 宣称证伪推翻三条：.env.example 自称完整却差 13 个真在读的键（含
+        是否允许无凭据监听公网、注入防御档位）；中英两份 README 变量表不一致
+        （英文缺 API_TOKEN——只读英文的人不会知道鉴权开关存在）；样例里的
+        AIDUMEM_HOST_MEMORY_MD 全仓无人读。全部修掉，配双向守卫。
+    25. 零配置首跑：/add 从 500+内部异常原文改为 503+可操作指引；degraded_details
+        与 degraded 同源（此前恒 None）；29 处裸 str(e) 5xx 收敛到 api_errors.py
+        单一 helper。
+    26. 收编生产机上未提交的 health_check.py 幽灵端口修复（实测无进程监听），
+        三方同 SHA 恢复。环境矩阵进 README：五种环境实测（1487/12 · 1497/2 ·
+        1497/2 · 1496/3 · 1499/0），每行 通过+跳过=1499 且跳过逐条归因；
+        无归因的差异=还藏着一条「换环境才现形」的缺陷。
+    27. 10 条守卫 10 条探针全部验红后还原；环境⑤ 有过一次不可复现的
+        5 failed + 1 error（与 pip 安装共用网络窗口，后续三次连续全绿），
+        记为已知风险。
+    28. 证伪工具自身造过两次假发现（射程太窄误报两个变量；lstrip("./")
+        逐字符剥把 .env.example 剥成 env.example）—— **证伪工具本身也需要
+        负向对照**，会造假发现的自查和会漏发现的自查同样危险。
+    29. 10 条新守卫、10 条变异探针全部验红后还原。环境⑤ 有过一次不可复现的
+        5 failed + 1 error（与 pip 安装共用网络窗口，后续三次连续全绿），
+        如实记为已知风险。
+    30. **单条删除三态是实机部署后补修的第三笔账**：沙箱全绿、四道关全过，
+        不代表出口契约真的到达调用方；生产冒烟抓出 raw 句柄删不掉、单条
+        /delete 仍硬编码 ok、raw 的 facts 行漏删。改成句柄换算统一函数 +
+        按同域枚举反查 + 模块级失败登记器；not_found 判据被 delete_local
+        的假计数拆穿后，改为先 retrieve 核实存在性。9 条守卫含 P5 句柄
+        形态扫描，五条变异探针全部验红后还原。用例总数 1499 → 1516。
 
 v20.2.4 (差异化时效衰减 + 纠正语登记 · 2026-08-27)
     主题：借鉴一个同源分支的两样东西——差异化时效衰减与纠正语检测，
@@ -1370,7 +1433,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.2.5"
+SERVICE_VERSION = "20.3.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1384,6 +1447,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.3.0", "", "", "优忆思 · Agent 入口与可操作性 · 生效自证"),
     ("20.2.5", "", "", "两份审计整改 · F-03 假修复真修 · 删除三态 · Ruff 进门禁"),
     ("20.2.4", "", "", "差异化时效衰减 · 纠正语只登记不判决 · 收益面如实标注"),
     ("20.2.3", "", "", "外部审计整改 · 入门依赖补齐/配置雷全仓拆除/登录爆破护栏"),

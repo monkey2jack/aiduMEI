@@ -128,3 +128,14 @@ curl -s 'http://127.0.0.1:8767/federation/awareness?agent_id=default'
 # 联邦层单测（临时库，不碰生产数据）
 ./venv/bin/python -m pytest tests/test_federation.py -v
 ```
+
+---
+
+> **Status (2026-08-31): historical snapshot.**
+> This document describes the v14-era architecture and is retained as design history.
+> For the current v20 architecture and runtime flow, read:
+>
+> - [`AGENTS.md`](../AGENTS.md) — deployment and verification entry
+> - [`README.md`](../README.md) — current product and operational overview
+> - [`docs/SECURITY-AUDIT-LEDGER.md`](SECURITY-AUDIT-LEDGER.md) — security remediation history
+> - [`CHANGELOG.md`](../CHANGELOG.md) — version-by-version implementation history

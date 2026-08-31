@@ -495,3 +495,20 @@ class TestR11CoreWriteRecallContract:
         assert self.CONTENT not in texts
         assert body["recall_verdict"] == "not_found", \
             "无数据租户没拿到诚实 not_found（腿全好 + 空结果的三态判定）"
+
+# ══════════════════════════════════════════════════════════════════
+# v20.3 WP-A-02：/health 不许有恒绿装饰灯
+# ══════════════════════════════════════════════════════════════════
+
+def test_health_has_no_hardcoded_true_probe():
+    """port_service / injection_guard_ok 不能是字面量 True。
+
+    VOC R5：74 个探针里混进两个装饰品，会伤整套可观测性的可信度。
+    injection_guard 已有 effective_mode 探针，这里应删除；port_service
+    改为真实 socket 探测。
+    """
+    import pathlib
+    src = pathlib.Path("ducky/hot/health.py").read_text(encoding="utf-8")
+    assert '"injection_guard_ok": True' not in src
+    assert '"port_service": True' not in src
+    assert 'socket.socket' in src, "port_service 没有真检测逻辑"

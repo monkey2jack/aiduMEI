@@ -27,7 +27,7 @@ if [[ -n "${AIDUMEM_API_TOKEN:-}" ]]; then
   AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
 fi
 
-BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-$(dirname "${REPO_ROOT}")}"
+BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-${REPO_ROOT}/backups}"
 SCRIPTS_DIR="${REPO_ROOT}/scripts"
 TESTS_DIR="${REPO_ROOT}/tests"
 

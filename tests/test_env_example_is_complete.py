@@ -121,3 +121,38 @@ def test_both_readmes_document_the_same_configuration():
         "鉴权开关从变量表里消失了 —— 那是决定这个服务对外要不要设防的那一个，"
         "任何一份文档都不许漏"
     )
+
+def test_readme_claims_match_runtime_facts():
+    """v20.3 WP-A：README 的关键事实不许靠记忆写。
+
+    VOC 核实出 12 条文档与代码不一致。这类漂移的共同根因是：文档数字
+    由人手维护。MCP 端口、工具数、Python 版本先纳入机械对表。
+    """
+    import ast
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    mcp = (root / "mcp_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(mcp)
+    default_port = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "add_argument":
+            if node.args and getattr(node.args[0], "value", None) == "--port":
+                for kw in node.keywords:
+                    if kw.arg == "default":
+                        default_port = ast.literal_eval(kw.value)
+    assert default_port == 8766
+
+    tools = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            for dec in node.decorator_list:
+                if isinstance(dec, ast.Call) and getattr(dec.func, "attr", None) == "tool":
+                    tools.append(node.name)
+    assert len(tools) == 41
+    for name in ("README.md", "README_EN.md"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert ":8768" not in text, f"{name} 仍写着错误 MCP 端口"
+        assert "3.12+" not in text, f"{name} 仍写着 3.12+；pyproject 是 >=3.10"
+        assert "41 tools" in text or "41 工具" in text
+        if name == "README.md":
+            assert "服务自身不做鉴权" not in text

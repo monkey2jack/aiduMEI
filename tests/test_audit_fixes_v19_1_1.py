@@ -93,8 +93,24 @@ def test_annotate_memory_types():
         assert "memory_type" in item
     assert results[3] == "not-a-dict"
     # 自审发现：fact_id 应优先命中账本（fact:{id}），不是拿 UUID 空查
-    assert results[0]["memory_type"] == "PREFERENCES"
+    expected = "PREFERENCES" if utils.DEFAULT_USER_ID == "default" else "FACTS"
+    assert results[0]["memory_type"] == expected
     assert results[1]["memory_type"] == "FACTS"
+
+def test_annotate_memory_types_on_renamed_default_identity(monkeypatch):
+    """改名部署上不许把默认租户的占位类型泄漏成跨租户可见。"""
+    # 用路径致炸的隔离方式，不换函数身份：这条用例锁的是部署环境变量
+    # 与运行时 DEFAULT_USER_ID 的一致性。此前在部署机上是“本机变量照进
+    # 进程”，这里把 .env 兜底隔离掉，显式设置一个具名身份。
+    monkeypatch.setattr(utils, "DEFAULT_USER_ID", "renamed-user")
+    import ducky.memory_types as mt
+    from ducky.memory_types import classify_and_record, ensure_memory_types_schema
+
+    ensure_memory_types_schema()
+    classify_and_record("fact:1", "用户偏好 Python", use_llm=False,
+                        user_id="other-user", bank_id="bank-b")
+    assert mt.get_memory_type("fact:1", user_id="other-user", bank_id="bank-b") == "PREFERENCES"
+    assert mt.get_memory_type("fact:1", user_id="another-user", bank_id="bank-b") == "FACTS"
 
 
 # ── P3-3: _normalize_user_id no hardcoded admin/user mapping ──────────

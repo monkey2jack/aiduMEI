@@ -25,7 +25,7 @@ $PY -m compileall -q ducky api_server.py mcp_server.py mem0_sync.py tests script
   || fail "编译关未过"
 echo "  ✅ 编译关：0 语法错误"
 
-files=("${(@f)$(git ls-files; git ls-files --others --exclude-standard)}")
+files=("${(@f)$(git ls-files; git ls-files --others --exclude-standard | sort -u)}")
 txt=(); for f in $files; do
   case "$f" in *.png|*.jpg|*.jpeg|*.gif|*.ico|*.webp|*.woff|*.woff2|*.ttf|*.gz|*.zip|*.pyc);;
   *) [[ -f "$f" ]] && txt+=("$f");; esac

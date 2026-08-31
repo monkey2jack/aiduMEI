@@ -278,6 +278,11 @@ def _walk_shipped_files():
                 keep.append(d)
         dirnames[:] = keep
         for fn in filenames:
+            # macOS AppleDouble metadata is not a shippable source file. On a
+            # real deployment tree it can appear beside downloaded model
+            # assets and make this guard report deployment artifacts as source.
+            if fn.startswith("._"):
+                continue
             if fn in _SHIP_NAMES or fn.endswith(_SHIP_SUFFIX):
                 out.append(os.path.join(rel_dir, fn) if rel_dir else fn)
     return sorted(out), pruned

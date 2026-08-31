@@ -1,0 +1,9 @@
+# aiduMEI agent entry index
+
+- AGENTS.md: https://github.com/monkey2jack/aiduMEI/blob/main/AGENTS.md
+- README.md: https://github.com/monkey2jack/aiduMEI/blob/main/README.md
+- OPERATIONS.md: https://github.com/monkey2jack/aiduMEI/blob/main/docs/OPERATIONS.md
+- HEALTH.md: https://github.com/monkey2jack/aiduMEI/blob/main/docs/HEALTH.md
+- AGENT_INTEGRATION.md: https://github.com/monkey2jack/aiduMEI/blob/main/docs/AGENT_INTEGRATION.md
+- BACKUP_RESTORE.md: https://github.com/monkey2jack/aiduMEI/blob/main/docs/BACKUP_RESTORE.md
+- TROUBLESHOOTING.md: https://github.com/monkey2jack/aiduMEI/blob/main/TROUBLESHOOTING.md

@@ -11,7 +11,7 @@
 > *Thinking is not reasoning, but doing everything with reason and result.*
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-yellow.svg)](https://www.python.org/)
+[![Python 3.10–3.12](https://img.shields.io/badge/python-3.10–3.12-yellow.svg)](https://www.python.org/)
 [![Built on mem0](https://img.shields.io/badge/built%20on-mem0-orange.svg)](https://github.com/mem0ai/mem0)
 
 **[📖 中文文档](README.md)** | **English**
@@ -96,7 +96,7 @@ cost you nothing.
 - **The LLM distillation leg has a gear too**: when distillation goes down, writes degrade to deterministic direct storage within seconds — verbatim text, hard facts and cloud vectors all land and stay recallable; only the polish is owed, and the debt is auditable. Transport-level blind retries are clipped (a gateway `Retry-After` can no longer hang a single write for minutes). Measured during an outage: a single write went from **4.5 minutes to 0.15 s**.
 - **Honest gear**: `/search` responses carry `engine_mode` reported per the leg actually used this request, not per the system gear; lite scores are scale-annotated; every shift lands in the event ledger. `/health` exposes `engine_mode_policy`, `engine_gear` and `llm_gear`, and a leg switched off by configuration **reports `disabled_by_policy`** rather than pretending to be in service.
 - **Production-proven, not a design doc**: the outage drill ran against the real production box — endpoints firewalled → auto downshift after three failures → writes during the outage land and are **semantically recallable** (`vector_leg=local`, verified) → auto upshift on recovery → debt drained to zero. Two real external gateway outages happened to hit during the drills; the machinery caught both.
-- **Honest about the downside**: lite is a survival gear, not a drop-in equal — across 20 real queries, local-vs-cloud top-5 overlap is ~9% (the metric includes verbatim-vector dilution and small-vs-large model ranking divergence). **During an outage you find what must be found; ranking quality is explicitly below the cloud gear.**
+- **Honest about the downside**: lite is a survival gear, not a drop-in equal — across 20 real queries, local-vs-cloud top-5 overlap is ~9% (measured 2026-08-26, 20 real queries, top-5 Jaccard overlap; the metric includes verbatim-vector dilution and small-vs-large model ranking divergence). **During an outage you find what must be found; ranking quality is explicitly below the cloud gear.**
 - **Contract differences stated too**: a lite-gear `/add` acknowledgement is a write-path contract (`status` / `action` / `engine_mode`) and does **not** carry the `/search` recall-verdict field family — accepting debt is not recalling.
 
 A bare install (no cloud keys) simply runs on the local gear forever — **a zero-dependency memory
@@ -206,7 +206,7 @@ v19.5.0 and this release do **not** change the same layer.
 | What changed | The release process — **zero runtime behaviour change** | The **ownership model** of memory (a data-plane contract) |
 | One-line theme | Don't let out what shouldn't be said | Don't let mix what shouldn't be mixed |
 | Should you upgrade | Optional; nothing functional depends on it | **Recommended** — it fixes a class of silent data loss |
-| Total test cases | ~700 | **1499** |
+| Total test cases | ~700 | **1516** |
 
 Three reasons, each harder than the last:
 
@@ -370,7 +370,7 @@ python api_server.py
 
 **Shared across all three**: 2 CPU cores is plenty, <1% idle; `/search` 0.14–0.23 s per call;
 5.2 s cold start; ~13 MB of vectors plus a few hundred KB of SQLite per thousand memories;
-zero frontend dependencies; Python 3.10–3.12.
+zero frontend dependencies; Python 3.10–3.12 (3.12 recommended).
 
 **Where those 150 MB go, and whether they can be shrunk** (measured, not estimated):
 
@@ -423,7 +423,7 @@ Installing it but selecting the cloud gear also works — the switch takes effec
 ┌──────────────────────────────────────────────────────────┐
 │        🦉 aiduMEI v20.2 · AI Wisdom Engine            │
 │              FastAPI REST API :8767                       │
-│              MCP Server :8768 (41 tools)                  │
+│              MCP Server :8766 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
 │  Athena          → Reflect · Self-Edit · Refine · Skill Growth · Persona │
 │  Core (HOT)      → Search, Add, CRUD, Health              │
@@ -633,7 +633,7 @@ curl -s -X POST http://localhost:8767/evolve/feedback \
 
 ## MCP Server (41 Tools)
 
-aiduMEI includes a built-in MCP Server (`:8768`) exposing 41 tools:
+aiduMEI includes a built-in MCP Server (`:8766`) exposing 41 tools:
 
 | Tool Group | Count | Description |
 |------------|-------|-------------|
@@ -678,7 +678,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 
 ## Tech Stack
 
-- **Runtime**: Python 3.12+, FastAPI, Uvicorn
+- **Runtime**: Python 3.10–3.12 (3.12 recommended), FastAPI, Uvicorn
 - **Memory Kernel**: mem0 v2.0.19 (v20.2)
 - **Vector Store**: Qdrant (via qdrant-client)
 - **Structured Data**: SQLite (facts.db, observations.db, scenes.db, fact_events.db)
@@ -792,10 +792,10 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **1499** (measured via `pytest --collect-only`) |
-| Clean dev machine | 1487 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
-| Sandbox on the production box | 1496 passed · **3 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **Measured on the production box, 2026-08-28** (whitelist copy with `.git` removed and no lint tooling; the `pytest -rs` skip reasons line up case by case: 2 on the `ruff` axis, 1 on the git-worktree axis). The previous real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree when the total was 860 — for several releases in between this row was **axis-derived**; from this release it is measured again |
-| All axes present | 1499 all green · 0 skipped — **measured on the production box, 2026-08-28** (candidate tree cloned from a bundle, `.git` present, all twelve axes available; the twelfth axis is satisfied by side-loading `ruff` via `pip install --target`, **without writing to the production venv**). The previous all-axes measurement was **1440 all green** on 2026-08-27, against v20.2.4's eleven axes — both the axis count and the total changed, so this release re-measured instead of editing the old conclusion's numbers |
+| Total cases | **1516** (measured via `pytest --collect-only`) |
+| Clean dev machine | 1504 passed · **12 skipped** — no host Hermes source, git worktree present (measured) |
+| Sandbox on the production box | 1513 passed · **3 skipped** — host Hermes source present, no git worktree (the sandbox is a whitelist copy without `.git`). **Measured on the production box, 2026-08-28** (whitelist copy with `.git` removed and no lint tooling; the `pytest -rs` skip reasons line up case by case: 2 on the `ruff` axis, 1 on the git-worktree axis). The previous real sandbox measurement was **859 passed · 1 skipped**, on the v20.0 committed tree when the total was 860 — for several releases in between this row was **axis-derived**; from this release it is measured again |
+| All axes present | 1516 all green · 0 skipped — **pending re-measurement on the current tree**; previous baseline was 1499 all green · 0 skipped (measured on the production box, 2026-08-28) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
@@ -811,13 +811,13 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | # | Environment | Passed | Skipped | Attribution |
 |---|-------------|-------:|--------:|-------------|
-| ① | Clean dev machine · full extras | 1487 | 12 | host Hermes source absent ×12 |
+| ① | Clean dev machine · full extras | 1504 | 12 | host Hermes source absent ×12 |
 | ② | Fresh clone · **no config** · `.git` present (≈ someone seeing this project for the first time) | 1497 | 2 | `ruff` not installed ×2 |
 | ③ | Fresh clone · **with production config** · `.git` present (rerank reachable) | 1497 | 2 | `ruff` not installed ×2 |
-| ④ | Deployment-tree shape · with config · **no `.git`** | 1496 | 3 | `ruff` ×2 + not a git worktree ×1 |
-| ⑤ | All axes present · with config · `.git` · `ruff` side-loaded | **1499** | **0** | — |
+| ④ | Deployment-tree shape · with config · **no `.git`** | 1513 | 3 | `ruff` ×2 + not a git worktree ×1 |
+| ⑤ | All axes present · with config · `.git` · `ruff` side-loaded | **pending** | **0** | — |
 
-Every row satisfies `passed + skipped = 1499`, and each skip count matches its attribution line by line.
+Measured rows ①–④ satisfy `passed + skipped = 1516`; row ⑤ must be re-measured before its number is filled in.
 **A difference that cannot be attributed means there is still a defect that only shows up when you change
 environments.**
 
@@ -835,7 +835,7 @@ survive fusion).
 > **⚠️ These numbers assume the optional extras are installed** (added in v20.2.5,
 > a gap the external audit pointed out).
 >
-> The 1499/1487/12 above were measured with `regex`, `nltk`, `numpy`,
+> The 1516/1504/12 above were measured with `regex`, `nltk`, `numpy`,
 > `qdrant_client`, `mem0ai` and `fastembed` all present. The "30-second start"
 > path in this README installs only `requirements.txt`, so those optional
 > dependencies are absent and their skip axes drop out together — fewer passed,
@@ -854,10 +854,8 @@ survive fusion).
 > pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
 > ```
 
-> **Why report both 1487 and 1496**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. **both 1487 and 1496 are measured** (2026-08-28, on the dev
-> machine and the production box respectively), and 1499 is the all-axes measurement taken the same day on the
-> production candidate tree — each number's environment is stated in the table above. The previous sandbox
+> **Why report both 1504 and 1513**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. **both 1504 and 1513 are axis-derived baselines for the current tree**; 1516 is the current collected total, and the all-axes number must be re-measured on the production box before it can be claimed — each number's environment is stated in the table above. The previous sandbox
 > measurement was 859, on the v20.0 committed tree when the total was 860; for several releases in between this
 > row was axis-derived. For every number, say whether it was measured or derived.
 > Always state the environment alongside a test count.
@@ -871,7 +869,7 @@ survive fusion).
 > |-----------|-------------|----------|
 > | Host Hermes source | 12 | all of `tests/test_hermes_plugin.py` |
 > | git worktree | 1 | `tests/test_v20_brand_policy.py` (needs `git ls-files` as its baseline) |
-> | `scripts/backup_gate.sh` + POSIX shell | 7 | all of `tests/test_v19_4_1_backup_gate.py` |
+> | `scripts/backup_gate.sh` + POSIX shell | 8 | all of `tests/test_v19_4_1_backup_gate.py` |
 > | `qdrant_client` installed | 1 | `tests/test_v20_vector_bank_contract.py` |
 > | LoCoMo dataset present | 1 | `tests/test_v20_locomo_official.py` (the whole-dataset scan needs the real file) |
 > | `regex` installed | 1 | `tests/test_v20_locomo_official.py` (differential-tests `regex` against stdlib `re`) |
@@ -882,8 +880,8 @@ survive fusion).
 > | `fastembed` installed | 1 | `tests/test_v20_2_autoshift.py` (real-model test for the autoshift fallback leg; honest skip when the dependency or model file is absent) |
 > | `ruff` installed | 2 | `tests/test_v20_2_5_audit_remediation.py` (the fourth gate's real-defect rules F821/F811/F841; when absent it **skips honestly instead of silently reporting no hits** — the first implementation did exactly that and the sandbox run caught it: the production venv has no ruff, so the guard was permanently green. push_gate still blocks on it) |
 >
-> A dev machine lacks the first → 1487 + 12. The sandbox on the production box lacks the second (whitelist copy, no
-> `.git`) → 1496 + 3. **Each is missing one, so neither partial environment produces 1499 all green** — the
+> A dev machine lacks the first → 1504 + 12. The sandbox on the production box lacks the second (whitelist copy, no
+> `.git`) → 1513 + 3. **Each is missing one, so neither partial environment produces 1516 all green** — the
 > is a derived number. The previous README claimed it was "verified on production", and the very
 > production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
 > must survive the measurement it cites.**
@@ -902,19 +900,19 @@ survive fusion).
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 1487 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1499 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1487 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 1504 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1516 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1504 passed, 12 skipped
 > ```
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 1496 passed, 3 skipped
-> (**axis-derived**; the last real sandbox measurement was 859 passed, 1 skipped on the v20.0 committed tree,
+> our own production box is exactly that), the first command above actually prints 1513 passed, 3 skipped
+> (**axis-derived for the current tree**; the last real sandbox measurement was 859 passed, 1 skipped on the v20.0 committed tree,
 > when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1499 passed` line in
-> the code block above requires *all eleven* axes present at once; that complete-axis result was measured on
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1516 passed` line in
+> the code block above requires *all twelve* axes present at once; that complete-axis result was measured on
 > the production box on 2026-08-27 (candidate tree, total 1499, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
 > **Falsifiability requires reproducibility in both directions.**
