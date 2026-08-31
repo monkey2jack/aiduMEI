@@ -10,6 +10,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from ducky.utils import api_auth_headers as auth_headers  # noqa: E402
+from ducky.utils import mem0_config_path  # noqa: E402
 
 
 def _default_api() -> str:
@@ -94,24 +96,59 @@ class Smoke:
         })
 
     def config(self) -> None:
-        data_path = _REPO / "mem0_config_local.json"
+        data_path = Path(mem0_config_path())
+        config_source = "AIDUMEM_CONFIG_FILE" if os.environ.get("AIDUMEM_CONFIG_FILE") else "repo_default"
         if not data_path.exists():
-            self.record("config", "WARN", "mem0_config_local.json is absent; cloud gears may be unavailable")
+            self.record("config", "WARN", "mem0 config is absent; cloud gears may be unavailable", {
+                "config_path": str(data_path),
+                "config_source": config_source,
+            })
             return
         try:
             config = json.loads(data_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            self.record("config", "FAIL", f"mem0_config_local.json is invalid: {exc}")
-            return
-        llm_key = bool((config.get("llm") or {}).get("config", {}).get("api_key"))
-        embed_key = bool((config.get("embedder") or {}).get("config", {}).get("api_key"))
-        if not llm_key or not embed_key:
-            self.record("config", "WARN", "LLM or embedding key is empty; semantic recall may be unavailable", {
-                "llm_key_present": llm_key,
-                "embedding_key_present": embed_key,
+            self.record("config", "FAIL", f"mem0 config is invalid: {exc}", {
+                "config_path": str(data_path),
+                "config_source": config_source,
             })
             return
-        self.record("config", "PASS", "cloud model configuration has non-empty keys")
+        llm_key = str((config.get("llm") or {}).get("config", {}).get("api_key") or "")
+        embed_key = str((config.get("embedder") or {}).get("config", {}).get("api_key") or "")
+        placeholder_keys = sorted(
+            name for name, value in (("llm", llm_key), ("embedder", embed_key))
+            if self._is_placeholder(value)
+        )
+        if placeholder_keys:
+            self.record(
+                "config",
+                "WARN",
+                "mem0 config still contains placeholder keys; cloud gears are not configured. "
+                "Use AIDUMEI_ENGINE_MODE=local for a no-key smoke, or fill real credentials.",
+                {
+                    "config_path": str(data_path),
+                    "config_source": config_source,
+                    "placeholder_keys": placeholder_keys,
+                },
+            )
+            return
+        if not llm_key or not embed_key:
+            self.record("config", "WARN", "LLM or embedding key is empty; semantic recall may be unavailable", {
+                "config_path": str(data_path),
+                "config_source": config_source,
+                "llm_key_present": bool(llm_key),
+                "embedding_key_present": bool(embed_key),
+            })
+            return
+        self.record("config", "PASS", "cloud model configuration has non-placeholder keys", {
+            "config_path": str(data_path),
+            "config_source": config_source,
+        })
+
+    @staticmethod
+    def _is_placeholder(value: str) -> bool:
+        normalized = (value or "").strip().lower()
+        hints = ("your_", "replace_", "change_me", "<", "xxx", "sk-xxx", "placeholder")
+        return bool(normalized) and any(hint in normalized for hint in hints)
 
     def add_and_recall(self) -> None:
         stamp = dt.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -239,7 +276,7 @@ class Smoke:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default=_default_api())
-    parser.add_argument("--tenant", default=f"e2e-smoke-{int(time.time())}")
+    parser.add_argument("--tenant", default=f"e2e-smoke-{int(time.time())}-{secrets.token_hex(4)}")
     parser.add_argument("--wait", type=float, default=0.0)
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON only")
     args = parser.parse_args()

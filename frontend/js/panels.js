@@ -1536,8 +1536,7 @@ function renderModelConfig(cfg) {
     const provider = m.provider || '—';
     const model = m.model || m.config && m.config.model || '—';
     const baseUrl = m.base_url || m.config && m.config.openai_base_url || '—';
-    const key = m.api_key || m.config && m.config.api_key || '';
-    const keyMasked = key ? key.slice(0, 3) + '***' + key.slice(-4) : '—';
+    const keyMasked = m.api_key || m.config && m.config.api_key || '—';
     return '<div class="tile mcard">' +
       '<div class="k">' + esc(title) + ' <span class="en-label">' + esc(en) + '</span></div>' +
       '<div class="mc-row"><span class="mc-k">Provider</span><b>' + esc(provider) + '</b></div>' +

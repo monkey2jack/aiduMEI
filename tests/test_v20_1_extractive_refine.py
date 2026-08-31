@@ -35,6 +35,12 @@ from ducky.refine_memory import (  # noqa: E402
     rollback_refinement,
 )
 
+# Full /health diagnostics now require a valid credential.
+def _health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
+
 
 def _mk(items):
     """[(key, value), ...] → refine 候选形状。"""
@@ -244,21 +250,21 @@ class TestApplyRollbackCompat:
 # 3. 水位阈值配置化（/health）
 # ══════════════════════════════════════════════════════════════════
 
-def _health_probes():
+def _health_probes(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.hot.health import register_health_routes
 
     app = FastAPI()
     register_health_routes(app)
-    body = TestClient(app).get("/health").json()
+    body = TestClient(app).get("/health", headers={"Authorization": "Bearer " + _set_health_token(monkeypatch)}).json()
     return body.get("probes", {}), body.get("warnings", [])
 
 
 class TestWatermarkConfig:
     def test_default_effective_is_800(self, facts_db, monkeypatch):
         monkeypatch.delenv("AIDUMEI_FACTS_WATERMARK", raising=False)
-        probes, _ = _health_probes()
+        probes, _ = _health_probes(monkeypatch)
         assert probes.get("facts_watermark_effective") == 800, \
             "默认阈值漂了 —— 承诺过与 v20.0.1 行为逐字节一致"
 
@@ -266,7 +272,7 @@ class TestWatermarkConfig:
         """生效值问 /health 不问文件：阈值 5、事实 6 条，警报必须响。"""
         monkeypatch.setenv("AIDUMEI_FACTS_WATERMARK", "5")
         _seed("wpb_wm", n=6, category="wpb_wm_cat")
-        probes, warnings = _health_probes()
+        probes, warnings = _health_probes(monkeypatch)
         assert probes.get("facts_watermark_effective") == 5
         assert probes.get("watermark_warning") is True
         assert any("阈值 5" in w for w in warnings), f"警报文本没带生效阈值: {warnings}"
@@ -275,13 +281,19 @@ class TestWatermarkConfig:
         """负向：不过阈值不许叫 —— 会叫的探针也要证明它会闭嘴。"""
         monkeypatch.setenv("AIDUMEI_FACTS_WATERMARK", "50")
         _seed("wpb_wm_quiet", n=3, category="wpb_wm_cat2")
-        probes, _ = _health_probes()
+        probes, _ = _health_probes(monkeypatch)
         assert probes.get("watermark_warning") is False
 
     def test_invalid_env_reports_error_and_falls_back(self, facts_db, monkeypatch):
         """显式值非法：/health 不许挂、不许哑 —— 报警进探针，回退默认。"""
         monkeypatch.setenv("AIDUMEI_FACTS_WATERMARK", "abc")
-        probes, _ = _health_probes()
+        probes, _ = _health_probes(monkeypatch)
         assert probes.get("facts_watermark_effective") == 800
         assert "AIDUMEI_FACTS_WATERMARK" in probes.get("facts_watermark_config_error", ""), \
             "非法配置的报警被吞了"
+
+
+def _set_health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token

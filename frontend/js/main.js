@@ -49,6 +49,7 @@ const BRAND_COLORS = ['#1f4e79', '#525252', '#000000'];
 
 // Current deployed version — mapped from aiduMEI /health
 let currentVersion = '—';
+const ENABLE_UPDATE_CHECK = localStorage.getItem('aidumei.updateCheck') === '1';
 const GITHUB_REPO_API = 'https://api.github.com/repos/monkey2jack/aiduMEI/releases/latest';
 
 function setDeployedVersion(ver) {
@@ -244,7 +245,7 @@ createHexBackground('#hexBg', 666, BRAND_COLORS, 0.3);
   } catch (e) {
     setDeployedVersion('—');
   }
-  checkLatestVersion();
+  if (ENABLE_UPDATE_CHECK) checkLatestVersion();
 })();
 
 // deep link

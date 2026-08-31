@@ -175,6 +175,16 @@ _AXES = (
         "doc_zh": "`git` 可执行文件在场",
         "doc_en": "`git` executable present",
     },
+    {
+        # v20.3 外审整改轮：生产 venv 不装 [mcp] optional extra。直接 import
+        # mcp_server 会在启动阶段连带 import fastmcp；缺依赖按轴跳过，不是失败。
+        "key": "mcp_extra",
+        "file": "test_first_run_experience.py",
+        "scope": "callsite",
+        "match": r'importorskip\("mcp_server"\)',
+        "doc_zh": "`mcp` extra 已安装",
+        "doc_en": "`mcp` extra installed",
+    },
 )
 
 
@@ -517,10 +527,16 @@ def test_every_registered_skip_axis_has_a_probe():
     except Exception:
         pass  # 导不进来 = 无从判定，按不齐备处理（宁可少报齐备）
 
+    try:
+        import fastmcp
+        present.append("mcp_extra")
+    except ImportError:
+        pass
+
     probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
               "bench_dep_regex", "bench_dep_numpy", "bench_dep_nltk",
-              "locomo_dataset", "git_binary", "mem0_base", "fastembed_local",
-              "ruff_installed"}
+                  "locomo_dataset", "git_binary", "mem0_base", "fastembed_local",
+                  "ruff_installed", "mcp_extra"}
     unprobed = {axis["key"] for axis in _AXES} - probed
     assert not unprobed, (
         f"这些轴没有探测器：{sorted(unprobed)} —— 少一个探测器，"

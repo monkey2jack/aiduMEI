@@ -174,7 +174,7 @@ def test_no_raw_env_numeric_cast_in_production_code():
     """产品代码里不许再有 `int(os.environ.get(...))` 这种裸转换。
 
     外审 M-2 点名了两处，自查普查出六处，元守卫上岗后又抓出两处
-    （frontend/dev_server.py、integrations 的 hook）——**普查比点名更值钱，
+    （scripts/dev_server.py、integrations 的 hook）——**普查比点名更值钱，
     而普查若不焊成守卫，下一处照样会长出来**（v19.4.2 的 inotify_simple
     与 v20.2.3 的 python-multipart 就是同一个道理）。
 

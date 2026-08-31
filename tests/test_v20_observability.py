@@ -370,21 +370,25 @@ def test_health_probes_include_rerank_configured(monkeypatch):
     app = FastAPI()
     register_health_routes(app)
     client = TestClient(app)
-    r = client.get("/health")
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    r = client.get("/health", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     probes = r.json()["probes"]
     assert probes["rerank_configured"] is True
     assert probes["rerank_provider"] == "siliconflow"
 
 
-def _health_probes():
+def _health_probes(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.hot.health import register_health_routes
 
     app = FastAPI()
     register_health_routes(app)
-    r = TestClient(app).get("/health")
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    r = TestClient(app).get("/health", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     return r.json()["probes"]
 
@@ -402,7 +406,7 @@ def test_health_exposes_schema_version_from_disk_not_from_the_constant(monkeypat
     on_disk = int(conn.execute("PRAGMA user_version").fetchone()[0])
     conn.close()
 
-    probes = _health_probes()
+    probes = _health_probes(monkeypatch)
     assert "schema_version" in probes, "/health 里读不到 schema_version"
     assert probes["schema_version"] == on_disk, \
         f"schema_version 不是磁盘真值: {probes['schema_version']} != {on_disk}"
@@ -418,7 +422,7 @@ def test_health_schema_version_mismatch_is_not_reported_green(monkeypatch):
     import ducky.schema_bootstrap as sb
 
     monkeypatch.setattr(sb, "CURRENT_SCHEMA_VERSION", int(sb.CURRENT_SCHEMA_VERSION) + 7)
-    probes = _health_probes()
+    probes = _health_probes(monkeypatch)
     assert probes["schema_version_ok"] is False, "版本对不上却报绿灯"
     assert probes["schema_version"] != probes["schema_version_expected"]
 

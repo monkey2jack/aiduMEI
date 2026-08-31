@@ -1,6 +1,7 @@
 include README.md README_EN.md LICENSE CHANGELOG.md manifest.json pyproject.toml
 recursive-include ducky *.py
 recursive-include frontend *
+exclude frontend/dev_server.py
 recursive-include integrations *
 recursive-include deploy *
 

@@ -38,6 +38,12 @@ from ducky.pattern_extract import (  # noqa: E402
 #: 相对日期换算的锚点 —— 测试里写死，永不取 now()。
 ANCHOR = "2026-08-25T08:00:00+00:00"
 
+# Full /health diagnostics now require a valid credential.
+def _health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
+
 
 def _kinds(items):
     return [it["kind"] for it in items]
@@ -402,14 +408,14 @@ def test_llm_empty_extraction_without_pattern_layer_loses_everything(
 # 4. /health 观测面
 # ══════════════════════════════════════════════════════════════════
 
-def test_health_exposes_pattern_extract_probe():
+def test_health_exposes_pattern_extract_probe(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.hot.health import register_health_routes
 
     app = FastAPI()
     register_health_routes(app)
-    body = TestClient(app).get("/health").json()
+    body = TestClient(app).get("/health", headers={"Authorization": "Bearer " + _set_health_token(monkeypatch)}).json()
 
     probe = body.get("probes", {}).get("pattern_extract")
     assert probe is not None, "/health 缺 pattern_extract 探针"
@@ -428,6 +434,12 @@ def test_health_surfaces_invalid_flag_error(monkeypatch):
     monkeypatch.setenv(ENV_FLAG, "maybe")
     app = FastAPI()
     register_health_routes(app)
-    probe = TestClient(app).get("/health").json()["probes"]["pattern_extract"]
+    probe = TestClient(app).get("/health", headers={"Authorization": "Bearer " + _set_health_token(monkeypatch)}).json()["probes"]["pattern_extract"]
     assert probe["enabled"] is False
     assert ENV_FLAG in probe.get("error", ""), "非法开关值的报警被吞了"
+
+
+def _set_health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token

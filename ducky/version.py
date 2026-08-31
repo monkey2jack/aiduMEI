@@ -38,8 +38,8 @@ v20.3.0 (优忆思 · 入口与可操作性 · 2026-08-31)
     8. 机械验收聚合脚本 scripts/acceptance_check.sh：入口文件、README
        行数、AGENTS 体量、rerank 样例、假探针、恢复脚本、MCP 端口、
        e2e 脚本可执行，一处失败即非零退出。
-       用例总数 1499 → 1516（本机 1504 passed + 12 skipped；
-       生产机沙箱按轴推导 1513 passed + 3 skipped）。
+       用例总数 1499 → 1533（本机 1521 passed + 12 skipped；
+       生产机沙箱按轴推导 1530 passed + 3 skipped）。
 
 v20.2.5 (两份审计整改 · 2026-08-28)
     主题：用户视角实机审计（20 项）+ 第三方独立外审（评级「有条件不通过」）。**六项落点全是修复，没有新能力** —— 所以版本号只走三级。
@@ -200,7 +200,7 @@ v20.2.5 (两份审计整改 · 2026-08-28)
         /delete 仍硬编码 ok、raw 的 facts 行漏删。改成句柄换算统一函数 +
         按同域枚举反查 + 模块级失败登记器；not_found 判据被 delete_local
         的假计数拆穿后，改为先 retrieve 核实存在性。9 条守卫含 P5 句柄
-        形态扫描，五条变异探针全部验红后还原。用例总数 1499 → 1516。
+        形态扫描，五条变异探针全部验红后还原。用例总数 1499 → 1533。
 
 v20.2.4 (差异化时效衰减 + 纠正语登记 · 2026-08-27)
     主题：借鉴一个同源分支的两样东西——差异化时效衰减与纠正语检测，
@@ -317,7 +317,7 @@ v20.2.3 (外部审计整改 · 2026-08-27)
        自查普查出 6 处，元守卫上岗后又抓出 2 处：ducky/security/auth.py
        （SESSION_TTL，**炸在 import 期=服务起不来**）、ducky/scoring.py 三处、
        ducky/security/injection_guard.py、api_server.py 端口、
-       frontend/dev_server.py、integrations/cursor-hook（后两者是独立脚本，
+       scripts/dev_server.py、integrations/cursor-hook（后两者是独立脚本，
        就地安全解析，语义一致）；ducky/gear.py 与 ducky/rate_guard.py 的
        v20.2.1 本地实现收编进单一真相源，公开行为逐字不变。元守卫判据走
        **AST 不走字符串**——正则版把 env_config 自己头注里的反面例子判成了违规。
@@ -1208,7 +1208,7 @@ v19.4.2 (守卫扩面 · 集成件凭据贯通 · 2026-08-19)
     17. 版本号五文件对齐 19.4.2，代号仍为 Athena · 雅典娜。
 
     —— 🔵 审计整改轮（用户视角审计 + 自查追加，同日）——
-    18. frontend/dev_server.py 的**双重逃逸**：它既按目录逃逸（守卫的 _SKIP_DIRS 里
+    18. scripts/dev_server.py 的**双重逃逸**：它既按目录逃逸（守卫的 _SKIP_DIRS 里
         写着 frontend），又按信号逃逸（用的是第 4 个上游变量名 AIDUMEM_UPSTREAM
         与第 2 个端口 8777，扫描器的特征串一个都不匹配）。两层都得拆掉才看得见。
         —— **目录级豁免是最容易积累盲区的写法**：豁免当初的理由（「这里没有可执行的

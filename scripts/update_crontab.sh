@@ -16,7 +16,7 @@ BACKUP_FILE="${LOG_DIR}/crontab_backup_$(date +%Y%m%d_%H%M%S).txt"
 # 记忆巩固：每天 04:00 跑一次（衰减 + 矛盾检测 + 指标）
 NEW_ENTRIES=$(cat <<CRON
 # aiduMEI: 每日记忆巩固（Salience 衰减 / 矛盾检测 / 每日指标）
-0 4 * * * cd ${REPO_ROOT} && ${PY} scripts/consolidator.py >> ${LOG_DIR}/consolidator.log 2>&1
+0 4 * * * cd "${REPO_ROOT}" && "${PY}" scripts/consolidator.py >> "${LOG_DIR}/consolidator.log" 2>&1
 CRON
 )
 

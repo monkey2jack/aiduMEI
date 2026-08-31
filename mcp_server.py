@@ -84,6 +84,12 @@ def _api_headers(extra: dict | None = None) -> dict:
         headers.update(extra)
     return headers
 
+def _sse_authorization_allowed() -> bool:
+    """SSE must not expose authenticated API tools without a transport credential."""
+    if api_auth_headers().get("Authorization"):
+        return True
+    return os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
+
 
 def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
     """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
@@ -97,7 +103,7 @@ def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        return {"error": f"HTTP {e.code}", "detail": body}
+        return {"error": f"HTTP {e.code}", "detail": body[:500]}
     except Exception as e:
         return {"error": str(e)}
 
@@ -126,7 +132,7 @@ def _api_post(path: str, body: dict | None = None, timeout: int = 30,
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         body_text = e.read().decode(errors="replace")
-        return {"error": f"HTTP {e.code}", "detail": body_text}
+        return {"error": f"HTTP {e.code}", "detail": body_text[:500]}
     except Exception as e:
         return {"error": str(e)}
 
@@ -882,6 +888,12 @@ if __name__ == "__main__":
 
     if args.sse:
         logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")
+        loopback = args.host in {"127.0.0.1", "localhost", "::1"}
+        if not loopback and not _sse_authorization_allowed():
+            raise RuntimeError(
+                "MCP SSE refuses to bind a non-loopback host without AIDUMEM_API_TOKEN "
+                "(or explicit AIDUMEM_ALLOW_INSECURE_PUBLIC=1)."
+            )
         import uvicorn
         app = mcp.sse_app(mount_path="/sse")
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")

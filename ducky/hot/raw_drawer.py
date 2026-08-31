@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ducky.bank_contract import DEFAULT_BANK_ID
@@ -162,8 +162,15 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
 
         elapsed_ms = round((time.time() - t0) * 1000, 1)
 
+        successful_layers = sum((fts_ok, vector_ok, facts_ok))
+        if successful_layers == 3:
+            status = "ok"
+        elif successful_layers == 0:
+            status = "failed"
+        else:
+            status = "partial"
         return {
-            "status": "ok",
+            "status": status,
             "action": "raw_stored",
             "memory_id": memory_id,
             "memory_tier": "verbatim",
@@ -177,12 +184,18 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         }
 
     @app.get("/raw/stats")
-    def raw_stats():
+    def raw_stats(
+        user_id: str = Query(DEFAULT_USER_ID),
+        bank_id: str = Query(DEFAULT_BANK_ID),
+    ):
         try:
             from ducky.text_fts import get_text_conn
+            from ducky.bank_contract import scoped_storage_key, make_scope
+            scope = make_scope(user_id, bank_id)
+            raw_prefix = scoped_storage_key("raw-", scope).removesuffix("-")
             conn = get_text_conn()
             total = conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE id LIKE 'raw-%'"
+                "SELECT COUNT(*) FROM memories WHERE id LIKE ?", (raw_prefix + "%",)
             ).fetchone()[0]
             conn.close()
         except Exception as e:
@@ -191,9 +204,11 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
 
         try:
             from ducky.utils import get_facts_conn
+            from ducky.facts_recall import tenant_clause
             conn = get_facts_conn()
+            clause, params = tenant_clause(user_id, bank_id=bank_id, conn=conn)
             facts_count = conn.execute(
-                "SELECT COUNT(*) FROM facts WHERE memory_tier='verbatim'"
+                "SELECT COUNT(*) FROM facts WHERE memory_tier='verbatim'" + clause, params
             ).fetchone()[0]
             conn.close()
         except Exception as e:

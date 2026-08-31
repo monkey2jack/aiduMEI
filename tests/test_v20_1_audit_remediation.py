@@ -196,7 +196,14 @@ def _health(monkeypatch=None):
     from ducky.hot.health import register_health_routes
     app = FastAPI()
     register_health_routes(app)
-    return TestClient(app).get("/health").json()
+    client = TestClient(app)
+    token = "test-health-token"
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"AIDUMEM_API_TOKEN": token}):
+        response = client.get(
+            "/health", headers={"Authorization": f"Bearer {token}"}
+        )
+    return response.json()
 
 
 def test_r07_watermark_probe_survives_facts_failure(monkeypatch, tmp_path):

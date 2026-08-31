@@ -1094,8 +1094,8 @@ def inject_context(
     if not blocks:
         return ""
 
-    lines = ["[CoreMemory · Hyperion]"]
     stale_count = 0
+    records = []
     for key, label in BLOCK_KEYS.items():
         b = blocks.get(key)
         if b and b["content"].strip():
@@ -1103,12 +1103,15 @@ def inject_context(
             stale = _is_stale(b.get("last_verified_at", ""), key)
             if stale:
                 stale_count += 1
-                lines.append(f"{label}: {b['content']} [⚠️ {staleness_threshold_days(key)}天+未验证]")
+                records.append(f"{label}: {b['content']} [⚠️ {staleness_threshold_days(key)}天+未验证]")
             else:
-                lines.append(f"{label}: {b['content']}")
+                records.append(f"{label}: {b['content']}")
     if stale_count:
-        lines.append(f"⚠️ {stale_count} 个 block 超过各自阈值未验证，建议通过 API 更新或 verify")
-    return "\n".join(lines) if len(lines) > 1 else ""
+        records.append(f"⚠️ {stale_count} 个 block 超过各自阈值未验证，建议通过 API 更新或 verify")
+    if not records:
+        return ""
+    from ducky.security.injection_guard import wrap_memory_context_sandbox
+    return wrap_memory_context_sandbox(records, header="CoreMemory · Hyperion")
 
 
 if __name__ == "__main__":

@@ -88,6 +88,12 @@ def env(monkeypatch, tmp_path):
 # ═══════════════════════════════════════════════════════════════════
 # 形态 A：只设 UI 口令（最自然的部署方式）
 # ═══════════════════════════════════════════════════════════════════
+# Full /health diagnostics now require a valid credential.
+def _health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
+
 
 def test_ui_password_only_actually_locks_rest_api(env):
     """v19.4.0 这里是 200 —— 部署方以为设了密码，实际全部记忆裸奔"""
@@ -308,20 +314,20 @@ def test_login_hint_never_leaks_password(env):
     assert env.client().get("/api/login/hint").json() == {"hint": None}
 
 
-def test_health_exposes_auth_gate_state(env):
+def test_health_exposes_auth_gate_state(env, monkeypatch):
     """/health 必须让部署方一眼看清有没有门禁，且绝不吐凭据内容"""
     env.set_ui_password("verystrongpassword")
     client = env.client()
-    probes = client.get("/health").json()["probes"]
+    probes = client.get("/health", headers={"Authorization": "Bearer " + _set_health_token(monkeypatch)}).json()["probes"]
     assert probes["auth_gate_enabled"] is True
     assert probes["auth_ui_password"] in {"user", "auto", "unset"}
     assert "verystrongpassword" not in client.get("/health").text, "/health 泄漏了口令明文"
 
 
-def test_health_warns_when_gate_disabled(env):
+def test_health_warns_when_gate_disabled(env, monkeypatch):
+    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
     data = env.client().get("/health").json()
-    assert data["probes"]["auth_gate_enabled"] is False
-    assert any("auth_gate_disabled" in w for w in data["warnings"])
+    assert set(data) == {"status", "version", "health_status", "degraded", "warming_up"}
 
 
 def test_frontend_sends_credentials():
@@ -486,7 +492,7 @@ def test_api_auth_headers_empty_when_no_token(tmp_path, monkeypatch):
 #
 # ⚠️ 这个正则**就是守卫的射程**，漏一个变量名 = 漏掉一整类调用方。
 #    v19.4.2 首版只登记了 8767 / AIDUMEM_API_BASE / AIDUMEM_URL 三个信号，
-#    于是 frontend/dev_server.py 用第四个名字 AIDUMEM_UPSTREAM + 第二个端口 8777，
+#    于是 scripts/dev_server.py 用第四个名字 AIDUMEM_UPSTREAM + 第二个端口 8777，
 #    从守卫眼皮底下整个溜了过去 —— 它是双重逃逸：既待在被跳过的目录里，
 #    用的又是没被登记的变量名。今后新增指向本服务的环境变量必须同时登记到这里。
 _TARGETS_THIS_SERVICE = r"8767|8777|AIDUMEM_API_BASE|AIDUMEM_URL|AIDUMEM_UPSTREAM"
@@ -497,7 +503,7 @@ _TARGETS_THIS_SERVICE = r"8767|8777|AIDUMEM_API_BASE|AIDUMEM_URL|AIDUMEM_UPSTREA
 #    抓不住**把地址注入进来**的调用方 —— 而后者恰恰是工程上更规范的写法，于是
 #    **越规范的代码越容易逃过这道守卫**。
 #
-#    v19.4.2 给 frontend/dev_server.py 补的是 AIDUMEM_UPSTREAM 这**一个词**，
+#    v19.4.2 给 scripts/dev_server.py 补的是 AIDUMEM_UPSTREAM 这**一个词**，
 #    没补「地址不出现在源码里」这**一个模式**。于是 benchmarks/adapter.py 用构造
 #    参数 base_url 拿到地址，在原地又逃了一次：跑分适配器一个 Authorization 头都
 #    不发，而生产机门禁是开着的 —— 拿它去打生产，第一个请求就 401，跑分根本跑不起来。
@@ -761,7 +767,7 @@ def test_library_module_exemption_is_backed_by_a_launcher():
 # v20.3 WP-A-03：恢复脚本不许绑定某天的历史备份
 # ══════════════════════════════════════════════════════════════════
 
-def test_restore_backup_is_parametrized_and_refuses_hardcoded_paths():
+def test_restore_backup_is_parametrized_and_refuses_hardcoded_paths(monkeypatch):
     """VOC R6：`backup_path` 硬编码 2026-07-27 那份备份。
 
     那不是恢复脚本，是一份只能复原某天某文件的仪式。恢复工具必须显式
@@ -782,3 +788,9 @@ def test_restore_backup_is_parametrized_and_refuses_hardcoded_paths():
         "restore_backup.py 的 _parse_args 应由 argparse 构造参数"
     )
     assert '"snapshot"' in src, "snapshot 必须是显式参数，而不是猜出来的路径"
+
+
+def _set_health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
