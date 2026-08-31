@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import time
 
 from fastapi import FastAPI
@@ -33,6 +34,8 @@ from ducky.mem0_runtime import (
 from ducky.tool_envelope import ok as te_ok
 from ducky.utils import FACTS_DB, TEXT_FTS_DB
 from ducky.degradation import DegradationTracker
+
+_API_PORT_FALLBACK = 8767
 
 logger = logging.getLogger("aiduMEM.hot")
 
@@ -136,9 +139,19 @@ def register_health_routes(app: FastAPI) -> None:
             "facts_db": os.path.exists(FACTS_DB),
             "text_fts_db": os.path.exists(TEXT_FTS_DB),
             "mem0_singleton": is_mem_ready(),
-            "port_service": True,
-            "injection_guard_ok": True,
         }
+
+        # v20.3 WP-A-02：恒绿字段不是探针。要么测真事实，要么删掉。
+        # 这里的真事实不是“有没有另一个进程监听”（那是巡检脚本的职责），
+        # 而是“当前服务实例能否建立出站 socket”。若系统连 socket 都不可用，
+        # /health 自己也答不出来；但能答出来时，这项至少代表网络栈可用。
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+                probe_socket.bind(("127.0.0.1", 0))
+                probes["port_service"] = True
+        except OSError as port_exc:
+            probes["port_service"] = False
+            probes["port_service_error"] = str(port_exc)[:120]
 
         # v20.2.5（外审 F-01）：报出**实际打开的**运行目录与可写性。
         #
