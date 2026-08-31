@@ -6,6 +6,7 @@ ducky.routes_obsidian — Obsidian 双链同步 (Phase 3)
 import json
 import logging
 import os
+import secrets
 import re
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -88,7 +89,13 @@ def register_obsidian_routes(app: FastAPI) -> None:
 
             # 3. 落库（user_id 从请求 metadata 读取，缺省 default，保持通用）
             user_id = req.metadata.get("user_id", "default")
-            add_result = mem.add(text, user_id=user_id, metadata=meta)
+            from ducky.engine_mode import cloud_egress_allowed
+            if cloud_egress_allowed("embedding"):
+                add_result = mem.add(text, user_id=user_id, metadata=meta)
+            else:
+                from ducky.dual_index import upsert_local_verbatim
+                upsert_local_verbatim(user_id, req.bank_id or "default",
+                                      f"obsidian-{secrets.token_hex(8)}", text)
 
             # 4. 把双链词直接作为 Entities 存入 SQLite，喂给 TreeMemory
             if wikilinks:

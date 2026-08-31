@@ -140,9 +140,14 @@ def run_add_pipeline(
                     "long_text": True,
                     "extract_hint": "优先拆成多条自洽事实，避免冗长叙述",
                 }
-            add_result = memory.add(messages_json, user_id=user_id, metadata=metadata)
+            from ducky.gear import should_try_llm
+            _use_llm = should_try_llm()
+            add_result = memory.add(
+                messages_json, user_id=user_id, metadata=metadata,
+                infer=_use_llm,
+            )
             timing["llm_add"] = int((time.time() - t3) * 1000)
-            timing["path"] = "llm"
+            timing["path"] = "llm" if _use_llm else "local"
             register_salience_for_add(add_result, user_id=user_id, bank_id=bank_id)
 
     # 4) FTS
