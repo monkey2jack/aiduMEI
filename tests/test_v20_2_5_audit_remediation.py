@@ -182,7 +182,7 @@ class TestA1AppliedSummaryScope:
 # 执行过**，一直走兜底值。工具能抓的错，不该靠人眼和运气。
 
 _RUFF_TARGETS = ["ducky/", "api_server.py", "mcp_server.py", "scripts/", "conftest.py"]
-_F841_BASELINE = 10        # 存量「算了不用」；新增请优先修，确实要留就改这个数并写明理由
+_F841_BASELINE = 9        # 存量「算了不用」；新增请优先修，确实要留就改这个数并写明理由
 
 
 def ruff_available() -> bool:

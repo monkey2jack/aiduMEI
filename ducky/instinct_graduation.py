@@ -162,7 +162,8 @@ def graduate_to_skill(memory, user_id: str, group: dict,
             "source_ids": source_ids,
             "graduated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }, scope.bank_id)
-        memory.add(messages, user_id=scope.user_id, metadata=metadata)
+        from ducky.gear import should_try_llm
+        memory.add(messages, user_id=scope.user_id, metadata=metadata, infer=should_try_llm())
 
         # 删除原始记忆
         deleted = 0
