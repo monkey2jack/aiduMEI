@@ -33,7 +33,7 @@ Copy this single line to your AI Agent. It will automatically detect the environ
 
 ## What is aiduMEI?
 
-aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. This tree is the **v20.3.0 private verification-line preview**; the public upstream Tag remains **v20.2**. The Wisdom Engine Autoshift provides a dual engine with automatic gear shifting. When external services fail it downshifts automatically and keeps running seamlessly; when they recover it upshifts and replays the debt; the gear is always honestly visible. v20.1's "deterministic fallbacks and honest recall" (17 remediation items closed across five external reviews) is its foundation. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
+aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current public release is **v20.3** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, first of its kind.** The Wisdom Engine Autoshift provides a dual engine with automatic gear shifting. When external services fail it downshifts automatically and keeps running seamlessly; when they recover it upshifts and replays the debt; the gear is always honestly visible. v20.1's "deterministic fallbacks and honest recall" (17 remediation items closed across five external reviews) is its foundation. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
 <!-- distribution-policy: github-source-only -->
 > **Distribution (GitHub-only):** aiduMEI no longer publishes or maintains packages on PyPI or GHCR. Get ongoing updates from the repository's `main` branch or formal versions from [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases). The `pip install -r requirements.txt` command below installs dependencies from a cloned source tree; it is not a package distribution method.
@@ -56,7 +56,7 @@ Built on top of [mem0](https://github.com/mem0ai/mem0), aiduMEI adds a version-b
 
 ---
 
-## 🚗 Wisdom Engine Autoshift (official in v20.2)
+## 🚗 Wisdom Engine Autoshift (official in v20.3)
 
 **One engine, three gears, automatic shifting** — the first open-source memory system to turn a
 "local fallback" into full-pipeline automatic downshifting. But we don't force it on you:
@@ -438,7 +438,7 @@ Installing it but selecting the cloud gear also works — the switch takes effec
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│        🦉 aiduMEI v20.2 · AI Wisdom Engine            │
+│        🦉 aiduMEI v20.3 · AI Wisdom Engine            │
 │              FastAPI REST API :8767                       │
 │              MCP Server :8766 (41 tools)                  │
 ├──────────────────────────────────────────────────────────┤
@@ -698,7 +698,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 ## Tech Stack
 
 - **Runtime**: Python 3.10–3.12 (3.12 recommended), FastAPI, Uvicorn
-- **Memory Kernel**: mem0 v2.0.19 (v20.2)
+- **Memory Kernel**: mem0 v2.0.19 (v20.3)
 - **Vector Store**: Qdrant (via qdrant-client)
 - **Structured Data**: SQLite (facts.db, observations.db, scenes.db, fact_events.db)
 - **Full-Text Search**: SQLite FTS5 + trigram tokenizer
