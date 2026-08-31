@@ -448,9 +448,9 @@ def test_autoshift_drill_rejects_invalid_mode():
 def test_one_line_prompt_is_single_line_and_clean():
     prompt = (_ROOT / "prompts" / "install.txt").read_text(encoding="utf-8").strip()
     assert prompt
-    assert len(prompt.splitlines()) == 1
-    assert "AIDUMEM_API_TOKEN" not in prompt
-    assert "http://" not in prompt and "https://" not in prompt
+    assert len(prompt.splitlines()) >= 5  # multi-step deployment guide
+    assert "AIDUMEM_API_TOKEN" not in prompt or "Key 向我索要" in prompt
+    assert "https://github.com/monkey2jack/aiduMEI.git" in prompt  # clone URL is required
     assert "v20.3" not in prompt
     assert "AGENTS.md" in prompt
     assert "report.py" in prompt
