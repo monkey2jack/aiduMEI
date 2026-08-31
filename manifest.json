@@ -3,5 +3,10 @@
   "version": "20.3.0",
   "description": "aiduMEI · 智能体通用智慧引擎 (AI Wisdom Engine)",
   "codename": null,
-  "codename_zh": null
+  "codename_zh": null,
+  "capabilities": {
+    "config": {
+      "salience_half_life_days": 30
+    }
+  }
 }
