@@ -231,12 +231,15 @@ def inject_context() -> str:
     if stale:
         header = f"[Checkpoint · 上次会话 ⚠️ {STALENESS_DAYS}天+前，仅供参考]"
 
-    lines = [header]
+    lines = []
     for key, label in CP_BLOCKS.items():
         content = cp["blocks"].get(key, "")
         if content.strip():
             lines.append(f"{label}: {content}")
-    return "\n".join(lines) if len(lines) > 1 else ""
+    if not lines:
+        return ""
+    from ducky.security.injection_guard import wrap_memory_context_sandbox
+    return wrap_memory_context_sandbox(lines, header=header)
 
 
 if __name__ == "__main__":

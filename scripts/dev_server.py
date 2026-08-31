@@ -37,7 +37,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 WEB_ROOT = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(WEB_ROOT)
-if _REPO_ROOT not in sys.path:            # 本文件常被直接 `python3 frontend/dev_server.py` 拉起
+if _REPO_ROOT not in sys.path:            # 本文件常被直接 `python3 scripts/dev_server.py` 拉起
     sys.path.insert(0, _REPO_ROOT)
 
 try:
@@ -49,7 +49,7 @@ except ImportError as exc:                # pragma: no cover - 环境问题，�
     sys.stderr.write(
         "dev_server: 无法 import ducky.utils（%s）。\n"
         "本代理需要仓库的运行环境才能取到 API 凭据，请用仓库 venv 启动：\n"
-        "    .venv/bin/python frontend/dev_server.py\n" % exc
+        "    .venv/bin/python scripts/dev_server.py\n" % exc
     )
     raise SystemExit(1)
 

@@ -6,7 +6,7 @@ import os
 import socket
 import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
 
@@ -56,7 +56,8 @@ def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
 
     现在的契约：`degraded` 里每一项都必须在 details 里有一条。理由的来源
     按优先级取 —— 追踪器的运行时记录（带时间戳，信息最全）→ 探针留下的
-    `<组件>_error` → 兜底一句「探针判定为不可用，未留下具体原因」。
+    `_error / _detail / _reason / _source / _status` → 兜底一句
+    「探针判定为不可用，未留下具体原因」。
     **兜底那句本身也是有用的信息**：它说明这条降级没有人给出理由，
     而不是让调用方对着一个 `null` 猜。
     """
@@ -75,11 +76,16 @@ def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
         if rec:
             out.append(dict(rec, component=comp, source="tracker"))
             continue
-        reason = probes.get(f"{comp}_error")
+        reason, reason_key = None, ""
+        for suffix in ("_error", "_detail", "_reason", "_source", "_status"):
+            value = probes.get(f"{comp}{suffix}")
+            if value not in (None, "", []):
+                reason, reason_key = value, suffix
+                break
         out.append({
             "component": comp,
             "reason": str(reason)[:200] if reason else "探针判定为不可用，未留下具体原因",
-            "source": "probe" if reason else "probe_no_reason",
+            "source": f"probe{reason_key}" if reason else "probe_no_reason",
         })
     # 追踪器里有、但不在 degraded 列表里的（例如已恢复但仍在 300s 窗口内）照旧带上
     for name, rec in tracked.items():
@@ -90,7 +96,7 @@ def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
 
 def register_health_routes(app: FastAPI) -> None:
     @app.get("/health")
-    def health():
+    def health(request: Request):
         """B 档：lazy 预热 + 真实探针 + 反静默降级追踪 + 水位预警。"""
         module_ok = {}
         try:
@@ -677,9 +683,14 @@ def register_health_routes(app: FastAPI) -> None:
 
         # 汇总所有降级组件（全量扫描 module_ok 与 probes 中 _ok=False 项）
         degraded = [k for k, v in module_ok.items() if not v]
+        warming_up: list[str] = []
         for p_key, p_val in probes.items():
             if p_key.endswith("_ok") and not p_val:
                 probe_comp = p_key[:-3]
+                if probe_comp == "vector_backend" and probes.get("vector_backend_probed") is False:
+                    if probe_comp not in warming_up:
+                        warming_up.append(probe_comp)
+                    continue
                 if probe_comp not in degraded:
                     degraded.append(probe_comp)
 
@@ -698,7 +709,7 @@ def register_health_routes(app: FastAPI) -> None:
 
         status = "ok" if not degraded else "degraded"
 
-        return te_ok(
+        full = te_ok(
             service=f"aiduMEM-v{_version_info['service_version']}",
             version=f"{_version_info['service_version']}",
             codename=_version_info["codename"],
@@ -706,10 +717,29 @@ def register_health_routes(app: FastAPI) -> None:
             modules=module_ok,
             probes=probes,
             degraded=degraded,
+            warming_up=warming_up,
             degraded_details=_reconcile_degraded_details(degraded, probes),
             warnings=warnings,
             health_status=status,
         )
+        # Public health must remain useful for load balancers without becoming a
+        # reconnaissance report. Unauthenticated callers receive a strict allow-list.
+        from ducky.security.auth import SESSION_COOKIE_NAME, validate_session
+        authorized = False
+        try:
+            from api_server import _request_authorized
+            authorized = _request_authorized(request)
+        except Exception:
+            authorized = validate_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
+        if not authorized:
+            return {
+                "status": status,
+                "version": _version_info["service_version"],
+                "health_status": status,
+                "degraded": degraded,
+                "warming_up": warming_up,
+            }
+        return full
 
     @app.get("/metrics")
     def metrics(days: int = 7):
