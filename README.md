@@ -37,7 +37,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **当前公开正式版 v20.2 —— 智慧引擎自动挡：双引擎、自动换挡、市面独一份。**
+> **当前公开正式版 v20.3 —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 市面独一份。**
 
 <!-- distribution-policy: github-source-only -->
 > **分发说明（GitHub-only）**：aiduMEI 不再通过 PyPI 或 GHCR 发布和维护安装包。请从本仓库的
@@ -65,7 +65,7 @@
 
 ---
 
-## 🚗 智慧引擎自动挡（v20.2 正式实现）
+## 🚗 智慧引擎自动挡（v20.3 正式实现）
 
 **一台引擎，三种挡位，自动换挡** —— 市面上第一个把「本地备胎」做成全链路自动降挡的开源记忆系统。
 但我们不强迫你接受它：**灵活多变任你选，实事求是报消耗。**
@@ -222,7 +222,7 @@ AIDUMEI_ENGINE_MODE=local   # 零 token、零外部网络、不需要任何密�
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v20.2            │
+│           aiduMEI⚕爱嘟优忆思 v20.3            │
 │              FastAPI REST API :8767                       │
 │              控制台 /ui :8767（自带静态托管）              │
 │              MCP Server :8766 (41 tools)                  │
@@ -330,7 +330,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 ## 技术栈
 
 - **运行时**：Python 3.10–3.12（推荐 3.12）、FastAPI、Uvicorn
-- **记忆内核**：mem0 v2.0.19（v20.2）
+- **记忆内核**：mem0 v2.0.19（v20.3）
 - **向量存储**：Qdrant（通过 qdrant-client）
 - **结构化数据**：SQLite（facts.db、observations.db、scenes.db、fact_events.db）
 - **全文搜索**：SQLite FTS5 + trigram 分词器
