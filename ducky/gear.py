@@ -265,6 +265,11 @@ _EMBED = _Breaker("cloud_embed", "云嵌入", "engine_mode",
                   on_upshift=_spawn_replay)
 _LLM = _Breaker("llm", "LLM 蒸馏", "llm_leg",
                 _LLM_FAIL_ENV, _LLM_RECOVER_ENV, _LLM_COOLDOWN_ENV)
+_PROBE_TIMER: Optional[threading.Timer] = None
+_PROBE_LOCK = threading.Lock()
+_PROBE_INTERVAL = env_float(
+    "AIDUMEI_GEAR_PROBE_INTERVAL_SEC", 30.0, exclusive_minimum=0.0
+)
 # LLM 腿升挡无重放回调：挡内写入已确定性落库（原文/硬事实/云向量齐全），
 # 欠的只是蒸馏精修——「补蒸馏债」需要 replace 语义（重放会产生第二份记忆），
 # 显式后置，不在这里装样子。
@@ -309,6 +314,46 @@ def current_mode(*, now: Optional[float] = None) -> str:
 
 def gear_status(*, now: Optional[float] = None) -> dict:
     return _EMBED.status(now=now)
+
+def _run_half_open_probe() -> None:
+    """Single active probe for a half-open cloud leg.
+
+    Real traffic remains the primary probe. This timer only prevents a
+    low-traffic deployment from waiting indefinitely for recovery.
+    """
+    global _PROBE_TIMER
+    try:
+        if _EMBED.mode() != "lite" or not should_try_cloud():
+            return
+        try:
+            from ducky.mem0_runtime import get_memory
+            memory = get_memory()
+            client = getattr(memory, "embedding_model", None)
+            if client is None:
+                return
+            client.embed("aiduMEI gear probe", "search")
+            record_cloud_success()
+            logger.info("⚙️ 云嵌入腿：主动探测成功，恢复信号已上报")
+        except Exception as exc:
+            record_cloud_failure(str(exc))
+            logger.debug("云嵌入腿主动探测失败: %s", exc)
+    finally:
+        _schedule_probe_timer()
+
+def _schedule_probe_timer() -> None:
+    global _PROBE_TIMER
+    with _PROBE_LOCK:
+        if _PROBE_TIMER is not None:
+            return
+        timer = threading.Timer(_PROBE_INTERVAL, _run_half_open_probe)
+        timer.daemon = True
+        timer.name = "aiduMEI-gear-probe"
+        timer.start()
+        _PROBE_TIMER = timer
+
+def ensure_half_open_probe_daemon() -> None:
+    """Start one low-frequency recovery probe for all gear states."""
+    _schedule_probe_timer()
 
 
 # ── LLM 腿公开 API（v20.2.2）─────────────────────────────────────────

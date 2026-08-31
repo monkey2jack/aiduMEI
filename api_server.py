@@ -621,6 +621,11 @@ def _start_background() -> None:
     except Exception as _vs:
         logger.warning(f"📼 Verbatim Vault 建表跳过（主服务仍会启动）: {_vs}")
     init_core_memory()
+    try:
+        from ducky.gear import ensure_half_open_probe_daemon
+        ensure_half_open_probe_daemon()
+    except Exception as _gear_probe_exc:
+        logger.warning("⚠️ Gear 半开主动探测启动跳过: %s", _gear_probe_exc)
     # 启动 WAL 对账与自愈（v19.2.0 P0-DATA）
     try:
         from ducky.wal_engine import reconcile_startup

@@ -56,6 +56,9 @@ jobs:
       - name: Pytest
         run: pytest tests/ -q -rs
 
+      - name: Mechanical acceptance gate
+        run: bash scripts/acceptance_check.sh
+
       - name: 跳过项必须可解释
         # 跳过不是「差不多绿了」。这一步把跳过条数打出来，让每次运行的跳过面
         # 都留在日志里 —— 哪天某条轴悄悄多吃掉几十条用例，翻日志就能看见。
