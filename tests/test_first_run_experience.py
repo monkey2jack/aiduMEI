@@ -543,3 +543,41 @@ def test_agent_integration_check_exists():
     text = path.read_text(encoding="utf-8")
     for endpoint in ("/gate", "/add", "/add/raw", "/search", "/api/core-memory/inject", "/session/start", "/session/end"):
         assert endpoint in text
+
+# ══════════════════════════════════════════════════════════════════
+# v20.3 Opus 4.8 audit: local mode must not leak outbound calls
+# ══════════════════════════════════════════════════════════════════
+
+_MEM_ADD_SITES = {}
+
+def test_all_mem_add_call_sites_have_engine_mode_gate():
+    """Opus 4.8 🔴: /add/raw and /obsidian/sync called mem.add without
+    checking cloud_egress_allowed. In local mode this sends outbound
+    HTTP to the cloud embedder. This guard scans all mem.add() call
+    sites and requires cloud_egress_allowed() in scope or explicit exemption."""
+    root = _ROOT
+    offenders = []
+    for path in (root / "ducky").rglob("*.py"):
+        if path.name in ("dual_index.py",):
+            continue  # dual_index writes local vectors, not cloud mem.add
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "add":
+                    # Check if receiver is named mem or mem0
+                    recv = func.value
+                    if isinstance(recv, ast.Name) and recv.id in ("mem", "mem0"):
+                        has_gate = "cloud_egress_allowed" in src or "should_try_cloud" in src or "should_try_llm" in src
+                        has_exempt = "_MEM_ADD_EXEMPT" in src
+                        if not has_gate and not has_exempt:
+                            offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, (
+        f"These mem.add() call sites lack cloud_egress_allowed() check: {offenders}"
+    )
+
+def test_raw_drawer_and_obsidian_have_egress_check():
+    for name in ("ducky/hot/raw_drawer.py", "ducky/routes_obsidian.py"):
+        src = (_ROOT / name).read_text(encoding="utf-8")
+        assert "cloud_egress_allowed" in src, f"{name} lacks cloud_egress_allowed"
