@@ -45,20 +45,31 @@ API_BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/
 
 def _with_file_lock(fn):
     """与 api_server 后台小时循环共用 consolidator.lock，防双跑。"""
-    import fcntl
     from ducky.utils import CONSOLIDATOR_LOCK
     lock_path = CONSOLIDATOR_LOCK
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    if sys.platform == "win32":
+        import msvcrt
+        def _lock(f):
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        def _unlock(f):
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        def _lock(f):
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        def _unlock(f):
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     with open(lock_path, "w") as lf:
         try:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock(lf)
         except BlockingIOError:
             logger.info("⏭️ consolidator 跳过：另一实例持锁")
             return None
         try:
             return fn()
         finally:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+            _unlock(lf)
 
 
 def _api_get(endpoint: str) -> dict:

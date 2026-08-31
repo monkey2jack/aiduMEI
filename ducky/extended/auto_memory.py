@@ -79,7 +79,9 @@ def _run_auto_memory():
         text = _auto_format_conversation(msgs)
         if len(text) > 50:
             try:
-                get_memory().add([{"role":"user","content":f"总结以下对话的关键信息:\n{text}"}], user_id=DEFAULT_USER_ID)
+                from ducky.gear import should_try_llm
+                _infer = should_try_llm()
+                get_memory().add([{"role":"user","content":f"总结以下对话的关键信息:\n{text}"}], user_id=DEFAULT_USER_ID, infer=_infer)
                 extracted += 1
             except Exception as e:
                 logger.error(f"auto_memory extract 失败: {e}")

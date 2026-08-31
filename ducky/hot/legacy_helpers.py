@@ -182,7 +182,8 @@ def _auto_extract_and_link(fact_id: int, text: str, conn=None) -> list[str]:
         try:
             cur.execute("INSERT OR IGNORE INTO fact_entities (fact_id,entity_id) VALUES (?,?)", (fact_id, eid))
             linked.append(ent_name)
-        except Exception: pass
+        except Exception as exc:
+            logger.warning(f"fact_entities INSERT failed for fact_id={fact_id}, entity_id={eid}: {exc}")
     conn.commit()
     if should_close: conn.close()
     return linked

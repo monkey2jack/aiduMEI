@@ -504,6 +504,18 @@ def replay_pending(*, apply: bool = True, limit: int = 200,
         try:
             data = json.loads(payload_json)
             if side == "cloud":
+                from ducky.engine_mode import cloud_egress_allowed
+                if not cloud_egress_allowed("embedding"):
+                    # Cloud leg still down; put back for next replay.
+                    rconn2 = get_facts_conn()
+                    try:
+                        rconn2.execute(
+                            "UPDATE pending_embeddings SET replayed_at=NULL "
+                            "WHERE pending_id=? AND replayed_at='claiming'", (pid,))
+                        rconn2.commit()
+                    finally:
+                        rconn2.close()
+                    continue
                 from ducky.mem0_runtime import get_memory
                 from ducky.bank_contract import stamp_bank_metadata
                 mem = get_memory()
@@ -552,8 +564,10 @@ def replay_pending(*, apply: bool = True, limit: int = 200,
                     rconn.commit()
                 finally:
                     rconn.close()
-            except Exception:
-                pass
+            except Exception as rollback_exc:
+                logger.warning(
+                    "pending_embeddings rollback failed for pending_id=%s: %s "
+                    "— this row may be stuck in 'claiming' state", pid, rollback_exc)
     from datetime import datetime
     _last_replay.clear()
     _last_replay.update({"at": datetime.now().isoformat(timespec="seconds"),

@@ -124,24 +124,14 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     t0 = time.time()
     now_ts = time.time()
     
-    # Lethe v9.2.0: 批量获取 lane 映射和 memory_states 状态
-    lane_map = {}
+    # Lethe v9.2.0: 批量获取 memory_states 状态
     superseded_ids = set()
     candidate_ids = [item.get("id") for item in (deduped_remaining + deduped_ignited) if item.get("id")]
     if candidate_ids:
         try:
-            # 批量获取 lane
-            conn = get_salience_conn()
-            placeholders = ",".join("?" for _ in candidate_ids)
-            rows = conn.execute(
-                f"SELECT memory_id, lane FROM salience WHERE memory_id IN ({placeholders})",
-                candidate_ids
-            ).fetchall()
-            lane_map = {row[0]: row[1] for row in rows}
-            conn.close()
-            
             # 批量获取被取代的状态 (from facts.db)
             conn_facts = get_facts_conn()
+            placeholders = ",".join("?" for _ in candidate_ids)
             states = conn_facts.execute(
                 f"SELECT memory_id FROM memory_states WHERE memory_id IN ({placeholders}) AND state = 'superseded'",
                 candidate_ids
