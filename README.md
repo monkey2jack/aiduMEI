@@ -123,40 +123,38 @@
 
 > 竞品定位、版本谱系与架构演进见 [docs/POSITIONING.md](docs/POSITIONING.md)、[docs/VERSION-LINEAGE.md](docs/VERSION-LINEAGE.md)。
 
-## 30 秒上手
+## 一行 Prompt 部署
 
-### 方式一：GitHub 源码运行（官方源码渠道，含控制台）
+把下面这段复制给你的 AI Agent（Claude Code、Cursor、Codex 等），它会自动完成全部部署和验证：
+
+```text
+请从官方仓库安装 aiduMEI，并严格读取 AGENTS.md：自动检查本机环境、选择最稳妥部署路径与 cloud/local/auto 挡位，完成配置、服务启动、e2e 生效验证、宿主记忆接入、维护任务初始化和 report.py 自检报告；每一步只以脚本退出码和 JSON 证据判定，遇到失败立即停止、修复并重试，最终向我汇报版本、挡位、健康、水位、召回质量、维护状态及未关闭风险。
+```
+
+<details>
+<summary>📋 手动安装（不用 Agent 的话点这里展开）</summary>
 
 ```bash
-# 1. 克隆
-git clone https://github.com/monkey2jack/aiduMEI.git
-cd aiduMEI
-
-# 2. 创建虚拟环境
-python3.12 -m venv .venv
-source .venv/bin/activate
-
-# 3. 安装依赖
+git clone https://github.com/monkey2jack/aiduMEI.git && cd aiduMEI
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# 4. 如需自动/本地挡位，先安装本地备胎并取模型
-pip install .[local-embed]
-python scripts/fetch_local_embed_model.py
-
-# 5. 配置（复制并编辑）
+# 如需自动/本地挡位：
+pip install .[local-embed] && python scripts/fetch_local_embed_model.py
+# 配置：
 cp mem0_config_local.json.example mem0_config_local.json
-# 编辑 mem0_config_local.json，填入你的 LLM 和 Embedding API Key
-
-# 6. 启动
+cp .env.example .env
+# 编辑 mem0_config_local.json 填入 LLM 和 Embedding Key
+# 编辑 .env 填入 AIDUMEM_ENTITY_KEYWORDS 和 AIDUMEM_API_TOKEN
+# 启动：
 python api_server.py
-# API 运行在 http://localhost:8767
-# 控制台打开 http://localhost:8767/ui/
-
-# 证明记忆真的生效（不是只证明 /health 活着）
+# 验证：
 python scripts/e2e_smoke.py --json
 ```
 
-> 💡 想让相关性闸门认得你自己的人名/项目代号？把它们填进环境变量 `AIDUMEM_ENTITY_KEYWORDS`，用 `|` 分隔，重启即生效。
+</details>
+
+> 💡 `AIDUMEM_ENTITY_KEYWORDS` 让相关性闸门认得你自己的人名/项目代号，用 `|` 分隔，重启即生效。
+> 📖 详细部署文档：[AGENTS.md](AGENTS.md) · 宿主接入：[docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)
 
 ---
 
