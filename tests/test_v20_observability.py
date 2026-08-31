@@ -14,6 +14,7 @@ tests/test_v20_observability.py — v20 P0-4 可观测性契约测试
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -420,3 +421,33 @@ def test_health_schema_version_mismatch_is_not_reported_green(monkeypatch):
     probes = _health_probes()
     assert probes["schema_version_ok"] is False, "版本对不上却报绿灯"
     assert probes["schema_version"] != probes["schema_version_expected"]
+
+# ──────────────────────────────────────────────
+# v20.3 WP-A-01：配置样例必须长在代码认识的形状上
+# ──────────────────────────────────────────────
+def test_rerank_example_uses_shape_the_runtime_reads(tmp_path):
+    """`.example` 不是文档装饰品，它是部署方直接复制的起点。
+
+    VOC R2：样例写扁平形状，代码只读嵌套形状。照样例填完，
+    rerank 静默不生效且 /health 报未配置 —— 这是真投产阻断。
+    判据不能只 grep "config"（文字里也会出现），必须真把样例交给
+    `_load_rerank_config()` 的形状逻辑。
+    """
+    import json
+    from unittest.mock import patch
+
+    example = pathlib.Path(__file__).resolve().parent.parent / "mem0_config_local.json.example"
+    raw = json.loads(example.read_text(encoding="utf-8"))
+    assert "config" in raw["rerank"], (
+        "样例仍是扁平形状；代码读的是 rerank.config.{model,api_key,openai_base_url}"
+    )
+    cfg = raw["rerank"]["config"]
+    assert {"model", "api_key", "openai_base_url"} <= set(cfg), (
+        "样例缺 rerank.config 必填提示字段"
+    )
+    # 让真实 loader 吃这份样例：路径变量与全局缓存都要按 loader 的世界接管。
+    with patch.object(mr, "MEM0_CONFIG", str(example)), \
+         patch.object(mr, "_RERANK_CONFIG_CACHE", None):
+        loaded = mr._load_rerank_config()
+    assert loaded["model"] == cfg["model"]
+    assert loaded["base_url"] == cfg["openai_base_url"]

@@ -107,8 +107,9 @@ def ensure_memory_types_schema() -> None:
         try:
             conn.execute("ALTER TABLE memory_types ADD COLUMN ref_alt TEXT")
             conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_types_ref_alt ON memory_types(ref_alt) "
-                "WHERE ref_alt IS NOT NULL"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_types_scope_ref_alt "
+            "ON memory_types(user_id, bank_id, ref_alt) "
+            "WHERE ref_alt IS NOT NULL"
             )
         except Exception:
             # ref_alt 已存在或 ALTER 不被支持时忽略，查询侧会回退单 ref。

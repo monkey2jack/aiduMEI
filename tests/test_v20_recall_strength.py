@@ -44,6 +44,11 @@ _NOISE_TOPS = (0.457, 0.423, 0.466)
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv(_ENV, raising=False)
+    # v20.2.5 反转了契约：未显式配置召回下限时，_score_floor() 回落到
+    # 部署方已标定的 verdict 阈值。生产机带着 0.46 跑全量时，这几条旧
+    # 用例会因读进部署配置而红。测试要锁函数行为，必须把两个相关键
+    # 一起隔离；不能只删一个，否则结论取决于部署环境。
+    monkeypatch.delenv("AIDUMEI_RECALL_VERDICT_THRESHOLD", raising=False)
 
 
 def _rows(*scores):
@@ -52,11 +57,11 @@ def _rows(*scores):
 
 # ═══════════════ ① 默认不改变任何行为 ═══════════════
 
-def test_default_floor_is_zero_and_drops_nothing():
-    """★ 默认必须**一条都不丢**，`weak` 恒 False。
+def test_default_floor_without_deployment_threshold_drops_nothing():
+    """★ 未配置任何阈值时一条都不丢，`weak` 恒 False。
 
-    这条是整改的安全边界：默认路径上的行为要与整改前逐字节一致，
-    否则这次「加个探针」就变成了一次没人要求的召回策略变更。
+    这条守住“完全未配置”时的兼容行为。v20.2.5 起若部署方已标定
+    verdict 阈值，召回下限回落到该阈值（单一真相源）。
     """
     rows = _rows(0.42, 0.61, 0.50)
     before = list(rows)
@@ -136,6 +141,15 @@ def test_malformed_floor_falls_back_to_no_filtering(monkeypatch, bad):
     """
     monkeypatch.setenv(_ENV, bad)
     assert search_mod._score_floor() == 0.0
+
+def test_floor_falls_back_to_calibrated_verdict_threshold(monkeypatch):
+    """v20.2.5 契约：未设召回下限时，回落到部署方已标定的 verdict 阈值。
+
+    生产实机曾出现「我知道这批不靠谱 / 我照样给你」同时成立的输出。
+    单一部署对“多少分算可信”只应有一个说法。
+    """
+    monkeypatch.setenv("AIDUMEI_RECALL_VERDICT_THRESHOLD", "0.46")
+    assert search_mod._score_floor() == 0.46
 
 
 def test_malformed_floor_logs_a_warning(monkeypatch, caplog):

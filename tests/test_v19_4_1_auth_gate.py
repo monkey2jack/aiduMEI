@@ -756,3 +756,29 @@ def test_library_module_exemption_is_backed_by_a_launcher():
         assert launchers, (
             f"{rel} 被豁免了 sys.path 修正，但仓里找不到任何「按包路径导入它、"
             f"且自带 sys.path 修正」的非测试启动件 —— 那 cron 下究竟靠谁 import 得到？")
+
+# ══════════════════════════════════════════════════════════════════
+# v20.3 WP-A-03：恢复脚本不许绑定某天的历史备份
+# ══════════════════════════════════════════════════════════════════
+
+def test_restore_backup_is_parametrized_and_refuses_hardcoded_paths():
+    """VOC R6：`backup_path` 硬编码 2026-07-27 那份备份。
+
+    那不是恢复脚本，是一份只能复原某天某文件的仪式。恢复工具必须显式
+    接收 snapshot 路径；无参数时的正确行为是给出用法，不是猜一个旧路径。
+    """
+    import ast
+    import pathlib
+    src = pathlib.Path("scripts/restore_backup.py").read_text(encoding="utf-8")
+    assert "20260727" not in src
+    assert "backup_path = " not in src
+    tree = ast.parse(src)
+    parse_fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef)
+                     and n.name == "_parse_args"), None)
+    assert parse_fn is not None, "restore_backup.py 缺 _parse_args"
+    returns = [n for n in parse_fn.body if isinstance(n, ast.Return)]
+    assert returns, "restore_backup.py 的 _parse_args 必须返回结果"
+    assert any(isinstance(r.value, ast.Call) for r in returns), (
+        "restore_backup.py 的 _parse_args 应由 argparse 构造参数"
+    )
+    assert '"snapshot"' in src, "snapshot 必须是显式参数，而不是猜出来的路径"
