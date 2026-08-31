@@ -10,6 +10,16 @@ aiduMEI is a self-hosted long-term memory and wisdom engine for AI agents. It st
 | Default resilience | `AIDUMEI_ENGINE_MODE=auto` | Cloud keys + `pip install .[local-embed]` + model fetch | Cloud-first, automatic local fallback and recovery |
 | Fully local | `AIDUMEI_ENGINE_MODE=local` | Local embed dependencies and model; no API keys | Zero cloud tokens and zero outbound model calls |
 
+## One-Line Prompt (canonical)
+
+Copy this single line to deploy, verify, integrate, maintain, and report:
+
+```text
+请从官方仓库安装 aiduMEI，并严格读取 AGENTS.md：自动检查本机环境、选择最稳妥部署路径与 cloud/local/auto 挡位，完成配置、服务启动、e2e 生效验证、宿主记忆接入、维护任务初始化和 report.py 自检报告；每一步只以脚本退出码和 JSON 证据判定，遇到失败立即停止、修复并重试，最终向我汇报版本、挡位、健康、水位、召回质量、维护状态及未关闭风险。
+```
+
+This is the canonical source at [prompts/install.txt](prompts/install.txt). Every step is judged by script exit codes and JSON evidence only.
+
 Changing mode requires a service restart. If you previously ran `cloud`, run the local-vector backfill before expecting the local gear to recall older memories.
 
 ## Install and start
@@ -61,6 +71,30 @@ curl -s http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.ru
 - Backup, restore, upgrade, rollback: `docs/BACKUP_RESTORE.md`
 - Host integration and memory ownership: `docs/AGENT_INTEGRATION.md`
 - Script index: `scripts/README.md`
+
+### Self-report
+
+```bash
+python scripts/report.py --json
+```
+
+Returns machine-readable JSON: version, engine mode, gear state, degraded components, warnings, memory capacity, WAL, backup status, and next actions. Exit code 0 = healthy; 2 = warning; 3 = degraded.
+
+### Drill autoshift
+
+```bash
+bash scripts/drill_autoshift.sh --check
+```
+
+Verifies that all scripts and health fields needed for a full autoshift drill are present. Use `--run` against a live service to verify gear state, pending replay, and warming-up fields.
+
+### Restore gate
+
+```bash
+bash scripts/restore_gate.sh --dry-run <backup_dir>
+```
+
+Verifies backup checksums and SQLite integrity, then (in apply mode) restores and runs e2e smoke. Apply mode requires `RESTORE_GATE_ALLOW_APPLY=1`.
 
 ## End-to-end data flow
 
