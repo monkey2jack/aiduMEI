@@ -7,6 +7,7 @@ import os
 from fastapi import FastAPI, HTTPException
 
 from ducky.api_models import SearchRequest, SearchResponse
+from ducky.api_errors import api_error_detail
 from ducky.mem0_runtime import (
     _normalize_user_id,
     boost_salience_for_results,
@@ -435,7 +436,7 @@ def register_search_routes(app: FastAPI) -> None:
             return resp
         except Exception as e:
             logger.error(f"search 失败: {e}")
-            return {"status": "error", "results": [], "detail": str(e)}
+            return {"status": "error", "results": [], "detail": api_error_detail(e)}
 
     @app.post("/search_trace")
     def search_trace(req: SearchRequest):
@@ -463,7 +464,7 @@ def register_search_routes(app: FastAPI) -> None:
                 "status": "error",
                 "trace": {"stages": [], "total_ms": 0, "final_count": 0},
                 "results": [],
-                "detail": str(e),
+                "detail": api_error_detail(e),
             }
 
     # 🔴1：Tahoe-Gate 相关性闸门端点。此前 relevance_check 全库零生产调用，

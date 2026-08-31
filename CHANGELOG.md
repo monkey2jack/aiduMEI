@@ -13,7 +13,7 @@
 - **运维与整合入口**：新增 `TROUBLESHOOTING.md`、`docs/HEALTH.md`、`docs/OPERATIONS.md`、`docs/AGENT_INTEGRATION.md`、`docs/BACKUP_RESTORE.md`、`scripts/README.md`。
 - **一致性修复**：Python 版本、MCP 端口、鉴权口径、lite/云重叠口径、备份根默认值、ECharts 加载口径与源码/实测统一；新增守卫防止回退。
 - **机械验收**：新增 `scripts/acceptance_check.sh`，聚合入口文件、README 行数、AGENTS 体量、rerank 样例、假探针、恢复脚本、MCP 端口、e2e 可执行八类检查，失败即非零退出。
-- 用例总数 1499 → 1516。本机 1504 passed + 12 skipped；生产机沙箱按轴推导为 1513 passed + 3 skipped（当前树尚未生产机复测）。
+- 用例总数 1499 → 1533。本机 1521 passed + 12 skipped；生产机沙箱按轴推导为 1530 passed + 3 skipped（当前树尚未生产机复测）。
 
 ---
 
@@ -91,7 +91,7 @@
 - **两次假发现如实记下**：我的检查器造过两个假缺陷（扫描射程太窄误报两个变量；`lstrip("./")` 是逐字符剥不是剥前缀，把 `.env.example` 剥成了 `env.example`）。**证伪工具本身也需要负向对照** —— 会造假发现的自查和会漏发现的自查同样危险。
 - 10 条新守卫，10 条变异探针全部验红后还原。已知风险如实记录：环境⑤ 四次跑里有一次 `5 failed + 1 error`（耗时 215s，与一次 pip 安装共用网络窗口），后续三次连续全绿，**未能复现，未钉死，记为已知风险**。
 
-用例总数 1499 → 1516。本机 1504 passed + 12 skipped；生产机沙箱 1513 passed + 3 skipped（少 git 工作区与 ruff 两条轴）。
+用例总数 1499 → 1533。本机 1521 passed + 12 skipped；生产机沙箱 1530 passed + 3 skipped（少 git 工作区与 ruff 两条轴）。
 
 ---
 
@@ -247,7 +247,7 @@
   鉴权模块加载失败 = 整个服务起不来**，比 v20.2.1 外审 R1 原案更狠）、
   `ducky/scoring.py` 三处打分参数、`ducky/security/injection_guard.py` 的
   内容长度上限、`api_server.py` 端口（or 链保留原语义，但错误点名到真正
-  提供了坏值的那个 env，不张冠李戴）、`frontend/dev_server.py` 与
+  提供了坏值的那个 env，不张冠李戴）、`scripts/dev_server.py` 与
   `integrations/cursor-hook/claude-code-hook.py`（独立脚本，够不着单一真相源，
   就地安全解析、语义一致）。`ducky/gear.py` 与 `ducky/rate_guard.py` 在
   v20.2.1 各自拆过一次雷、实现留在本地，本轮一并收编进单一真相源，
@@ -1585,7 +1585,7 @@
 > 「身份没贯通」—— 而用户视角审计打回来的三条，加上整改途中自查揪出的一条，
 > 指向的是同一件事：**这一版新写的守卫，射程仍然小于缺陷的分布**。
 
-- **`frontend/dev_server.py` 的双重逃逸**：它既按**目录**逃逸（守卫的 `_SKIP_DIRS` 里
+- **`scripts/dev_server.py` 的双重逃逸**：它既按**目录**逃逸（守卫的 `_SKIP_DIRS` 里
   写着 `frontend`），又按**信号**逃逸（用的是第 4 个上游变量名 `AIDUMEM_UPSTREAM`
   与第 2 个端口 `8777`，扫描器的特征串一个都不匹配）。两层都得拆掉才看得见。
   —— **目录级豁免是最容易积累盲区的写法**：豁免当初的理由（「这里没有可执行的调用方」）
