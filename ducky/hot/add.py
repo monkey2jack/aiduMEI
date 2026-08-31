@@ -48,6 +48,29 @@ def register_add_routes(app: FastAPI) -> None:
                     headers={"Retry-After": str(_retry)},
                 )
             ensure_bank_registered(make_scope(req.user_id, req.bank_id))
+            # v20.3 user-audit P2: retries must not create duplicate memories.
+            from ducky import idempotency
+            idempotency_payload = {
+                "messages": req.messages,
+                "user_id": req.user_id,
+                "bank_id": req.bank_id,
+                "infer": req.infer,
+                "async_mode": req.async_mode,
+                "metadata": req.metadata,
+            }
+            idempotency_state = idempotency.claim(
+                req.idempotency_key, req.user_id, req.bank_id, idempotency_payload
+            )
+            if idempotency_state["action"] == "replay":
+                response = dict(idempotency_state.get("response") or {})
+                response["idempotency_replayed"] = True
+                response["request_id"] = idempotency_state["key"]
+                return response
+            if idempotency_state["action"] == "conflict":
+                raise HTTPException(
+                    409,
+                    "idempotency_key is already bound to a different payload",
+                )
 
             from ducky.add_speed import (
                 coalesce_enqueue,
@@ -517,6 +540,13 @@ def register_add_routes(app: FastAPI) -> None:
             # 真的按免抽取写入执行了，而不是把这个字段静默丢掉。
             if isinstance(out, dict):
                 out = {**out, "infer": infer_flag}
+            if req.idempotency_key:
+                out = {**out, "request_id": req.idempotency_key}
+                if idempotency_state["action"] != "disabled":
+                    from ducky import idempotency
+                    idempotency.finalize(
+                        req.idempotency_key, req.user_id, req.bank_id, out
+                    )
             return out
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
