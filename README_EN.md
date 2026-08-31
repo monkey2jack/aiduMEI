@@ -339,34 +339,38 @@ Why we would rather hand in a blank page than a placeholder figure:
 
 ---
 
-## Get Started in 30 Seconds
+## One-Line Prompt Deployment
 
-### Method 1: Clone & Run from GitHub Source (official source channel)
+Copy this to your AI Agent (Claude Code, Cursor, Codex, etc.) and it will handle everything:
 
-```bash
-# 1. Clone
-git clone https://github.com/monkey2jack/aiduMEI.git
-cd aiduMEI
-
-# 2. Create virtual environment
-python3.12 -m venv venv
-source venv/bin/activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure (copy and edit)
-cp mem0_config_local.json.example mem0_config_local.json
-# Edit mem0_config_local.json with your LLM and embedding API keys
-
-# 5. Start
-python api_server.py
-# API runs on http://localhost:8767
+```text
+请从官方仓库安装 aiduMEI，并严格读取 AGENTS.md：自动检查本机环境、选择最稳妥部署路径与 cloud/local/auto 挡位，完成配置、服务启动、e2e 生效验证、宿主记忆接入、维护任务初始化和 report.py 自检报告；每一步只以脚本退出码和 JSON 证据判定，遇到失败立即停止、修复并重试，最终向我汇报版本、挡位、健康、水位、召回质量、维护状态及未关闭风险。
 ```
 
----
+<details>
+<summary>📋 Manual Installation (click to expand)</summary>
 
-## 📦 Deployment Footprint — Two Sizes, You Pick
+```bash
+git clone https://github.com/monkey2jack/aiduMEI.git && cd aiduMEI
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# For auto/local mode:
+pip install .[local-embed] && python scripts/fetch_local_embed_model.py
+# Configure:
+cp mem0_config_local.json.example mem0_config_local.json
+cp .env.example .env
+# Edit mem0_config_local.json (LLM + Embedding keys)
+# Edit .env (AIDUMEM_ENTITY_KEYWORDS, AIDUMEM_API_TOKEN)
+# Start:
+python api_server.py
+# Verify:
+python scripts/e2e_smoke.py --json
+```
+
+</details>
+
+> 💡 Set `AIDUMEM_ENTITY_KEYWORDS` so the relevance gate recognizes your own names/project codenames. Pipe-separated, restart to apply.
+> 📖 Detailed deployment: [AGENTS.md](AGENTS.md) · Host integration: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)## 📦 Deployment Footprint — Two Sizes, You Pick
 
 > The usual question: how heavy is this to run? **It depends on which gear you choose.**
 > The v20.2 dual-engine autoshift brought a local spare tire, and a spare tire takes memory —
