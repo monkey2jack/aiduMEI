@@ -192,6 +192,12 @@ class TestBackfill:
 # ══════════════════════════════════════════════════════════════════
 # D2：陈旧告警分级
 # ══════════════════════════════════════════════════════════════════
+# Full /health diagnostics now require a valid credential.
+def _health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
+
 
 def _age(days: float) -> str:
     return (datetime.now() - timedelta(days=days)).isoformat()
@@ -273,7 +279,13 @@ class TestTieredThresholds:
         from ducky.hot.health import register_health_routes
         app = FastAPI()
         register_health_routes(app)
-        probes = TestClient(app).get("/health").json()["probes"]
+        probes = TestClient(app).get("/health", headers={"Authorization": "Bearer " + _set_health_token(monkeypatch)}).json()["probes"]
         assert probes.get("core_memory_thresholds", {}).get(
             "core_key_decisions") == 45, "/health 报的不是生效值"
         assert isinstance(probes.get("core_vector_index_enabled"), bool)
+
+
+def _set_health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token

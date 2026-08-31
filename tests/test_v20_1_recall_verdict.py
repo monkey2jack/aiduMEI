@@ -121,6 +121,12 @@ def search_client(monkeypatch):
     hot_search.register_search_routes(app)
     return TestClient(app), monkeypatch
 
+# Full /health diagnostics now require a valid credential.
+def _health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
+
 
 def _post(client, query="测试查询", **extra):
     return client.post("/search", json={"query": query, "user_id": "wpc_user", **extra})
@@ -244,6 +250,12 @@ def test_health_exposes_verdict_threshold_effective(monkeypatch):
     monkeypatch.setenv(_VERDICT_THRESHOLD_ENV, "0.35")
     app = FastAPI()
     register_health_routes(app)
-    probes = TestClient(app).get("/health").json()["probes"]
+    probes = TestClient(app).get("/health", headers={"Authorization": "Bearer " + _set_health_token(monkeypatch)}).json()["probes"]
     assert probes.get("recall_verdict_threshold_effective") == 0.35, \
         "生效阈值问不到 —— 配置生效三查缺了问解析者这一查"
+
+
+def _set_health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token

@@ -103,14 +103,14 @@ class TestRateGuard:
         assert r2.status_code == 429, r2.text
         assert "Retry-After" in r2.headers
 
-    def test_health_exposes_effective_limits(self):
+    def test_health_exposes_effective_limits(self, monkeypatch):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from ducky.hot.health import register_health_routes
 
         app = FastAPI()
         register_health_routes(app)
-        probes = TestClient(app).get("/health").json()["probes"]
+        probes = TestClient(app).get("/health", headers={"Authorization": "Bearer " + _set_health_token(monkeypatch)}).json()["probes"]
         assert probes.get("rate_add_per_min_effective") == 120
         assert probes.get("rate_delete_all_per_min_effective") == 3
 
@@ -199,6 +199,12 @@ def r18_sandbox(monkeypatch, tmp_path):
             c.close()
     return query, db_path
 
+# Full /health diagnostics now require a valid credential.
+def _health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
+
 
 def _seed_r18(db_path):
     conn = sqlite3.connect(db_path)
@@ -261,3 +267,9 @@ class TestR18ScopedDeletion:
         action, reason = DELETE_CHAIN_MATRIX["store:persona"]
         assert action == "exempt"
         assert "正交" in reason and "persona_key" in reason
+
+
+def _set_health_token(monkeypatch):
+    token = "test-health-token"
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
+    return token
