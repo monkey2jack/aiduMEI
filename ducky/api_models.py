@@ -83,6 +83,8 @@ class AddRequest(BaseModel):
     # 这是**公开契约参数**，不是隐藏的 benchmark 模式：调用方显式传，
     # 服务端在响应里回显（见 hot/add.py），无法被静默忽略。
     infer: bool = True
+    # v20.3 user-audit remediation: make client retries safely replayable.
+    idempotency_key: str = Field(default="", min_length=0, max_length=128)
 
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="allow")

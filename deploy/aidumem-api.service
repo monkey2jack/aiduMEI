@@ -135,8 +135,8 @@ Environment=HOME=/var/lib/aidumem
 # 「读得到、写不进」而不是启动失败。
 UMask=0007
 
-StandardOutput=append:/opt/aidumem/logs/api_server.log
-StandardError=append:/opt/aidumem/logs/api_server.log
+StandardOutput=journal
+StandardError=journal
 
 # ══ 沙箱加固（v20.0 P3-8）══
 # 每一行都按「这个服务实际用到什么」裁的，不是抄模板。
@@ -155,7 +155,7 @@ RestrictSUIDSGID=yes
 # 文件系统面
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/aidumem/data /opt/aidumem/logs
+ReadWritePaths=/var/lib/aidumem/data /var/lib/aidumem/logs
 PrivateTmp=yes
 #   ↑ ProtectSystem=strict 把整个文件系统挂成只读，再用 ReadWritePaths 开两个洞。
 #     ★ 这两个洞必须**同时**开：只开 data/ 会让 StandardOutput 的 append 失败，
@@ -176,6 +176,10 @@ ProtectClock=yes
 ProtectProc=invisible
 PrivateDevices=yes
 LockPersonality=yes
+# v20.3 外审整改：记忆系统需要本地模型；上限留给系统级保护，不是给内存泄漏消音。
+MemoryHigh=768M
+MemoryMax=1G
+
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes

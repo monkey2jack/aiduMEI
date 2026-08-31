@@ -26,3 +26,26 @@ The health endpoint is a diagnostic surface, not a guarantee that memory works. 
 - A `false` probe is valid when the corresponding optional feature is intentionally not deployed; it must still be attributed.
 - A field that is always true is not a probe and must not be displayed as one.
 - `health_status: ok` never proves semantic recall. Run the e2e smoke after installation and upgrades.
+
+## Authenticated full-probe fields
+
+The public allow-list intentionally excludes deep diagnostics. With a valid API token or session, `/health` also returns:
+
+| Group | Fields | Meaning |
+|---|---|---|
+| Runtime | `modules`, `probes`, `service`, `warnings` | Complete diagnostic state and operator hints. |
+| Scope | `probes.default_bank_id`, `probes.memory_banks_ok` | Active default memory bank and schema status. |
+| Paths | `probes.runtime_paths` | Actual `BASE_DIR`, `DATA_DIR`, `LOG_DIR`, `facts_db`, writability, and package-escape detection. |
+| Recall | `probes.vector_backend*`, `probes.local_embed`, `probes.rerank_*`, `probes.recall_verdict_threshold_effective` | Which recall legs are configured, reachable, or degraded. |
+| Gears | `probes.engine_gear`, `probes.llm_gear`, `probes.engine_mode_policy` | Active gear, breaker state, thresholds, cooldown, and policy-disabled legs. |
+| Capacity | `probes.facts_active_count`, `probes.facts_watermark_effective`, `probes.wal_total_bytes`, `probes.process_rss_mb`, `probes.process_max_rss_mb`, `probes.process_open_fds`, `probes.process_threads` | Fact size, WAL recovery pressure, and process resource pressure. |
+| Reliability | `probes.feature_failures*`, `degraded_details`, `warnings` | Explicit ledger of soft-failed memory work and next actions. |
+| Security | `probes.injection_guard_mode`, `probes.auth_gate_enabled`, `probes.auth_api_token_set`, `probes.auth_ui_password` | Effective security mode. Credentials are never returned. |
+| Maintenance | `probes.core_memory_*`, `probes.core_replica_*`, `probes.schema_version*` | Stale core blocks, replica gaps, and on-disk schema version. |
+
+## Never treat as normal
+
+- A field named `*_ok` is false without a matching warning.
+- `degraded_details` contains `probe_no_reason`.
+- `auth_gate_enabled` is false while the service listens beyond loopback.
+- `schema_version_ok` is false.

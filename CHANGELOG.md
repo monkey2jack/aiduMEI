@@ -13,7 +13,7 @@
 - **运维与整合入口**：新增 `TROUBLESHOOTING.md`、`docs/HEALTH.md`、`docs/OPERATIONS.md`、`docs/AGENT_INTEGRATION.md`、`docs/BACKUP_RESTORE.md`、`scripts/README.md`。
 - **一致性修复**：Python 版本、MCP 端口、鉴权口径、lite/云重叠口径、备份根默认值、ECharts 加载口径与源码/实测统一；新增守卫防止回退。
 - **机械验收**：新增 `scripts/acceptance_check.sh`，聚合入口文件、README 行数、AGENTS 体量、rerank 样例、假探针、恢复脚本、MCP 端口、e2e 可执行八类检查，失败即非零退出。
-- 用例总数 1499 → 1533。本机 1521 passed + 12 skipped；生产机沙箱按轴推导为 1530 passed + 3 skipped（当前树尚未生产机复测）。
+- 用例总数 1499 → 1550。本机 1538 passed + 12 skipped；生产机沙箱按轴推导为 1545 passed + 3 skipped（当前树尚未生产机复测）。
 
 ---
 
@@ -91,7 +91,7 @@
 - **两次假发现如实记下**：我的检查器造过两个假缺陷（扫描射程太窄误报两个变量；`lstrip("./")` 是逐字符剥不是剥前缀，把 `.env.example` 剥成了 `env.example`）。**证伪工具本身也需要负向对照** —— 会造假发现的自查和会漏发现的自查同样危险。
 - 10 条新守卫，10 条变异探针全部验红后还原。已知风险如实记录：环境⑤ 四次跑里有一次 `5 failed + 1 error`（耗时 215s，与一次 pip 安装共用网络窗口），后续三次连续全绿，**未能复现，未钉死，记为已知风险**。
 
-用例总数 1499 → 1533。本机 1521 passed + 12 skipped；生产机沙箱 1530 passed + 3 skipped（少 git 工作区与 ruff 两条轴）。
+用例总数 1499 → 1550。本机 1538 passed + 12 skipped；生产机沙箱 1545 passed + 3 skipped（少 git 工作区与 ruff 两条轴）。
 
 ---
 

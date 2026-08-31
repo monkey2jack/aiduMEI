@@ -263,7 +263,8 @@ _MIGRATION_LEDGER = {
     ("ducky/federation/schema.py", "CREATE", "federation_broadcast"),
     ("ducky/governance.py", "ALTER", "candidate_facts"),
     ("ducky/governance.py", "CREATE", "candidate_facts"),
-    ("ducky/hot/legacy_helpers.py", "ALTER", "observations"),
+    ("ducky/hot/legacy_helpers.py", "ALTER", "observations"),    ("ducky/idempotency.py", "CREATE", "idempotency_keys"),
+
     ("ducky/hot/legacy_helpers.py", "ALTER", "scenes"),
     ("ducky/hot/legacy_helpers.py", "CREATE", "observations"),
     ("ducky/hot/legacy_helpers.py", "CREATE", "scenes"),

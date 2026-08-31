@@ -162,6 +162,10 @@ ProtectClock=yes
 ProtectProc=invisible
 PrivateDevices=yes
 LockPersonality=yes
+# v20.3 外审整改：记忆系统需要本地模型；上限留给系统级保护，不是给内存泄漏消音。
+MemoryHigh=768M
+MemoryMax=1G
+
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes

@@ -1,5 +1,7 @@
 # 接入 Hermes Agent
 
+> **Canonical contract**: `docs/AGENT_INTEGRATION.md` is the single source of truth for integration scope, lifecycle, authentication, and endpoint contracts. This document only provides Hermes-specific installation steps and points to that canonical guide.
+
 > v15 起有两条路：**A. 官方 MemoryProvider 插件（推荐）** / **B. Shell Hook（兜底）**
 > 位置：`<仓库根>/integrations/`
 
@@ -59,7 +61,7 @@ curl -s localhost:8767/health | head -c 200
 
 ### ⚠️ 安全提示
 
-aiduMEI 服务自身**不做鉴权**。默认监听 `127.0.0.1`，请保持这样。
+aiduMEI 默认仅监听回环；设置 API token 或 UI 口令后接口会强制鉴权。跨机访问必须配置凭据并前置 TLS 反代。
 要跨机访问就在前面挂一层带认证 + TLS 的反向代理，再把 `AIDUMEM_URL` 指过去；
 直接把服务暴露到公网等于把全部记忆公开可读可写。
 

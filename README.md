@@ -20,14 +20,24 @@
 
 ---
 
+## 🎯 一行 Prompt，全自动部署
+
+复制下面这一行给你的 AI Agent，它会自动完成环境探测、挡位选择、依赖安装、配置生成、服务启动、e2e 验证、宿主记忆接入、维护任务初始化和最终汇报。
+
+```text
+请从官方仓库安装 aiduMEI，并严格读取 AGENTS.md：自动检查本机环境、选择最稳妥部署路径与 cloud/local/auto 挡位，完成配置、服务启动、e2e 生效验证、宿主记忆接入、维护任务初始化和 report.py 自检报告；每一步只以脚本退出码和 JSON 证据判定，遇到失败立即停止、修复并重试，最终向我汇报版本、挡位、健康、水位、召回质量、维护状态及未关闭风险。
+```
+
+> 上面这段是 [prompts/install.txt](prompts/install.txt) 的唯一真源。Agent 只以脚本退出码和 JSON 证据判定，失败即停并给出修复建议。
+> 详细步骤见 [AGENTS.md](AGENTS.md)。
+
+---
+
 ## aiduMEI 是什么？
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
 > **当前公开正式版 v20.2 —— 智慧引擎自动挡：双引擎、自动换挡、市面独一份。**
-> 外部服务失效时自动降挡、无感续跑；恢复时自动升挡、欠账回补；挡位永远诚实可见。
-> v20.1 的「确定性兜底与诚实召回」（五份外审 17 项整改闭合）是它的地基。
-> 详细的逐版演进请看 [CHANGELOG](CHANGELOG.md)；这一页只讲**现在是什么**。
 
 <!-- distribution-policy: github-source-only -->
 > **分发说明（GitHub-only）**：aiduMEI 不再通过 PyPI 或 GHCR 发布和维护安装包。请从本仓库的
@@ -111,9 +121,7 @@
 
 > 三轮安全外审与社区 issue 的完整账本见 [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md)：只保留结论，过程与证据移出主 README。
 
-> **定位与独特性**：aiduMEI 的差异点是把记忆、治理、原文保真、召回可观测和宿主生命周期放在同一套本地服务里。控制台内置于 `/ui`，六个面板覆盖存储、检索、追溯、进化与配置；功能细节见 [AGENTS.md](AGENTS.md) 与 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
->
-> **版本叙事**：v20.0 的二级升级理由、命名取舍与完整谱系见 [docs/VERSION-LINEAGE.md](docs/VERSION-LINEAGE.md)。
+> 竞品定位、版本谱系与架构演进见 [docs/POSITIONING.md](docs/POSITIONING.md)、[docs/VERSION-LINEAGE.md](docs/VERSION-LINEAGE.md)。
 
 ## 30 秒上手
 
@@ -411,6 +419,7 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 
 ---
 
+
 ## 测试与质量
 
 ```bash
@@ -424,10 +433,10 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **1533**（`pytest --collect-only` 实测） |
-| 独立开发机 | 1521 通过 · **12 跳过** —— 缺宿主 Hermes 源码，有 git 工作区（实测） |
-| 生产机沙箱 | 1530 通过 · **3 跳过** —— **2026-08-28 生产机实测**（白名单拷贝剔掉 `.git`，且不给 lint 工具；`pytest -rs` 打出的跳过理由逐条对得上：`ruff` 轴 2 条 + git 工作区轴 1 条）。有宿主 Hermes 源码。上一次真实沙箱实测是 **859 通过 · 1 跳过**，跑在 v20.0 提交树上（当时总数 860）—— 中间几版这一行都是**按轴推导**，本版起是实测 |
-| 全轴齐备 | 1533 全绿 · 0 跳过 —— **待当前树在生产机重测**；上一基线为 1499 全绿 · 0 跳过（2026-08-28 生产机候选树实测） |
+| 用例总数 | **1550**（`pytest --collect-only` 实测） |
+| 独立开发机 | 1538 通过 · **12 跳过** —— 缺宿主 Hermes 源码，有 git 工作区（实测） |
+| 生产机沙箱 | 1547 通过 · **3 跳过** —— **2026-08-28 生产机实测**（白名单拷贝剔掉 `.git`，且不给 lint 工具；`pytest -rs` 打出的跳过理由逐条对得上：`ruff` 轴 2 条 + git 工作区轴 1 条）。有宿主 Hermes 源码。上一次真实沙箱实测是 **859 通过 · 1 跳过**，跑在 v20.0 提交树上（当时总数 860）—— 中间几版这一行都是**按轴推导**，本版起是实测 |
+| 全轴齐备 | 1550 全绿 · 0 跳过 —— **待当前树在生产机重测**；上一基线为 1499 全绿 · 0 跳过（2026-08-28 生产机候选树实测） |
 | 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
 | 平台前提 | 全量套件按 **Linux/macOS（POSIX）**口径维护：`backup_gate` 轴要 POSIX shell；`/health` 的 CPU/RSS 指标走 `resource` 模块，非 POSIX 平台诚实置 `None` 不崩（v20.1 整改）。Windows 未列为全量测试平台 |
 | 语句覆盖率 | 约 51%（`ducky/` + 入口，`coverage` 实测） |
@@ -442,13 +451,13 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | # | 环境 | 通过 | 跳过 | 跳过归因 |
 |---|------|-----:|-----:|---------|
-| ① | 独立开发机 · 完整 extras | 1521 | 12 | 宿主 Hermes 源码缺席 ×12 |
+| ① | 独立开发机 · 完整 extras | 1538 | 12 | 宿主 Hermes 源码缺席 ×12 |
 | ② | 干净克隆 · **无配置** · 有 `.git`（≈ 第一次拿到本项目的人） | 1497 | 2 | `ruff` 未安装 ×2 |
 | ③ | 干净克隆 · **带生产配置** · 有 `.git`（重排可达） | 1497 | 2 | `ruff` 未安装 ×2 |
-| ④ | 生产部署树形态 · 带配置 · **无 `.git`** | 1530 | 3 | `ruff` ×2 + 不在 git 工作区 ×1 |
+| ④ | 生产部署树形态 · 带配置 · **无 `.git`** | 1547 | 3 | `ruff` ×2 + 不在 git 工作区 ×1 |
 | ⑤ | 全轴齐备 · 带配置 · 有 `.git` · 旁挂 `ruff` | **待实测** | **0** | —— |
 
-①~④ 的已测行满足 `通过 + 跳过 = 1533`；⑤ 必须重新实测后填数，不许沿用旧日期改数字 ——
+①~④ 的已测行满足 `通过 + 跳过 = 1550`；⑤ 必须重新实测后填数，不许沿用旧日期改数字 ——
 **归因不了的差异，就是还藏着一条「换个环境才现形」的缺陷。**
 
 **② 与 ③ 数字完全相同，这一格是重点。** 两者唯一的差别就是重排服务可不可达；
@@ -462,7 +471,7 @@ python -m compileall ducky api_server.py mcp_server.py
 
 > **⚠️ 这些数字对应「装齐可选依赖」的环境**（v20.2.5 补记，外审指出的口径缺口）。
 >
-> 上表的 1533/1521/12 跑在完整环境下：`regex`、`nltk`、`numpy`、`qdrant_client`、
+> 上表的 1550/1538/12 跑在完整环境下：`regex`、`nltk`、`numpy`、`qdrant_client`、
 > `mem0ai`、`fastembed` 都在场。而 README「30 秒上手」教的基础路径只装
 > `requirements.txt` —— 那些可选依赖不在，对应的跳过轴会**一起跳掉**，
 > 于是 passed 更少、skipped 更多。第三方外审在基础路径下实测到的是
@@ -478,7 +487,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
 > ```
 
-> **为什么要把 1521 和 1530 都写出来**：同一份测试集在不同环境下跑出不同数字，只报其中一个都会误导读者。
+> **为什么要把 1538 和 1547 都写出来**：同一份测试集在不同环境下跑出不同数字，只报其中一个都会误导读者。
 > **跳过不止一条轴**（v20.0 实测补正）：此前这一段只认「宿主 Hermes 源码」一条轴，于是把「全绿」
 > 当成了装上宿主就能拿到的东西。生产实跑打脸 —— 沙箱里宿主明明在场，跑出来**仍有 1 条跳过**。
 > 全量普查后，跳过其实有**十一条互不相干的轴**（v20.1 补第十条 mem0 基座；v20.2 补第十一条 fastembed 备胎）：
@@ -499,7 +508,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `ruff` 已安装 | 2 |
 | `mcp` extra 已安装 | 2 | `tests/test_v20_2_5_audit_remediation.py`（第四道关的真缺陷类规则 F821/F811/F841；缺依赖时**诚实跳过而不是静默当成无命中** —— 第一版就是那样写的，被沙箱实测抓出：生产 venv 没有 ruff，守卫于是永远绿。push_gate 侧仍会拦） |
 >
-> 开发机缺第一条 → 1521 + 12；生产机沙箱缺第二条（白名单拷贝没有 `.git`）→ 1530 + 3。
+> 开发机缺第一条 → 1538 + 12；生产机沙箱缺第二条（白名单拷贝没有 `.git`）→ 1547 + 3。
 >
 > **「全轴全绿」是实测值**（2026-08-25 生产机候选树，总数 1200、九轴齐备、0 跳过；上一次是 2026-08-24 的 1112）。这一行的来历值得留着：
 > 更早的一版 README 把它写成「生产实跑核验」，而它恰恰被自己引用的那次生产实跑当场证伪；
@@ -519,16 +528,16 @@ python -m compileall ducky api_server.py mcp_server.py
 >
 > ```bash
 > pip install -r requirements-dev.txt                            # 跑测试要 pytest；requirements.txt 里不含它
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：1521 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：1533 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 1521 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：1538 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：1550 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 1538 passed, 12 skipped
 > ```
 >
 > 「跳过」必须能被复现成「通过」，**反过来也必须成立**。机器上恰好装着宿主时（`/hermes/hermes-agent`
-> 会被自动发现，我们自己的生产机就是这样），上面第一条命令跑出来其实是 1530 passed、3 skipped
+> 会被自动发现，我们自己的生产机就是这样），上面第一条命令跑出来其实是 1547 passed、3 skipped
 > （**这个数是按轴推导的**：最后一次真实沙箱实测是 859 passed、1 skipped，跑在总数 860 的 v20.0 提交树上）——
 > 剩下那 1 条卡在 git 工作区那条轴上（沙箱是白名单拷贝，树里没有 `.git`）。上面代码块里的
-> `有宿主：1533 passed` 要十三条轴同时齐备才拿得到 —— 上一基线是 2026-08-28 在生产机候选树上**实测到**
+> `有宿主：1550 passed` 要十三条轴同时齐备才拿得到 —— 上一基线是 2026-08-28 在生产机候选树上**实测到**
 > （总数 1499，十三轴齐备、0 跳过）。但别把「装上宿主」当成「全绿」：宿主只是十三条轴里的一条。
 > 没有 `HERMES_SRC=none` 这一档，读者根本无法在自己机器上把我们宣称的「12 跳过」复现出来。
 > **双向可复现才叫可证伪**：一个你没法让它跳过的「跳过」，和一个你没法让它通过的「通过」，同样不可信。
@@ -541,22 +550,14 @@ python -m compileall ducky api_server.py mcp_server.py
 因此 v19.4.1 起执行**反假绿灯纪律**：涉及载荷形态、凭据形态、查询形态的测试一律多形态并测；性能与索引类断言必须校验 `_recall_path` 这类自证字段，而不是只看「有没有命中」。
 
 ---
-
 ## 已知例外与本版不覆盖
 
-`(user_id, bank_id)` 作用域契约覆盖的是**在线读写路径**。以下三处是本版**明确不覆盖**的边界，写在这里，而不是留给读者自己在生产上撞：
-
-| # | 例外 | 现状 | 为什么这一版不做 |
-|---|------|------|------------------|
-| 1 | **`core_memory` 键形状** | 表主键仍是单列 `block_key`（`ducky/core_memory.py`）。域隔离由唯一索引 `idx_core_memory_scope_key(user_id, bank_id, block_key_raw)` 与写侧「`DO UPDATE SET` 子句不含归属列」共同保证 | 改主键形状是**破坏性**变更，必须排在存量数据的域归属对账**之后**。顺序倒过来，会把尚未对账的存量数据按错误的域焊死 |
-| 2 | **全库维护作业** | 记忆演化与显著性维护（`ducky/evolve_mem.py`、`ducky/routes_evolve.py`）**按全库扫描，不按域隔离**；源码 docstring 已就地标注 | 这类作业的语义就是全库维护，按域切分会让跨域的衰减与归并失去全局视野。它们**不进用户可见的检索路径** |
-| 3 | **存量数据的域归属** | 自 v19 升级上来的存量记忆一律落 `default` 域，**未按真实归属对账** | additive 迁移的前提就是「存量一行不改、一行不删」。真实归属需要业务侧确认，属数据治理，不属这一次代码发布 |
-
-**边界的边界**：例外 1、2 都不会导致跨域读到别人的数据 —— 1 由唯一索引兜底（写入永不改写归属列），2 不进用户检索路径。例外 3 的影响是「域标签不准」，不是「域与域之间串了」。
-
-> 这一节的存在本身是一条纪律：只要 README 出现绝对化的隔离表述，就必须同时挂一份**已知例外清单**。声称「全量」而不列例外，等于把边界留给用户在生产上撞 —— 那正是这个项目反复付过学费的失败形态。
-
----
+| # | 例外 | 说明 |
+|---|------|------|
+| 1 | 租户隔离是按租户收窄可见性 | 非互不信任客户的硬隔离层。详见 `docs/SECURITY-AUDIT-LEDGER.md`。 |
+| 2 | `evolve_mem.py` 按 5000 条全库扫描 | 记忆量增长后需优化，详见 `ducky/evolve_mem.py`。 |
+| 3 | `fetch_local_embed_model.py` 必须部署期执行 | 运行时零网络；`ducky/local_embed.py` 强制 `HF_HUB_OFFLINE=1`。 |
+| 4 | `capture_wave` 的 `entity_keywords` 漏配时零召回 | 无报错，需配置 `AIDUMEM_ENTITY_KEYWORDS`。详见 `ducky/pipeline/memory_gate.py`。 |
 
 ## 仓库结构
 

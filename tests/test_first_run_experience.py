@@ -264,10 +264,14 @@ def test_code_graph_max_files_has_upper_bound():
         cg.ImpactRequest(changed_files=["x"], max_files=2001)
 
 def test_cron_entry_quotes_all_variable_paths():
-    text = (_ROOT / "scripts" / "update_crontab.sh").read_text(encoding="utf-8")
-    assert 'cd "${REPO_ROOT}"' in text
-    assert '"${PY}" scripts/consolidator.py' in text
-    assert '>> "${LOG_DIR}/consolidator.log"' in text
+    import subprocess
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "update_crontab.sh"), "--dry-run"],
+        check=True, capture_output=True, text=True, timeout=10,
+    )
+    lines = [line for line in result.stdout.splitlines() if " cd " in line]
+    assert lines
+    assert all(' cd "' in line and '" && ' in line for line in lines)
 
 def test_frontend_does_not_remask_raw_keys():
     """Server must be the only masking layer; the browser never holds raw keys."""
@@ -326,3 +330,216 @@ def test_authenticated_health_returns_full_diagnostics(monkeypatch):
     data = response.json()
     assert "probes" in data
     assert "degraded_details" in data
+
+# ══════════════════════════════════════════════════════════════════
+# v20.3 用户审计 P0-A：report.py
+# ══════════════════════════════════════════════════════════════════
+
+def test_report_script_exists_and_is_executable():
+    path = _ROOT / "scripts" / "report.py"
+    assert path.is_file()
+    assert path.stat().st_mode & 0o111
+
+def test_report_public_payload_hides_sensitive_fields():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("aidumei_report", _ROOT / "scripts" / "report.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    public = module._public_report({"health_status": "ok", "status": "ok", "degraded": [], "warming_up": []})
+    assert public["schema_version"] == 1
+    assert set(public) == {
+        "schema_version", "generated_at", "service_version", "git_commit",
+        "health_status", "status", "engine_mode", "degraded", "warming_up", "next_actions",
+    }
+    assert "runtime_paths" not in public
+    assert "probes" not in public
+
+def test_report_exit_codes():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("aidumei_report", _ROOT / "scripts" / "report.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    ok = {"health_status": "ok", "degraded": [], "warming_up": [], "maintenance": {"crontab_task_count": 9, "latest_backup": {"verified": True}}}
+    assert module._exit_code(ok) == 0
+    warn = {"health_status": "ok", "degraded": [], "warming_up": ["x"], "anomalies": {}, "maintenance": {"crontab_task_count": 9, "latest_backup": {"verified": True}}}
+    assert module._exit_code(warn) == 2
+    fail = {"health_status": "degraded", "degraded": ["x"], "warming_up": [], "anomalies": {}, "maintenance": {"crontab_task_count": 9, "latest_backup": {"verified": True}}}
+    assert module._exit_code(fail) == 3
+
+# ══════════════════════════════════════════════════════════════════
+# v20.3 用户审计 P0-D：crontab 必须真实可 list、dry-run、安装
+# ══════════════════════════════════════════════════════════════════
+
+def test_crontab_script_lists_nine_tasks():
+    import json
+    import subprocess
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "update_crontab.sh"), "--list"],
+        check=True, capture_output=True, text=True, timeout=10,
+    )
+    data = json.loads(result.stdout)
+    assert len(data["tasks"]) >= 9
+    names = {task["name"] for task in data["tasks"]}
+    assert {
+        "health_check", "consolidator", "backup_create", "backup_verify",
+        "e2e_smoke", "facts_checkpoint", "report", "restore_gate_dry_run",
+        "dependency_audit",
+    } <= names
+
+def test_crontab_dry_run_does_not_mutate_crontab():
+    import subprocess
+    before = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "update_crontab.sh"), "--dry-run"],
+        check=True, capture_output=True, text=True, timeout=10,
+    )
+    after = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    assert result.returncode == 0
+    assert "would install 9" in result.stdout
+    assert before == after
+
+def test_restore_gate_rejects_missing_backup_dir():
+    import subprocess
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "restore_gate.sh"), "--dry-run", "/tmp/does-not-exist-aidumei"],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 3
+    assert "backup directory not found" in result.stderr
+
+def test_restore_gate_dry_run_accepts_verified_backup(tmp_path):
+    import sqlite3
+    import subprocess
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    db = backup / "facts.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE sanity (id INTEGER PRIMARY KEY, value TEXT)")
+    conn.commit(); conn.close()
+    digest = subprocess.check_output(["shasum", "-a", "256", str(db)], text=True).split()[0]
+    (backup / "SHA256SUMS").write_text(f"{digest}  facts.db\n")
+    (backup / ".backup_verified").write_text("ok\n")
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "restore_gate.sh"), "--dry-run", str(backup)],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "backup verification dry-run ok" in result.stdout
+
+def test_autoshift_drill_contract_mode():
+    import subprocess
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "drill_autoshift.sh"), "--check"],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0
+    assert "autoshift drill contract present" in result.stdout
+
+def test_autoshift_drill_rejects_invalid_mode():
+    import subprocess
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "drill_autoshift.sh"), "--invalid"],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 2
+
+def test_one_line_prompt_is_single_line_and_clean():
+    prompt = (_ROOT / "prompts" / "install.txt").read_text(encoding="utf-8").strip()
+    assert prompt
+    assert len(prompt.splitlines()) == 1
+    assert "AIDUMEM_API_TOKEN" not in prompt
+    assert "http://" not in prompt and "https://" not in prompt
+    assert "v20.3" not in prompt
+    assert "AGENTS.md" in prompt
+    assert "report.py" in prompt
+    one_line = (_ROOT / "ONE_LINE_INSTALL.md").read_text(encoding="utf-8").strip()
+    assert one_line == prompt
+
+def test_integration_guide_points_to_canonical_contract():
+    text = (_ROOT / "integrations" / "INTEGRATION_GUIDE.md").read_text(encoding="utf-8")
+    assert "Canonical contract" in text
+    assert "docs/AGENT_INTEGRATION.md" in text
+    assert "不做鉴权" not in text
+
+def test_capacity_and_restore_comparison_docs_exist():
+    capacity = (_ROOT / "docs" / "CAPACITY.md").read_text(encoding="utf-8")
+    restore = (_ROOT / "docs" / "restore-comparison.md").read_text(encoding="utf-8")
+    for needle in ("facts_watermark_effective", "wal_total_bytes", "process_rss_mb"):
+        assert needle in capacity
+    for tool in ("restore_backup.py", "restore_from_facts.py", "restore_bg.py", "restore_gate.sh"):
+        assert tool in restore
+
+def test_gear_has_active_probe_daemon():
+    text = (_ROOT / "ducky" / "gear.py").read_text(encoding="utf-8")
+    assert "ensure_half_open_probe_daemon" in text
+    assert "AIDUMEI_GEAR_PROBE_INTERVAL_SEC" in text
+    api = (_ROOT / "api_server.py").read_text(encoding="utf-8")
+    assert "ensure_half_open_probe_daemon" in api
+
+def test_idempotency_claim_and_replay_contract(tmp_path, monkeypatch):
+    """Same key + fingerprint replays; changed payload conflicts; missing key writes."""
+    import sqlite3
+    from ducky import idempotency as idem
+    db = tmp_path / "idem.db"
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    original = idem.get_facts_conn
+    def _fresh_conn():
+        nonlocal conn
+        conn = sqlite3.connect(db, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+    monkeypatch.setattr(idem, "get_facts_conn", _fresh_conn)
+    try:
+        first = idem.claim("same-key", "u", "b", {"messages": "same"})
+        assert first["action"] == "new", f"claim unexpectedly disabled: {first}"
+        assert first == {"action": "new", "key": "same-key"}
+        idem.finalize("same-key", "u", "b", {"status": "ok", "results": [{"id": "mem-1"}]})
+        replay = idem.claim("same-key", "u", "b", {"messages": "same"})
+        assert replay["action"] == "replay"
+        assert replay["response"]["results"][0]["id"] == "mem-1"
+        conflict = idem.claim("same-key", "u", "b", {"messages": "different"})
+        assert conflict["action"] == "conflict"
+    finally:
+        idem.get_facts_conn = original
+
+
+def test_service_units_have_memory_limits_and_consistent_runtime_paths():
+    for name in ("deploy/aidumem-api.service", "deploy/aidumem-sync.service"):
+        text = (_ROOT / name).read_text(encoding="utf-8")
+        assert "MemoryHigh=768M" in text
+        assert "MemoryMax=1G" in text
+    api = (_ROOT / "deploy/aidumem-api.service").read_text(encoding="utf-8")
+    sync = (_ROOT / "deploy/aidumem-sync.service").read_text(encoding="utf-8")
+    assert "Environment=AIDUMEM_DATA_DIR=/var/lib/aidumem/data" in api
+    assert "ReadWritePaths=/var/lib/aidumem/data /var/lib/aidumem/logs" in api
+    # Deployed runtime path must not appear as the active ReadWritePaths line.
+    active_rw = [line for line in api.splitlines() if line.startswith("ReadWritePaths=")]
+    assert active_rw == ["ReadWritePaths=/var/lib/aidumem/data /var/lib/aidumem/logs"]
+
+def test_dependency_audit_contract():
+    import json
+    import subprocess
+    result = subprocess.run(
+        ["python3", str(_ROOT / "scripts" / "dependency_audit.py")],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stdout
+    data = json.loads(result.stdout)
+    assert data["status"] == "ok"
+
+def test_agent_integration_check_exists():
+    path = _ROOT / "scripts" / "agent_integration_check.py"
+    assert path.is_file() and path.stat().st_mode & 0o111
+    text = path.read_text(encoding="utf-8")
+    for endpoint in ("/gate", "/add", "/add/raw", "/search", "/api/core-memory/inject", "/session/start", "/session/end"):
+        assert endpoint in text
+
+def test_agent_integration_check_exists():
+    path = _ROOT / "scripts" / "agent_integration_check.py"
+    assert path.is_file() and path.stat().st_mode & 0o111
+    text = path.read_text(encoding="utf-8")
+    for endpoint in ("/gate", "/add", "/add/raw", "/search", "/api/core-memory/inject", "/session/start", "/session/end"):
+        assert endpoint in text
