@@ -95,24 +95,30 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         # ── 2. Qdrant 向量入库 ──
         vector_ok = False
         try:
-            from ducky.mem0_runtime import get_memory
-            mem = get_memory()
-            # 🔴v20：原文向量也要盖域戳，否则命名域存的原文在向量侧与默认域
-            # 混在一起，只有 FTS 那一半是隔离的。
-            from ducky.bank_contract import stamp_bank_metadata
-            md = stamp_bank_metadata(req.metadata, req.bank_id)
-            md["memory_tier"] = "verbatim"
-            md["source"] = req.source
-            md["content_hash"] = content_hash
-            md["raw_length"] = len(content)
+            from ducky.engine_mode import cloud_egress_allowed
+            if cloud_egress_allowed("embedding"):
+                from ducky.mem0_runtime import get_memory
+                mem = get_memory()
+                from ducky.bank_contract import stamp_bank_metadata
+                md = stamp_bank_metadata(req.metadata, req.bank_id)
+                md["memory_tier"] = "verbatim"
+                md["source"] = req.source
+                md["content_hash"] = content_hash
+                md["raw_length"] = len(content)
 
-            result = mem.add(
-                content,
-                user_id=req.user_id,
-                metadata=md,
-                infer=False,
-            )
-            vector_ok = True
+                result = mem.add(
+                    content,
+                    user_id=req.user_id,
+                    metadata=md,
+                    infer=False,
+                )
+                vector_ok = True
+            else:
+                from ducky.dual_index import upsert_local_verbatim
+                upsert_local_verbatim(
+                    req.user_id, req.bank_id, memory_id, content
+                )
+                vector_ok = True
         except Exception as e:
             logger.warning(f"Raw 向量入库失败: {e}")
 
