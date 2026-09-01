@@ -70,7 +70,7 @@ def _crontab_task_count() -> int | None:
 
 
 def _crontab_installed_count() -> int | None:
-    """实装数（数真实 crontab 里本仓条目）。v20.3.1（九份审计 P0-1/嘟嘟 🔴-5）：
+    """实装数（数真实 crontab 里本仓条目）。v20.3.1（九份审计 P0-1/用户审计 🔴-5）：
     此前 report 只报意图数，把「装了 1 条」报成「9 条全在」——每层仪器都在读
     上一层输出，没有一层去读世界。"""
     try:
@@ -90,7 +90,7 @@ def _crontab_installed_count() -> int | None:
 
 
 def _maintenance_block() -> dict[str, Any]:
-    """维护块对公开/鉴权两形态都填（v20.3.1 · 外审 hy4 F-02 / 嘟嘟 🔴-5）。
+    """维护块对公开/鉴权两形态都填（v20.3.1 · 外审 hy4 F-02 / 用户审计 🔴-5）。
 
     这块数据全部来自本地文件系统与 crontab，不依赖鉴权 —— 无凭据部署此前
     因缺 maintenance 键恒 exit 2，一个完全健康的实例永远报「警告」，
@@ -128,7 +128,7 @@ def _safe_next_actions(health: dict[str, Any], maintenance: dict[str, Any] | Non
     intended = maintenance.get("crontab_task_count")
     installed = maintenance.get("crontab_installed_count")
     # 实装数优先于意图数（v20.3.1）：装了 1 条报「9 条全在」是上一版被
-    # 嘟嘟实锤的病。实装拿不到时才退回意图数，并如实说明。
+    # 用户审计实锤的病。实装拿不到时才退回意图数，并如实说明。
     effective = installed if installed is not None else intended
     if effective is None or effective < 8:
         actions.append(
@@ -144,7 +144,7 @@ def _safe_next_actions(health: dict[str, Any], maintenance: dict[str, Any] | Non
 
 
 def _engine_mode_of(health: dict[str, Any]) -> Any:
-    """engine_mode 真身在 probes.engine_mode_policy（v20.3.1 · 嘟嘟 🟡-7）。
+    """engine_mode 真身在 probes.engine_mode_policy（v20.3.1 · 用户审计 🟡-7）。
 
     此前从 /health 顶层读，顶层根本没这个键 → 恒 null。一行 Prompt 第 11 步
     让 agent 汇报「挡位」，拿到的永远是空。"""
