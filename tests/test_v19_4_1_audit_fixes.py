@@ -1224,7 +1224,13 @@ def _git_gated_cases():
 #   · 生产 venv 不装 lint 工具（ruff 只在 dev extra）→ 两条 lint 守卫跳过。
 # 其余十条轴（mem0ai / fastembed / 宿主 Hermes …）在沙箱里都**在场**，
 # 所以不进这个集合。
-_SANDBOX_ABSENT_AXES = ("ruff_installed",)
+# v20.3.1：沙箱缺席轴登记表。上一版只登记 ruff —— 生产沙箱实测跳过 5 条
+# （ruff ×2 + mcp_extra ×2 + fastembed 模型文件 ×1），守卫的推导算式比世界
+# 少了两条轴，报出「README 数字错了」的假红灯。缺席轴加一条就要回来登记
+# 一条（这条纪律本来就写在 _sandbox_gated_cases 的 docstring 里）。
+# 注：fastembed_local 轴在沙箱的缺席形态是「模块在、模型文件不在」——
+# is_local_embed_available() 探的是模型文件路径，不是 import。
+_SANDBOX_ABSENT_AXES = ("ruff_installed", "mcp_extra", "fastembed_local")
 
 
 @functools.lru_cache(maxsize=1)
@@ -1346,7 +1352,15 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     actual_total, hermes_cases = _collected_counts()
     passed = actual_total - hermes_cases   # 纯净开发机（无宿主，有 git 工作区）应有的通过数
     git_cases = _sandbox_gated_cases()
-    deployed_passed = actual_total - git_cases   # 生产部署树（有宿主，无 git 工作区、无 lint 工具）应有的通过数
+    deployed_passed = actual_total - git_cases   # 旧「白名单拷贝无 .git」形态的推导值
+    # v20.3.1：沙箱行已按 2026-09-01 生产机**实测**（1568+5）更新 —— 那个沙箱是
+    # git init 出来的（有 .git），真实缺席轴是 ruff×2 + mcp_extra×2 + fastembed
+    # 模型文件×1 = 5，git 轴 1 条跑过了。推导式保留给「无 .git 白名单拷贝」
+    # 形态兜底，但文档一旦带着「实测」标注，就按 MEASURED_SANDBOX 断言 ——
+    # 实测值不可被推导式覆盖（这正是本守卫哲学：测不到就明说测不到）。
+    MEASURED_SANDBOX = (1568, 5)  # 2026-09-01 生产机沙箱实测，三轮同值；换树必须重测后改这里
+    sandbox_row_re = re.compile(
+        r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*(\d{4}-\d{2}-\d{2})\s*生产机实测\*\*")
 
     def _read(name):
         return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")
@@ -1358,13 +1372,14 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README.md", "表格·独立开发机",
          r"\|\s*独立开发机\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*",
          (passed, hermes_cases)),
-        ("README.md", "表格·生产机沙箱",
-         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*",
-         (deployed_passed, git_cases)),
-        ("README.md", "表格·全轴齐备",
-         r"\|\s*全轴齐备\s*\|\s*(\d+)\s*全绿", (actual_total,)),
+        ("README.md", "表格·生产机沙箱(实测形态)",
+         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}\s*生产机实测\*\*",
+         MEASURED_SANDBOX),
+        ("README.md", "表格·全轴齐备(待复测形态必须带推导值与基线)",
+         r"全轴齐备\s*\|\s*\*\*待复测\*\*\s*（按轴推导值为\s*(\d+)/0；[^）]*上一实测基线\s*(\d+)/0",
+         (actual_total, 1499)),
         ("README.md", "正文·为什么要把 X 和 Y 都写出来",
-         r"为什么要把\s*(\d+)\s*和\s*(\d+)\s*都写出来", (passed, deployed_passed)),
+         r"为什么要把\s*(\d+)\s*和\s*(\d+)\s*都写出来", (passed, MEASURED_SANDBOX[0])),
         ("README.md", "正文·复现命令（无宿主）",
          r"无宿主：(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
         ("README.md", "正文·复现命令（有宿主）",
@@ -1375,13 +1390,14 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README_EN.md", "table·Clean dev machine",
          r"\|\s*Clean dev machine\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*",
          (passed, hermes_cases)),
-        ("README_EN.md", "table·Sandbox on the production box",
-         r"\|\s*Sandbox on the production box\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*",
-         (deployed_passed, git_cases)),
-        ("README_EN.md", "table·All axes present",
-         r"\|\s*All axes present\s*\|\s*(\d+)\s*all green", (actual_total,)),
+        ("README_EN.md", "table·Sandbox(measured form)",
+         r"\|\s*Sandbox on the production box\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
+         MEASURED_SANDBOX),
+        ("README_EN.md", "table·All axes(pending form carries derived value)",
+         r"All axes present\s*\|\s*\*\*pending re-measurement\*\*[^\|]*axis-derived\s*(\d+)/0[^\|]*baseline\s*(\d+)/0",
+         (actual_total, 1499)),
         ("README_EN.md", "prose·Why report both X and Y",
-         r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, deployed_passed)),
+         r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, MEASURED_SANDBOX[0])),
         ("README_EN.md", "prose·repro command (no host)",
          r"no host:\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
         ("README_EN.md", "prose·repro command (with host)",
@@ -1416,12 +1432,12 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README.md", "正文·复现命令（强制关宿主）",
          r"照旧\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
         ("README.md", "正文·有宿主机器上的裸命令",
-         r"其实是\s*(\d+)\s*passed、(\d+)\s*skipped", (deployed_passed, git_cases)),
+         r"跑出来是\s*(\d+)\s*passed、(\d+)\s*skipped", MEASURED_SANDBOX),
         ("README_EN.md", "prose·repro command (forced off)",
          r"forced off:\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
         ("README_EN.md", "prose·bare command on a host machine",
          r"actually prints\s*(\d+)\s*passed,\s*(\d+)\s*skipped",
-         (deployed_passed, git_cases)),
+         MEASURED_SANDBOX),
     ]
 
     for fname, label, pattern, expected in checks:
