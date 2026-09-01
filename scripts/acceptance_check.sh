@@ -87,9 +87,24 @@ PYEOF
 # 硬门槛的「真的执行」要量的是退出码，不是收集成功。全量跑给发布流程；
 # 这里跑守卫自证子集（本轮新增测试 + 数字口径守卫），几分钟内出结果，
 # 退出码 0 才算过 —— collect-only 会把「根本没跑」伪装成「跑了」。
-PY="python3"
-if [[ -x "${ROOT}/.venv/bin/python" ]]; then PY="${ROOT}/.venv/bin/python"; fi
-if [[ -n "${AIDUMEM_PYTHON:-}" ]]; then PY="${AIDUMEM_PYTHON}"; fi
+# 探测链与 update_crontab.sh 同款：显式指定 > 仓内 .venv > PATH 上能 import
+# pytest 的 python3。沙箱形态（用部署 venv 跑测试、树内无 .venv）此前
+# 掉进系统 python3（无 pytest）→ 哨兵子集红 —— 环境轴，不是产品缺陷。
+PY="${AIDUMEM_PYTHON:-}"
+if [[ -z "${PY}" ]]; then
+  if [[ -x "${ROOT}/.venv/bin/python" ]]; then PY="${ROOT}/.venv/bin/python"; fi
+fi
+if [[ -z "${PY}" ]]; then
+  for cand in python3 python3.12 python3.11 python3.10; do
+    if command -v "${cand}" >/dev/null 2>&1 && "${cand}" -c "import pytest" >/dev/null 2>&1; then
+      PY="${cand}"; break
+    fi
+  done
+fi
+if [[ -z "${PY}" ]]; then
+  printf 'FAIL hard gate: no interpreter with pytest found (set AIDUMEM_PYTHON)\n' >&2
+  exit 1
+fi
 # ${PY} 作为位置参数传给 bash -c（"bash: /Users/jack/Documents/4.: No such
 # file or directory" —— 路径含空格时把它拼进命令串会把解释器路径劈成两半）。
 check "hard gate: pytest sentinel subset exits 0" bash -c '
