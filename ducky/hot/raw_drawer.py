@@ -31,7 +31,7 @@ class RawDrawerRequest(BaseModel):
     metadata: dict = Field(default_factory=dict)
     source: str = "raw_drawer"
     dedup: bool = True
-    # v20.3.1（九份审计 P0-5 / 嘟嘟 🟡-3）：重试幂等键。/add 有了、
+    # v20.3.1（九份审计 P0-5 / 用户审计 🟡-3）：重试幂等键。/add 有了、
     # /add/raw 没有 —— 原文抽屉在重试场景（网络抖动、客户端超时重发）
     # 仍可能重复写。与 /add 同一实现（ducky.idempotency），同键同负载
     # 重发回放首次响应，不重复落库。

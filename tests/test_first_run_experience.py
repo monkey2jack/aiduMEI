@@ -362,7 +362,7 @@ def test_report_public_payload_hides_sensitive_fields(monkeypatch):
     assert "probes" not in public
 
 def test_report_engine_mode_reads_probes_not_top_level():
-    """嘟嘟 🟡-7：engine_mode 真身在 probes.engine_mode_policy，顶层没有这个键。"""
+    """用户审计 🟡-7：engine_mode 真身在 probes.engine_mode_policy，顶层没有这个键。"""
     import importlib.util
     spec = importlib.util.spec_from_file_location("aidumei_report", _ROOT / "scripts" / "report.py")
     module = importlib.util.module_from_spec(spec)
@@ -375,7 +375,7 @@ def test_report_engine_mode_reads_probes_not_top_level():
     assert module._engine_mode_of({"engine_mode": "local"}) == "local"
 
 def test_report_exit_codes_prefer_installed_over_intended():
-    """嘟嘟 🔴-5：装了 1 条不得报 8 条全在 —— 退出码以实装数为准。"""
+    """用户审计 🔴-5：装了 1 条不得报 8 条全在 —— 退出码以实装数为准。"""
     import importlib.util
     spec = importlib.util.spec_from_file_location("aidumei_report", _ROOT / "scripts" / "report.py")
     module = importlib.util.module_from_spec(spec)
@@ -434,7 +434,7 @@ def test_crontab_script_lists_eight_tasks_no_ghost():
             assert (_ROOT / m.group(0)).is_file(), f"ghost task target: {m.group(0)}"
 
 def test_crontab_install_writes_all_entries_and_is_idempotent(tmp_path):
-    """嘟嘟 🔴-1 / GLM F-1.0：上一版去重键取共享中文前缀 → 只装 1 条报 9 条。
+    """用户审计 🔴-1 / GLM F-1.0：上一版去重键取共享中文前缀 → 只装 1 条报 9 条。
     判据落在世界（mock crontab 实文）而不是脚本自己的输出。"""
     import subprocess
     fake_bin = tmp_path / "fakebin"
@@ -480,7 +480,7 @@ def test_crontab_install_writes_all_entries_and_is_idempotent(tmp_path):
     assert installed_3 == 8, f"repair install wrote {installed_3}, expected 8"
 
 def test_crontab_install_refuses_missing_target_script(tmp_path):
-    """守卫射程负向对照：注册一个不存在的脚本必须红（嘟嘟 🟢-2）。"""
+    """守卫射程负向对照：注册一个不存在的脚本必须红（用户审计 🟢-2）。"""
     import subprocess
     ghost = _ROOT / "scripts" / "uc_ghost_probe_tmp.sh"
     src = (_ROOT / "scripts" / "update_crontab.sh").read_text(encoding="utf-8")

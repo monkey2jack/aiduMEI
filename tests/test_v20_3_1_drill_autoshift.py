@@ -1,4 +1,4 @@
-"""v20.3.1（九份审计 P0-4 · 嘟嘟 🔴-2）：drill_autoshift.sh --run 必须真的能跑通。
+"""v20.3.1（九份审计 P0-4 · 用户审计 🔴-2）：drill_autoshift.sh --run 必须真的能跑通。
 
 上一版的病（从写出来那天起没成功跑通一次）：
   1. heredoc 与管道抢 stdin → sys.stdin.read() 得空串 → JSONDecodeError；
@@ -8,7 +8,7 @@
 
 判据落在真实进程行为上：起一台只回合法 /health 的本地 mock 服务，
 drill --run 必须输出 status=pass 且 exit 0。acceptance 的 `test -x` 只量
-「文件在不在」，量不出「功能通不通」—— 嘟嘟原话：尺子量了存在性，
+「文件在不在」，量不出「功能通不通」—— 用户审计原话：尺子量了存在性，
 没量可行性。
 """
 
@@ -118,7 +118,7 @@ def test_drill_run_fails_when_service_unreachable(tmp_path):
 
 
 def test_drill_check_verifies_key_names_statically():
-    """--check 顺手静态断言 --run 要读的键在 health.py 里存在（嘟嘟 🟢-2）。"""
+    """--check 顺手静态断言 --run 要读的键在 health.py 里存在（用户审计 🟢-2）。"""
     env = {**os.environ, "AIDUMEM_DATA_DIR": "/tmp/aidumei_drill_t_data",
            "AIDUMEM_LOG_DIR": "/tmp/aidumei_drill_t_logs"}
     r = subprocess.run(["bash", _DRILL, "--check"],

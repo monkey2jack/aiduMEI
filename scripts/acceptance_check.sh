@@ -43,7 +43,7 @@ check "restore_gate exists and rejects invalid path" bash -c 'test -x scripts/re
 check "crontab intent list matches real TASKS array (8, ghost-free)" bash -c 'test "$(bash scripts/update_crontab.sh --list | python3 -c "import json,sys; print(len(json.load(sys.stdin)[\"tasks\"]))")" -eq 8'
 check "crontab every task target script exists" bash -c 'bash scripts/update_crontab.sh --dry-run >/dev/null' 
 check "deploy prompt is present and canonical" bash -c 'test -f prompts/install.txt && test -f ONE_LINE_INSTALL.md && cmp -s prompts/install.txt ONE_LINE_INSTALL.md && grep -q "report.py" prompts/install.txt && grep -q "e2e_smoke.py" prompts/install.txt && grep -q "agent_integration_check.py" prompts/install.txt && grep -q "update_crontab.sh" prompts/install.txt'
-# v20.3.1（九份审计 P0-8 · 嘟嘟 🔴-4）：展示区与 canonical 的对账。
+# v20.3.1（九份审计 P0-8 · 用户审计 🔴-4）：展示区与 canonical 的对账。
 # 上一版 README/AGENTS 展示的是另一段旧文案却自称「唯一真源」——哈希对不上，
 # 那句话就是假的。修复：展示区全部改为引用形态（不再复制正文），三处必须
 # 同时满足「明确指向 install.txt 为 canon」且「不再宣称自己是真源」。
