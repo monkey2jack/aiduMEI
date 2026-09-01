@@ -318,9 +318,9 @@ _RUNTIME_OUT = [
     ),
     (
         "scripts/update_crontab.sh",
-        "# aiduMEI: 每日记忆巩固",
-        "# aiduMEM: 每日记忆巩固",
-        "这条注释会被写进用户自己的 crontab",
+        "# aiduMEI:${name}|owner=${owner}|failure=${failure}",
+        "# aiduMEM:${name}|owner=${owner}|failure=${failure}",
+        "注释头的模板行 —— 实际写进用户 crontab 的产出是 `# aiduMEI:health_check|…`",
     ),
     (
         "scripts/health_check.py",

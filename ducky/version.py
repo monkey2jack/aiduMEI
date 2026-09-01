@@ -3,6 +3,21 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.3.1 (九份审计整改 · 仪器读世界 · 2026-09-01)
+    主题：v20.3 正式版发布后的 9 份审计（嘟嘟生产实机 + 8 个外部模型，约 60 项发现，
+    逐条核验零假指控）整改轮。纲领一句话（Qwen3.7-Max 审计原话）：每一层仪器
+    都在读上一层的输出，没有一层去读世界——全部验收判据落在系统真实状态上。
+    1. crontab 三连修 + latest 解析：去重键 9装1 / 幽灵任务 / -x 不查 PATH；--installed 数真实 crontab，install 尾与世界对账
+    2. 半开探针一次性（_PROBE_TIMER 永不置空）→ 重挂修复 + LLM 腿覆盖
+    3. agent_integration_check 双空断言（GET body 被丢弃 / count 整串恒 0）
+    4. drill --run 从未跑通（stdin 之争 + 顶层键不存在）→ mock 实测通过
+    5. 幂等断裂：local/lite/async 六条早返回补 finalize；/add/raw 幂等键；Idempotency-Key header 支持
+    6. 测试数字口径：三处打架收敛为同源双口径
+    7. acceptance：第 18 项改锚不变量（版本感知）+ 三道硬门槛真跑
+    8. 一行 Prompt 真源收敛：展示区改引用形态 + acceptance 对账
+    9. report.py：无凭据恒 exit 2 / engine_mode 恒 null / 实装数优先
+    10. 用例总数 1552 → 1573。本机 1561 passed + 12 skipped（2026-09-01 实测）；生产机沙箱 1570 + 3 按轴推导、待复测
+
 v20.3.0 (优忆思 · 入口与可操作性 · 2026-08-31)
     主题：修复 v20 的入口债。11 份双盲 VOC 给出同一个结论——
     「代码是上游水平，文档是反 agent 的」：11/11 不建议投产、
@@ -38,8 +53,8 @@ v20.3.0 (优忆思 · 入口与可操作性 · 2026-08-31)
     8. 机械验收聚合脚本 scripts/acceptance_check.sh：入口文件、README
        行数、AGENTS 体量、rerank 样例、假探针、恢复脚本、MCP 端口、
        e2e 脚本可执行，一处失败即非零退出。
-       用例总数 1499 → 1552（本机 1540 passed + 12 skipped；
-       生产机沙箱按轴推导 1545 passed + 3 skipped）。
+       用例总数 1552 → 1573（本机 1561 passed + 12 skipped · 2026-09-01；
+       生产机沙箱待复测 —— 数字与日期一体，换树必须重测）。
 
 v20.2.5 (两份审计整改 · 2026-08-28)
     主题：用户视角实机审计（20 项）+ 第三方独立外审（评级「有条件不通过」）。**六项落点全是修复，没有新能力** —— 所以版本号只走三级。
@@ -1433,7 +1448,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.3.0"
+SERVICE_VERSION = "20.3.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1447,6 +1462,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.3.1", "", "v20.3.1", "九份审计整改 · 仪器读世界 · 2026-09-01"),
     ("20.3.0", "", "", "优忆思 · Agent 入口与可操作性 · 生效自证"),
     ("20.2.5", "", "", "两份审计整改 · F-03 假修复真修 · 删除三态 · Ruff 进门禁"),
     ("20.2.4", "", "", "差异化时效衰减 · 纠正语只登记不判决 · 收益面如实标注"),
