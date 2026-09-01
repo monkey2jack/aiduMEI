@@ -4,7 +4,28 @@
 
 ---
 
-## v20.3.0 — 优忆思：入口与可操作性（进行中 · 2026-08-31）
+---
+
+## v20.3.1 — 九份审计整改：仪器读世界（2026-09-01）
+
+> 来源：v20.3 正式版发布后，嘟嘟（生产实机）+ 8 个外部模型审计，合计约 60 项发现，
+> 逐条核验**零假指控**。整改任务书挂 wiki（Rev.2，qwen3.8 独立复核补漏）。
+> 本版纲领（Qwen3.7-Max 原话）：**每一层仪器都在读上一层的输出，没有一层去读世界** ——
+> 全部验收判据落在系统真实状态上（crontab 实文 / 进程行为 / HTTP 响应 / DB 行集），
+> 不落在对仓库源码的文本匹配上。
+
+- **P0-1 crontab 三连修 + latest 解析**：去重键共用中文前缀导致「报 9 实装 1」（本机 mock 复现）；幽灵任务 `facts_checkpoint` 指向不存在的脚本（删除，9→8）；`-x python3` 不查 PATH（改 `command -v` 解析绝对路径）；`backup_gate verify latest` / `restore_gate --dry-run latest` 不解析 latest（装上每周必失败）——新增共享 helper `_backup_common.sh` 单一实现，`--installed` 模式数真实 crontab，install 尾与世界对账（实文≠期望即红）。
+- **P0-2 半开探针永不重挂**：`_PROBE_TIMER` 持有已死 Timer 引用永不置空 → `_schedule_probe_timer` 门卫恒命中 → 全进程只探测一次（「不再依赖流量」的宣称在启动 30 秒后作废）。修法：tick 消费先清引用再重排；探针覆盖面扩到 LLM 腿（docstring 一直写着 for all gear states，实际只探过 embed）。行为测试（短 interval + 计数替身，≥3 次触发）替换旧的「符号存在」断言。
+- **P0-3 agent_integration_check 双空断言**：GET /gate 携 JSON body 被 FastAPI 整个丢弃（恒命中 empty_query 早返回，任何 200 算 PASS）；`values.count(nonce)` 整串相等恒 0（重复注入五次也绿）。修法：GET 参数走 query string + reason 非 empty_query 判真；重复检测改子串计数 + 「故意注入两次必须红」负向对照。附 `--tenant` 白名单护栏（拒绝 default 与任意租户 —— 防被诱导清库）。
+- **P0-4 drill --run 从未跑通**：heredoc 与管道抢 stdin → JSONDecodeError；断言的三个键在 /health 顶层不存在（真身在 probes.*）——**从写出来那天起没有成功跑通过一次**，acceptance 只 `test -x`。修法：HEALTH 落临时文件 + `python3 -c`；字段改读 probes.*；token 经 stdin（ps 不可见）；bash 3.2 空数组兼容。acceptance 增加「mock health 可跑通」断言。
+- **P0-5 幂等断裂四路**：finalize 只挂同步完整路径末尾，local_only / deferred_distillation / coalesce×2 / coalesce_flushed / async_queued 六条早返回全漏落账 → 重试被判 pending 而非 replay，幂等保护恰在 local 档（用户最可能首跑的档）失效。修法：`_finalize_and` 统一收口（一个实现不抄五遍）；/add/raw 补幂等键（同 409 conflict 契约）；`Idempotency-Key` header 支持（Release 曾宣称 header 形态，实际只认 body 字段 —— 照发布说明集成的网关/SDK 静默失去保护）。
+- **P0-6 测试数字三处打架**：README「1549 实测」vs 正文「按轴推导」vs CHANGELOG「1545+3（1548≠1552 算术不可能）」vs Release「1548/4（全仓无此数）」。全部统一为本树实测/推导双口径：**总数 1573（collect 实测 2026-09-01）· 本机 1561 passed + 12 skipped（实测）· 沙箱 1570+3（按轴推导，如实标注待复测）**。数字与日期一体，未实测不得写「实测」。
+- **P0-7 acceptance 过期 + 硬门槛**：第 18 项锚在已删除的叙事文案上（转正提交改衣服没换尺子 → 发布物自证 FAIL 而 Release 宣称 21/21）。修法：判据改锚不变量（两份 README 版本串必须与 version.py 一致，版本变守卫自动跟）；补三道硬门槛（py_compile / pytest 哨兵子集真跑退出码 / push_gate 可执行）——文本存在性检查量不出「功能通不通」。
+- **P0-8 一行 Prompt 真源收敛**：README/AGENTS 展示区是旧的一行版，install.txt 是 13 行分步版，三处却自称与 canonical 逐字一致（哈希对不上，那句话就是假的）。修法：展示区全部改引用形态（指向 install.txt 为正典，不再复制正文）；acceptance 加对账守卫（三处必须指向 install.txt 且不得再自称真源）。
+- **P1-4 report.py 三处**：无凭据部署恒 exit 2（`_public_report` 不填 maintenance —— 假警报与假绿灯同一种病）；engine_mode 恒 null（顶层没这个键，真身在 probes.engine_mode_policy）；`_crontab_task_count` 同表达式调两次（一次报告 fork 三个子进程）。三处全修：maintenance 对公开形态也填（本地数据无需鉴权）、实装数优先于意图数（装 1 条不得报 8 条全在）、子进程结果缓存。
+- 用例总数 1552 → 1573。本机 1561 passed + 12 skipped（2026-09-01，v20.3.1 整改树实测）；生产机沙箱**待复测** —— 推导数字不再冒充实测进文档。
+
+## v20.3.0 — 优忆思：入口与可操作性（已发布 · 2026-08-31，Tag v20.3）
 
 - **目标不是加功能，是补入口**：11 份双盲 VOC 给出同一个结论——代码是上游水平，文档是反 agent 的。本版让陌生 agent 从仓库本身就能装好、验好、接好、养好。
 - **三条真投产阻断先修**：rerank 样例改为代码真实读取的嵌套形状（测试用真实 loader 吃样例）；`/health` 删除恒绿 `injection_guard_ok`，`port_service` 改为真实 socket 探测；`restore_backup.py` 去掉历史日期硬编码，改为显式 snapshot 参数 + dry-run + 退出码。
@@ -13,7 +34,7 @@
 - **运维与整合入口**：新增 `TROUBLESHOOTING.md`、`docs/HEALTH.md`、`docs/OPERATIONS.md`、`docs/AGENT_INTEGRATION.md`、`docs/BACKUP_RESTORE.md`、`scripts/README.md`。
 - **一致性修复**：Python 版本、MCP 端口、鉴权口径、lite/云重叠口径、备份根默认值、ECharts 加载口径与源码/实测统一；新增守卫防止回退。
 - **机械验收**：新增 `scripts/acceptance_check.sh`，聚合入口文件、README 行数、AGENTS 体量、rerank 样例、假探针、恢复脚本、MCP 端口、e2e 可执行八类检查，失败即非零退出。
-- 用例总数 1499 → 1552。本机 1540 passed + 12 skipped；生产机沙箱按轴推导为 1545 passed + 3 skipped（当前树尚未生产机复测）。
+- 用例总数 1552 → 1573。本机 1561 passed + 12 skipped（2026-09-01，v20.3.1 整改树）；生产机沙箱**待复测** —— 推导数字不再进文档（九份审计 P0-6：README 1549 / CHANGELOG 1545 / Release 1548 三处打架，1545+3=1548≠1552 算术不可能）。
 
 ---
 
