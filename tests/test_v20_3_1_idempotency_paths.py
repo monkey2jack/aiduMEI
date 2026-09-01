@@ -95,7 +95,7 @@ def test_local_only_path_replays_on_retry(app_rig, monkeypatch):
 
 
 def test_raw_drawer_has_idempotency_now(app_rig):
-    """P0-5 + 嘟嘟 🟡-3：/add/raw 幂等键。同键重发回放首次响应。"""
+    """P0-5 + 用户审计 🟡-3：/add/raw 幂等键。同键重发回放首次响应。"""
     client, tmp_path = app_rig
     body = {"content": "raw-replay-probe unique content 001",
             "user_id": "replay-raw-u1", "bank_id": "default",
