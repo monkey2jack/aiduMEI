@@ -142,12 +142,13 @@ def test_tenant_guardrail_rejects_default_and_foreign_prefix(tmp_path):
     """P2-1：--tenant 被诱导传 default 时必须拒绝（防验收即清库）。"""
     import subprocess
     import os
+    import sys
     env = {**os.environ,
            "AIDUMEM_DATA_DIR": str(tmp_path / "data"),
            "AIDUMEM_LOG_DIR": str(tmp_path / "logs")}
     for bad_tenant in ("default", "victim-user"):
         r = subprocess.run(
-            [".venv/bin/python", "scripts/agent_integration_check.py", "--tenant", bad_tenant],
+            [sys.executable, "scripts/agent_integration_check.py", "--tenant", bad_tenant],
             capture_output=True, text=True, timeout=20, env=env, cwd=str(_ROOT),
         )
         assert r.returncode == 2, (
