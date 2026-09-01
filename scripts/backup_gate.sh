@@ -37,6 +37,10 @@ fi
 ok()  { echo -e "  ${GREEN}✅${RESET} $1"; }
 bad() { echo -e "  ${RED}❌${RESET} $1" >&2; }
 
+# 共享 helper（v20.3.1）：latest 解析只此一份，restore_gate.sh 也 source 它
+# shellcheck source=scripts/_backup_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_backup_common.sh"
+
 # ── 一致性快照 + 完整性校验（v19.4.1 修复）─────────────────────────────
 #
 # 为什么不能直接 cp WAL 库（v19.4.1 生产实机暴露的真问题）：
@@ -176,7 +180,13 @@ cmd_create() {
 }
 
 cmd_verify() {
-  local dest="$1"
+  local dest
+  # v20.3.1（外审 Qwen P1-7）：latest 必须解析成真实目录，否则 cron 的
+  # `verify latest` 每周必失败。显式路径形态原样通过，不改变旧语义。
+  if ! dest="$(resolve_latest "$1" "${BACKUP_ROOT}")"; then
+    bad "latest 解析失败：${BACKUP_ROOT} 下没有含 SHA256SUMS 的备份目录"
+    exit 1
+  fi
   if [[ ! -d "$dest" ]]; then
     bad "备份目录不存在: $dest"
     exit 1

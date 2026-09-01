@@ -316,27 +316,52 @@ def gear_status(*, now: Optional[float] = None) -> dict:
     return _EMBED.status(now=now)
 
 def _run_half_open_probe() -> None:
-    """Single active probe for a half-open cloud leg.
+    """Single active probe for half-open cloud legs.
 
     Real traffic remains the primary probe. This timer only prevents a
     low-traffic deployment from waiting indefinitely for recovery.
+
+    v20.3.1（九份审计 P0-2）：本 tick 已消费，先把引用清掉再重排 ——
+    此前 `_PROBE_TIMER` 拿着已触发完毕的 Timer 对象永不清空，
+    `_schedule_probe_timer` 的 `is not None` 门卫恒命中 → 探针只跑一次
+    就永久停摆，"不再依赖流量"的宣称在启动 30 秒后作废。
+    同时把探测覆盖到 LLM 腿（ensure 的 docstring 一直写着 for all gear
+    states，实际只探过 embed）。
     """
     global _PROBE_TIMER
+    with _PROBE_LOCK:
+        _PROBE_TIMER = None          # 本 tick 已消费，允许重挂
     try:
-        if _EMBED.mode() != "lite" or not should_try_cloud():
-            return
-        try:
-            from ducky.mem0_runtime import get_memory
-            memory = get_memory()
-            client = getattr(memory, "embedding_model", None)
-            if client is None:
-                return
-            client.embed("aiduMEI gear probe", "search")
-            record_cloud_success()
-            logger.info("⚙️ 云嵌入腿：主动探测成功，恢复信号已上报")
-        except Exception as exc:
-            record_cloud_failure(str(exc))
-            logger.debug("云嵌入腿主动探测失败: %s", exc)
+        # ── 嵌入腿 ──
+        if _EMBED.mode() == "lite" and should_try_cloud():
+            try:
+                from ducky.mem0_runtime import get_memory
+                memory = get_memory()
+                client = getattr(memory, "embedding_model", None)
+                if client is not None:
+                    client.embed("aiduMEI gear probe", "search")
+                    record_cloud_success()
+                    logger.info("⚙️ 云嵌入腿：主动探测成功，恢复信号已上报")
+            except Exception as exc:
+                record_cloud_failure(str(exc))
+                logger.debug("云嵌入腿主动探测失败: %s", exc)
+        # ── LLM 腿（v20.3.1）：探针只探一次 embed 的旧病不重演 ──
+        if _LLM.mode() == "lite" and should_try_llm():
+            try:
+                from ducky.llm_client import call_llm
+                result = call_llm(
+                    "Reply with the single word: ok",
+                    max_tokens=8, timeout=10,
+                )
+                if result is not None:
+                    record_llm_success()
+                    logger.info("⚙️ LLM 蒸馏腿：主动探测成功，恢复信号已上报")
+                else:
+                    # 返回 None 是「LLM 不可用」的既有降级契约，算失败信号
+                    record_llm_failure("probe returned None")
+            except Exception as exc:
+                record_llm_failure(str(exc)[:120])
+                logger.debug("LLM 腿主动探测失败: %s", exc)
     finally:
         _schedule_probe_timer()
 
@@ -344,6 +369,8 @@ def _schedule_probe_timer() -> None:
     global _PROBE_TIMER
     with _PROBE_LOCK:
         if _PROBE_TIMER is not None:
+            # 已有一个活跃定时器（未触发）。已触发完毕的死引用在
+            # _run_half_open_probe 开头清掉，这里的 non-None 一定是活的。
             return
         timer = threading.Timer(_PROBE_INTERVAL, _run_half_open_probe)
         timer.daemon = True

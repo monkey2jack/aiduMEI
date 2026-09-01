@@ -12,13 +12,7 @@ aiduMEI is a self-hosted long-term memory and wisdom engine for AI agents. It st
 
 ## One-Line Prompt (canonical)
 
-Copy this single line to deploy, verify, integrate, maintain, and report:
-
-```text
-请从官方仓库安装 aiduMEI，并严格读取 AGENTS.md：自动检查本机环境、选择最稳妥部署路径与 cloud/local/auto 挡位，完成配置、服务启动、e2e 生效验证、宿主记忆接入、维护任务初始化和 report.py 自检报告；每一步只以脚本退出码和 JSON 证据判定，遇到失败立即停止、修复并重试，最终向我汇报版本、挡位、健康、水位、召回质量、维护状态及未关闭风险。
-```
-
-This is the canonical source at [prompts/install.txt](prompts/install.txt). Every step is judged by script exit codes and JSON evidence only.
+Send the canonical deployment text (all of [prompts/install.txt](prompts/install.txt), 13 lines) to your Agent — do not paraphrase it. Every step is judged by script exit codes and JSON evidence only.
 
 Changing mode requires a service restart. If you previously ran `cloud`, run the local-vector backfill before expecting the local gear to recall older memories.
 

@@ -340,39 +340,78 @@ def test_report_script_exists_and_is_executable():
     assert path.is_file()
     assert path.stat().st_mode & 0o111
 
-def test_report_public_payload_hides_sensitive_fields():
+def test_report_public_payload_hides_sensitive_fields(monkeypatch):
+    """公开形态带 maintenance（本地文件系统数据，无需鉴权），仍不泄 probes/路径。"""
     import importlib.util
     spec = importlib.util.spec_from_file_location("aidumei_report", _ROOT / "scripts" / "report.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_maintenance_block", lambda: {
+        "crontab_task_count": 8, "crontab_installed_count": 8,
+        "latest_backup": {"verified": True},
+    })
     public = module._public_report({"health_status": "ok", "status": "ok", "degraded": [], "warming_up": []})
     assert public["schema_version"] == 1
     assert set(public) == {
         "schema_version", "generated_at", "service_version", "git_commit",
-        "health_status", "status", "engine_mode", "degraded", "warming_up", "next_actions",
+        "health_status", "status", "engine_mode", "degraded", "warming_up",
+        "maintenance", "next_actions",
     }
     assert "runtime_paths" not in public
     assert "probes" not in public
 
-def test_report_exit_codes():
+def test_report_engine_mode_reads_probes_not_top_level():
+    """嘟嘟 🟡-7：engine_mode 真身在 probes.engine_mode_policy，顶层没有这个键。"""
     import importlib.util
     spec = importlib.util.spec_from_file_location("aidumei_report", _ROOT / "scripts" / "report.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
-    ok = {"health_status": "ok", "degraded": [], "warming_up": [], "maintenance": {"crontab_task_count": 9, "latest_backup": {"verified": True}}}
+    health = {"health_status": "ok",
+              "probes": {"engine_mode_policy": {"configured": "auto"}}}
+    assert module._engine_mode_of(health) == "auto"
+    # 顶层旧形态仍兼容（防御读取）
+    assert module._engine_mode_of({"engine_mode": "local"}) == "local"
+
+def test_report_exit_codes_prefer_installed_over_intended():
+    """嘟嘟 🔴-5：装了 1 条不得报 8 条全在 —— 退出码以实装数为准。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("aidumei_report", _ROOT / "scripts" / "report.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    base_maint = {"crontab_task_count": 8, "crontab_installed_count": 8,
+                  "latest_backup": {"verified": True}}
+    ok = {"health_status": "ok", "degraded": [], "warming_up": [],
+          "anomalies": {}, "maintenance": dict(base_maint)}
     assert module._exit_code(ok) == 0
-    warn = {"health_status": "ok", "degraded": [], "warming_up": ["x"], "anomalies": {}, "maintenance": {"crontab_task_count": 9, "latest_backup": {"verified": True}}}
+    # 意图 8 · 实装 1（上一版的假账形态）→ 必须是 warning
+    lying = {"health_status": "ok", "degraded": [], "warming_up": [],
+             "anomalies": {}, "maintenance": {"crontab_task_count": 8,
+                                              "crontab_installed_count": 1,
+                                              "latest_backup": {"verified": True}}}
+    assert module._exit_code(lying) == 2
+    # 实装拿不到时退回意图数（升级中的过渡态），不给恒 2 的假警报
+    fallback = {"health_status": "ok", "degraded": [], "warming_up": [],
+                "anomalies": {}, "maintenance": {"crontab_task_count": 8,
+                                                  "crontab_installed_count": None,
+                                                  "latest_backup": {"verified": True}}}
+    assert module._exit_code(fallback) == 0
+    warn = {"health_status": "ok", "degraded": [], "warming_up": ["x"],
+            "anomalies": {}, "maintenance": dict(base_maint)}
     assert module._exit_code(warn) == 2
-    fail = {"health_status": "degraded", "degraded": ["x"], "warming_up": [], "anomalies": {}, "maintenance": {"crontab_task_count": 9, "latest_backup": {"verified": True}}}
+    fail = {"health_status": "degraded", "degraded": ["x"], "warming_up": [],
+            "anomalies": {}, "maintenance": dict(base_maint)}
     assert module._exit_code(fail) == 3
 
 # ══════════════════════════════════════════════════════════════════
 # v20.3 用户审计 P0-D：crontab 必须真实可 list、dry-run、安装
 # ══════════════════════════════════════════════════════════════════
 
-def test_crontab_script_lists_nine_tasks():
+def test_crontab_script_lists_eight_tasks_no_ghost():
+    """v20.3.1（九份审计 P0-1）：9→8，facts_checkpoint 幽灵任务删除；
+    清单里每一项的目标脚本都必须真实存在——数量与存在性分开断言。"""
     import json
     import subprocess
     result = subprocess.run(
@@ -380,13 +419,95 @@ def test_crontab_script_lists_nine_tasks():
         check=True, capture_output=True, text=True, timeout=10,
     )
     data = json.loads(result.stdout)
-    assert len(data["tasks"]) >= 9
+    assert len(data["tasks"]) == 8
     names = {task["name"] for task in data["tasks"]}
-    assert {
+    assert names == {
         "health_check", "consolidator", "backup_create", "backup_verify",
-        "e2e_smoke", "facts_checkpoint", "report", "restore_gate_dry_run",
+        "e2e_smoke", "report", "restore_gate_dry_run",
         "dependency_audit",
-    } <= names
+    }
+    assert "facts_checkpoint" not in names
+    # 清单内每条命令引用的脚本都真实存在（防止下一个幽灵任务混进来）
+    import re as _re
+    for task in data["tasks"]:
+        for m in _re.finditer(r"scripts/[\w.\-]+", task["command"]):
+            assert (_ROOT / m.group(0)).is_file(), f"ghost task target: {m.group(0)}"
+
+def test_crontab_install_writes_all_entries_and_is_idempotent(tmp_path):
+    """嘟嘟 🔴-1 / GLM F-1.0：上一版去重键取共享中文前缀 → 只装 1 条报 9 条。
+    判据落在世界（mock crontab 实文）而不是脚本自己的输出。"""
+    import subprocess
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    state = tmp_path / "crontab_state.txt"
+    (fake_bin / "crontab").write_text(
+        "#!/bin/bash\n"
+        f"F={state}\n"
+        'if [ "$1" = "-l" ]; then [ -f "$F" ] && cat "$F"; exit 0; fi\n'
+        'cat "$1" > "$F"\n'
+    )
+    (fake_bin / "crontab").chmod(0o755)
+    env = {**__import__("os").environ, "PATH": f"{fake_bin}:{__import__('os').environ['PATH']}",
+           "AIDUMEM_DATA_DIR": str(tmp_path / "data"), "AIDUMEM_LOG_DIR": str(tmp_path / "logs")}
+    def run():
+        return subprocess.run(
+            ["bash", str(_ROOT / "scripts" / "update_crontab.sh"), "install"],
+            capture_output=True, text=True, timeout=15, env=env,
+        )
+    r1 = run()
+    assert r1.returncode == 0, r1.stderr
+    installed_1 = state.read_text().count("# aiduMEI:")
+    assert installed_1 == 8, f"first install wrote {installed_1}, expected 8 (dedup key bug back?)"
+    r2 = run()
+    assert r2.returncode == 0, r2.stderr
+    installed_2 = state.read_text().count("# aiduMEI:")
+    assert installed_2 == 8, "second install is not idempotent"
+    # 删一条重跑必须精确补回
+    lines = state.read_text().splitlines()
+    out, skip = [], False
+    for line in lines:
+        if line.startswith("# aiduMEI:report|"):
+            skip = True
+            continue
+        if skip:
+            skip = False
+            continue
+        out.append(line)
+    state.write_text("\n".join(out))
+    r3 = run()
+    assert r3.returncode == 0, r3.stderr
+    installed_3 = state.read_text().count("# aiduMEI:")
+    assert installed_3 == 8, f"repair install wrote {installed_3}, expected 8"
+
+def test_crontab_install_refuses_missing_target_script(tmp_path):
+    """守卫射程负向对照：注册一个不存在的脚本必须红（嘟嘟 🟢-2）。"""
+    import subprocess
+    ghost = _ROOT / "scripts" / "uc_ghost_probe_tmp.sh"
+    src = (_ROOT / "scripts" / "update_crontab.sh").read_text(encoding="utf-8")
+    ghost.write_text(src.replace("scripts/dependency_audit.py", "scripts/GHOST_missing.py"))
+    try:
+        r = subprocess.run(["bash", str(ghost), "--dry-run"],
+                           capture_output=True, text=True, timeout=15)
+        assert r.returncode != 0, "ghost task slipped through the guard"
+        assert "GHOST_missing" in r.stderr, f"guard red for wrong reason: {r.stderr[-200:]}"
+    finally:
+        ghost.unlink()
+
+def test_crontab_dry_run_works_without_repo_venv(tmp_path, monkeypatch):
+    """qwen3.8 F-A：无仓内 venv、python3 只在 PATH 时，dry-run 不得崩。
+
+    env 是刻意的极简形态（PATH 兜底轴），DATA/LOG 钉到 tmp —— 子进程守卫
+    要求「手搓环境必须钉数据落点」，这条测试自己就是它要抓的形态。"""
+    import subprocess
+    r = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "update_crontab.sh"), "--dry-run"],
+        capture_output=True, text=True, timeout=15,
+        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp",
+             "AIDUMEM_DATA_DIR": str(tmp_path / "data"),
+             "AIDUMEM_LOG_DIR": str(tmp_path / "logs")},
+    )
+    assert r.returncode == 0, r.stderr
+    assert "would install 8" in r.stdout
 
 def test_crontab_dry_run_does_not_mutate_crontab():
     import subprocess
@@ -397,8 +518,29 @@ def test_crontab_dry_run_does_not_mutate_crontab():
     )
     after = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
     assert result.returncode == 0
-    assert "would install 9" in result.stdout
+    assert "would install 8" in result.stdout
     assert before == after
+
+def test_backup_gate_verify_resolves_latest(tmp_path):
+    """Qwen P1-7：cron 传 `verify latest`，上一版把它当字面目录 → 每周必失败。"""
+    import subprocess
+    import time as _time
+    root = tmp_path / "backups"
+    for label, age in (("older", 200), ("newer", 0)):
+        d = root / f"pre-daily-{label}"
+        d.mkdir(parents=True)
+        (d / "SHA256SUMS").write_text("")
+        _time.sleep(0.01)
+    newer_mtime = (root / "pre-daily-newer").stat().st_mtime
+    r = subprocess.run(
+        ["bash", str(_ROOT / "scripts" / "backup_gate.sh"), "verify", "latest"],
+        capture_output=True, text=True, timeout=15,
+        env={**__import__("os").environ, "AIDUMEM_BACKUP_ROOT": str(root),
+             "AIDUMEM_DATA_DIR": str(tmp_path / "data"), "AIDUMEM_LOG_DIR": str(tmp_path / "logs")},
+    )
+    # SHA256SUMS 是空的 → 校验可能失败，但失败必须发生在「校验」而不是「找目录」
+    assert "备份目录不存在: latest" not in r.stderr, "latest was treated as a literal path"
+    assert r.stderr + r.stdout != ""
 
 def test_restore_gate_rejects_missing_backup_dir():
     import subprocess
@@ -529,13 +671,6 @@ def test_dependency_audit_contract():
     assert result.returncode == 0, result.stdout
     data = json.loads(result.stdout)
     assert data["status"] == "ok"
-
-def test_agent_integration_check_exists():
-    path = _ROOT / "scripts" / "agent_integration_check.py"
-    assert path.is_file() and path.stat().st_mode & 0o111
-    text = path.read_text(encoding="utf-8")
-    for endpoint in ("/gate", "/add", "/add/raw", "/search", "/api/core-memory/inject", "/session/start", "/session/end"):
-        assert endpoint in text
 
 def test_agent_integration_check_exists():
     path = _ROOT / "scripts" / "agent_integration_check.py"

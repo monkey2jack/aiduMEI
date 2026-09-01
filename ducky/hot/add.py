@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
 from ducky.api_models import AddRequest
 from ducky.mem0_runtime import (
@@ -23,7 +23,7 @@ logger = logging.getLogger("aiduMEM.hot")
 
 def register_add_routes(app: FastAPI) -> None:
     @app.post("/add")
-    def add(req: AddRequest, background_tasks: BackgroundTasks = None):
+    def add(req: AddRequest, background_tasks: BackgroundTasks = None, request: Request = None):
         """写入记忆 — 高速路径：计时 / 快路径 / 缓存 / 会话合并 / 可选异步回执
 
         async_mode=true（或 body 里 "async": true）时：
@@ -32,6 +32,14 @@ def register_add_routes(app: FastAPI) -> None:
         默认同步：完整抽取后返回，兼容旧调用方。
         """
         try:
+            # v20.3.1（九份审计 P1-1）：Idempotency-Key header 支持。
+            # Release Notes 曾宣称 header 形态，实际只认 body 字段 —— 照
+            # 发布说明集成的调用方（网关/SDK 重试语义都走 header）静默失去
+            # 幂等保护。header 优先级低于 body 显式值，两路同键不冲突。
+            if request is not None and not req.idempotency_key:
+                header_key = (request.headers.get("idempotency-key") or "").strip()
+                if header_key:
+                    req.idempotency_key = header_key
             # 🔴P1-4: 统一规范化 user_id，杜绝脏租户与空租户写入
             scope = make_scope(req.user_id, req.bank_id)
             req.user_id = _normalize_user_id(scope.user_id) if scope.user_id else "default"
@@ -71,6 +79,24 @@ def register_add_routes(app: FastAPI) -> None:
                     409,
                     "idempotency_key is already bound to a different payload",
                 )
+
+            def _finalize_and(resp: dict) -> dict:
+                """v20.3.1（九份审计 P0-5）：早返回路径的幂等收口。
+
+                上一版 finalize 只挂在同步完整路径的末尾，local/lite/async
+                三类早返回全部漏落账 —— response_json 恒 NULL，客户端在
+                TTL 内重试被判 pending 而不是 replay，幂等保护恰在 local
+                档（用户最可能首跑的档）失效。每条早返回构造完响应都
+                过这里：落账 + 回填 request_id，一个实现不抄五遍。
+                """
+                if req.idempotency_key and idempotency_state["action"] != "disabled":
+                    from ducky import idempotency
+                    resp = {**resp, "request_id": req.idempotency_key}
+                    idempotency.finalize(
+                        req.idempotency_key, req.user_id, req.bank_id, resp
+                    )
+                return resp
+
 
             from ducky.add_speed import (
                 coalesce_enqueue,
@@ -269,26 +295,26 @@ def register_add_routes(app: FastAPI) -> None:
                     # 欠账的语义是「等恢复后补算」，而本地档没有「恢复」
                     # 这回事（是部署方的选择，不是故障）。入了就是永不清零
                     # 的假水位，会把 /health 的欠账探针变成噪声。
-                    return {
+                    return _finalize_and({
                         "status": "ok",
                         "action": "local_only",
                         "engine_mode": "local",
                         "detail": "本地档：硬事实、原文与本地向量已落库并可召回；"
                                   "按部署配置不调用云端 LLM 与云嵌入（零 token）",
-                    }
+                    })
                 if current_mode() == "lite":
                     from ducky.dual_index import enqueue_cloud_add
                     enqueue_cloud_add(
                         {"messages": req.messages if isinstance(req.messages, str)
                          else messages_json, "metadata": dict(md)},
                         req.user_id, req.bank_id)
-                    return {
+                    return _finalize_and({
                         "status": "ok",
                         "action": "deferred_distillation",
                         "engine_mode": "lite",
                         "detail": "云嵌入熔断中：硬事实与原文已确定性落库并可召回；"
                                   "LLM 蒸馏与云向量已入欠账，服务恢复后自动补算",
-                    }
+                    })
             except HTTPException:
                 raise
             except Exception as _ge:
@@ -489,7 +515,7 @@ def register_add_routes(app: FastAPI) -> None:
                                 "window_sec": enq.get("window_sec"),
                             },
                         )
-                        return {
+                        return _finalize_and({
                             "status": "accepted",
                             "action": "coalesce_buffered",
                             "job_id": job_id,
@@ -503,9 +529,9 @@ def register_add_routes(app: FastAPI) -> None:
                                 "idle_sec": enq.get("idle_sec"),
                                 "window_sec": enq.get("window_sec"),
                             },
-                        }
+                        })
                     # 当前句触发了满额即时冲刷
-                    return {
+                    return _finalize_and({
                         "status": "accepted",
                         "action": "coalesce_flushed",
                         "job_id": job_id,
@@ -518,14 +544,14 @@ def register_add_routes(app: FastAPI) -> None:
                             "key": enq.get("key"),
                             "profile": enq.get("profile"),
                         },
-                    }
+                    })
 
                 # 不进合并：单条异步
                 def _bg_job(jid=job_id, msgs=messages_json, meta=md, uid=req.user_id):
                     _execute_batch(uid, msgs, meta, [jid])
 
                 background_tasks.add_task(_bg_job)
-                return {
+                return _finalize_and({
                     "status": "accepted",
                     "action": "async_queued",
                     "job_id": job_id,
@@ -533,7 +559,7 @@ def register_add_routes(app: FastAPI) -> None:
                     "message": "已收下，后台正在总结落库",
                     "preview": text_preview,
                     "coalesce_skip": why,
-                }
+                })
 
             out = _run_pipeline(req.user_id, messages_json, md)
             # v20：回显 infer —— 调用方（尤其跑分适配器）据此断言服务端

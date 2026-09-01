@@ -52,6 +52,7 @@ def _git_commit() -> str | None:
 
 
 def _crontab_task_count() -> int | None:
+    """意图数（--list 数的是脚本打算装什么，不是系统装了什么）。"""
     try:
         result = subprocess.run(
             [str(Path(__file__).resolve().parent / "update_crontab.sh"), "--list"],
@@ -68,6 +69,41 @@ def _crontab_task_count() -> int | None:
         return None
 
 
+def _crontab_installed_count() -> int | None:
+    """实装数（数真实 crontab 里本仓条目）。v20.3.1（九份审计 P0-1/嘟嘟 🔴-5）：
+    此前 report 只报意图数，把「装了 1 条」报成「9 条全在」——每层仪器都在读
+    上一层输出，没有一层去读世界。"""
+    try:
+        result = subprocess.run(
+            [str(Path(__file__).resolve().parent / "update_crontab.sh"), "--installed"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "{}")
+        return data.get("installed")
+    except Exception:
+        return None
+
+
+def _maintenance_block() -> dict[str, Any]:
+    """维护块对公开/鉴权两形态都填（v20.3.1 · 外审 hy4 F-02 / 嘟嘟 🔴-5）。
+
+    这块数据全部来自本地文件系统与 crontab，不依赖鉴权 —— 无凭据部署此前
+    因缺 maintenance 键恒 exit 2，一个完全健康的实例永远报「警告」，
+    假警报和假绿灯是同一种病：它替你签了字，但字没有信息量。
+    同时缓存子进程结果——此前同一表达式调两次，一次报告 fork 三个
+    update_crontab.sh。"""
+    return {
+        "crontab_task_count": _crontab_task_count(),
+        "crontab_installed_count": _crontab_installed_count(),
+        "latest_backup": _latest_backup(Path(os.environ.get("AIDUMEM_BACKUP_ROOT", "backups"))),
+    }
+
+
 def _latest_backup(root: Path) -> dict[str, Any]:
     if not root.exists():
         return {"path": None, "age_hours": None, "verified": None}
@@ -80,7 +116,7 @@ def _latest_backup(root: Path) -> dict[str, Any]:
     return {"path": latest.name, "age_hours": age_hours, "verified": verified}
 
 
-def _safe_next_actions(health: dict[str, Any]) -> list[str]:
+def _safe_next_actions(health: dict[str, Any], maintenance: dict[str, Any] | None = None) -> list[str]:
     actions: list[str] = []
     if health.get("health_status") != "ok":
         actions.append("Inspect the authenticated /health response and resolve degraded components.")
@@ -88,9 +124,18 @@ def _safe_next_actions(health: dict[str, Any]) -> list[str]:
         actions.append("Resolve degraded components before relying on semantic recall.")
     if health.get("warming_up"):
         actions.append("Wait for warm-up components or trigger a normal request before deep diagnosis.")
-    if _crontab_task_count() is None or (_crontab_task_count() or 0) < 9:
-        actions.append("Run scripts/update_crontab.sh --list and install the required maintenance jobs.")
-    backup = _latest_backup(Path(os.environ.get("AIDUMEM_BACKUP_ROOT", "backups")))
+    maintenance = maintenance or _maintenance_block()
+    intended = maintenance.get("crontab_task_count")
+    installed = maintenance.get("crontab_installed_count")
+    # 实装数优先于意图数（v20.3.1）：装了 1 条报「9 条全在」是上一版被
+    # 嘟嘟实锤的病。实装拿不到时才退回意图数，并如实说明。
+    effective = installed if installed is not None else intended
+    if effective is None or effective < 8:
+        actions.append(
+            "Run bash scripts/update_crontab.sh install to install maintenance jobs "
+            "(maintenance is NOT fully installed; this is based on the real crontab)."
+        )
+    backup = maintenance.get("latest_backup") or {}
     if not backup.get("verified"):
         actions.append("Create and verify a backup with scripts/backup_gate.sh.")
     if not actions:
@@ -98,7 +143,18 @@ def _safe_next_actions(health: dict[str, Any]) -> list[str]:
     return actions
 
 
+def _engine_mode_of(health: dict[str, Any]) -> Any:
+    """engine_mode 真身在 probes.engine_mode_policy（v20.3.1 · 嘟嘟 🟡-7）。
+
+    此前从 /health 顶层读，顶层根本没这个键 → 恒 null。一行 Prompt 第 11 步
+    让 agent 汇报「挡位」，拿到的永远是空。"""
+    probes = health.get("probes") or {}
+    policy = probes.get("engine_mode_policy") or {}
+    return policy.get("configured") or policy.get("mode") or health.get("engine_mode")
+
+
 def _public_report(health: dict[str, Any]) -> dict[str, Any]:
+    maintenance = _maintenance_block()
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": int(time.time()),
@@ -106,10 +162,11 @@ def _public_report(health: dict[str, Any]) -> dict[str, Any]:
         "git_commit": _git_commit(),
         "health_status": health.get("health_status"),
         "status": health.get("status"),
-        "engine_mode": health.get("engine_mode"),
+        "engine_mode": _engine_mode_of(health),
         "degraded": health.get("degraded", []),
         "warming_up": health.get("warming_up", []),
-        "next_actions": _safe_next_actions(health),
+        "maintenance": maintenance,
+        "next_actions": _safe_next_actions(health, maintenance),
     }
 
 
@@ -124,10 +181,6 @@ def _full_report(health: dict[str, Any]) -> dict[str, Any]:
             "wal_alert_dbs": probes.get("wal_alert_dbs"),
             "process_rss_mb": probes.get("process_rss_mb"),
             "process_max_rss_mb": probes.get("process_max_rss_mb"),
-        },
-        "maintenance": {
-            "crontab_task_count": _crontab_task_count(),
-            "latest_backup": _latest_backup(Path(os.environ.get("AIDUMEM_BACKUP_ROOT", "backups"))),
         },
         "anomalies": {
             "warnings": health.get("warnings", []),
@@ -144,9 +197,13 @@ def _exit_code(report: dict[str, Any]) -> int:
         return 3
     if report.get("warming_up") or report.get("anomalies", {}).get("warnings"):
         return 2
-    if report.get("maintenance", {}).get("crontab_task_count") in (None, 0):
+    maintenance = report.get("maintenance", {}) or {}
+    intended = maintenance.get("crontab_task_count")
+    installed = maintenance.get("crontab_installed_count")
+    effective = installed if installed is not None else intended
+    if effective is None or effective < 8:
         return 2
-    if not report.get("maintenance", {}).get("latest_backup", {}).get("verified"):
+    if not (maintenance.get("latest_backup") or {}).get("verified"):
         return 2
     return 0
 

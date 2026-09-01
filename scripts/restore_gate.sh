@@ -20,7 +20,17 @@ BACKUP_DIR="$1"
 ROOT="${AIDUMEM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 DATA_DIR="${AIDUMEM_DATA_DIR:-${ROOT}/data}"
 API_BASE="${AIDUMEM_API_BASE:-http://127.0.0.1:8767}"
+BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-${ROOT}/backups}"
 export AIDUMEM_DATA_DIR="${DATA_DIR}"
+
+# 共享 helper（v20.3.1 · 外审 Qwen P1-7）：latest 解析与 backup_gate 同一份实现。
+# cron 的 `restore_gate.sh --dry-run latest` 此前把 latest 当字面目录名 → 每周必失败。
+# shellcheck source=scripts/_backup_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_backup_common.sh"
+if ! BACKUP_DIR="$(resolve_latest "${BACKUP_DIR}" "${BACKUP_ROOT}")"; then
+  echo "FAIL: no verified backup found under ${BACKUP_ROOT} (tried to resolve 'latest')" >&2
+  exit 3
+fi
 
 if [[ ! -d "${BACKUP_DIR}" ]]; then
   echo "FAIL: backup directory not found: ${BACKUP_DIR}" >&2
