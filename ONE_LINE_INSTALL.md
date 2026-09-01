@@ -8,6 +8,6 @@
 第 7 步：起服务。运行 python api_server.py 启动服务（默认监听 http://127.0.0.1:8767）。确认 curl -s http://127.0.0.1:8767/health 返回 health_status=ok 且 runtime_paths.data_dir_writable=true。
 第 8 步：验证生效。运行 python scripts/e2e_smoke.py --json，确认输出 status=PASS 且 0 failures。这不是只看 /health=ok——e2e 会写入唯一 nonce、跨新会话召回、查看 trace、清理临时租户。WARN 不是 PASS，必须修复到 0 warnings 才算通过。
 第 9 步：接入宿主。按 docs/AGENT_INTEGRATION.md 把 aiduMEI 接到我正在用的 AI 宿主（Hermes Agent、Claude Code 等）上，并做一次真实对话验证记忆能被读写。运行 python scripts/agent_integration_check.py 确认全部通过。
-第 10 步：初始化维护。运行 bash scripts/update_crontab.sh 安装 9 项定时任务，然后用 bash scripts/update_crontab.sh --list 确认。运行 bash scripts/backup_gate.sh create initial 创建首次备份并用 bash scripts/backup_gate.sh verify <备份目录> 验证。
+第 10 步：初始化维护。运行 bash scripts/update_crontab.sh install 安装 8 项定时任务，然后用 crontab -l 数一遍 —— 实文 8 条才算装上（--list 只报意图清单）。运行 bash scripts/backup_gate.sh create initial 创建首次备份并用 bash scripts/backup_gate.sh verify latest 验证。
 第 11 步：生成报告。运行 python scripts/report.py --json，把输出原文发给我。报告应包含版本、挡位、健康状态、水位、记忆数量、备份状态和下一步建议。
 遇到报错先查 TROUBLESHOOTING.md 和 docs/HEALTH.md；连续两次修不好就停下来把完整报错和日志发给我。

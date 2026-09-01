@@ -31,6 +31,11 @@ class RawDrawerRequest(BaseModel):
     metadata: dict = Field(default_factory=dict)
     source: str = "raw_drawer"
     dedup: bool = True
+    # v20.3.1（九份审计 P0-5 / 嘟嘟 🟡-3）：重试幂等键。/add 有了、
+    # /add/raw 没有 —— 原文抽屉在重试场景（网络抖动、客户端超时重发）
+    # 仍可能重复写。与 /add 同一实现（ducky.idempotency），同键同负载
+    # 重发回放首次响应，不重复落库。
+    idempotency_key: str = ""
 
 
 def register_raw_drawer_routes(app: FastAPI) -> None:
@@ -40,6 +45,31 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
 
         if not req.content or not req.content.strip():
             raise HTTPException(400, "content 不能为空")
+
+        # ── 幂等收口（v20.3.1）─────────────────────────────────────────
+        # 与 /add 同一 claim/finalize 契约；payload 用 content_hash 前缀
+        # 而非全文（幂等指纹不需要存原文第二份，hash 足够区分负载）。
+        from ducky import idempotency
+        idem_state = idempotency.claim(
+            req.idempotency_key, req.user_id, req.bank_id,
+            {"kind": "raw", "content_sha": __import__("hashlib").sha256(
+                req.content.encode()).hexdigest()[:16]},
+        )
+        if idem_state["action"] == "replay":
+            response = dict(idem_state.get("response") or {})
+            response["idempotency_replayed"] = True
+            response["request_id"] = idem_state["key"]
+            return response
+        if idem_state["action"] == "conflict":
+            raise HTTPException(
+                409, "idempotency_key is already bound to a different payload")
+
+        def _finalize_raw(resp: dict) -> dict:
+            if req.idempotency_key and idem_state["action"] != "disabled":
+                resp = {**resp, "request_id": req.idempotency_key}
+                idempotency.finalize(
+                    req.idempotency_key, req.user_id, req.bank_id, resp)
+            return resp
 
         is_safe, sanitized_content, rejection = validate_and_sanitize_memory_content(req.content.strip())
         if not is_safe:
@@ -65,13 +95,13 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
                 ).fetchone()
                 conn.close()
                 if existing:
-                    return {
+                    return _finalize_raw({
                         "status": "ok",
                         "action": "dedup_skipped",
                         "memory_id": existing[0],
                         "message": "内容已存在（去重跳过）",
                         "timing_ms": round((time.time() - t0) * 1000, 1),
-                    }
+                    })
             except Exception as e:
                 logger.debug(f"去重检查跳过: {e}")
 
@@ -175,7 +205,7 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
             status = "failed"
         else:
             status = "partial"
-        return {
+        return _finalize_raw({
             "status": status,
             "action": "raw_stored",
             "memory_id": memory_id,
@@ -187,7 +217,7 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
             "facts_registered": facts_ok,
             "timing_ms": elapsed_ms,
             "message": f"原味抽屉已存入 ({elapsed_ms}ms)",
-        }
+        })
 
     @app.get("/raw/stats")
     def raw_stats(
