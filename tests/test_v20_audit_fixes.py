@@ -277,23 +277,37 @@ def test_jia16_renamed_default_identity_reads_its_legacy_blocks(caplog, monkeypa
     )
 
 
-def test_jia16_seed_stays_quiet_when_nothing_is_blocked(caplog):
+def test_jia16_seed_stays_quiet_when_nothing_is_blocked(tmp_path, monkeypatch, caplog):
     """正常播种**不许**报警（假红灯护栏）。
 
     一次假红会训练人忽略红灯 —— 所以 甲16 这道警告必须证明自己只在真出事时响。
     这里跑两条干净路径：全新的默认域、全新的具名域，两条都不许出现 WARNING，
     并且初始化日志必须报满额 ``3/3``。
+
+    v20.3.1：本条曾用共享 scope 名（"solo"），在生产沙箱形态下（多出的
+    Hermes 集成轴）被前序用例先初始化 → `init_core_memory` 幂等提前
+    return、不打日志 → 本条红。这是测试间状态污染，不是产品缺陷：
+    幂等语义本身是对的。修法是**自证前提**——每个 scope 只属于本条，
+    用 tmp 隔离库 + 专属前缀，不与全仓任何用例共享名字空间。
     """
+    import os
+    import ducky.core_memory as cm
     from ducky.core_memory import init_core_memory
 
-    for user_id, bank_id in (("solo", "default"), ("solo", "work")):
+    monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "logs"))
+    # 前提反证: 清初始化账本（连接由 conftest 隔离到 tmp，无需断），
+    # 保证本条真的在跑「全新 scope」，命运不取决于前序用例碰过什么名字
+    cm._initialized_scopes.clear()
+
+    for bank_id in ("default", "work"):
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="aiduMEM.CoreMemory"):
-            init_core_memory(user_id=user_id, bank_id=bank_id)
+            init_core_memory(user_id="jia16-exclusive-scope", bank_id=bank_id)
 
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert not warnings, (
-            f"user_id={user_id} bank_id={bank_id} 是一条干净路径，却报了警："
+            f"bank_id={bank_id} 是一条干净路径，却报了警："
             f"{warnings!r} —— 假红灯会训练人忽略红灯"
         )
         init_lines = [
@@ -301,7 +315,8 @@ def test_jia16_seed_stays_quiet_when_nothing_is_blocked(caplog):
             if r.levelno == logging.INFO and "初始化完成" in r.getMessage()
         ]
         assert init_lines and "3/3" in init_lines[-1], (
-            f"干净路径应报 3/3，实得 {init_lines!r}"
+            f"干净路径应报 3/3，实得 {init_lines!r} —— "
+            f"scope 已被别人初始化过（幂等提前 return），前提被污染"
         )
 
 
