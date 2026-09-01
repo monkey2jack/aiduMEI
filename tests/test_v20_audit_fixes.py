@@ -290,7 +290,6 @@ def test_jia16_seed_stays_quiet_when_nothing_is_blocked(tmp_path, monkeypatch, c
     幂等语义本身是对的。修法是**自证前提**——每个 scope 只属于本条，
     用 tmp 隔离库 + 专属前缀，不与全仓任何用例共享名字空间。
     """
-    import os
     import ducky.core_memory as cm
     from ducky.core_memory import init_core_memory
 
