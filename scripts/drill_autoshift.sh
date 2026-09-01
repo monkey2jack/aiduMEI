@@ -4,7 +4,7 @@
 #   --check  verify script contract without contacting the service
 #   --run    verify live health fields and emit JSON (default)
 #
-# v20.3.1（九份审计 P0-4 · 嘟嘟 🔴-2）：--run 从写出来那天起没有成功跑通过一次：
+# v20.3.1（九份审计 P0-4 · 用户审计 🔴-2）：--run 从写出来那天起没有成功跑通过一次：
 #   1. heredoc 与管道抢同一个 stdin —— python 从 heredoc 读源码，
 #      `sys.stdin.read()` 拿到空串 → JSONDecodeError；
 #   2. 断言的 engine_mode / llm_gear / pending_replay 三个键在 /health
@@ -23,7 +23,7 @@ if [[ "${MODE}" == "--check" ]]; then
   test -x "${ROOT}/scripts/e2e_smoke.py"
   test -x "${ROOT}/scripts/report.py"
   test -x "${ROOT}/scripts/drill_autoshift.sh"
-  # v20.3.1（嘟嘟 🟢-2）：--check 顺手静态断言 --run 要读的键在 health.py 里
+  # v20.3.1（用户审计 🟢-2）：--check 顺手静态断言 --run 要读的键在 health.py 里
   # 存在 —— 否则 --check 绿永远掩盖 --run 死。
   grep -q "engine_mode_policy" "${ROOT}/ducky/hot/health.py"
   grep -q "llm_gear" "${ROOT}/ducky/hot/health.py"
