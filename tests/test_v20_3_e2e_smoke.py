@@ -162,13 +162,11 @@ def test_readme_is_a_navigation_entry_not_a_knowledge_dump():
     # 而 v20.3 的承诺是「README 瘦身」—— 英文版当时仍是 1000+ 行。
     # 上一轮外部审计点的正是这件事（"README_EN 未瘦身"），而守卫一声不响，
     # 于是「≤600」看起来像是整个 README 的承诺已经兑现。
-    # 英文版瘦身是**仍未完成**的事，不在本版范围；但盲区必须变成可见的棘轮：
-    # 只许变短，不许变长。等哪天做完，把上限压到 600 即可。
+    # Rev.2 已把英文版从 1000+ 行收敛成同一定位：门面只负责导航，细节下沉文档。
+    # 两份语言的上限必须一致，不能再让英文页回涨成版本史/审计史知识堆。
     en = (_ROOT / "README_EN.md").read_text(encoding="utf-8")
     en_lines = len(en.splitlines())
-    assert en_lines <= 1075, (
-        f"README_EN is {en_lines} lines —— 英文版瘦身仍是未完成项（上限是棘轮，"
-        "只降不升；做完后请把上限压到 600，与中文版对齐）")
+    assert en_lines <= 600, f"README_EN is {en_lines} lines; target is <=600"
     assert "[🤖 Agent Guide](AGENTS.md)" in readme
     assert "python scripts/e2e_smoke.py --json" in readme
 

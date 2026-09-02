@@ -367,12 +367,54 @@ class TestA2DeleteOutcomeStates:
         monkeypatch.setattr(utils, "TEXT_FTS_DB", str(tmp_path / "t.db"))
         import ducky.mem0_runtime as rt
         import ducky.wal_engine as we
+        from ducky.mem0_runtime import Mem0NotConfiguredError
         monkeypatch.setattr(rt, "get_memory",
-                            lambda: (_ for _ in ()).throw(RuntimeError("mem0 不可用: 未配置")))
+                            lambda: (_ for _ in ()).throw(
+                                Mem0NotConfiguredError("config_file_missing")))
         out = we.cascade_delete_all("probe3", bank_id="b", confirm=True)
         layers = {f["layer"] for f in out.get("failed_layers", [])}
         assert "mem0_vectors" not in layers, (
             f"后端不在场被算成了删除失败：{out.get('failed_layers')}")
+
+    @pytest.mark.parametrize(
+        "delete_kind,expected_layer",
+        [("single", "mem0_vector"), ("all", "mem0_vectors")],
+    )
+    def test_configured_init_failure_is_not_downgraded(
+            self, delete_kind, expected_layer, tmp_path, monkeypatch):
+        """Rev.2：两条删除链都不许拿普通 HTTP 503 冒充「未配置」。"""
+        import ducky.utils as utils
+        monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "f.db"))
+        monkeypatch.setattr(utils, "TEXT_FTS_DB", str(tmp_path / "t.db"))
+        import ducky.mem0_runtime as rt
+        import ducky.wal_engine as we
+        from fastapi import HTTPException
+
+        class _RecordingWAL:
+            def __init__(self):
+                self.statuses = []
+
+            def append(self, entry):
+                return entry.wal_id
+
+            def mark_status(self, _wal_id, status, error=""):
+                self.statuses.append((status, error))
+
+        wal = _RecordingWAL()
+        monkeypatch.setattr(we.WALEngine, "get_instance", classmethod(lambda cls: wal))
+        boom = HTTPException(status_code=503, detail="qdrant connection refused")
+        monkeypatch.setattr(rt, "get_memory", lambda: (_ for _ in ()).throw(boom))
+
+        if delete_kind == "single":
+            out = we.cascade_delete_memory(
+                "configured-failure-id", user_id="configured_failure", bank_id="b")
+        else:
+            out = we.cascade_delete_all("configured_failure", bank_id="b", confirm=True)
+
+        assert out["status"] == "failed", out
+        assert {f["layer"] for f in out["failed_layers"]} == {expected_layer}
+        assert not any(status == "committed" for status, _error in wal.statuses), (
+            f"关键层失败却把 WAL 标成 committed：{wal.statuses}")
 
 
 # ════════════════════════════════════════════════════════════════════

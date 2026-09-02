@@ -27,7 +27,10 @@ check "entry files exist" bash -c '
   test -f docs/BACKUP_RESTORE.md &&
   test -f scripts/README.md
 '
-check "README line count <=600" bash -c 'test "$(wc -l < README.md)" -le 600'
+check "both README line counts <=600" bash -c '
+  test "$(wc -l < README.md)" -le 600 &&
+  test "$(wc -l < README_EN.md)" -le 600
+'
 check "AGENTS.md <=12KB" bash -c 'test "$(wc -c < AGENTS.md)" -le 12000'
 check "rerank example is nested" grep -q '"config": {' mem0_config_local.json.example
 check "no hardcoded restore date" bash -c '! grep -q 20260727 scripts/restore_backup.py'

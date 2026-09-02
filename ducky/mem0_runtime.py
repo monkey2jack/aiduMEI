@@ -564,8 +564,83 @@ def _assert_vector_store_inside_sandbox(cfg: dict) -> None:
         )
 
 
+class Mem0NotConfiguredError(HTTPException):
+    """mem0 从未启用；删除链可以安全跳过这一层。
+
+    这是初始化边界的类型契约，不是对任意初始化异常的事后解释。它同时继承
+    ``HTTPException``，让普通 API 调用保留可操作的 503；删除链则能精确捕获
+    这个类型，而不必从 HTTP 状态码或异常字符串事后猜测。配置损坏、配置不
+    完整、凭据失效、服务不可达与 SDK 错误都不能构造此异常。
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(
+            status_code=503,
+            detail=(
+                "记忆写入依赖的向量后端尚未配置："
+                "请复制 mem0_config_local.json.example 为 mem0_config_local.json，"
+                "填入 embedding / LLM 凭据；用 GET /health 查看 degraded 与 "
+                "degraded_details；不配凭据可先使用 POST /add/raw。"
+                f"（原因：{reason}）"
+            ),
+        )
+
+
+_CONFIG_EXAMPLE = "mem0_config_local.json.example"
+PLACEHOLDER_HINTS = ("your_", "replace_", "change_me", "<", "xxx", "placeholder")
+
+
+def is_placeholder_key(value: str) -> bool:
+    """凭据值是否仍是样例占位符。"""
+    normalized = (value or "").strip().lower()
+    return not normalized or any(h in normalized for h in PLACEHOLDER_HINTS)
+
+
+def _read_resolved_mem0_config() -> dict:
+    """读取并解析 mem0 配置；这是初始化与状态探针共用的唯一入口。"""
+    path = mem0_config_path()
+    if not os.path.isfile(path):
+        raise Mem0NotConfiguredError("config_file_missing")
+    with open(path, "r", encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    # API-key file fallback is part of the production configuration path; do
+    # not let a malformed top-level value be mistaken for an absent backend.
+    return _resolve_api_keys(cfg)
+
+
+def _is_placeholder_mem0_config(cfg: dict) -> bool:
+    """只把完整的生产形状样例配置认作「从未配置」。
+
+    顶层 ``embedder.api_key`` 等旧/错误形状不会被误认成已配置；它会继续进入
+    mem0 初始化并作为配置错误失败。这样状态探针与真实加载路径不会各自发明
+    一套配置解释。
+    """
+    sections = []
+    for name in ("embedder", "llm"):
+        section = cfg.get(name)
+        if not isinstance(section, dict) or not isinstance(section.get("config"), dict):
+            return False
+        config = section["config"]
+        # Missing required fields is a malformed/incomplete deployment, not the
+        # complete sample users have never edited.  Let mem0 surface that as a
+        # real initialization failure instead of making deletion skip it.
+        if "api_key" not in config:
+            return False
+        sections.append(config["api_key"])
+    return bool(sections) and all(is_placeholder_key(key) for key in sections)
+
+
+def _load_mem0_config() -> dict:
+    """读取真实配置，并只在明确的「从未配置」形态抛专用异常。"""
+    cfg = _read_resolved_mem0_config()
+    if _is_placeholder_mem0_config(cfg):
+        raise Mem0NotConfiguredError("placeholder_credentials")
+    return cfg
+
+
 def get_memory():
-    """延迟初始化 mem0 单例，绑定到 sys 命名空间防止跨模块双重导入"""
+    """延迟初始化 mem0 单例，绑定到 sys 命名空间防止跨模块双重导入。"""
     global m
     with _mem_init_lock:
         if hasattr(sys, "_aidumem_singleton") and sys._aidumem_singleton is not None:
@@ -575,10 +650,11 @@ def get_memory():
             sys._aidumem_singleton = m
             return m
         try:
+            # 必须先加载配置：无配置时即使 mem0 SDK 未装，删除链也能收到
+            # 明确的 Mem0NotConfiguredError；SDK 缺失本身则仍是真故障。
+            cfg = _load_mem0_config()
             if Memory is None:
                 raise RuntimeError("mem0 SDK 未加载")
-            cfg = json.loads(open(MEM0_CONFIG).read())
-            cfg = _resolve_api_keys(cfg)
             _assert_vector_store_inside_sandbox(cfg)
             # 启动时清理 Qdrant 锁（与生产环境对齐：先读配置再清理）
             _clear_qdrant_lock()
@@ -601,83 +677,37 @@ def get_memory():
                     f"{(_patch_state or {}).get('problems')}（补丁层: {_summary}）"
                 )
             return m
+        except Mem0NotConfiguredError:
+            logger.info("mem0 后端未配置，按零凭据首跑路径返回 503")
+            raise
         except Exception as e:
             logger.error(f"mem0 初始化失败: {e}")
             raise HTTPException(503, _mem0_unavailable_detail(e))
 
-_CONFIG_EXAMPLE = "mem0_config_local.json.example"
-
-# ── 「后端未配置」与「后端配了但坏了」必须是两件事 ──────────────────────────
-#
-# 🔴v20.3.2（第 10 轮外部审计 P0-1）：`get_memory()` 把**所有**初始化失败都包成
-# 同一个 `HTTPException(503)` —— 配置文件不存在是 503，凭据无效是 503，
-# Qdrant 连不上也是 503。于是删除链若拿「是不是 503」判「未启用」，
-# 就等于宣布「凡是后端出问题，都当它没启用」——
-#
-#     嵌入服务抖动 → 删除被当成未启用 → 其余层删干净、向量点留着 →
-#     调用方收到 committed/200，而**已删内容仍可召回**。
-#
-# 那正是 F-02 的原病，被一次「修复」重新引进来。`bank_contract.is_legacy_schema_error`
-# 的 docstring 早就把这条道理写过了（「租户隔离要是能被一次瞬时故障摘掉，它就不叫隔离」），
-# 这次是同一个道理换了个病因重演。
-#
-# 所以判据**不看异常、不看状态码，看世界的事实**：配置文件在不在、里面是不是真凭据。
-# 这份事实同时供删除链与 e2e 冒烟使用 —— 占位符的口径全仓只此一处。
-PLACEHOLDER_HINTS = ("your_", "replace_", "change_me", "<", "xxx", "placeholder")
-
-
-def is_placeholder_key(value: str) -> bool:
-    """凭据值是否仍是样例占位符。"""
-    normalized = (value or "").strip().lower()
-    return not normalized or any(h in normalized for h in PLACEHOLDER_HINTS)
-
 
 def mem0_backend_configured() -> tuple[bool, str]:
-    """向量/LLM 后端是否**真的被配置过**（读世界，不读异常）。
-
-    返回 (configured, reason)。三种情形必须分开：
-      · 配置文件不存在 → 未启用（部署方还没配，不是故障）
-      · 配置文件存在但凭据仍是占位符 → 未启用（配了个样例，等于没配）
-      · 配置文件存在且凭据是真的 → 已启用；此后任何失败都是**真故障**，不许降级
-    """
-    import json as _json
-
-    path = mem0_config_path()
-    if not os.path.isfile(path):
-        return False, "config_file_missing"
+    """通过真实配置加载路径报告 mem0 是否明确启用。"""
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            cfg = _json.load(fh)
+        cfg = _read_resolved_mem0_config()
+    except Mem0NotConfiguredError as exc:
+        return False, exc.reason
     except Exception as exc:
-        # 文件在但读不了/不是合法 JSON：这是**部署坏了**，不是未配置。
-        # 报已启用，让上层按真故障处理 —— 宁可红一次，不许悄悄放行。
-        logger.warning("mem0 配置文件存在但解析失败（按真故障处理，不降级）: %s", exc)
+        # 文件存在但读不了/不是合法 JSON，或密钥解析失败：这是部署故障，
+        # 不能让删除链把它当成「没启用」。
+        logger.warning("mem0 配置读取失败（按真故障处理，不降级）: %s", exc)
         return True, "config_unreadable"
-
-    def _section_keys(*names):
-        for n in names:
-            sec = cfg.get(n)
-            if isinstance(sec, dict):
-                k = sec.get("api_key") or sec.get("openai_api_key") or ""
-                return str(k)
-        return ""
-
-    embed_key = _section_keys("embedder", "embedding", "embeddings")
-    llm_key = _section_keys("llm", "language_model")
-    if is_placeholder_key(embed_key) and is_placeholder_key(llm_key):
+    if _is_placeholder_mem0_config(cfg):
         return False, "placeholder_credentials"
     return True, "configured"
 
 
 def is_backend_not_configured(exc: BaseException) -> bool:
-    """这个异常是否源于「后端从未被配置」—— 降级唯一允许的触发原因。
+    """兼容查询：只有专用异常才代表「后端从未配置」。
 
-    与 `is_legacy_schema_error` 同一条纪律：**降级前先验明病因**。
-    这里不看异常内容（503 的成因有四种，其中三种是真故障），
-    只看世界的事实：配置文件在不在、凭据是不是真的。
+    删除链不调用此函数；它保留给旧集成方时，必须继续拒绝裸 RuntimeError、
+    HTTPException(503) 以及任何其他事后猜测。
     """
-    configured, _reason = mem0_backend_configured()
-    return not configured
+    return isinstance(exc, Mem0NotConfiguredError)
 
 
 def _mem0_unavailable_detail(exc: Exception) -> str:
