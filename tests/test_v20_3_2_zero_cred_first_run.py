@@ -80,7 +80,18 @@ for r in getattr(app, "routes", []):
             out.append([m, url, resp.status_code, resp.text[:200]])
         except Exception as e:
             out.append([m, url, "EXC", f"{type(e).__name__}: {e}"[:200]])
-print(json.dumps({"routes": len(seen), "hits": len(out), "rows": out}))
+# 自报世界状态：BASE_DIR / DATA_DIR / 是否鉴权 / 后端配置判定。
+# 判据不能只数状态码 —— 它必须先确认自己测的是以为在测的那个世界。
+from ducky.utils import BASE_DIR, DATA_DIR
+from ducky.mem0_runtime import mem0_backend_configured
+print(json.dumps({
+    "routes": len(seen), "hits": len(out), "rows": out,
+    "world": {
+        "base_dir": BASE_DIR, "data_dir": DATA_DIR,
+        "auth_enabled": bool(os.environ.get("AIDUMEM_API_TOKEN", "").strip()),
+        "backend": list(mem0_backend_configured()),
+    },
+}))
 '''
 
 
@@ -114,15 +125,26 @@ def sweep_result(tmp_path_factory):
         "PYTHONDONTWRITEBYTECODE": "1",
         "AIDUMEM_DATA_DIR": str(d / "data"),
         "AIDUMEM_LOG_DIR": str(d / "log"),
-        "AIDUMEI_HOME": str(d / "home"),
+        # **前缀必须是 AIDUMEM_（冻结兼容面），不是 AIDUMEI_。**
+        # 上一版这里写的是 AIDUMEI_HOME —— utils.py:94 读的是 AIDUMEM_HOME，
+        # 于是 BASE_DIR 仍指向真实仓库根，启动时 `load_env_file()` 把部署树里的
+        # `.env` 读了进来（含 API token），扫描拿到一片 401。
+        # 这是**同一个坑在本文件里第二次踩**（第一次是 AIDUMEI_DATA_DIR），
+        # 所以底下 test_bare_environment_is_really_bare 加了「未鉴权」这条断言：
+        # 新变量的约定前缀是 AIDUMEI_，而 HOME/DATA_DIR/LOG_DIR/CONFIG_FILE
+        # 属冻结兼容面，读的是 AIDUMEM_ —— 写错前缀不会报错，只会静默失效。
+        "AIDUMEM_HOME": str(d / "home"),
         "AIDUMEM_CONFIG_FILE": str(d / "no_such_config.json"),
+        # 显式给空：load_env_file 不覆盖已存在的键，所以这一句同时挡住
+        # 「.env 里配了 token」与「父进程泄漏了 token」两条路。
+        "AIDUMEM_API_TOKEN": "",
     }
     proc = subprocess.run(
         [sys.executable, str(script), str(root)],
         capture_output=True, text=True, timeout=300, cwd=str(root), env=child_env)
     assert proc.returncode == 0, f"扫描子进程失败：{proc.stderr[-600:]}"
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
-    return payload["rows"], payload["routes"], payload["hits"]
+    return payload["rows"], payload["routes"], payload["hits"], payload["world"]
 
 
 def _rows_by(sweep_result, path, method=None):
@@ -131,10 +153,22 @@ def _rows_by(sweep_result, path, method=None):
 
 
 def test_bare_environment_is_really_bare(sweep_result):
-    """前提反证：子进程必须真的扫到了足够多的路由，否则整份文件在测一个空世界。"""
-    _rows, routes, hits = sweep_result
+    """前提反证：子进程必须真的处在一个「什么都没配」的世界里。
+
+    这条不是装饰。上一版 BASE_DIR 因前缀写错仍指向真实仓库根，启动时把部署树的
+    `.env` 读了进来 —— 扫描于是测的是「已鉴权的部署实例」，而它宣称测的是
+    「新用户的第一次」。**判据先要确认自己在测哪个世界，再去数状态码。**
+    """
+    _rows, routes, hits, world = sweep_result
     assert routes > 100, f"路由数异常少（{routes}），扫描没生效"
     assert hits > 60, f"实际打到 {hits} 条，太少，判据没有射程"
+    assert world["auth_enabled"] is False, (
+        f"子进程里鉴权是开的（BASE_DIR={world['base_dir']}）—— "
+        "扫描会拿到一片 401，而 401 不是缺陷，判据就此失真")
+    assert world["backend"] == [False, "config_file_missing"], (
+        f"子进程不是「未配置」形态：{world['backend']}（BASE_DIR={world['base_dir']}）")
+    assert "site-packages" not in world["data_dir"] and "/dudu-mem0/" not in world["data_dir"], (
+        f"DATA_DIR 落在真实部署/包目录里：{world['data_dir']} —— 扫描会写活数据")
 def test_no_route_returns_500_when_backend_is_not_configured(sweep_result):
     """零凭据首跑：任何路由都不许回 500。
 
@@ -143,7 +177,7 @@ def test_no_route_returns_500_when_backend_is_not_configured(sweep_result):
     成因是「用户还没配置」—— 把「还没配」报成「我坏了」，调用方就再也分不出
     「等一下再来」与「得有人去修」。
     """
-    rows, _routes, hits = sweep_result
+    rows, _routes, hits, _world = sweep_result
     bad = [f"{m} {u} -> {code} {txt[:110]}"
            for m, u, code, txt in rows
            if code == "EXC" or (isinstance(code, int) and code >= 500 and code != 503)]
@@ -155,7 +189,7 @@ def test_503_details_stay_actionable(sweep_result):
     这是它比同类项目做得好的地方，也是**必须守住**的地方 —— 一旦有人把
     `str(e)` 直接塞进 detail，这条会红。
     """
-    rows, _routes, _hits = sweep_result
+    rows, _routes, _hits, _world = sweep_result
     got = [r for r in rows if r[2] == 503]
     assert len(got) >= 3, f"只扫到 {len(got)} 条 503，环境可能不是未配置形态"
     for m, u, _code, txt in got:
@@ -168,7 +202,8 @@ def test_single_and_bulk_delete_agree_when_unconfigured(sweep_result):
     这是 P0-1 的靶心：修复前 `/delete` 回 500 failed、`/delete_all` 回 200 committed。
     同一条判据在同一个文件的两个函数里长出了两种行为 —— 相隔 426 行。
     """
-    rows, _routes, _hits = sweep_result
+    rows, _routes, _hits, _world = sweep_result
+    rows, _routes, _hits, _world = sweep_result
     single = [r for r in rows if r[1] == "/delete" and r[0] == "DELETE"]
     bulk = [r for r in rows if r[1] == "/delete_all"]
     assert single and bulk, "没扫到删除路由，夹具变了"
