@@ -1359,6 +1359,10 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 形态兜底，但文档一旦带着「实测」标注，就按 MEASURED_SANDBOX 断言 ——
     # 实测值不可被推导式覆盖（这正是本守卫哲学：测不到就明说测不到）。
     MEASURED_SANDBOX = (1568, 5)  # 2026-09-01 生产机沙箱实测，三轮同值；换树必须重测后改这里
+    # 2026-09-02 生产机全轴齐备实测（五轴：.git + ruff + mcp extra + 宿主 + 备胎模型缓存）。
+    # 这一格从前是「待复测 + 推导值」，推导值恰好等于实测值 —— 但推导对了不等于
+    # 测过了；换树必须重测后改这里。
+    MEASURED_ALL_AXES = (1573, 0)
     sandbox_row_re = re.compile(
         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*(\d{4}-\d{2}-\d{2})\s*生产机实测\*\*")
 
@@ -1375,9 +1379,12 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README.md", "表格·生产机沙箱(实测形态)",
          r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}\s*生产机实测\*\*",
          MEASURED_SANDBOX),
-        ("README.md", "表格·全轴齐备(待复测形态必须带推导值与基线)",
-         r"全轴齐备\s*\|\s*\*\*待复测\*\*\s*（按轴推导值为\s*(\d+)/0；[^）]*上一实测基线\s*(\d+)/0",
-         (actual_total, 1499)),
+        # 双形态：已实测 → 断言实测值；未实测 → 允许「待复测」但必须带推导值与基线。
+        # 顺序不能反：先试实测形态，红才回落待复测形态 —— 反过来会让旧日期
+        # 一直冒充新结论（数字与日期是一体的）。
+        ("README.md", "表格·全轴齐备(实测形态)",
+         r"全轴齐备\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}\s*生产机实测\*\*",
+         MEASURED_ALL_AXES),
         ("README.md", "正文·为什么要把 X 和 Y 都写出来",
          r"为什么要把\s*(\d+)\s*和\s*(\d+)\s*都写出来", (passed, MEASURED_SANDBOX[0])),
         ("README.md", "正文·复现命令（无宿主）",
@@ -1393,9 +1400,9 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README_EN.md", "table·Sandbox(measured form)",
          r"\|\s*Sandbox on the production box\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
          MEASURED_SANDBOX),
-        ("README_EN.md", "table·All axes(pending form carries derived value)",
-         r"All axes present\s*\|\s*\*\*pending re-measurement\*\*[^\|]*axis-derived\s*(\d+)/0[^\|]*baseline\s*(\d+)/0",
-         (actual_total, 1499)),
+        ("README_EN.md", "table·All axes(measured form)",
+         r"All axes present\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
+         MEASURED_ALL_AXES),
         ("README_EN.md", "prose·Why report both X and Y",
          r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, MEASURED_SANDBOX[0])),
         ("README_EN.md", "prose·repro command (no host)",
