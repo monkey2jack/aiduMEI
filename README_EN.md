@@ -319,31 +319,31 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 pip install -r requirements.txt -r requirements-dev.txt
 pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
-pytest tests/ -q -rs | tail -1                                 # no host: 1577 passed, 12 skipped
-HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1589 passed
-HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1577 passed, 12 skipped
+pytest tests/ -q -rs | tail -1                                 # no host: 1637 passed, 12 skipped
+HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1649 passed
+HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1637 passed, 12 skipped
 
 # Basic source-install path
 pip install -r requirements.txt -r requirements-dev.txt
-pytest tests/ -q -rs | tail -1                                 # basic path: 1558 passed, 31 skipped
+pytest tests/ -q -rs | tail -1                                 # basic path: 1617 passed, 32 skipped
 ```
 
 | Dimension | Status |
 |---|---|
-| Total cases | **1589** (measured via `pytest --collect-only`, 2026-09-02) |
-| Clean dev machine | 1577 passed · **12 skipped** — host Hermes source absent (measured 2026-09-02) |
-| Basic install path | 1558 passed · **31 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-02**) |
+| Total cases | **1649** (measured via `pytest --collect-only`, 2026-09-02) |
+| Clean dev machine | 1637 passed · **12 skipped** — host Hermes source absent (measured 2026-09-02) |
+| Basic install path | 1617 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-02**) |
 | Sandbox on the production box | 1576 passed · **5 skipped** — **measured on the production box, 2026-09-02** |
 | All axes present | 1581 passed · **0 skipped** — **measured on the production box, 2026-09-02** |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1577 and 1558**: they are measurements of different environments. The commands and their dependency assumptions therefore stay together. With the complete optional environment, the expected host-axis pair is:
+**Why report both 1637 and 1617**: they are measurements of different environments. The commands and their dependency assumptions therefore stay together. With the complete optional environment, the expected host-axis pair is:
 
 ```text
-no host: 1577 passed, 12 skipped
-with host: 1589 passed
-forced off: 1577 passed, 12 skipped
+no host: 1637 passed, 12 skipped
+with host: 1649 passed
+forced off: 1637 passed, 12 skipped
 ```
 
 On a production host where other optional axes are absent, the bare command **actually prints 1576 passed, 5 skipped** (measured 2026-09-02). A number without its environment and date is not a reproducible claim.
@@ -363,7 +363,7 @@ On a production host where other optional axes are absent, the bare command **ac
 | `git` executable present | 6 | throwaway-repository oracle |
 | `mem0ai` installed | 20 | real patch-layer tests |
 | `fastembed` installed | 1 | real local-model fallback test |
-| `ruff` installed | 2 | real-defect static rules |
+| `ruff` installed | 3 | real-defect static rules |
 | `mcp` extra installed | 2 | product import-surface tests |
 
 The suite is maintained for Linux/macOS POSIX. Guards that lack their tool skip honestly instead of reporting zero findings. Every payload-, credential- or response-shape fix needs its production shape plus a discriminating negative control; named tests must be PASSED, not silently SKIPPED.
