@@ -83,7 +83,7 @@ def main() -> int:
             "user_id": tenant, "bank_id": "default", "infer": False,
         })
         check("add", status == 200, added)
-        status, gate = request("GET", "/gate", {"query": nonce, "user_id": tenant, "bank_id": "default"})
+        status, gate = request("GET", "/gate", {"query": f"remember {nonce}", "user_id": tenant, "bank_id": "default"})
         # v20.3.1：只看 200 是假绿灯 —— empty_query 也是 200。闸门必须
         # 真的对本次 nonce 做过相关性判定。
         check("gate",
@@ -99,7 +99,7 @@ def main() -> int:
         check("session-start", status == 200, session_start)
         session_id = session_start.get("session_id") if isinstance(session_start, dict) else None
         if session_id:
-            status, session_end = request("POST", "/session/end", {"session_id": session_id, "user_id": tenant, "bank_id": "default"})
+            status, session_end = request("POST", f"/session/end?session_id={session_id}&user_id={tenant}&bank_id=default")
             check("session-end", status == 200, session_end)
         results = searched.get("results", [])
         values = [r.get("memory") or r.get("content") or r.get("fact_value") for r in results]
