@@ -476,31 +476,18 @@ def cascade_delete_memory(
         # 向量孤儿，绝不把一个未验证的 id 交给全局删除原语。
         mem = None
         try:
-            from ducky.mem0_runtime import get_memory
+            from ducky.mem0_runtime import Mem0NotConfiguredError, get_memory
             mem = get_memory()
+        except Mem0NotConfiguredError as e:
+            # Rev.2：只有初始化边界明确抛出的专用类型才代表「从未启用」。
+            # 该部署未启用 mem0 时跳过向量层；配置存在但损坏、凭据无效、
+            # 网络/Qdrant/代理故障均会落入下面的通用异常分支。
+            logger.warning("mem0 后端未配置，跳过向量层: %s", e.detail)
+            res["vector_enumeration_complete"] = False
         except Exception as e:
-            # 🔴v20.3.2（第 10 轮审计 P0-1）：**「后端从未配置」≠「删除失败」**。
-            #
-            # `cascade_delete_all` 一直有这个判据，单条路径却没有 —— 于是零凭据
-            # 首跑形态下 `DELETE /delete` 回 500，而同环境 `/delete_all` 回 200：
-            # 两条链共用同一套三态契约，对同一个信号给出相反判决。危害不止状态码：
-            # crud.py 的注释写着「not_found 走 200，因为 consolidator 正在批量删
-            # 早就不存在的东西」—— 它在零凭据部署下收到的是一片 500。
-            #
-            # **判据只放在「取后端」这一步**，与 delete_all 的结构逐字对齐。
-            # 拿到后端之后的任何失败（枚举问不出来、delete 抛错）照旧算关键层失败：
-            # 那是 F-02 的原病现场 —— 后端抖动时若放行，删除会报成功而向量点留着。
-            # 上一版把判据放在整段的 except 上，被既有用例
-            # （test_v20_2_5_audit_remediation.py 的「后端连不上必须 failed」）当场戳穿。
-            from ducky.mem0_runtime import is_backend_not_configured
-            if not is_backend_not_configured(e):
-                logger.warning("mem0 后端初始化失败（已配置，算关键层失败）: %s", e)
-                _layer_failed("mem0_vector", e)
-                mem = None
-            else:
-                logger.warning(
-                    "mem0 后端不可用（视为未启用，不计入删除失败）: %s", e)
-                res["vector_enumeration_complete"] = False
+            logger.warning("mem0 后端初始化失败（按已启用故障处理）: %s", e)
+            _layer_failed("mem0_vector", e)
+            mem = None
 
         if mem is not None:
             try:
@@ -918,21 +905,23 @@ def cascade_delete_all(
         # only safe operation is scoped enumeration followed by single-id
         # deletes.  In particular, do not reintroduce ``mem.delete_all`` here
         # as a convenience fallback.
-        # v20.2.5（外审 F-02）：**取后端**与**执行删除**分成两个 try —— 判据
-        # 要看异常的**来源**，不是看配置文件存不存在。
-        #
-        #   · 取不到后端 → 这个部署可能根本没启用向量库（没有内容留在那儿）；
-        #   · 拿到后端、删除却炸了 → **内容还躺在向量库里**，那是真失败。
-        #
-        # 早先我用「配置文件是否存在」当判据，被自己的故障注入用例当场戳穿：
-        # mock 掉删除函数让它抛异常，判据却因为本机没有配置文件而放行 ——
-        # 那等于生产上 Qdrant 一断，删除就报成功。**这正是 F-02 的原病。**
+        # Rev.2：**获取对象**与**执行删除**分成两个 try，且降级只认初始化
+        # 边界主动抛出的 Mem0NotConfiguredError。普通 HTTP 503、配置损坏、
+        # 凭据/网络/Qdrant/SDK 故障都进入真实失败分支；对象取得后的枚举或
+        # 删除失败更不能降级。这样异常的病因在被统一 HTTP 包装前就保留下来，
+        # 删除链无需再查看文件、状态码或异常文字做事后猜测。
         mem = None
         try:
-            from ducky.mem0_runtime import get_memory
+            from ducky.mem0_runtime import Mem0NotConfiguredError, get_memory
             mem = get_memory()
+        except Mem0NotConfiguredError as e:
+            # Rev.2：只允许初始化边界的专用类型跳过 mem0。任何已配置后端
+            # 的初始化故障都必须进入下面的通用异常分支。
+            logger.warning("mem0 后端未配置，跳过向量层: %s", e.detail)
+            res["vector_enumeration_complete"] = False
         except Exception as e:
-            logger.warning("mem0 后端不可用（视为未启用，不计入删除失败）: %s", e)
+            logger.warning("mem0 后端初始化失败（按已启用故障处理）: %s", e)
+            _layer_failed("mem0_vectors", e)
             res["vector_enumeration_complete"] = False
 
         if mem is not None:
