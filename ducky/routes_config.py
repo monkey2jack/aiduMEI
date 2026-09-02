@@ -247,7 +247,11 @@ def register_config_routes(app: FastAPI) -> None:
         if not write_password_hash(hash_password(new)):
             return {"status": "error", "detail": "更新失败：无法写入口令哈希文件"}
 
-        os.environ["AIDUMEM_UI_PASSWORD"] = new
+        # 🔴v20.3.2-beta（外审 M-2）：**不再把明文口令写进 os.environ。**
+        # 上一行 write_password_hash() 已经落盘哈希，门禁判据读的就是那个文件，
+        # 所以这一行对功能毫无贡献；而它的代价是明文常驻 /proc/<pid>/environ，
+        # 并被**所有子进程**（mem0、ffmpeg…）继承。既多余又有害，直接删。
+        # （auth.py 的 docstring 早写过同一条道理：口令的读者范围只许缩小。）
         revoked = revoke_all_sessions()
         logger.info("🔐 UI 登录口令已更新（PBKDF2 哈希），已撤销 %d 个既有会话", revoked)
         return {
