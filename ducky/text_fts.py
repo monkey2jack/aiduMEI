@@ -377,8 +377,14 @@ def _like_search(terms, user_id, top_k, conn=None, bank_id=DEFAULT_BANK_ID):
     return [{**dict(r), "id": raw_storage_key(r["id"], scope)} for r in rows]
 
 
-def calc_bm25_score(query: str, content: str) -> float:
-    """计算单条内容相对于 query 的词频匹配得分 (0.0~1.0)"""
+def calc_token_overlap_score(query: str, content: str) -> float:
+    """trigram 切词后的**词元覆盖率** (0.0~1.0)。**这不是 BM25。**
+
+    🔴v20.3.2-beta（外审）：与 scoring.py 那个同名函数一样，本函数原名
+    `calc_bm25_score` 而实现是覆盖率 —— 无 IDF、无 TF 饱和、无长度归一。
+    全仓有**两个**同名的「BM25」，两个都不是 BM25：改名时必须一起改，
+    否则就是「加完一处漏一处」的又一例。旧名保留为兼容别名。
+    """
     if not query or not content:
         return 0.0
     terms = _fts_terms(query)
@@ -470,3 +476,7 @@ def _hybrid_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID,
         feature_failed("hybrid_search", e)
         logger.debug(f"hybrid 委托失败，降级 BM25: {e}")
         return _bm25_keyword_search(query, top_k, user_id, bank_id)
+
+
+# 兼容别名（v20.3.2-beta）：旧名指向同一实现。**它不是 BM25。**
+calc_bm25_score = calc_token_overlap_score

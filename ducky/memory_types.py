@@ -52,6 +52,23 @@ TYPE_LABELS = {
 
 VALID_TYPES = frozenset(TYPE_LABELS)
 
+class SchemaMigrationError(RuntimeError):
+    """迁移没能把防护建起来 —— 这不是可以静默降级的那类失败。
+
+    v20.3.2-beta（外审 P1-A）：区分「表初始化遇到小问题、服务可继续」与
+    「安全防护建不起来」。后者必须定性、必须进 /health 的 degraded_details，
+    不许只留一条读者读不懂后果的 WARNING。
+    """
+
+
+def _table_columns(conn, table: str) -> set[str]:
+    """读表的真实列集合（读世界，不读别处读过的输出）。"""
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    except Exception:
+        return set()
+
+
 _checked = False
 
 
@@ -98,10 +115,35 @@ def ensure_memory_types_schema() -> None:
         # 而重建是不可逆动作；生产 dry-run 实测 346 行、新约束下冲突组 0、
         # 同 ref 跨用户 0 组 —— 加索引不会丢任何行）。upsert 的冲突目标
         # 同步改成这三列。
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_types_scope_ref "
-            "ON memory_types(user_id, bank_id, memory_ref_raw)"
-        )
+        # 🔴v20.3.2-beta（外审 P1-A）：**这条唯一索引原先建在这里 —— 补列之前。**
+        # 存量表（v20.0 前建、无 scope 三列）会在此抛 no such column: user_id，
+        # 被本函数最外层 except 吞成一条 WARNING，于是**整段初始化中止**，
+        # 连下面那个本该补列的循环都没跑到。结果：F-16 修的跨用户覆盖漏洞，
+        # 在唯一需要它的场景（存量多租户库升级）依然可利用；而新库因 CREATE TABLE
+        # 自带三列而不受影响 —— 本地全绿、生产失效，藏了 5 个 Tag。
+        # **顺序即语义**：索引依赖列，所以它只能建在补列之后（见下方）。
+        for column, ddl in (
+            ("user_id", f"TEXT NOT NULL DEFAULT '{LEGACY_PLACEHOLDER_USER_ID}'"),
+            ("bank_id", f"TEXT NOT NULL DEFAULT '{DEFAULT_BANK_ID}'"),
+            ("memory_ref_raw", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE memory_types ADD COLUMN {column} {ddl}")
+            except Exception:
+                pass
+        # 🔴v20.3.2-beta（外审 P1-A）：补列**必须先于**任何依赖这些列的索引。
+        # 并且补完要**硬校验**：补不上就不是「降级继续」，而是「F-16 租户隔离
+        # 防护建不起来」。以前这里只留一条不指明后果的 WARNING —— 读者无法从
+        # 「表初始化失败（服务继续）」知道租户隔离已经失效。定性必须写出来。
+        _missing = [c for c in ("user_id", "bank_id", "memory_ref_raw")
+                    if c not in _table_columns(conn, "memory_types")]
+        if _missing:
+            raise SchemaMigrationError(
+                f"memory_types 缺列 {sorted(_missing)} 且补列失败："
+                "F-16 的 (user_id, bank_id, memory_ref_raw) 唯一约束无法建立，"
+                "**跨用户类型覆盖防护当前为失效状态**。"
+                "请检查 facts.db 是否只读或被并发占用。"
+            )
         # P2-4：ref 空间统一兼容。主链写时用 mem0 UUID，backfill 用 fact:{id}，
         # 两者可能指向同一条记忆。这里幂等补 ref_alt 列，查询时双 ref 可命中。
         try:
@@ -123,15 +165,6 @@ def ensure_memory_types_schema() -> None:
         # 这条 ALTER 正是 甲9 的成因本体：``ADD COLUMN … DEFAULT 'default'`` 会把
         # **所有**存量行一次性写满字面量，于是后面那种
         # ``WHERE user_id IS NULL OR TRIM(user_id)=''`` 的补写永远不可能触发。
-        for column, ddl in (
-            ("user_id", f"TEXT NOT NULL DEFAULT '{LEGACY_PLACEHOLDER_USER_ID}'"),
-            ("bank_id", f"TEXT NOT NULL DEFAULT '{DEFAULT_BANK_ID}'"),
-            ("memory_ref_raw", "TEXT"),
-        ):
-            try:
-                conn.execute(f"ALTER TABLE memory_types ADD COLUMN {column} {ddl}")
-            except Exception:
-                pass
         try:
             conn.execute(
                 "UPDATE memory_types SET memory_ref_raw=memory_ref "
@@ -149,6 +182,14 @@ def ensure_memory_types_schema() -> None:
             logger.debug("memory_types scope index/backfill skipped: %s", exc)
         conn.commit()
         _checked = True
+    except SchemaMigrationError as e:
+        # 定性失败：进 degraded 台账，让 /health 说得出「哪条防护当前无效」。
+        logger.error("🔴 memory_types 迁移未能建立租户隔离防护: %s", e)
+        # 用真实 API（record_degradation），不是想当然的名字：签名对不上会被
+        # 外层 except 静默吞掉，那就等于「定性」这一步根本没发生 —— 又一个假绿灯。
+        from ducky.degradation import DegradationTracker
+        DegradationTracker.record_degradation(
+            "memory_types_scope_guard", str(e), severity="error")
     except Exception as e:
         logger.warning(f"memory_types 表初始化失败（服务继续）: {e}")
     finally:

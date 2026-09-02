@@ -158,8 +158,18 @@ def normalize_score(score: Any) -> float:
     return round(s, 4)
 
 
-def calc_bm25_score(query: str, text: str) -> float:
-    """轻量级快速词频与覆盖度打分。"""
+def calc_token_overlap_score(query: str, text: str) -> float:
+    """查询词元在文本中的**覆盖率**（0–1）。**这不是 BM25。**
+
+    🔴v20.3.2-beta（外审）：本函数原名 `calc_bm25_score`，而它算的是
+    「查询里有几成词元出现在文本里」—— **无 IDF、无 TF 饱和、无文档长度归一**，
+    经典 Okapi BM25 的三个灵魂一个都没有。它在融合分里占 0.25 权重，
+    对外文档还大张旗鼓叫「BM25 词频」，属于概念包装。
+
+    诚实的名字就是 token overlap。要真 BM25 的话，底层 SQLite FTS5 有原生
+    `bm25()` 可用（登记为 v20.4 候选，涉及打分口径变更，需重跑基准）。
+    旧名保留为**兼容别名**（存量调用方），但不再声称自己是 BM25。
+    """
     if not query or not text:
         return 0.0
     q_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", query.lower()))
@@ -486,3 +496,8 @@ def score_and_rank_candidates(
     final = scored[:limit]
 
     return final
+
+
+# 兼容别名（v20.3.2-beta）：旧名指向同一实现，避免打断存量调用方。
+# **它不是 BM25** —— 见 calc_token_overlap_score 的 docstring。
+calc_bm25_score = calc_token_overlap_score

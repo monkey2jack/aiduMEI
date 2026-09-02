@@ -217,7 +217,7 @@ def test_persona_ai_self_read_is_scope_filtered(tmp_path, monkeypatch):
     routes.register_extended_routes(
         app,
         _get_memory_fn=lambda: None,
-        _get_db_fn=lambda: conn,
+        _get_db_fn=_conn,   # v20.3.2-beta 外审 F-2：原写 `lambda: conn`，conn 未定义（F821）
         _extract_entities_fn=lambda text: [],
     )
     client = TestClient(app)

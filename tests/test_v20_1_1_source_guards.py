@@ -172,6 +172,10 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/hot/legacy_routes.py", "t_clause"), ("ducky/hot/legacy_routes.py", "where"),
     ("ducky/memory_types.py", "DEFAULT_BANK_ID"), ("ducky/memory_types.py", "LEGACY_PLACEHOLDER_USER_ID"),
     ("ducky/memory_types.py", "column"), ("ducky/memory_types.py", "ddl"),
+    # v20.3.2-beta（外审 P1-A）：_table_columns() 的 PRAGMA table_info({table})。
+    # table 只来自本模块内的字面量 "memory_types"（唯一调用点），不接受外部输入；
+    # PRAGMA 也不接受 ? 参数化。登记而非放行 —— 新增调用点会让本条守卫再红一次。
+    ("ducky/memory_types.py", "table"),
     ("ducky/memory_types.py", "owner_sql"), ("ducky/memory_types.py", "placeholders"),
     ("ducky/recall_funnel.py", "placeholders"),
     ("ducky/reflect.py", "ph"),

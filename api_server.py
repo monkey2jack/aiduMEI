@@ -126,6 +126,8 @@ async def _lifespan(_app: "FastAPI"):
     **之前** —— 拒绝启动就该在建表、预热、起线程之前发生。
     """
     _enforce_public_binding_policy()
+    # v20.3.2-beta（外审 P0-3）：单进程契约与公网熔断同级，**同样在起线程之前**。
+    _enforce_single_process_policy()
     _start_background()
     yield
 
@@ -323,6 +325,99 @@ def _client_is_loopback(request: "Request") -> bool:
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
+# ── 反代痕迹探测（v20.3.2-beta · 外审 C-1）────────────────────────────────
+#
+# 🔴 C-1：`_client_is_loopback` 判的是 **TCP 对端 IP**，而同机 nginx 反代的
+# 对端**恒为 127.0.0.1**。于是「无凭据 → 只服务回环」这道防线，在本项目
+# **标准生产形态**（域名 + 同机反代）下等于全部放行 —— 而「无凭据」正是
+# 默认安装的终点（自动生成口令 source=auto 刻意不启门禁）。
+#
+# 判据只看代理头**在不在**，绝不看它的**值**：
+#   · 值可伪造（rate_guard.py 早就写明拒绝采信 XFF 的值，那是对的）；
+#   · 但**存在性不可否认** —— 这个请求经过了一跳，是客户端无法抹掉的事实。
+# 无凭据实例不该服务任何经过跳转的请求，所以「有痕迹 → 拒绝」是 fail-closed。
+#
+# 逃生阀是 AIDUMEI_TRUST_PROXY：部署方显式声明「我知道我在反代后面」才放行。
+# 宁可让反代部署者多配一个变量，也不让默认安装裸奔。
+_PROXY_HINT_HEADERS = (
+    "x-forwarded-for", "x-real-ip", "forwarded",
+    "x-forwarded-host", "x-forwarded-proto", "x-client-ip",
+)
+
+
+def _request_via_proxy(headers) -> bool:
+    """请求是否带反代痕迹。**只判存在性，不读值。**"""
+    try:
+        for name in _PROXY_HINT_HEADERS:
+            v = headers.get(name)
+            if v is not None and str(v).strip():
+                return True
+    except Exception:
+        # 取不到头时 fail-closed：当作经过了代理（更严的赢）。
+        return True
+    return False
+
+
+def _trust_proxy_enabled() -> bool:
+    """部署方是否显式声明「本实例在可信反代之后」。"""
+    return os.environ.get("AIDUMEI_TRUST_PROXY", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+
+
+def _enforce_single_process_policy() -> None:
+    """单进程契约由机器守住（v20.3.2-beta · 外审 P0-3 / 跨进程风险面）。
+
+    会话表（auth._sessions）、限流窗口（rate_guard._WINDOWS）、用量计数
+    （mem0_runtime._llm_usage）全是**进程内**状态 —— 这是**显式设计决策**
+    （注释与文档都写明单进程部署形态，跨实例属 v21 路线图）。
+
+    问题不在这个决策，而在**没有任何东西阻止别人违反它**：
+    本文件的 docstring 就把 `gunicorn -k uvicorn.workers.UvicornWorker` 列为起法之一，
+    任何人顺手加 `--workers 4` 就会得到「登录时好时坏 / 限流失灵 / 后台线程 ×4」——
+    而这类症状**最难排查**，且服务看起来完全正常。
+
+    所以判据落在**启动期**、拒绝启动、并给出唯一合规路径：与既有公网熔断同一风格。
+    两个来源都看（更严的赢）：WEB_CONCURRENCY 环境变量，以及 argv 里的
+    `--workers/-w`（gunicorn 的 worker 数是它自己的命令行参数，环境变量看不见它
+    —— 与 F-01 的 `--host` 同理）。
+    """
+    def _fail(source: str, value: str) -> None:
+        raise RuntimeError(
+            f"🛑 [Security] 拒绝以多进程形态启动（{source}={value}）。"
+            "本服务是**单进程契约**：会话表、限流窗口、用量计数均为进程内状态，"
+            "多 worker 下会表现为「登录时好时坏、限流失灵」这类难排查症状。"
+            "唯一合规路径：把 worker 数设为 1（WEB_CONCURRENCY=1，或去掉 --workers），"
+            "后台任务如需独立进程请用 aidumem-worker 形态。"
+            "跨实例共享状态属 v21 多副本路线图。"
+        )
+
+    raw = os.environ.get("WEB_CONCURRENCY", "").strip()
+    if raw:
+        try:
+            if int(raw) > 1:
+                _fail("WEB_CONCURRENCY", raw)
+        except ValueError:
+            # 非法值不静默：配置面出错必须出声（与 env_config 同纪律）
+            logger.warning("WEB_CONCURRENCY 值非法（%r），按单进程处理", raw)
+
+    argv = list(sys.argv[1:])
+    for i, tok in enumerate(argv):
+        val = None
+        if tok in ("--workers", "-w") and i + 1 < len(argv):
+            val = argv[i + 1]
+        elif tok.startswith("--workers="):
+            val = tok.split("=", 1)[1]
+        if val is None:
+            continue
+        try:
+            if int(val) > 1:
+                _fail("--workers", val)
+        except ValueError:
+            continue
+
 
 def _detect_bind_host() -> str:
     """推断**实际**监听地址（v20.2.4 · 外审 F-01）。
@@ -382,6 +477,37 @@ def _enforce_public_binding_policy() -> None:
 
 
 @app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """浏览器侧兜底（v20.3.2-beta · 外审 F-4 / DeepSeek P1-6）。
+
+    本服务自带 Web 控制台且常被放在反代之后，而全仓此前**一个安全头都没有**
+    —— 与它在鉴权、注入、交付硬化上的完成度极不相称，属于低垂果实。
+
+    CSP 必须**容纳现状**：前端有 inline style（`style-src 'unsafe-inline'`）。
+    先宽后紧 —— 一个把自家控制台打成白屏的 CSP 会被下一个人直接删掉，
+    那比没有 CSP 更糟。收紧 style-src 登记为 v20.4 候选（需先把 inline style 抽出）。
+    """
+    response = await call_next(request)
+    # 已存在的值不覆盖（反代可能已经加过，部署方的显式设置优先）
+    for name, value in (
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "DENY"),
+        ("Referrer-Policy", "no-referrer"),
+        ("Content-Security-Policy",
+         "default-src 'self'; "
+         "img-src 'self' data: https:; "
+         "style-src 'self' 'unsafe-inline'; "
+         "script-src 'self'; "
+         "connect-src 'self'; "
+         "frame-ancestors 'none'; "
+         "base-uri 'self'"),
+    ):
+        if name not in response.headers:
+            response.headers[name] = value
+    return response
+
+
+@app.middleware("http")
 async def _require_credentials(request: Request, call_next):
     if not _auth_enabled():
         # v20.2.4（外审 F-01 第二道）：无凭据的实例**只服务回环**。
@@ -390,7 +516,8 @@ async def _require_credentials(request: Request, call_next):
         # `uvicorn --host 0.0.0.0` 里的 host 是 **uvicorn 自己的命令行参数**，
         # 环境变量 AIDUMEM_HOST 根本看不到它。所以这一道把判据换成**运行时
         # 事实**——请求是谁发来的。不管服务监听在哪，没配凭据就只招待本机。
-        if not _client_is_loopback(request):
+        _proxied = _request_via_proxy(request.headers) and not _trust_proxy_enabled()
+        if not _client_is_loopback(request) or _proxied:
             logger.critical(
                 "🛑 [Security] 拒绝非回环请求：本实例未配置任何凭据"
                 "（AIDUMEM_API_TOKEN 或 UI 口令），只服务回环。来源=%s 路径=%s",
@@ -400,9 +527,15 @@ async def _require_credentials(request: Request, call_next):
             return JSONResponse(
                 status_code=503,
                 content={
-                    "detail": "This instance has no credential configured and therefore "
-                              "serves loopback only. Set AIDUMEM_API_TOKEN (or a UI "
-                              "password) before exposing it beyond localhost.",
+                    "detail": (
+                        "This instance has no credential configured and therefore "
+                        "serves direct loopback only. Set AIDUMEM_API_TOKEN (or a UI "
+                        "password) before exposing it beyond localhost. "
+                        "If this request arrived through a trusted reverse proxy on "
+                        "the same host, the proxy hop is what was refused: configure "
+                        "a credential, or set AIDUMEI_TRUST_PROXY=1 to declare the "
+                        "proxy trusted."
+                    ),
                     "code": "no_credential_public_access_denied",
                 },
             )
@@ -692,6 +825,7 @@ def main():
     # v20.2.4（F-01）：与 lifespan 共用**同一个**门禁实现 —— 两份拷贝
     # 早晚会长歪一份，而长歪的那份恰好是没人跑的那条路。
     _enforce_public_binding_policy()
+    _enforce_single_process_policy()
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

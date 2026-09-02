@@ -1303,15 +1303,28 @@ def reconcile_startup() -> Dict[str, Any]:
             # v20.0：重放必须恢复完整作用域。payload 里的 bank_id 是权威值
             # （v19 旧条目没有该键，回落到条目字段再回落 default）。
             replay_bank = ent.payload.get("bank_id") or ent.bank_id or DEFAULT_BANK_ID
+            # 🔴v20.3.2-beta（外审 P1-3）：**重放完必须闭合原条目。**
+            # cascade_delete_* 内部铸的是**新**的 wal_id、committed 的是那个新 id；
+            # 原条目 ent.wal_id 从来没人标过。于是它永久 pending：每次重启重放一次、
+            # WAL 只增不减、report["recovered"] 是假账、/health 的 WAL 水位失真。
+            # 级联删除幂等，所以这不是数据损坏，而是**账本永不收敛** ——
+            # 一个报告「已恢复」却没闭合的账本，比没有账本更坏。
             if ent.operation == "delete":
                 mid = ent.payload.get("memory_id")
                 if mid:
                     cascade_delete_memory(mid, user_id=ent.user_id, bank_id=replay_bank)
+                    wal.mark_status(ent.wal_id, "committed")
                     report["recovered"] += 1
+                else:
+                    # 没有 memory_id 的 delete 条目无法重放，也不许留在 pending 里
+                    wal.mark_status(ent.wal_id, "failed",
+                                    error="delete entry carries no memory_id")
+                    report["failed"] += 1
             elif ent.operation == "delete_all":
                 # WAL 条目的存在即证明原调用已通过 confirm 闸门；
                 # 重放时补 confirm=True，否则 default 用户的恢复会永远失败。
                 cascade_delete_all(user_id=ent.user_id, confirm=True, bank_id=replay_bank)
+                wal.mark_status(ent.wal_id, "committed")
                 report["recovered"] += 1
             else:
                 # 记录为无法自动决议的写入，标记 failed 供运维审计
@@ -1319,6 +1332,12 @@ def reconcile_startup() -> Dict[str, Any]:
                 report["failed"] += 1
         except Exception as err:
             logger.error("Reconcile 恢复失败 wal_id=%s: %s", ent.wal_id, err)
+            # 失败也要闭合：留在 pending 里等于下次重启再炸一遍，而且账本永不收敛。
+            # 标 failed 供运维审计（与 else 支的处置一致）。
+            try:
+                wal.mark_status(ent.wal_id, "failed", error=f"replay failed: {err}")
+            except Exception as mark_err:
+                logger.error("Reconcile 无法标记 wal_id=%s: %s", ent.wal_id, mark_err)
             report["failed"] += 1
 
     return _finish_reconcile(report)

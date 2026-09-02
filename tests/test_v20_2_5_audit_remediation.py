@@ -181,8 +181,20 @@ class TestA1AppliedSummaryScope:
 # NameError，被外层 except 吞掉，于是那段读 manifest 的配置逻辑**从来没成功
 # 执行过**，一直走兜底值。工具能抓的错，不该靠人眼和运气。
 
-_RUFF_TARGETS = ["ducky/", "api_server.py", "mcp_server.py", "scripts/", "conftest.py"]
-_F841_BASELINE = 9        # 存量「算了不用」；新增请优先修，确实要留就改这个数并写明理由
+# 🔴v20.3.2-beta（外审 F-2）：**射程加 tests/**。
+# 本仓已三次总结「守卫的世界模型落后于它守的现实」；这是**第四种形态：
+# 守卫的地理射程落后于缺陷的实际分布**。tests/ 从来不在静态关射程里，
+# 于是一个真实 F821（test_first_run_experience.py:220 的 `lambda: conn`，
+# conn 未定义、靠惰性求值躲过）在逃 —— 而守卫 docstring 明写「F821 是运行时
+# 会炸的形态，必须零命中」，此前只对生产代码兑现。
+_RUFF_TARGETS = ["ducky/", "api_server.py", "mcp_server.py", "scripts/", "conftest.py",
+                 "tests/"]
+# F841 登记制基线（v20.3.2-beta 外审 F-2：射程加 tests/ 后**拆分登记**）。
+# 拆开的理由：合成一个总数会让两侧互相遮蔽 —— 生产侧减 1、tests 侧加 1，
+# 总数不变而守卫全绿，那就又是一个「自洽但不属实」的数。
+_F841_BASELINE_PROD = 9     # 生产侧存量（ducky/ api_server mcp_server scripts conftest）
+_F841_BASELINE_TESTS = 14   # tests/ 侧存量（本轮首次纳入射程时的实测值）
+_F841_BASELINE = _F841_BASELINE_PROD + _F841_BASELINE_TESTS
 
 
 def ruff_available() -> bool:
@@ -238,6 +250,18 @@ def test_no_undefined_names_or_redefinitions():
         + "\n\nF821 的典型后果：那行一执行就 NameError，若被 except 吞掉，"
           "整段逻辑会静默失效而请求照常返回 200。"
     )
+
+
+def test_unused_locals_baseline_is_split_per_surface():
+    """两侧各自不许涨 —— 防「生产侧减 1、tests 侧加 1」把总数守卫骗过去。"""
+    prod = [h for h in _ruff("F841") if not h.startswith("tests/")]
+    tests = [h for h in _ruff("F841") if h.startswith("tests/")]
+    assert len(prod) <= _F841_BASELINE_PROD, (
+        f"生产侧 F841 从 {_F841_BASELINE_PROD} 涨到 {len(prod)}：\n  "
+        + "\n  ".join(prod[-5:]))
+    assert len(tests) <= _F841_BASELINE_TESTS, (
+        f"tests 侧 F841 从 {_F841_BASELINE_TESTS} 涨到 {len(tests)}：\n  "
+        + "\n  ".join(tests[-5:]))
 
 
 def test_unused_locals_stay_on_baseline():

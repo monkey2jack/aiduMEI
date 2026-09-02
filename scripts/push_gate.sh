@@ -15,7 +15,7 @@ $PY -m pytest tests/ -q > /tmp/g_t.log 2>&1 || fail "测试关未过：$(tail -1
 # 本版就抓到一条被 except 吞了很久的）、F811 重复定义。F841「算了不用」走
 # 登记制（tests 里的基线守卫），不在这里阻塞：存量里混着无害残留，
 # 一次全拦会让人绕过整道关。
-$PY -m ruff check ducky/ api_server.py mcp_server.py scripts/ conftest.py \
+$PY -m ruff check ducky/ api_server.py mcp_server.py scripts/ conftest.py tests/ \
     --select F821,F811 --output-format concise > /tmp/g_ruff.log 2>&1 \
     || fail "静态关未过（F821/F811 是运行时会炸的形态）：$(head -3 /tmp/g_ruff.log | tr '\n' ' ')"
 echo "  ✅ 静态关：F821/F811 零命中"
