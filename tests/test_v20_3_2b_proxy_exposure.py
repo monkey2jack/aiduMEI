@@ -18,7 +18,6 @@
 声明 AIDUMEI_TRUST_PROXY。不采信 XFF 的**值**，只采信它的**存在**——
 存在即证明「这个请求经过了一跳」，而无凭据实例不该服务任何经过跳转的请求。
 """
-import importlib
 import os
 
 import pytest
@@ -30,12 +29,29 @@ def bare_app(tmp_path, monkeypatch):
     """零凭据实例：自动生成口令，不设 token，不设 UI 口令。"""
     monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path / "d"))
     monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "l"))
+    # ⚠️ 顺序有讲究：api_server 在 **import 期**跑 _bootstrap_env_file() 读 .env，
+    # 会把部署方的 AIDUMEM_API_TOKEN / AIDUMEM_UI_PASSWORD 灌回 os.environ。
+    # 第一版把 delenv 放在 import 之前 —— 于是在生产机上，**首次 import 的那一个
+    # 参数化用例**被 .env 覆盖成「有凭据」而 ERROR，后 8 个（import 已缓存）却通。
+    # 一个只在「第一个用例」上红的守卫最难查，所以清环境必须在 import 之后。
+    import api_server as A  # noqa: F401  (先 import，让 .env 该做的副作用先发生)
+    # 口令哈希文件的路径由 password_hash_path() 决定，而 DATA_DIR 在 import 期
+    # 就固化了 —— 只 setenv 是不够的（「配置生效三查」：改完要查**实际生效值**）。
+    # 在生产机上跑时，宿主自己的 data/.ui_password_hash 带 source=user，
+    # 于是 _auth_enabled() 恒 True，本夹具的前提当场破掉（第一版就是这样在
+    # 生产实机上 ERROR 的 —— 那是断言在**正确地拒绝在错误的世界里跑**）。
+    # 所以这里把路径显式钉到 tmp：测试自己造世界，不依赖宿主机形态。
     for k in ("AIDUMEM_API_TOKEN", "AIDUMEM_UI_PASSWORD", "AIDUMEI_TRUST_PROXY"):
         monkeypatch.delenv(k, raising=False)
-    import api_server as A
-    importlib.reload(A) if False else None
+
+    import ducky.security.auth as _auth
+    _hash_path = tmp_path / "ui_password_hash"
+    monkeypatch.setattr(_auth, "password_hash_path", lambda: str(_hash_path))
     A._ensure_ui_password()
-    assert A._auth_enabled() is False, "夹具前提破了：这个实例本该是无凭据形态"
+    assert _hash_path.exists(), "自动生成口令没落到夹具指定的路径 —— 世界没造对"
+    assert A._auth_enabled() is False, (
+        "夹具前提破了：这个实例本该是无凭据形态（source=auto 不启门禁）"
+    )
     return A
 
 
