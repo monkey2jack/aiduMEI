@@ -607,6 +607,78 @@ def get_memory():
 
 _CONFIG_EXAMPLE = "mem0_config_local.json.example"
 
+# ── 「后端未配置」与「后端配了但坏了」必须是两件事 ──────────────────────────
+#
+# 🔴v20.3.2（第 10 轮外部审计 P0-1）：`get_memory()` 把**所有**初始化失败都包成
+# 同一个 `HTTPException(503)` —— 配置文件不存在是 503，凭据无效是 503，
+# Qdrant 连不上也是 503。于是删除链若拿「是不是 503」判「未启用」，
+# 就等于宣布「凡是后端出问题，都当它没启用」——
+#
+#     嵌入服务抖动 → 删除被当成未启用 → 其余层删干净、向量点留着 →
+#     调用方收到 committed/200，而**已删内容仍可召回**。
+#
+# 那正是 F-02 的原病，被一次「修复」重新引进来。`bank_contract.is_legacy_schema_error`
+# 的 docstring 早就把这条道理写过了（「租户隔离要是能被一次瞬时故障摘掉，它就不叫隔离」），
+# 这次是同一个道理换了个病因重演。
+#
+# 所以判据**不看异常、不看状态码，看世界的事实**：配置文件在不在、里面是不是真凭据。
+# 这份事实同时供删除链与 e2e 冒烟使用 —— 占位符的口径全仓只此一处。
+PLACEHOLDER_HINTS = ("your_", "replace_", "change_me", "<", "xxx", "placeholder")
+
+
+def is_placeholder_key(value: str) -> bool:
+    """凭据值是否仍是样例占位符。"""
+    normalized = (value or "").strip().lower()
+    return not normalized or any(h in normalized for h in PLACEHOLDER_HINTS)
+
+
+def mem0_backend_configured() -> tuple[bool, str]:
+    """向量/LLM 后端是否**真的被配置过**（读世界，不读异常）。
+
+    返回 (configured, reason)。三种情形必须分开：
+      · 配置文件不存在 → 未启用（部署方还没配，不是故障）
+      · 配置文件存在但凭据仍是占位符 → 未启用（配了个样例，等于没配）
+      · 配置文件存在且凭据是真的 → 已启用；此后任何失败都是**真故障**，不许降级
+    """
+    import json as _json
+
+    path = mem0_config_path()
+    if not os.path.isfile(path):
+        return False, "config_file_missing"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            cfg = _json.load(fh)
+    except Exception as exc:
+        # 文件在但读不了/不是合法 JSON：这是**部署坏了**，不是未配置。
+        # 报已启用，让上层按真故障处理 —— 宁可红一次，不许悄悄放行。
+        logger.warning("mem0 配置文件存在但解析失败（按真故障处理，不降级）: %s", exc)
+        return True, "config_unreadable"
+
+    def _section_keys(*names):
+        for n in names:
+            sec = cfg.get(n)
+            if isinstance(sec, dict):
+                k = sec.get("api_key") or sec.get("openai_api_key") or ""
+                return str(k)
+        return ""
+
+    embed_key = _section_keys("embedder", "embedding", "embeddings")
+    llm_key = _section_keys("llm", "language_model")
+    if is_placeholder_key(embed_key) and is_placeholder_key(llm_key):
+        return False, "placeholder_credentials"
+    return True, "configured"
+
+
+def is_backend_not_configured(exc: BaseException) -> bool:
+    """这个异常是否源于「后端从未被配置」—— 降级唯一允许的触发原因。
+
+    与 `is_legacy_schema_error` 同一条纪律：**降级前先验明病因**。
+    这里不看异常内容（503 的成因有四种，其中三种是真故障），
+    只看世界的事实：配置文件在不在、凭据是不是真的。
+    """
+    configured, _reason = mem0_backend_configured()
+    return not configured
+
 
 def _mem0_unavailable_detail(exc: Exception) -> str:
     """把 mem0 初始化失败翻译成**调用方能照着做**的一句话。

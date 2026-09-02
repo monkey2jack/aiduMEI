@@ -248,6 +248,16 @@ def register_v8_routes(app: FastAPI) -> None:
             return {"status": "error", "detail": str(e)}
         except ImportError:
             raise HTTPException(503, "Instinct Graduation 模块未就绪")
+        # 🔴v20.3.2（第 10 轮审计 P0-2）：**先透传 HTTPException**。
+        # `get_memory()` 在后端未就绪时抛的是 HTTPException(503)，而它是
+        # Exception 的子类 —— 没有这一句就会被下面的 except 接住、重包成 500。
+        # 结果错误正文里明明白白写着「原始错误：503」，状态码却是 500：
+        # 调用方无法区分「服务还没配好（可重试）」与「服务端坏了（要人查）」。
+        # 这个惯用法仓里已有 6 处（crud.py:182、routes_octopus.py:99 等），
+        # crud.py 那处的注释记的就是同一课（v19.4.1 P1-4 注入拦截 400 被吞成 500）。
+        # **惯用法存在不等于被一致套用** —— 漏的那一处恰在新用户必经之路上。
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"graduate 失败: {e}")
             raise HTTPException(500, api_error_detail(e))
