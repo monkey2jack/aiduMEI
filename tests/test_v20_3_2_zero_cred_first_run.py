@@ -434,6 +434,7 @@ def test_incomplete_or_flat_config_is_not_silently_treated_as_unconfigured(tmp_p
     """错误/不完整形状必须进入初始化失败，不能因 key 看起来像样例就跳过向量层。"""
     import ducky.mem0_runtime as mr
 
+    monkeypatch.setattr(mr, "BASE_DIR", str(tmp_path))
     cases = [
         {
             "embedder": {"api_key": "YOUR_EMBEDDING_API_KEY"},
