@@ -1174,7 +1174,11 @@ def test_yellow_a_readme_claims_are_consistent():
     # 测试数字：README 必须同时给出两个环境的数字并说明差异来源
     readme = pathlib.Path(_REPO_ROOT, "README.md").read_text(encoding="utf-8")
     assert "12 跳过" in readme, "README 未说明跳过项的成因"
-    for _row in ("独立开发机", "生产部署树", "全轴齐备"):
+    # 行名跟着现实走（v20.3.2）：「生产部署树」在 v20.3 已改名为「生产机沙箱」——
+    # 旧名字与它自己的括注互相矛盾（CHANGELOG 记着这件事）。这里若继续找旧名，
+    # 守卫就会在一个**已被有意改掉**的措辞上亮红，看起来像文档错、其实像守卫过期。
+    # 新增「基础安装路径」为一等公民行：新用户实际得到的就是它。
+    for _row in ("独立开发机", "生产机沙箱", "全轴齐备", "基础安装路径"):
         assert _row in readme, f"README 测试数字表缺「{_row}」这一行 —— 未区分运行环境"
     # 🔴v20.0：「全轴齐备」那一行原本是推导值，这里曾断言 README 必须写「从未实测」。
     #
@@ -1251,7 +1255,13 @@ def _sandbox_gated_cases():
     spec.loader.exec_module(census)
 
     counts = census._measured_axis_counts()
-    total = _git_gated_cases()
+    # **不再减 git 那条轴**（v20.3.2 修正世界模型）。
+    # 上面那段 docstring 记的是「加轴必须回来登记」，这次落后的正是它自己：
+    # 沙箱形态从「白名单拷贝、无 `.git`」换成了「bundle clone、有 `.git`」
+    # （v20.3.1 起为了跑 git 相关守卫而改），git 轴于是**不再缺席**。
+    # 上一版把 git 的 1 条继续算进来，推导值比现实少 1 —— 守卫报「README 写错了」，
+    # 而 README 是对的。**这是本仓第三次「守卫的世界模型落后于它守的现实」。**
+    total = 0
     for key in _SANDBOX_ABSENT_AXES:
         assert key in counts, (
             f"沙箱缺席轴 {key!r} 不在普查登记表里 —— "
@@ -1363,6 +1373,11 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 这一格从前是「待复测 + 推导值」，推导值恰好等于实测值 —— 但推导对了不等于
     # 测过了；换树必须重测后改这里。
     MEASURED_ALL_AXES = (1573, 0)
+    # v20.3.2（第 10 轮审计 P0-3）：**基础路径数字进射程**。
+    # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，
+    # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
+    # 现在两套环境各配各的命令、各报各的数，且必须同屏。
+    MEASURED_BASIC = (1550, 31)   # 2026-09-02 干净 venv 实测（Python 3.12，只装 requirements*）
     sandbox_row_re = re.compile(
         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*(\d{4}-\d{2}-\d{2})\s*生产机实测\*\*")
 
@@ -1376,15 +1391,13 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README.md", "表格·独立开发机",
          r"\|\s*独立开发机\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*",
          (passed, hermes_cases)),
-        ("README.md", "表格·生产机沙箱(实测形态)",
-         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}\s*生产机实测\*\*",
-         MEASURED_SANDBOX),
+
         # 双形态：已实测 → 断言实测值；未实测 → 允许「待复测」但必须带推导值与基线。
         # 顺序不能反：先试实测形态，红才回落待复测形态 —— 反过来会让旧日期
         # 一直冒充新结论（数字与日期是一体的）。
-        ("README.md", "表格·全轴齐备(实测形态)",
-         r"全轴齐备\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}\s*生产机实测\*\*",
-         MEASURED_ALL_AXES),
+        ("README.md", "表格·基础路径(实测形态)",
+         r"\|\s*基础安装路径\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}[^\|]*实测\*\*",
+         MEASURED_BASIC),
         ("README.md", "正文·为什么要把 X 和 Y 都写出来",
          r"为什么要把\s*(\d+)\s*和\s*(\d+)\s*都写出来", (passed, MEASURED_SANDBOX[0])),
         ("README.md", "正文·复现命令（无宿主）",
@@ -1397,14 +1410,14 @@ def test_doc_numbers_are_consistent_across_both_readmes():
         ("README_EN.md", "table·Clean dev machine",
          r"\|\s*Clean dev machine\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*",
          (passed, hermes_cases)),
-        ("README_EN.md", "table·Sandbox(measured form)",
-         r"\|\s*Sandbox on the production box\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
-         MEASURED_SANDBOX),
-        ("README_EN.md", "table·All axes(measured form)",
-         r"All axes present\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
-         MEASURED_ALL_AXES),
+
+        ("README_EN.md", "table·Basic install path(measured form)",
+         r"\|\s*Basic install path\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
+         MEASURED_BASIC),
+        # v20.3.2：这句话现在领起的是「完整环境 vs 基础路径」这一对 ——
+        # 对新人更有意义的一对（他们装的就是基础路径）。沙箱数另有专行守着。
         ("README_EN.md", "prose·Why report both X and Y",
-         r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, MEASURED_SANDBOX[0])),
+         r"Why report both\s*(\d+)\s*and\s*(\d+)", (passed, MEASURED_BASIC[0])),
         ("README_EN.md", "prose·repro command (no host)",
          r"no host:\s*(\d+)\s*passed,\s*(\d+)\s*skipped", (passed, hermes_cases)),
         ("README_EN.md", "prose·repro command (with host)",
@@ -1446,6 +1459,58 @@ def test_doc_numbers_are_consistent_across_both_readmes():
          r"actually prints\s*(\d+)\s*passed,\s*(\d+)\s*skipped",
          MEASURED_SANDBOX),
     ]
+
+    # 沙箱行与全轴行：**双形态**，实测优先。
+    # （v20.3.2 把沙箱行也纳入同一套逻辑：换树后旧实测值即失效，
+    #   要么重测、要么显式写「待复测 + 推导值」，含糊形态一律红。）
+    # 顺序不能反 —— 先试实测形态，红才回落待复测形态；反过来会让旧日期
+    # 一直冒充新结论（数字与日期是一体的，SOP 铁律 18）。
+    for _label, _measured, _pat_zh, _pat_en, _pend_zh, _pend_en in [
+        ("生产机沙箱", MEASURED_SANDBOX,
+         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}\s*生产机实测\*\*",
+         r"\|\s*Sandbox on the production box\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
+         r"生产机沙箱\s*\|\s*\*\*待复测\*\*\s*（按轴推导值为\s*(\d+)",
+         r"Sandbox on the production box\s*\|\s*\*\*pending re-measurement\*\*[^\|]*axis-derived\s*(\d+)"),
+    ]:
+        for _f in ("README.md", "README_EN.md"):
+            _t = _read(_f)
+            _pat = _pat_zh if _f.endswith("README.md") else _pat_en
+            _ppat = _pend_zh if _f.endswith("README.md") else _pend_en
+            _m = re.search(_pat, _t)
+            if _m:
+                assert tuple(int(g) for g in _m.groups()) == _measured, (
+                    f"{_f}「{_label}」写的是 {tuple(int(g) for g in _m.groups())}，"
+                    f"实测应为 {_measured}")
+            else:
+                _pd = re.search(_ppat, _t)
+                assert _pd, (
+                    f"{_f} 的「{_label}」行既非实测形态也非待复测形态 —— 换树后旧数字必须重测或明说")
+                assert int(_pd.group(1)) == actual_total - git_cases, (
+                    f"{_f}「{_label}」推导值 {_pd.group(1)} 与当前轴表算出的 "
+                    f"{actual_total - git_cases} 不符")
+
+    for _f, _zh, _en, _pat_zh, _pat_en in [(
+        "README.md", "全轴齐备", "All axes present",
+        r"全轴齐备\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*\d{4}-\d{2}-\d{2}\s*生产机实测\*\*",
+        r"All axes present\s*\|\s*(\d+)\s*passed\s*·\s*\*\*(\d+)\s*skipped\*\*[^\|]*\*\*[^*]*\d{4}-\d{2}-\d{2}[^*]*\*\*",
+    )]:
+        _t = _read(_f)
+        _m = re.search(_pat_zh if _f.endswith("README.md") else _pat_en, _t)
+        if _m:
+            assert tuple(int(g) for g in _m.groups()) == MEASURED_ALL_AXES, (
+                f"{_f}「{_zh if _f.endswith('README.md') else _en}」写的是 "
+                f"{tuple(int(g) for g in _m.groups())}，实测应为 {MEASURED_ALL_AXES}")
+        else:
+            # 允许「待复测」形态，但必须带推导值（=当前收集数）与上一实测基线
+            _pend = re.search(
+                r"全轴齐备\s*\|\s*\*\*待复测\*\*\s*（按轴推导值为\s*(\d+)/0", _t) \
+                if _f.endswith("README.md") else re.search(
+                r"All axes present\s*\|\s*\*\*pending re-measurement\*\*[^\|]*axis-derived\s*(\d+)/0", _t)
+            assert _pend, (
+                f"{_f} 的全轴行既不是「实测+日期」形态也不是「待复测+推导值」形态 —— "
+                "要么去测，要么把推导值与上一基线写出来，不许含糊")
+            assert int(_pend.group(1)) == actual_total, (
+                f"{_f} 全轴行的推导值 {_pend.group(1)} ≠ 当前收集数 {actual_total}")
 
     for fname, label, pattern, expected in checks:
         m = re.search(pattern, _read(fname))
