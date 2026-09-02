@@ -39,6 +39,7 @@ v20.0 之前，README 里写着一句绝对话：
 
 import ast
 import functools
+import importlib.util
 import io
 import pathlib
 import re
@@ -151,8 +152,10 @@ _AXES = (
         "file": "test_v20_2_autoshift.py",
         "scope": "callsite",
         # 同一用例两个跳过点同属本轴：依赖缺失（importorskip）与
-        # 模型文件未部署（用例内 skip）——都是「备胎不在场」。
-        "match": r'importorskip\("fastembed"|模型文件未部署',
+        # 模型未就绪（用例内 skip）——都是「备胎不在场」。
+        # v20.3.1：跳过文案改成能自曝真因（缓存目录 + 是否设了 env），
+        # 锚串跟着换；这类「文案改了锚串没跟上」正是这条守卫存在的意义。
+        "match": r'importorskip\("fastembed"|本地嵌入模型未就绪',
         "doc_zh": "`fastembed` 已安装",
         "doc_en": "`fastembed` installed",
     },
@@ -528,9 +531,16 @@ def test_every_registered_skip_axis_has_a_probe():
         pass  # 导不进来 = 无从判定，按不齐备处理（宁可少报齐备）
 
     try:
-        import fastmcp
-        present.append("mcp_extra")
-    except ImportError:
+        # 问产品真正 import 的那个模块路径，不问同名巧合。
+        # 上一版这里写的是 `import fastmcp` —— 那是 PyPI 上另一个独立项目
+        # （fastmcp 包），而 mcp_server.py:153 用的是 `mcp.server.fastmcp`。
+        # 后果不是"少报一条轴"这么简单：装了 mcp 也永远报缺席，这条轴
+        # 于是**在任何机器上都不可能齐备** —— 探测器接错了线，比没接更坏，
+        # 因为它看起来在工作。用 find_spec 而非真 import：判路径存在性，
+        # 不执行 mcp_server（它会建 FastMCP 实例，有副作用）。
+        if importlib.util.find_spec("mcp.server.fastmcp") is not None:
+            present.append("mcp_extra")
+    except (ImportError, ValueError):
         pass
 
     probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
