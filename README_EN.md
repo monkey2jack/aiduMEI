@@ -813,7 +813,7 @@ python -m compileall ducky api_server.py mcp_server.py
 | Total cases | **1573** (measured via `pytest --collect-only`, 2026-09-01) |
 | Clean dev machine | 1561 passed · **12 skipped** — no host Hermes source, git worktree present (**measured 2026-09-01**, v20.3.1 tree) |
 | Sandbox on the production box | 1568 passed · **5 skipped** — **measured on the production box, 2026-09-01** (sandbox with Hermes host axis + local_embed_cache, three consecutive rounds; skips individually attributed) |
-| All axes present | **pending re-measurement** (axis-derived 1573/0; the 1568+5 sandbox is not an all-axes shape — no `.git`, no lint tooling. Previous measured baseline 1499/0, 2026-08-28) |
+| All axes present | 1573 passed · **0 skipped** — **measured on the production box, 2026-09-02** (five axes satisfied: `.git` + `ruff` + `mcp` extra + host source + backup model cache; 80.7s). Matches the axis-derived 1573/0 — this time the derivation was promoted to a measurement |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
@@ -830,12 +830,12 @@ python -m compileall ducky api_server.py mcp_server.py
 | # | Environment | Passed | Skipped | Attribution |
 |---|-------------|-------:|--------:|-------------|
 | ① | Clean dev machine · full extras | 1561 | 12 | host Hermes source absent ×12 (measured 2026-09-01) |
-| ② | Fresh clone · **no config** · `.git` present (≈ someone seeing this project for the first time) | 1497 | 2 | `ruff` not installed ×2 |
-| ③ | Fresh clone · **with production config** · `.git` present (rerank reachable) | 1497 | 2 | `ruff` not installed ×2 |
+| ② | Fresh clone · **no config** · `.git` present (≈ someone seeing this project for the first time) | 1497 | 2 | `ruff` not installed ×2 — **2026-08-29 baseline (the 1499-total era)**, superseded by ④⑤ |
+| ③ | Fresh clone · **with production config** · `.git` present (rerank reachable) | 1497 | 2 | `ruff` not installed ×2 — **2026-08-29 baseline (the 1499-total era)**, superseded by ④⑤ |
 | ④ | Production sandbox · with config · host source · local embed cache | 1568 | 5 | measured 2026-09-01 (three consecutive rounds) |
-| ⑤ | All axes present · with config · `.git` · `ruff` side-loaded | **pending** | **0** | — |
+| ⑤ | All axes present · with config · `.git` · `ruff` · `mcp` extra · host · model cache | **1573** | **0** | measured 2026-09-02 on the production box (five axes) |
 
-Measured rows ①–④ satisfy `passed + skipped = 1573`; unmeasured rows must be re-measured before their numbers are filled in.
+Measured rows ①④⑤ satisfy `passed + skipped = 1573` (②③ are the 1499-total-era baseline, dated as such); unmeasured rows must be re-measured before their numbers are filled in.
 **A difference that cannot be attributed means there is still a defect that only shows up when you change
 environments.**
 
@@ -873,10 +873,13 @@ survive fusion).
 > ```
 
 > **Why report both 1561 and 1568**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. **both 1561 and 1570 are axis-derived values for the current tree**; 1573 is the current collected total, and the all-axes number must be re-measured on the production box before it can be claimed — each number's environment is stated in the table above. The previous sandbox
-> measurement was 859, on the v20.0 committed tree when the total was 860; for several releases in between this
-> row was axis-derived. For every number, say whether it was measured or derived.
-> Always state the environment alongside a test count.
+> and quoting only one of them misleads the reader. Every figure below is now a measurement, and each
+> row names its environment: 1561 + 12 on a clean dev machine (2026-09-01), 1568 + 5 in the production
+> sandbox (2026-09-01, three rounds, same values), 1573 + 0 with all five axes present (2026-09-02,
+> production box, dedicated test venv carrying the `mcp` extra). For several releases in between the
+> last two rows were axis-derived — the earlier real sandbox measurement was 859, on the v20.0 committed
+> tree when the total was 860. **For every number, say whether it was measured or derived**, and always
+> state the environment alongside a test count.
 >
 > **Skips have more than one axis** (corrected by measurement in v20.0): this section used to recognise
 > only the host-Hermes axis, and therefore treated "all green" as something you get simply by installing
@@ -899,11 +902,17 @@ survive fusion).
 > | `ruff` installed | 2 |
 | `mcp` extra installed | 2 | `tests/test_v20_2_5_audit_remediation.py` (the fourth gate's real-defect rules F821/F811/F841; when absent it **skips honestly instead of silently reporting no hits** — the first implementation did exactly that and the sandbox run caught it: the production venv has no ruff, so the guard was permanently green. push_gate still blocks on it) |
 >
-> A dev machine lacks the first → 1561 + 12. The sandbox on the production box (host + local embed cache, no
-> `.git`-free sandbox with host + local embed cache) → 1568 + 5. **Neither partial environment produces 1573 all green** — the
-> is a derived number. The previous README claimed it was "verified on production", and the very
-> production run it cited is what falsified it. This paragraph stays as a reminder: **an absolute claim
-> must survive the measurement it cites.**
+> A dev machine lacks the first → 1561 + 12. The sandbox on the production box (host + local embed cache,
+> no `.git`) → 1568 + 5. All five axes present (`.git` + `ruff` + the `mcp` extra + host + model cache)
+> → **1573 + 0**, measured on the production box 2026-09-02.
+>
+> This row's history is worth keeping. An earlier README called it "verified on production" while it was
+> only a derivation — and the very production run it cited is what falsified it. It was then pinned as
+> "derived, never measured" by an assertion designed to go red the day it actually became true. It went
+> red on 2026-08-24, and that version swapped in a real measurement (1112/0, then 1200/0 on 2026-08-25,
+> when the axis table had nine rows). The table has since grown to thirteen axes, and for a while the
+> all-axes shape was again only a derivation — until this time, when a dedicated test venv carrying the
+> `mcp` extra was built just to measure it. **An absolute claim must survive the measurement it cites.**
 >
 > ⚠️ **That row is about the sandbox, not the live deployed tree** (found while surveying before
 > the v20.0 deployment): the deployed tree still carries a stale `.git` from an old clone — it is updated
