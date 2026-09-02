@@ -295,7 +295,18 @@ class TestLocalEmbed:
         pytest.importorskip("fastembed", reason="fastembed 未安装：备胎真模型测试跳过")
         import ducky.local_embed as le
         if not le.is_local_embed_available():
-            pytest.skip("本地嵌入模型文件未部署（fetch_local_embed_model.py）")
+            # 跳过原因必须能自曝真因：模型不在默认路径时，最常见的原因是部署方
+            # 用 env 指定了缓存目录（生产就是这么装的），而测试进程没继承它 ——
+            # 光说"未部署"会把人引去重跑 fetch，而真正该查的是 env。
+            _cache = le.local_embed_cache_dir()
+            _hint = ("未设 %s，查的是默认路径" % le._CACHE_ENV
+                     if not os.environ.get(le._CACHE_ENV) else "已显式指定")
+            # 锚串必须落在 pytest.skip( 那一行上：轴登记表按跳过点所在行匹配，
+            # 换行写就匹配不到 —— 这条守卫会立刻红，红得对。
+            pytest.skip("本地嵌入模型未就绪：缓存目录 %s（%s）里没有模型文件。"
+                        "模型装在别处时，跑测试请带上 %s=<该目录>；否则跑 "
+                        "scripts/fetch_local_embed_model.py 部署。"
+                        % (_cache, _hint, le._CACHE_ENV))
         va, vb, vc = le.local_embed_texts(
             ["网关端口是多少", "网关服务监听的端口号", "清晨的手冲咖啡"])
         assert len(va) == le.LOCAL_EMBED_DIM
