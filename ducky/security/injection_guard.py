@@ -13,6 +13,8 @@ import os
 
 from ducky.env_config import int_env
 import re
+import threading
+import time
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -59,10 +61,19 @@ _RAW_INJECTION_PATTERNS = re.compile(
     r"|your\s+(new|real|true|actual)\s+system\s+(prompt|instruction)\s+is"
     # 系统级标记与特殊 Token
     r"|<\|?im_start\|?>|<\|?im_end\|?>|<\|?endoftext\|?>"
-    r"|<\|?system\|?>|<\|?user\|?>|<\|?assistant\|?>"
-    r"|\[system\s*(prompt|message|instruction)?\]"
-    r"|\[/?(system|prompt|instruction)\]"
-    r"|<\s*(system|prompt|instruction)\s*>"
+    # 🔴v20.3.2-beta（外审 P1-B）：ChatML 分隔符的**管道符是必需的**。
+    # 原式 `<\|?system\|?>` 把管道设为可选，于是裸 `<system>`（XML 标签，
+    # agent 常存的内容）也命中。`<|system|>` 是真攻击向量，保留；
+    # 裸 `<system>` 交给下面的「必须词组共现」规则判。
+    r"|<\|\s*(system|user|assistant)\s*\|>"
+    # 🔴v20.3.2-beta（外审 P1-B）：**方括号/尖括号类必须词组共现。**
+    # 原式的 `?` 让词组可选，于是**裸 `[system]` 即命中** —— 而 `[section]` 是
+    # INI/TOML 语法、`<tag>` 是 XML、`[text](url)` 是 Markdown，恰好都是 agent
+    # 最常存的内容。实测 14 条真实载荷里 7 条被误拒，包括「真实错误日志」。
+    # 收窄成必带指令词（system prompt / system instruction / …），裸标记放行。
+    r"|\[\s*(system|assistant|developer)\s+(prompt|message|instruction)s?\s*\]"
+    r"|\[/?\s*(system|assistant|developer)\s+(prompt|message|instruction)s?\s*\]"
+    r"|<\s*/?\s*(system|assistant|developer)\s+(prompt|message|instruction)s?\s*>"
     # 中文指令覆盖与角色劫持
     r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部)*(的)?(所有|全部|之前|先前|历史)*(系统)?(指令|指示|提示词)"
     r"|忘记(所有|一切|你学到的|你的记忆)*(的)?(系统)?(指令|提示词)"
@@ -117,14 +128,59 @@ def check_prompt_injection(content: str) -> Tuple[bool, str]:
             return True, f"Layer 2 normalized pattern matched: '{norm_match.group(0)[:40]}'"
 
     # 3. 重复行轰炸检测
-    lines = [line.strip().lower() for line in content.split("\n") if line.strip()]
+    #
+    # 🔴v20.3.2-beta（外审 P1-B）：**先剔除结构性重复，再统计。**
+    # 原判据 `len>6 and count>=3 and ratio>0.3` 把 Markdown 表格分隔行、
+    # 日志片段、CSV 表头一律判为攻击 —— 7 行 `|---|---|` 是任何一张表格的组成部分，
+    # 3 行相同的 ERROR 是任何一段真实日志的常态。
+    # 攻击要的是**篇幅填充**（用重复把上下文挤爆），3 行重复不构成任何成本，
+    # 所以阈值抬到 count>=10 且 ratio>0.6，并剔除下列结构行：
+    #   · 纯分隔/边框行（`|---|---|`、`====`、`- - -`）
+    #   · 纯标点/空白行
+    # 剔除后若正文只剩几行，也就没有「填充」可言。
+    _STRUCTURAL = re.compile(r"^[\s|:+_=~*#.\-]*$")
+    _all = [line.strip().lower() for line in content.split("\n") if line.strip()]
+    lines = [ln for ln in _all if not _STRUCTURAL.match(ln)]
     if len(lines) > 6:
         counts = Counter(lines)
         most_common_line, count = counts.most_common(1)[0]
-        if count >= 3 and (count / len(lines)) > 0.3:
+        if count >= 10 and (count / len(lines)) > 0.6:
             return True, f"Layer 3 repeated line attack detected (repetition: {count}/{len(lines)})"
 
     return False, ""
+
+
+# ── 拒收计数（v20.3.2-beta · 外审 P1-B）────────────────────────────────
+#
+# 误拒率是这条防线**唯一需要盯的运营指标**，而它此前完全不可见：
+# 一条真实记忆被拒，调用方常把 400 当成「写过了」，表现为「存了就是搜不到」。
+# 没有计数就没人知道这事在发生。进程内滚动窗口，与 rate_guard 同口径
+# （单进程部署形态；跨实例聚合属 v21 多副本路线图，不在此处装样子）。
+_REJECT_WINDOW_SECONDS = 300
+_rejections: list[float] = []
+_reject_lock = threading.Lock()
+
+
+def _record_rejection() -> None:
+    now = time.time()
+    with _reject_lock:
+        _rejections.append(now)
+        cutoff = now - _REJECT_WINDOW_SECONDS
+        while _rejections and _rejections[0] < cutoff:
+            _rejections.pop(0)
+
+
+def rejection_stats() -> dict:
+    """近窗口内被拒收的记忆条数（供 /health 暴露）。"""
+    now = time.time()
+    with _reject_lock:
+        cutoff = now - _REJECT_WINDOW_SECONDS
+        recent = [t for t in _rejections if t >= cutoff]
+    return {
+        "rejected_total": len(recent),
+        "window_seconds": _REJECT_WINDOW_SECONDS,
+        "guard_mode": GUARD_MODE,
+    }
 
 
 def validate_and_sanitize_memory_content(content: str) -> Tuple[bool, str, Optional[str]]:
@@ -151,6 +207,7 @@ def validate_and_sanitize_memory_content(content: str) -> Tuple[bool, str, Optio
     is_injected, reason = check_prompt_injection(cleaned)
     if is_injected:
         if GUARD_MODE == "enforce":
+            _record_rejection()
             logger.warning(
                 "🛡️ [InjectionGuard] REJECTED prompt injection (len=%d): %s | preview: %s",
                 len(cleaned),

@@ -457,7 +457,11 @@ def session_end(session_id: str) -> str:
     Args:
         session_id: 要结束的会话标识
     """
-    result = _api_post("/session/end", {"session_id": session_id})
+    # 🔴v20.3.2-beta（外审 P1-5）：端点是 `def session_end(session_id: str)` ——
+    # 裸标量参数，FastAPI 从 **query** 绑定。发进 body 会恒 422。
+    # 同型缺陷在 ad3ba6c 已修过 scripts/agent_integration_check.py 一处，
+    # 这一处漏了 —— 「加完一处漏一处」。元守卫现在按 FastAPI 依赖图判绑定来源。
+    result = _api_post("/session/end", None, params={"session_id": session_id})
     return _ok(result)
 
 
