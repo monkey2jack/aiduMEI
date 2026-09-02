@@ -466,23 +466,27 @@ def _resolve_api_keys(cfg: dict) -> dict:
     cfg = copy.deepcopy(cfg)
     base = BASE_DIR
 
-    emb_key = cfg.get("embedder", {}).get("config", {}).get("api_key", "")
-    if emb_key == "__SF_KEY__" or not emb_key:
-        kp = os.path.join(base, ".sf_key")
-        if os.path.exists(kp):
-            with open(kp) as f:
-                cfg["embedder"]["config"]["api_key"] = f.read().strip()
+    emb_sec = cfg.get("embedder")
+    if isinstance(emb_sec, dict) and isinstance(emb_sec.get("config"), dict):
+        emb_key = emb_sec["config"].get("api_key", "")
+        if emb_key == "__SF_KEY__" or not emb_key:
+            kp = os.path.join(base, ".sf_key")
+            if os.path.exists(kp):
+                with open(kp) as f:
+                    emb_sec["config"]["api_key"] = f.read().strip()
 
-    llm_key = cfg.get("llm", {}).get("config", {}).get("api_key", "")
-    if llm_key == "__SF_KEY__" or llm_key == "__LLM_KEY__" or not llm_key:
-        kp = os.path.join(base, ".llm_key")
-        if os.path.exists(kp):
-            with open(kp) as f:
-                cfg["llm"]["config"]["api_key"] = f.read().strip()
+    llm_sec = cfg.get("llm")
+    if isinstance(llm_sec, dict) and isinstance(llm_sec.get("config"), dict):
+        llm_key = llm_sec["config"].get("api_key", "")
+        if llm_key == "__SF_KEY__" or llm_key == "__LLM_KEY__" or not llm_key:
+            kp = os.path.join(base, ".llm_key")
+            if os.path.exists(kp):
+                with open(kp) as f:
+                    llm_sec["config"]["api_key"] = f.read().strip()
 
     rerank_cfg = cfg.get("rerank")
-    if isinstance(rerank_cfg, dict):
-        rk = rerank_cfg.get("config", {}).get("api_key", "")
+    if isinstance(rerank_cfg, dict) and isinstance(rerank_cfg.get("config"), dict):
+        rk = rerank_cfg["config"].get("api_key", "")
         if rk == "__SF_KEY__" or not rk:
             kp = os.path.join(base, ".sf_key")
             if os.path.exists(kp):
