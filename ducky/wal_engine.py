@@ -474,52 +474,80 @@ def cascade_delete_memory(
         # 参数，直接调用会让拿到另一域 id 的请求越过 v20 作用域。因此先
         # 在同一作用域枚举并确认 id，再执行单条删除；枚举失败时宁可留
         # 向量孤儿，绝不把一个未验证的 id 交给全局删除原语。
+        mem = None
         try:
             from ducky.mem0_runtime import get_memory
             mem = get_memory()
-            _items, enumeration_ok = _scoped_vector_items(mem, scope)
-            scoped_ids = [
-                _vector_item_id(it) for it in _items
-                if isinstance(it, dict) and vector_item_in_bank(it, bank_id)
-            ]
-            scoped_ids = [i for i in scoped_ids if i]
-            if enumeration_ok and str(memory_id) in scoped_ids:
-                mem.delete(memory_id)
-                res["mem0_vector"] = True
-            elif enumeration_ok and _raw_hash:
-                # 🔴v20.2.5-b（实机冒烟 D1）：`raw-…` 句柄在 mem0 里**不是 id**
-                # —— `/add/raw` 走 `mem.add(infer=False)`，mem0 自己铸 UUID，
-                # 两者唯一的连接是 metadata.content_hash。此前这里只比 id，
-                # 于是这一层永远命不中，而删除照旧回 ok、原文继续可召回。
-                # 反查仍在**同一作用域的枚举结果内**做，一个未验证的 id 都不会
-                # 交给全局 delete 原语 —— 这条纪律不因为多了一种句柄而放宽。
-                _hits = _vector_ids_by_content_hash(_items, bank_id, _raw_hash)
-                for _vid in _hits:
-                    mem.delete(_vid)
-                res["mem0_vector"] = bool(_hits)
-                res["raw_handle_resolved_ids"] = _hits
-                if not _hits:
-                    logger.info(
-                        "raw 句柄在本域向量里没有对应点 user=%s bank=%s handle=%s",
-                        user_id, bank_id, memory_id,
-                    )
-            elif enumeration_ok:
-                logger.info(
-                    "向量 id 不属于请求作用域，跳过删除 user=%s bank=%s id=%s",
-                    user_id, bank_id, memory_id,
-                )
+        except Exception as e:
+            # 🔴v20.3.2（第 10 轮审计 P0-1）：**「后端从未配置」≠「删除失败」**。
+            #
+            # `cascade_delete_all` 一直有这个判据，单条路径却没有 —— 于是零凭据
+            # 首跑形态下 `DELETE /delete` 回 500，而同环境 `/delete_all` 回 200：
+            # 两条链共用同一套三态契约，对同一个信号给出相反判决。危害不止状态码：
+            # crud.py 的注释写着「not_found 走 200，因为 consolidator 正在批量删
+            # 早就不存在的东西」—— 它在零凭据部署下收到的是一片 500。
+            #
+            # **判据只放在「取后端」这一步**，与 delete_all 的结构逐字对齐。
+            # 拿到后端之后的任何失败（枚举问不出来、delete 抛错）照旧算关键层失败：
+            # 那是 F-02 的原病现场 —— 后端抖动时若放行，删除会报成功而向量点留着。
+            # 上一版把判据放在整段的 except 上，被既有用例
+            # （test_v20_2_5_audit_remediation.py 的「后端连不上必须 failed」）当场戳穿。
+            from ducky.mem0_runtime import is_backend_not_configured
+            if not is_backend_not_configured(e):
+                logger.warning("mem0 后端初始化失败（已配置，算关键层失败）: %s", e)
+                _layer_failed("mem0_vector", e)
+                mem = None
             else:
                 logger.warning(
-                    "向量归属无法确认，跳过删除 user=%s bank=%s id=%s",
-                    user_id, bank_id, memory_id,
-                )
-                # 枚举失败不是「没有这条」——它是「问不出来」。留孤儿可重试，
-                # 报成功不可挽回，所以这里必须进失败账本（F-02 原病）。
-                _layer_failed("mem0_vector", RuntimeError(
-                    "向量作用域枚举失败，归属无法确认，未执行删除"))
-        except Exception as e:
-            logger.warning("mem0.delete 失败: %s", e)
-            _layer_failed("mem0_vector", e)
+                    "mem0 后端不可用（视为未启用，不计入删除失败）: %s", e)
+                res["vector_enumeration_complete"] = False
+
+        if mem is not None:
+            try:
+                _items, enumeration_ok = _scoped_vector_items(mem, scope)
+                scoped_ids = [
+                    _vector_item_id(it) for it in _items
+                    if isinstance(it, dict) and vector_item_in_bank(it, bank_id)
+                ]
+                scoped_ids = [i for i in scoped_ids if i]
+                if enumeration_ok and str(memory_id) in scoped_ids:
+                    mem.delete(memory_id)
+                    res["mem0_vector"] = True
+                elif enumeration_ok and _raw_hash:
+                    # 🔴v20.2.5-b（实机冒烟 D1）：`raw-…` 句柄在 mem0 里**不是 id**
+                    # —— `/add/raw` 走 `mem.add(infer=False)`，mem0 自己铸 UUID，
+                    # 两者唯一的连接是 metadata.content_hash。此前这里只比 id，
+                    # 于是这一层永远命不中，而删除照旧回 ok、原文继续可召回。
+                    # 反查仍在**同一作用域的枚举结果内**做，一个未验证的 id 都不会
+                    # 交给全局 delete 原语 —— 这条纪律不因为多了一种句柄而放宽。
+                    _hits = _vector_ids_by_content_hash(_items, bank_id, _raw_hash)
+                    for _vid in _hits:
+                        mem.delete(_vid)
+                    res["mem0_vector"] = bool(_hits)
+                    res["raw_handle_resolved_ids"] = _hits
+                    if not _hits:
+                        logger.info(
+                            "raw 句柄在本域向量里没有对应点 user=%s bank=%s handle=%s",
+                            user_id, bank_id, memory_id,
+                        )
+                elif enumeration_ok:
+                    logger.info(
+                        "向量 id 不属于请求作用域，跳过删除 user=%s bank=%s id=%s",
+                        user_id, bank_id, memory_id,
+                    )
+                else:
+                    logger.warning(
+                        "向量归属无法确认，跳过删除 user=%s bank=%s id=%s",
+                        user_id, bank_id, memory_id,
+                    )
+                    # 枚举失败不是「没有这条」——它是「问不出来」。留孤儿可重试，
+                    # 报成功不可挽回，所以这里必须进失败账本（F-02 原病）。
+                    _layer_failed("mem0_vector", RuntimeError(
+                        "向量作用域枚举失败，归属无法确认，未执行删除"))
+            except Exception as e:
+                # 拿到后端之后的失败：一律算关键层失败，不做任何降级（F-02 纪律）。
+                logger.warning("mem0.delete 失败: %s", e)
+                _layer_failed("mem0_vector", e)
 
         # 2. FTS5 索引剔除（带 user_id 作用域）
         try:

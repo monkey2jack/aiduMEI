@@ -218,7 +218,7 @@ v19.5.0 and this release do **not** change the same layer.
 | What changed | The release process — **zero runtime behaviour change** | The **ownership model** of memory (a data-plane contract) |
 | One-line theme | Don't let out what shouldn't be said | Don't let mix what shouldn't be mixed |
 | Should you upgrade | Optional; nothing functional depends on it | **Recommended** — it fixes a class of silent data loss |
-| Total test cases | ~700 | **1573** |
+| Total test cases | ~700 | **1581** |
 
 Three reasons, each harder than the last:
 
@@ -810,10 +810,11 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | Dimension | Status |
 |-----------|--------|
-| Total cases | **1573** (measured via `pytest --collect-only`, 2026-09-01) |
-| Clean dev machine | 1561 passed · **12 skipped** — no host Hermes source, git worktree present (**measured 2026-09-01**, v20.3.1 tree) |
-| Sandbox on the production box | 1568 passed · **5 skipped** — **measured on the production box, 2026-09-01** (sandbox with Hermes host axis + local_embed_cache, three consecutive rounds; skips individually attributed) |
-| All axes present | 1573 passed · **0 skipped** — **measured on the production box, 2026-09-02** (five axes satisfied: `.git` + `ruff` + `mcp` extra + host source + backup model cache; 80.7s). Matches the axis-derived 1573/0 — this time the derivation was promoted to a measurement |
+| Total cases | **1581** (measured via `pytest --collect-only`, 2026-09-02) |
+| Clean dev machine | 1569 passed · **12 skipped** — no host Hermes source, git worktree present (**measured 2026-09-02**, v20.3.2 tree) |
+| Basic install path | 1550 passed · **31 skipped** — only `requirements.txt` + `requirements-dev.txt`, **what a new user actually gets** (**measured 2026-09-02** in a clean venv, Python 3.12) |
+| Sandbox on the production box | **pending re-measurement** (axis-derived 1576/5; last measured 1568/5 on the 1573-total tree, 2026-09-01) |
+| All axes present | **pending re-measurement** (axis-derived 1581/0; last measured 1573/0 on the 2026-09-02 production run, five axes) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
@@ -829,13 +830,13 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | # | Environment | Passed | Skipped | Attribution |
 |---|-------------|-------:|--------:|-------------|
-| ① | Clean dev machine · full extras | 1561 | 12 | host Hermes source absent ×12 (measured 2026-09-01) |
+| ① | Clean dev machine · full extras | 1569 | 12 | host Hermes source absent ×12 (measured 2026-09-02, v20.3.2 tree) |
 | ② | Fresh clone · **no config** · `.git` present (≈ someone seeing this project for the first time) | 1497 | 2 | `ruff` not installed ×2 — **2026-08-29 baseline (the 1499-total era)**, superseded by ④⑤ |
 | ③ | Fresh clone · **with production config** · `.git` present (rerank reachable) | 1497 | 2 | `ruff` not installed ×2 — **2026-08-29 baseline (the 1499-total era)**, superseded by ④⑤ |
-| ④ | Production sandbox · with config · host source · local embed cache | 1568 | 5 | measured 2026-09-01 (three consecutive rounds) |
-| ⑤ | All axes present · with config · `.git` · `ruff` · `mcp` extra · host · model cache | **1573** | **0** | measured 2026-09-02 on the production box (five axes) |
+| ④ | Production sandbox · with config · host source · local embed cache | pending | 5 | derived 1576/5; last measured 1568/5 (1573-total tree, 2026-09-01) |
+| ⑤ | All axes present · with config · `.git` · `ruff` · `mcp` extra · host · model cache | pending | **0** | derived 1581/0; last measured 1573/0 (2026-09-02, five axes) |
 
-Measured rows ①④⑤ satisfy `passed + skipped = 1573` (②③ are the 1499-total-era baseline, dated as such); unmeasured rows must be re-measured before their numbers are filled in.
+Measured rows satisfy `passed + skipped = 1581` (②③ are the 1499-total-era baseline, dated as such); unmeasured rows must be re-measured before their numbers are filled in.
 **A difference that cannot be attributed means there is still a defect that only shows up when you change
 environments.**
 
@@ -853,7 +854,7 @@ survive fusion).
 > **⚠️ These numbers assume the optional extras are installed** (added in v20.2.5,
 > a gap the external audit pointed out).
 >
-> The 1573/1561/12 above were measured with `regex`, `nltk`, `numpy`,
+> The 1581/1569/12 above were measured with `regex`, `nltk`, `numpy`,
 > `qdrant_client`, `mem0ai` and `fastembed` all present. The "30-second start"
 > path in this README installs only `requirements.txt`, so those optional
 > dependencies are absent and their skip axes drop out together — fewer passed,
@@ -872,14 +873,14 @@ survive fusion).
 > pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
 > ```
 
-> **Why report both 1561 and 1568**: the same suite yields different numbers in different environments,
-> and quoting only one of them misleads the reader. Every figure below is now a measurement, and each
-> row names its environment: 1561 + 12 on a clean dev machine (2026-09-01), 1568 + 5 in the production
-> sandbox (2026-09-01, three rounds, same values), 1573 + 0 with all five axes present (2026-09-02,
-> production box, dedicated test venv carrying the `mcp` extra). For several releases in between the
-> last two rows were axis-derived — the earlier real sandbox measurement was 859, on the v20.0 committed
-> tree when the total was 860. **For every number, say whether it was measured or derived**, and always
-> state the environment alongside a test count.
+> **Why report both 1569 and 1550**: the same suite yields different numbers in different environments,
+> and quoting only one of them misleads the reader. Each row names its environment: 1569 + 12 on a clean
+> dev machine with all optional groups installed (2026-09-02), **1550 + 31 on the basic install path —
+> which is what a new user actually gets** (2026-09-02, clean venv, Python 3.12), 1568 + 5 in the
+> production sandbox (2026-09-01, three rounds, same values; pending re-measurement on this tree),
+> 1573 + 0 with all five axes present (2026-09-02, production box, dedicated test venv carrying the
+> `mcp` extra; likewise pending on this tree). **For every number, say whether it was measured or
+> derived**, and always state the environment alongside a test count.
 >
 > **Skips have more than one axis** (corrected by measurement in v20.0): this section used to recognise
 > only the host-Hermes axis, and therefore treated "all green" as something you get simply by installing
@@ -927,11 +928,24 @@ survive fusion).
 > `HERMES_SRC` is a three-state switch, so **both directions reproduce**:
 >
 > ```bash
-> pip install -r requirements-dev.txt                            # tests need pytest; requirements.txt omits it
-> pytest tests/ -q -rs | tail -1                                 # no host: 1561 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1573 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1561 passed, 12 skipped
+> # install the optional groups too — these are the commands that yield 12 skips
+> pip install -r requirements.txt -r requirements-dev.txt
+> pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
+> pytest tests/ -q -rs | tail -1                                 # no host: 1569 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1581 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # host present but forced off: 1569 passed, 12 skipped
+>
+> # basic install path (requirements* only, no optional groups) — what a new user actually hits
+> pip install -r requirements.txt -r requirements-dev.txt
+> pytest tests/ -q -rs | tail -1                                 # basic path: 1550 passed, 31 skipped
 > ```
+>
+> **Why both sets are here** (v20.3.2, tenth-round external audit P0-3): this section used to be headed
+> "those 12 are reproducible, not folklore" while the command it gave was
+> `pip install -r requirements-dev.txt` — a file containing exactly two lines, `pytest` and `pyyaml`.
+> Running it yields **31 skips, not 12**. The extra 19 come from the bench / mcp / local-embed / ruff
+> optional groups, and the caveat lived 60 lines away. **A passage titled "falsifiable" shipped a command
+> that could not falsify it.** Commands and numbers now sit together, each labelled with its environment.
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
