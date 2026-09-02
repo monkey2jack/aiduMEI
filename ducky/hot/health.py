@@ -199,6 +199,15 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as _ig_exc:
             probes["injection_guard_mode"] = {"error": str(_ig_exc)[:100]}
 
+        # v20.3.2-beta（外审 P1-B）：**误拒率是这条防线唯一需要盯的运营指标。**
+        # 一条真实记忆被拒，调用方常把 400 当「写过了」→「存了就是搜不到」。
+        # 以前完全不可见；现在把近 5 分钟拒收数摊开，运维能看见它在拒什么量级。
+        try:
+            from ducky.security.injection_guard import rejection_stats
+            probes["injection_rejections"] = rejection_stats()
+        except Exception as _rj_exc:
+            probes["injection_rejections"] = {"error": str(_rj_exc)[:100]}
+
         # v20.2.4（外审 F-03）：本地档拦下的云出口计数。
         # 「local 档零外呼」这句话需要一个能被观察的凭据，而不只是一条测试。
         try:

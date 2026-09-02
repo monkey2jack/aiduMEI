@@ -36,10 +36,14 @@ logger = logging.getLogger("aiduMEM.ConflictResolver")
 # 格式: (属性类型正则, 旧值模式正则, 新值模式正则)
 # 当新文本匹配 new_re 时，自动失效数据库中匹配 old_re 的条目
 MUTUAL_EXCLUSION_PATTERNS: list[tuple[str, str, str]] = [
-    # 域名/URL 变动（通用模式，具体域名在运行时通过配置文件注入）
-    (r"(域名|domain|site|url|网址)", r"old_domain_placeholder", r"new_domain_placeholder"),
-    # 名称/品牌更名（通用模式）
-    (r"(名称|名字|title|name|模块)", r"old_name_placeholder", r"new_name_placeholder"),
+    # 🔴v20.3.2-beta（外审）：**这里原有两条带 `*_placeholder` 的规则。**
+    # 开源脱敏时只做了字符串替换，于是 `old_domain_placeholder` 这种正则
+    # **永不匹配任何真实文本** —— 4 条规则里 2 条是死代码，而对外宣称吸收了
+    # 「显式互斥消解」特性。更难堪的是逃生阀 load_custom_exclusion_patterns()
+    # 一直存在、CHANGELOG 也写着「供 api_server 启动时配置」，却**全仓无人调用**
+    # （「定义了不接线」同型病）。
+    # 现在：占位符规则删除，域名/名称类互斥改由部署方通过下面的注入 API 提供
+    # （见 load_custom_exclusion_patterns 的 docstring 与 api_server 启动接线）。
     # 状态开关（双向）
     (r"(开关|状态|status|mode)", r"(开启|启用|open|enable)", r"(关闭|禁用|close|disable)"),
     (r"(开关|状态|status|mode)", r"(关闭|禁用|close|disable)", r"(开启|启用|open|enable)"),
