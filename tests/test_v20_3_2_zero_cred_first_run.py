@@ -138,6 +138,12 @@ def sweep_result(tmp_path_factory):
         # 显式给空：load_env_file 不覆盖已存在的键，所以这一句同时挡住
         # 「.env 里配了 token」与「父进程泄漏了 token」两条路。
         "AIDUMEM_API_TOKEN": "",
+        # **光给空 token 不够**：`env_or_env_file()` 在环境变量为空时会
+        # **回读 .env 文件**（`utils.py:188-194`）—— 部署树上那份真 .env 于是
+        # 照样把 token 递进去，扫描拿到 401。生产机实测就是这么露出来的：
+        # 本机没有 .env，这个回退路径从来没被走到过。
+        # 用产品自己支持的开关把 .env 指开：`_env_file_path()` 认 AIDUMEM_ENV_FILE。
+        "AIDUMEM_ENV_FILE": str(d / "no_such_env"),
     }
     proc = subprocess.run(
         [sys.executable, str(script), str(root)],

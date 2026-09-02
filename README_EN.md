@@ -813,8 +813,8 @@ python -m compileall ducky api_server.py mcp_server.py
 | Total cases | **1581** (measured via `pytest --collect-only`, 2026-09-02) |
 | Clean dev machine | 1569 passed · **12 skipped** — no host Hermes source, git worktree present (**measured 2026-09-02**, v20.3.2 tree) |
 | Basic install path | 1550 passed · **31 skipped** — only `requirements.txt` + `requirements-dev.txt`, **what a new user actually gets** (**measured 2026-09-02** in a clean venv, Python 3.12) |
-| Sandbox on the production box | **pending re-measurement** (axis-derived 1576/5; last measured 1568/5 on the 1573-total tree, 2026-09-01) |
-| All axes present | **pending re-measurement** (axis-derived 1581/0; last measured 1573/0 on the 2026-09-02 production run, five axes) |
+| Sandbox on the production box | 1576 passed · **5 skipped** — **measured on the production box, 2026-09-02** (bundle clone, `.git` present; skips = ruff×2 + mcp×2 + backup model×1, matching the axis derivation line by line) |
+| All axes present | 1581 passed · **0 skipped** — **measured on the production box, 2026-09-02** (five axes satisfied: `.git` + `ruff` + `mcp` extra + host source + backup model cache; 82.9s) |
 | Layers | Mostly module-level unit tests + source-level guard assertions; `TestClient`-driven API tests as a secondary layer |
 | Platform preconditions | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms instead of crashing (v20.1 remediation). Windows is not a supported full-suite platform |
 | Statement coverage | ~51% (`ducky/` plus entrypoints, measured with `coverage`) |
@@ -833,8 +833,8 @@ python -m compileall ducky api_server.py mcp_server.py
 | ① | Clean dev machine · full extras | 1569 | 12 | host Hermes source absent ×12 (measured 2026-09-02, v20.3.2 tree) |
 | ② | Fresh clone · **no config** · `.git` present (≈ someone seeing this project for the first time) | 1497 | 2 | `ruff` not installed ×2 — **2026-08-29 baseline (the 1499-total era)**, superseded by ④⑤ |
 | ③ | Fresh clone · **with production config** · `.git` present (rerank reachable) | 1497 | 2 | `ruff` not installed ×2 — **2026-08-29 baseline (the 1499-total era)**, superseded by ④⑤ |
-| ④ | Production sandbox · with config · host source · local embed cache | pending | 5 | derived 1576/5; last measured 1568/5 (1573-total tree, 2026-09-01) |
-| ⑤ | All axes present · with config · `.git` · `ruff` · `mcp` extra · host · model cache | pending | **0** | derived 1581/0; last measured 1573/0 (2026-09-02, five axes) |
+| ④ | Production sandbox · with config · host source · local embed cache | 1576 | 5 | measured 2026-09-02 (v20.3.2 tree) |
+| ⑤ | All axes present · with config · `.git` · `ruff` · `mcp` extra · host · model cache | **1581** | **0** | measured 2026-09-02 on the production box (five axes) |
 
 Measured rows satisfy `passed + skipped = 1581` (②③ are the 1499-total-era baseline, dated as such); unmeasured rows must be re-measured before their numbers are filled in.
 **A difference that cannot be attributed means there is still a defect that only shows up when you change
@@ -876,7 +876,7 @@ survive fusion).
 > **Why report both 1569 and 1550**: the same suite yields different numbers in different environments,
 > and quoting only one of them misleads the reader. Each row names its environment: 1569 + 12 on a clean
 > dev machine with all optional groups installed (2026-09-02), **1550 + 31 on the basic install path —
-> which is what a new user actually gets** (2026-09-02, clean venv, Python 3.12), 1568 + 5 in the
+> which is what a new user actually gets** (2026-09-02, clean venv, Python 3.12), 1576 + 5 in the
 > production sandbox (2026-09-01, three rounds, same values; pending re-measurement on this tree),
 > 1573 + 0 with all five axes present (2026-09-02, production box, dedicated test venv carrying the
 > `mcp` extra; likewise pending on this tree). **For every number, say whether it was measured or
@@ -903,9 +903,9 @@ survive fusion).
 > | `ruff` installed | 2 |
 | `mcp` extra installed | 2 | `tests/test_v20_2_5_audit_remediation.py` (the fourth gate's real-defect rules F821/F811/F841; when absent it **skips honestly instead of silently reporting no hits** — the first implementation did exactly that and the sandbox run caught it: the production venv has no ruff, so the guard was permanently green. push_gate still blocks on it) |
 >
-> A dev machine lacks the first → 1561 + 12. The sandbox on the production box (host + local embed cache,
-> no `.git`) → 1568 + 5. All five axes present (`.git` + `ruff` + the `mcp` extra + host + model cache)
-> → **1573 + 0**, measured on the production box 2026-09-02.
+> A dev machine lacks the first → 1569 + 12. The sandbox on the production box (host + local embed
+> cache, `.git` present since v20.3.1 switched to bundle clones) → 1576 + 5. All five axes present
+> (`.git` + `ruff` + `mcp` extra + host + model cache) → **1581 + 0**, both measured 2026-09-02.
 >
 > This row's history is worth keeping. An earlier README called it "verified on production" while it was
 > only a derivation — and the very production run it cited is what falsified it. It was then pinned as
@@ -949,11 +949,11 @@ survive fusion).
 >
 > A "skip" you cannot turn back into a "pass" is just an unfalsifiable number — **and the converse holds
 > too**. On a machine that happens to have the host installed (`/hermes/hermes-agent` is auto-discovered;
-> our own production box is exactly that), the first command above actually prints 1568 passed, 5 skipped
+> our own production box is exactly that), the first command above actually prints 1576 passed, 5 skipped
 > (**measured on the production box sandbox, 2026-09-01**, host + local embed cache present, three consecutive rounds; the historical
 > baseline was 859 passed, 1 skipped on the v20.0 committed tree when the total was 860).
 > That last skip sits on a different axis — git worktree. The sandbox is a whitelist copy with no `.git`,
-> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1573 passed` line in
+> so `tests/test_v20_brand_policy.py` has no baseline to diff against. The `with host: 1581 passed` line in
 > the code block above requires *all twelve* axes present at once; that complete-axis result was measured on
 > the production box on 2026-08-27 (candidate tree, total 1499, zero skips).
 > Without the `HERMES_SRC=none` state, a reader simply cannot reproduce the "12 skipped" we claim.
