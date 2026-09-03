@@ -8,6 +8,7 @@ import logging
 import sqlite3
 import threading
 import time
+from ducky.shutdown import sleep as _shutdown_sleep
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -302,7 +303,8 @@ def autodream_background_loop():
             # 如果从没运行过，1小时后触发第一次
             if status["status"] == "never_run":
                 logger.info("  → 首次运行，等待 1 小时后触发首轮蒸馏...")
-                time.sleep(3600)
+                if not _shutdown_sleep(3600):
+                    return  # 停机请求（P2-20）：收尾退出
                 trigger_dream()
                 continue
                 
@@ -320,12 +322,15 @@ def autodream_background_loop():
                     # 每次最长休眠 10 分钟，以响应服务的优雅退出/重启检测，不一次 sleep 很多天
                     sleep_time = min(diff, 600)
                     if sleep_time > 0:
-                        time.sleep(sleep_time)
+                        if not _shutdown_sleep(sleep_time):
+                            return  # 停机请求（P2-20）：收尾退出
             else:
-                time.sleep(600)
+                if not _shutdown_sleep(600):
+                    return  # 停机请求（P2-20）：收尾退出
         except Exception as e:
             logger.error(f"AutoDream 后台异常: {e}")
-            time.sleep(600)  # 出错后等 10 分钟再试
+            if not _shutdown_sleep(600):  # 出错后等 10 分钟再试
+                return  # 停机请求（P2-20）：收尾退出
 
 
 if __name__ == "__main__":

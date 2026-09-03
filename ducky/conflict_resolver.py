@@ -136,6 +136,46 @@ def load_custom_exclusion_patterns(patterns: list[tuple[str, str, str]]) -> None
     logger.info("🐙 [ConflictResolver] 已加载 %d 条自定义互斥规则", len(patterns))
 
 
+def load_custom_exclusion_patterns_from_file(path: str | None = None) -> int:
+    """v20.3.2 正式版（E1）：把「定义了不接线」的逃生阀真正接到部署面。
+
+    读 `DATA_DIR/conflict_rules.json`，格式二选一：
+        {"mutual_exclusion": [{"attr": "(域名|url)", "old": "old\\.example", "new": "new\\.example"}, ...]}
+        [["(域名|url)", "old\\.example", "new\\.example"], ...]
+    文件不存在 → 0（正常，多数部署没有自定义规则）；JSON 坏 → WARNING 且不装；
+    单条正则坏 → WARNING 跳过该条，其余照装。返回实际装入条数。
+    """
+    import json
+    import os
+    if path is None:
+        from ducky.utils import DATA_DIR
+        path = os.path.join(DATA_DIR, "conflict_rules.json")
+    if not os.path.exists(path):
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception as exc:
+        logger.warning("🐙 [ConflictResolver] conflict_rules.json 不可读，未装载自定义规则：%s", exc)
+        return 0
+    items = raw.get("mutual_exclusion", []) if isinstance(raw, dict) else raw
+    good: list[tuple[str, str, str]] = []
+    for i, item in enumerate(items or []):
+        try:
+            if isinstance(item, dict):
+                triple = (str(item["attr"]), str(item["old"]), str(item["new"]))
+            else:
+                triple = (str(item[0]), str(item[1]), str(item[2]))
+            for rx in triple:
+                re.compile(rx)
+            good.append(triple)
+        except Exception as exc:
+            logger.warning("🐙 [ConflictResolver] conflict_rules.json 第 %d 条无效，跳过：%s", i, exc)
+    if good:
+        load_custom_exclusion_patterns(good)
+    return len(good)
+
+
 # ── 纠正语检测（v20.2.4 · WP-B）──
 #
 # 观察：用户明说「你记错了 / 不对，是…」是信噪比最高的一类信号。

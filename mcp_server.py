@@ -38,6 +38,10 @@ from typing import Any
 # ── 路径 bootstrap（先于 ducky import）──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ducky.utils import BASE_DIR, DATA_DIR, DEFAULT_USER_ID, LOG_DIR, api_auth_headers
+# 🔴v20.3.2 正式版（外审 Gemini P0-3）：MCP 9 个记忆/事实工具原先 **0 个**收 bank_id ——
+# v20 最核心的 (user_id, bank_id) 多域隔离，在 Claude Desktop / Cursor / Hermes 全走的
+# MCP 生态里根本传不进去，所有 Agent 被锁死在 default 域。REST 契约有它，MCP 契约没有。
+from ducky.bank_contract import DEFAULT_BANK_ID
 from ducky.tool_envelope import success, error, format_response
 # 🟡12：版本号统一从真相源导入，杜绝 mcp_server 自报 18.0.0 与 version.py 打架。
 from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
@@ -160,7 +164,7 @@ mcp = FastMCP("aidumem", log_level="INFO")
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def mem_add(messages: str, user_id: str = DEFAULT_USER_ID) -> str:
+def mem_add(messages: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """添加记忆到 aiduMEI（自动提炼 + 向量化存储）。
 
     Args:
@@ -171,12 +175,12 @@ def mem_add(messages: str, user_id: str = DEFAULT_USER_ID) -> str:
         msg_list = json.loads(messages)
     except json.JSONDecodeError as e:
         return _err(f"messages JSON 解析失败: {e}")
-    result = _api_post("/add", {"messages": msg_list, "user_id": user_id})
+    result = _api_post("/add", {"messages": msg_list, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
 @mcp.tool()
-def mem_add_raw(content: str, source: str = "mcp", user_id: str = DEFAULT_USER_ID) -> str:
+def mem_add_raw(content: str, source: str = "mcp", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """原味抽屉（Raw Drawer）— 零 LLM 直存原始文本，不经过提炼压缩。
 
     适合存入代码片段、完整对话记录、原始日志等需要原文检索的内容。
@@ -186,12 +190,12 @@ def mem_add_raw(content: str, source: str = "mcp", user_id: str = DEFAULT_USER_I
         source:  来源标识（如 cursor_hook / claude_code / manual）
         user_id: 用户标识
     """
-    result = _api_post("/add/raw", {"content": content, "source": source, "user_id": user_id})
+    result = _api_post("/add/raw", {"content": content, "source": source, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
 @mcp.tool()
-def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5) -> str:
+def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_id: str = DEFAULT_BANK_ID) -> str:
     """语义搜索记忆（内置相关性闸门 + 显著性 boost）。
 
     响应带三态判语 `recall_verdict`（v20.1）：
@@ -207,7 +211,7 @@ def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5) -> st
         user_id: 用户标识
         top_k:   返回结果数量，默认 5
     """
-    result = _api_post("/search", {"query": query, "user_id": user_id, "top_k": top_k})
+    result = _api_post("/search", {"query": query, "user_id": user_id, "top_k": top_k, "bank_id": bank_id})
     return _ok(result)
 
 
@@ -236,19 +240,19 @@ def mem_search_deep(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 10,
 
 
 @mcp.tool()
-def mem_recent(user_id: str = DEFAULT_USER_ID, limit: int = 10) -> str:
+def mem_recent(user_id: str = DEFAULT_USER_ID, limit: int = 10, bank_id: str = DEFAULT_BANK_ID) -> str:
     """获取最近添加的记忆列表。
 
     Args:
         user_id: 用户标识
         limit:   返回条数，默认 10
     """
-    result = _api_get("/recent", {"user_id": user_id, "limit": limit})
+    result = _api_get("/recent", {"user_id": user_id, "limit": limit, "bank_id": bank_id})
     return _ok(result)
 
 
 @mcp.tool()
-def mem_update(memory_id: str, content: str, user_id: str = DEFAULT_USER_ID) -> str:
+def mem_update(memory_id: str, content: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """更新指定 ID 的记忆内容。
 
     Args:
@@ -256,31 +260,31 @@ def mem_update(memory_id: str, content: str, user_id: str = DEFAULT_USER_ID) -> 
         content:   新的记忆文本
         user_id:   用户标识
     """
-    result = _api_post("/update", {"memory_id": memory_id, "content": content, "user_id": user_id})
+    result = _api_post("/update", {"memory_id": memory_id, "content": content, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
 @mcp.tool()
-def mem_delete(memory_id: str, user_id: str = DEFAULT_USER_ID) -> str:
+def mem_delete(memory_id: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """删除指定 ID 的记忆。
 
     Args:
         memory_id: 记忆 UUID
         user_id:   用户标识
     """
-    result = _api_post("/delete", {"memory_id": memory_id, "user_id": user_id})
+    result = _api_post("/delete", {"memory_id": memory_id, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
 @mcp.tool()
-def mem_delete_all(user_id: str = DEFAULT_USER_ID, confirm: bool = False) -> str:
+def mem_delete_all(user_id: str = DEFAULT_USER_ID, confirm: bool = False, bank_id: str = DEFAULT_BANK_ID) -> str:
     """⚠️ 危险：清空指定用户的全部记忆。操作不可逆，请谨慎使用。
 
     Args:
         user_id: 用户标识
         confirm: 是否二次确认（清空 default 用户必须为 True）
     """
-    result = _api_post("/delete_all", {"user_id": user_id, "confirm": confirm})
+    result = _api_post("/delete_all", {"user_id": user_id, "confirm": confirm, "bank_id": bank_id})
     return _ok(result)
 
 
@@ -289,13 +293,13 @@ def mem_delete_all(user_id: str = DEFAULT_USER_ID, confirm: bool = False) -> str
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def mem_stats(user_id: str = DEFAULT_USER_ID) -> str:
+def mem_stats(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """查看记忆统计信息（总数、用户分布、显著性统计等）。
 
     Args:
         user_id: 用户标识
     """
-    result = _api_get("/stats", {"user_id": user_id})
+    result = _api_get("/stats", {"user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
@@ -318,7 +322,7 @@ def mem_usage() -> str:
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def facts_search(query: str, limit: int = 10) -> str:
+def facts_search(query: str, limit: int = 10, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """搜索结构化知识事实库（facts）。
 
     Facts 是经过实体提取的高质量结构化知识，与向量记忆互补。
@@ -327,19 +331,19 @@ def facts_search(query: str, limit: int = 10) -> str:
         query: 搜索关键词
         limit: 返回条数，默认 10
     """
-    result = _api_get("/facts/search", {"query": query, "limit": limit})
+    result = _api_get("/facts/search", {"query": query, "limit": limit, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
 @mcp.tool()
-def facts_list(category: str = "", limit: int = 20) -> str:
+def facts_list(category: str = "", limit: int = 20, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """列出结构化知识事实。
 
     Args:
         category: 筛选类别（如 preference / event / skill / identity）
         limit:    返回条数，默认 20
     """
-    params: dict = {"limit": limit}
+    params: dict = {"limit": limit, "user_id": user_id, "bank_id": bank_id}
     if category:
         params["category"] = category
     result = _api_get("/facts", params)
@@ -348,7 +352,7 @@ def facts_list(category: str = "", limit: int = 20) -> str:
 
 @mcp.tool()
 def facts_add(content: str, category: str = "general", source: str = "mcp",
-              fact_key: str = "", user_id: str = DEFAULT_USER_ID) -> str:
+              fact_key: str = "", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """向结构化知识库添加一条 Fact。
 
     Args:
@@ -366,6 +370,7 @@ def facts_add(content: str, category: str = "general", source: str = "mcp",
         "category": category,
         "source": source,
         "user_id": user_id,
+        "bank_id": bank_id,
     })
     return _ok(result)
 
@@ -490,14 +495,14 @@ def session_report(session_id: str) -> str:
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def mem_observe(query: str = "", user_id: str = DEFAULT_USER_ID) -> str:
+def mem_observe(query: str = "", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """观察记忆全景 — 返回高层次记忆摘要和热点话题。
 
     Args:
         query:   可选筛选关键词
         user_id: 用户标识
     """
-    params: dict = {"user_id": user_id}
+    params: dict = {"user_id": user_id, "bank_id": bank_id}
     if query:
         params["query"] = query
     result = _api_get("/observe", params)
@@ -505,14 +510,14 @@ def mem_observe(query: str = "", user_id: str = DEFAULT_USER_ID) -> str:
 
 
 @mcp.tool()
-def mem_reflect(topic: str, user_id: str = DEFAULT_USER_ID) -> str:
+def mem_reflect(topic: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """对某个话题进行深度反思 — 联结相关记忆，生成洞察。
 
     Args:
         topic:   反思话题
         user_id: 用户标识
     """
-    result = _api_post("/reflect", {"topic": topic, "user_id": user_id})
+    result = _api_post("/reflect", {"topic": topic, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
@@ -712,14 +717,14 @@ def crystals_detect() -> str:
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def conflict_resolve(topic: str = "", user_id: str = DEFAULT_USER_ID) -> str:
+def conflict_resolve(topic: str = "", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """检测并解决记忆冲突（矛盾的记忆会影响召回质量）。
 
     Args:
         topic:   可选，聚焦在某个话题范围内检测冲突
         user_id: 用户标识
     """
-    body: dict = {"user_id": user_id}
+    body: dict = {"user_id": user_id, "bank_id": bank_id}
     if topic:
         body["topic"] = topic
     result = _api_post("/conflict/resolve", body)

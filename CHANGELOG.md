@@ -6,7 +6,51 @@
 
 ---
 
-## v20.3.2 — 第 10 轮独立审计整改：零凭据首跑（2026-09-02）
+## v20.3.2 — 正式版：五方外审整改 · 一致性与底层（2026-09-03；pre 09-01 · beta 09-02）
+
+### 正式版（2026-09-03）
+
+> **pre 修的是「代码算错了」，beta 修的是「默认值是错的」，正式版修的是「边界不成立」**：
+> 串行、正常、凭据齐全的路上全绿；换到并发 / 异常 / 中文 / 浏览器 / 真 uvicorn / 长期运行，边界就不在了。
+> 五方外审（用户方 + Gemini 3.8 Flash + GLM-5.3 + GPT-5.6 + Kimi-k3）34 项发现全部坐实、零假指控，
+> 按《外审后任务书》全部闭合。不升 20.3.3：pre → beta → 正式，版本身份不变。
+
+- **P0-4/P0-5 守卫必须与生产 ASGI 栈同构**：逃生阀 `AIDUMEI_TRUST_PROXY` 在真 uvicorn 下恒 503 ——
+  uvicorn 默认 `proxy_headers=True` 用 XFF 的**值**改写 `client.host`，TestClient 不经过那一层所以 9 条守卫全绿。
+  `main()` 显式 `proxy_headers=False`；中间件真实顺序与注释相反（鉴权最外层，401/503 不进计数、不带安全头）→ 物理调序。
+  新纪律：凡与请求来源 / 请求头 / 中间件层次有关的判据，一律起真 `uvicorn.Server` + 真 socket 验。
+- **P0-1/P0-2/P0-3 说的与跑的接缝**：`report.py` 加 `git_describe` + `anchored`，脱锚退出 2；`/health` 匿名视图
+  留键说明不删键（`probes.runtime_paths.data_dir_writable` 对未带凭据 agent 仍可读），门禁未启用时全量开放，匿名 30s 缓存；
+  acceptance 的「hard gate」真跑 `push_gate`；`push_gate` 改 bash + 解释器探测。
+- **P1-7 MCP 14 个工具补 `bank_id`**；P1-11 `top_k` 1–100 边界 + fan-out 硬顶；P1-13 配置损坏 ≠ 空配置（409 + `.bak`）；
+  P1-14 `main()` 不再自己起后台。
+- **P1-8 中文词元**：整句汉字当一个 token → 中文 bigram；`calc_bm25_score` 自家零调用。
+- **P1-9 事务卫生**：`_ConnProxy.__exit__` 恢复 sqlite3 契约；悬挂事务出声 + `/health` 计数；`db_tx()`；无 rollback 写函数棘轮 96 → 93。
+- **P1-10 幂等**：`INSERT … ON CONFLICT DO NOTHING` 原子抢占；pending → 409；finalize 失败释放 key。
+- **P1-12 无凭据模式 Host 校验**（DNS rebinding）：Host 不受信 → 421 `host_not_allowed`；浏览器跨站写 → 403；`AIDUMEI_TRUSTED_HOSTS`。
+- **P1-15 环境变量注册表** `ducky/env_registry.py`：AST 抽取 == 注册表；启动期未知变量 WARNING + 近似名；
+  `AIDUMEI_SALIENCE_HALF_LIFE_DAYS` / `AIDUMEI_SALIENCE_FLOOR` 此前由 f-string 拼出且从未文档化，改字面量 + 当前前缀。
+- **P1-16 drill 判据有区分力**；**P1-17 WAL compaction**（pending 全留、终态折叠、原子替换、体积触发滞回、对账后收敛）；
+  **P0-6 mem0ai 2.0.19 → 2.0.20** 双文件对齐 + 补丁台账上 `/health`。
+- **P2 批次**：互斥规则逃生阀接线（`DATA_DIR/conflict_rules.json`）；七循环 + coalesce 刷写器可中断睡眠 + lifespan 停机 join；口令哈希创建即 0600；
+  召回日志不落 query 原文；搜索错误信封 `error_code`/`retryable`；注入拒绝文案给出路；水位告警如实；两条生产红用例自造世界；
+  沙箱缺席轴特征识别对照；TROUBLESHOOTING +2、OPERATIONS 基座升级仪式、README 读表口径。logger 契约处数 93 → 95。
+- **用例总数 1573 → 1726**（上一发布 v20.3.1 → 本发布；2026-09-03 `--collect-only` 实测；pre / beta 阶段快照均为 1649）。各形态通过 / 跳过数见 README 表，随本树重测后填数。
+
+## v20.3.2-beta — 七方外审整改：默认配置面（2026-09-02，阶段快照）
+
+> 前十轮修的是「代码算错了」，这七份翻出的是「默认值是错的」：三条最重的发现——反代裸奔、迁移顺序、绑定来源——
+> 代码逐行都对，错在默认配置与真实部署形态的接缝。详细条目见 `ducky/version.py` 的 beta 阶段块。
+
+- 默认安装 + 同机反代 = 全站零凭据可读写（外审 C-1）：无凭据实例判据升级为「回环 且 无反代痕迹」，只判代理头存在性不读值；逃生阀 `AIDUMEI_TRUST_PROXY`。
+- 迁移顺序与绑定来源两条默认值缺陷修正；四个安全响应头 + CSP（F-4）；明文口令不再进 `os.environ`（M-2）。
+- 消解规则移除脱敏占位符（两条死规则）；`calc_bm25_score` → `calc_token_overlap_score`（两个同名函数都不是 BM25）；单进程契约落成启动期守卫并接进 lifespan 与 `main()`。
+- 公开大仓全历史身份重写（94 个提交 + 1 处提交信息），所有 commit hash 变更、31 个公开 tag force-update，内容零变更。
+- 用例数由 1589 增至 1649；本机 1637 passed + 12 skipped、基础安装路径 1617 passed + 32 skipped（2026-09-02 实测）。
+- 已观测未闭合：test_jia16 全量下 1/4 轮间歇红（单跑绿），登记待查，不宣布已修。
+
+## v20.3.2-pre — 第 10 轮独立审计整改：零凭据首跑（2026-09-01，阶段快照）
+
 
 > **方法换了**：脱离本地全部笔记与工作树，把公开仓重新克隆到一个干净 venv，以陌生人视角读码 + 真跑。
 > 规模 42,648 行源码 / 39,095 行测试 / 120 测试文件。
@@ -43,7 +87,7 @@
 - **守卫的世界模型又落后了一次**：沙箱推导式仍把 git 轴算作缺席，而沙箱自 v20.3.1 起是 bundle clone
   （**有 `.git`**）—— 守卫报「README 数字写错了」，而 README 是对的。
   **本仓第三次「守卫的世界模型落后于它守的现实」**，假红灯与假绿灯同样害人。
-- **用例总数 1573 → 1649**。本机 1637 passed + 12 skipped（2026-09-02 实测）；
+- **beta 阶段用例从 1573 增至 1649**。本机 1637 passed + 12 skipped（2026-09-02 实测）；
   **基础安装路径 1617 passed + 32 skipped**（同日干净 venv 实测，新用户实际形态）；
   生产机沙箱与全轴齐备两行**待本树复测后填数**，不沿用旧日期。
 
