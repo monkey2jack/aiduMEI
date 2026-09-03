@@ -336,7 +336,7 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 169
 | Clean dev machine | 1716 passed · **12 skipped** — host Hermes source absent (measured 2026-09-03) |
 | Basic install path | 1696 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-03**) |
 | Sandbox on the production box | 1723 passed · **5 skipped** — **measured on the production box, 2026-09-03** (no `.env`; skips = ruff×3 + mcp×2) |
-| All axes present | 1581 passed · **0 skipped** — **measured on the production box, 2026-09-02** |
+| All axes present | 1728 passed · **0 skipped** — **measured on the production box, 2026-09-03** (separate all-axes venv) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
