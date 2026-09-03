@@ -61,3 +61,15 @@ Every runbook follows the same pattern: symptom → probe → command → repair
 - Probe: restore count and post-restore smoke.
 - Command: `python scripts/e2e_smoke.py --json`
 - Repair: restore the verified snapshot again and stop the service before restore if the provider requires exclusive access. Never treat restore as complete without smoke success.
+
+## 11. Requests return 503 `no_credential_public_access_denied` behind a reverse proxy
+
+- Probe: the instance has no credential and the request carries a proxy trace (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`, …). A credential-less instance serves direct loopback only; a proxy hop is refused fail-closed even when the proxy itself runs on the same host.
+- Command: `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8767/facts?user_id=probe` (direct → 200) vs. the same request through the proxy (→ 503).
+- Repair: configure a credential (`AIDUMEM_API_TOKEN`, recommended) so the gate, not the loopback rule, protects the write surface. If you knowingly sit behind a trusted proxy, `AIDUMEI_TRUST_PROXY=1` declares it. Since v20.3.2 the service starts uvicorn with `proxy_headers=False`; if you run uvicorn by hand keep that flag, otherwise the forwarded IP overwrites the peer address and the trust switch cannot work.
+
+## 12. Requests return 421 `host_not_allowed` or 403 `cross_site_write_refused`
+
+- Probe: credential-less instance; the `Host` header is not a loopback name, or a browser sent a write with a foreign `Origin` / `Sec-Fetch-Site: cross-site`. This is DNS-rebinding protection: an attacker page can resolve its own domain to 127.0.0.1 and drive your browser against the local API.
+- Command: `curl -s -H 'Host: memory.internal' http://127.0.0.1:8767/health` (→ 421 until the name is trusted).
+- Repair: reach the service as `127.0.0.1` / `localhost`, or list your names in `AIDUMEI_TRUSTED_HOSTS=memory.internal,10.0.0.5`. Neither check runs once a credential is configured or `AIDUMEI_TRUST_PROXY=1` is set (the proxy owns virtual-host routing then). CLI/MCP clients never send `Origin`, so the 403 branch cannot hit them.

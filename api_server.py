@@ -59,6 +59,7 @@ import logging
 from contextlib import asynccontextmanager as _asynccontextmanager
 import os
 import threading
+import time
 import hmac
 from pathlib import Path
 
@@ -128,8 +129,33 @@ async def _lifespan(_app: "FastAPI"):
     _enforce_public_binding_policy()
     # v20.3.2-beta（外审 P0-3）：单进程契约与公网熔断同级，**同样在起线程之前**。
     _enforce_single_process_policy()
+    # v20.3.2 正式版（用户审计 H / GLM F-3）：设了本系统**不读**的 AIDUME?_ 变量，大概率是
+    # 拼错了前缀（AIDUMEM_/AIDUMEI_ 双前缀 90+ 个，分界无规律）。此前静默按默认值跑 ——
+    # 作者本人同一版本踩了两次。现在启动期扫 os.environ，未知名字 WARNING + 最接近的正确名。
+    from ducky.env_registry import warn_unknown_env_vars
+    warn_unknown_env_vars()
+    # E1（v20.3.2 正式版）：部署方自定义互斥规则（DATA_DIR/conflict_rules.json）—— 逃生阀终于接线
+    from ducky.conflict_resolver import load_custom_exclusion_patterns_from_file
+    try:
+        _n_rules = load_custom_exclusion_patterns_from_file()
+        if _n_rules:
+            logger.info("🐙 已装载 %d 条部署方自定义互斥规则", _n_rules)
+    except Exception as _exc:
+        logger.warning("自定义互斥规则装载失败（忽略，使用内置规则）：%s", _exc)
     _start_background()
     yield
+    # P2-20（v20.3.2 正式版 · Gemini P1-4）：优雅停机 —— 叫停七个循环，最多等 3s 让
+    # 正在跑的一轮收尾。此前守护线程被进程退出硬切，半截巩固/反思留在库里。
+    from ducky.shutdown import request_shutdown
+    request_shutdown()
+    _deadline = time.monotonic() + 3.0
+    for _t in list(_BACKGROUND_THREADS):
+        _t.join(max(0.0, _deadline - time.monotonic()))
+    _alive = [t.name for t in _BACKGROUND_THREADS if t.is_alive()]
+    if _alive:
+        logger.warning("停机：%d 个后台循环 3s 内未退出（守护线程随进程结束）：%s", len(_alive), _alive)
+    else:
+        logger.info("停机：后台循环全部收尾退出")
 
 
 app = FastAPI(
@@ -285,22 +311,6 @@ def _request_authorized(request: Request) -> bool:
     return False
 
 
-@app.middleware("http")
-async def _record_http_outcome(request: Request, call_next):
-    """把每个响应的状态码记进进程内计数器（v20 · P1-9）。
-
-    放在鉴权 middleware **外面**（注册更晚 = 更外层）是刻意的：被门禁挡掉的 401
-    也是一次真实结局，事故里「凭据链断了导致满屏 401」正是要看见的形态之一。
-    未处理异常按 500 计入后再抛，否则「打挂了」这一类会从统计里凭空消失。
-    """
-    from ducky import http_metrics
-    try:
-        response = await call_next(request)
-    except Exception:
-        http_metrics.record(500)
-        raise
-    http_metrics.record(response.status_code)
-    return response
 
 
 def _client_is_loopback(request: "Request") -> bool:
@@ -356,6 +366,57 @@ def _request_via_proxy(headers) -> bool:
         # 取不到头时 fail-closed：当作经过了代理（更严的赢）。
         return True
     return False
+
+
+# ── P1-12（v20.3.2 正式版 · Codex F-04）：无凭据模式的 Host 校验 ─────────────
+# 无凭据实例只服务回环 —— 但「对端是回环」拦不住 DNS rebinding：攻击页把
+# attacker.example 解析到 127.0.0.1，用户的浏览器就以回环对端、攻击者 Host 打本地 API，
+# 无 CORS 预检的简单请求还能直接写。所以对端判据之外再加两道只看请求头的判据：
+#   ① Host 必须是回环名 / AIDUMEM_HOST / AIDUMEI_TRUSTED_HOSTS 之一（否则 421）；
+#   ② 浏览器发起的写（有 Origin 或 Sec-Fetch-Site: cross-site）Origin 必须同样受信（否则 403）。
+# 无 Origin 的 CLI / MCP / cron 请求不受 ② 影响；有凭据的实例由鉴权守住写面，这两道不启用；
+# 声明了 AIDUMEI_TRUST_PROXY=1 时 Host 校验交给反代（反代转发的是对外域名）。
+_LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"})
+
+
+def _trusted_host_names() -> frozenset:
+    extra = {h.strip().lower() for h in os.getenv("AIDUMEI_TRUSTED_HOSTS", "").split(",") if h.strip()}
+    bound = (os.getenv("AIDUMEM_HOST") or "").strip().lower()
+    return frozenset(_LOOPBACK_HOST_NAMES | extra | ({bound} if bound else set()))
+
+
+def _host_without_port(value: str) -> str:
+    h = (value or "").strip().lower()
+    if h.startswith("["):            # [::1]:8767
+        return h.split("]", 1)[0] + "]"
+    if h.count(":") == 1:            # 127.0.0.1:8767 / localhost:8767
+        return h.rsplit(":", 1)[0]
+    return h                          # 裸 IPv6 或无端口
+
+
+def _host_header_allowed(request: "Request") -> bool:
+    if _trust_proxy_enabled():
+        return True
+    client_host = (getattr(getattr(request, "client", None), "host", "") or "").strip()
+    if client_host == "testclient":
+        # ASGI 直连测试客户端：没有 TCP 对端、没有 DNS，rebinding 不成立。
+        # 与 _client_is_loopback 同一取舍（真实网络请求的 client.host 一定是 IP）。
+        return True
+    return _host_without_port(request.headers.get("host", "")) in _trusted_host_names()
+
+
+def _browser_cross_site_write(request: "Request") -> bool:
+    if request.method.upper() not in ("POST", "PUT", "PATCH", "DELETE"):
+        return False
+    if (request.headers.get("sec-fetch-site") or "").strip().lower() == "cross-site":
+        return True
+    origin = (request.headers.get("origin") or "").strip().lower()
+    if not origin:
+        return False                  # 非浏览器客户端不带 Origin
+    if origin == "null":
+        return True                   # 不透明来源（file:// 等）
+    from urllib.parse import urlsplit
+    return _host_without_port(urlsplit(origin).netloc) not in _trusted_host_names()
 
 
 def _trust_proxy_enabled() -> bool:
@@ -476,35 +537,6 @@ def _enforce_public_binding_policy() -> None:
     )
 
 
-@app.middleware("http")
-async def _security_headers(request: Request, call_next):
-    """浏览器侧兜底（v20.3.2-beta · 外审 F-4 / DeepSeek P1-6）。
-
-    本服务自带 Web 控制台且常被放在反代之后，而全仓此前**一个安全头都没有**
-    —— 与它在鉴权、注入、交付硬化上的完成度极不相称，属于低垂果实。
-
-    CSP 必须**容纳现状**：前端有 inline style（`style-src 'unsafe-inline'`）。
-    先宽后紧 —— 一个把自家控制台打成白屏的 CSP 会被下一个人直接删掉，
-    那比没有 CSP 更糟。收紧 style-src 登记为 v20.4 候选（需先把 inline style 抽出）。
-    """
-    response = await call_next(request)
-    # 已存在的值不覆盖（反代可能已经加过，部署方的显式设置优先）
-    for name, value in (
-        ("X-Content-Type-Options", "nosniff"),
-        ("X-Frame-Options", "DENY"),
-        ("Referrer-Policy", "no-referrer"),
-        ("Content-Security-Policy",
-         "default-src 'self'; "
-         "img-src 'self' data: https:; "
-         "style-src 'self' 'unsafe-inline'; "
-         "script-src 'self'; "
-         "connect-src 'self'; "
-         "frame-ancestors 'none'; "
-         "base-uri 'self'"),
-    ):
-        if name not in response.headers:
-            response.headers[name] = value
-    return response
 
 
 @app.middleware("http")
@@ -539,6 +571,31 @@ async def _require_credentials(request: Request, call_next):
                     "code": "no_credential_public_access_denied",
                 },
             )
+        if not _host_header_allowed(request):
+            logger.warning(
+                "🛑 [Security] 拒绝 Host=%s：无凭据实例只接受回环/受信主机名（防 DNS rebinding）。"
+                "反代部署请配置凭据或设 AIDUMEI_TRUST_PROXY=1；自定义域名加入 AIDUMEI_TRUSTED_HOSTS。",
+                request.headers.get("host", "?"))
+            return JSONResponse(
+                status_code=421,
+                content={
+                    "detail": (
+                        "Host header is not a trusted name for this credential-less instance "
+                        "(DNS rebinding protection). Use 127.0.0.1/localhost, add the name to "
+                        "AIDUMEI_TRUSTED_HOSTS, or configure a credential."
+                    ),
+                    "code": "host_not_allowed",
+                },
+            )
+        if _browser_cross_site_write(request):
+            logger.warning("🛑 [Security] 拒绝跨站浏览器写请求：Origin=%s Sec-Fetch-Site=%s 路径=%s",
+                           request.headers.get("origin", "-"), request.headers.get("sec-fetch-site", "-"),
+                           request.url.path)
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Cross-site browser write refused on a credential-less instance.",
+                         "code": "cross_site_write_refused"},
+            )
         return await call_next(request)
     if _is_public_path(request.url.path):
         return await call_next(request)
@@ -552,6 +609,64 @@ async def _require_credentials(request: Request, call_next):
         },
         status_code=401,
     )
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """浏览器侧兜底（v20.3.2-beta · 外审 F-4 / DeepSeek P1-6）。
+
+    本服务自带 Web 控制台且常被放在反代之后，而全仓此前**一个安全头都没有**
+    —— 与它在鉴权、注入、交付硬化上的完成度极不相称，属于低垂果实。
+
+    CSP 必须**容纳现状**：前端有 inline style（`style-src 'unsafe-inline'`）。
+    先宽后紧 —— 一个把自家控制台打成白屏的 CSP 会被下一个人直接删掉，
+    那比没有 CSP 更糟。收紧 style-src 登记为 v20.4 候选（需先把 inline style 抽出）。
+    """
+    response = await call_next(request)
+    # 已存在的值不覆盖（反代可能已经加过，部署方的显式设置优先）
+    for name, value in (
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "DENY"),
+        ("Referrer-Policy", "no-referrer"),
+        ("Content-Security-Policy",
+         "default-src 'self'; "
+         "img-src 'self' data: https:; "
+         "style-src 'self' 'unsafe-inline'; "
+         "script-src 'self'; "
+         "connect-src 'self'; "
+         "frame-ancestors 'none'; "
+         "base-uri 'self'"),
+    ):
+        if name not in response.headers:
+            response.headers[name] = value
+    return response
+
+
+@app.middleware("http")
+async def _record_http_outcome(request: Request, call_next):
+    """把每个响应的状态码记进进程内计数器（v20 · P1-9）。
+
+    放在鉴权 middleware **外面**是刻意的：被门禁挡掉的 401 也是一次真实结局，
+    事故里「凭据链断了导致满屏 401」正是要看见的形态之一。
+    未处理异常按 500 计入后再抛，否则「打挂了」这一类会从统计里凭空消失。
+
+    🔴v20.3.2 正式版（外审 GLM F-2 / Codex F-08）：**这段注释曾与事实相反。**
+    Starlette 是「后注册者在更外层」，而本函数原先注册在**最前**（第 289 行），
+    鉴权注册在最后 —— 于是鉴权成了最外层，它直接 return 的 401/503 **从不经过**
+    这里，也不经过安全头中间件：实测 401+200 两个请求只计了 1 个，401 响应无 CSP。
+    我上一轮加的四个安全头，没盖到我上一轮加的拒绝分支。
+    现在三个中间件按「鉴权 → 安全头 → 计数」的**源码顺序**注册，运行时层次即
+    「计数（最外）→ 安全头 → 鉴权（最内）→ 路由」。tests/test_v20_3_2_release_real_asgi.py
+    用真 uvicorn + 真 socket 钉行为，用 AST 钉顺序 —— 两条都要。
+    """
+    from ducky import http_metrics
+    try:
+        response = await call_next(request)
+    except Exception:
+        http_metrics.record(500)
+        raise
+    http_metrics.record(response.status_code)
+    return response
 
 # ── UI 登录与会话（🔴P0-1 v19.4.1）───────────────────────────────────────
 # /login 校验口令后**服务端签发会话**（HttpOnly cookie），不再只在浏览器
@@ -653,7 +768,10 @@ def _register_login(route_app: FastAPI) -> None:
                 {"success": False, "message": "密码不能为空或格式错误"}, status_code=401
             )
 
-        if not check_ui_password(given):
+        # v20.3.2（外审 Gemini P1-1，实测 15.4ms）：PBKDF2 200k 轮是纯 CPU，
+        # 在 async def 里同步跑会冻住整个事件循环；丢进线程池。
+        import asyncio as _asyncio
+        if not await _asyncio.to_thread(check_ui_password, given):
             _n = record_login_failure(_ip)
             logger.warning("🚪 UI 登录失败（密码错误，本窗口第 %d 次）", _n)
             return JSONResponse(
@@ -717,13 +835,15 @@ set_version_info(SERVICE_VERSION, CODENAME, CODENAME_ZH)
 
 _background_started = False
 _background_lock = threading.Lock()
+_BACKGROUND_THREADS: list = []   # P2-20（v20.3.2 正式版）：已启动的循环线程，lifespan 停机时 join
+
 _BACKGROUND_LOOPS = {
     "consolidation": _background_consolidation_loop,
     "scene_cluster": _background_scene_cluster_loop,
     "auto_memory": auto_memory_background_loop,
     "auto_expire": _auto_expire_loop,
     "autodream": autodream_background_loop,
-        "evolve_mem": evolve_background_loop,
+    "evolve_mem": evolve_background_loop,
     "reflect": reflect_background_loop,
 }
 
@@ -792,6 +912,7 @@ def _start_background() -> None:
             name=f"aiduMEM-{name}",
         )
         thread.start()
+        _BACKGROUND_THREADS.append(thread)  # P2-20：停机时逐个 join
         logger.info(f"▶ {name} 后台线程已启动")
 
     logger.info(
@@ -803,7 +924,11 @@ def _start_background() -> None:
 
 
 def main():
-    _start_background()
+    # 🔴v20.3.2 正式版（外审 Codex F-09）：**不在这里起后台。**
+    # 原先第一行就是 _start_background()，而安全策略检查在 20 行之后 ——
+    # 一个最终会因公网绑定/多 worker 被拒绝启动的进程，退出前已经建表、预热、
+    # 起了线程。lifespan 是后台生命周期的唯一负责人（且有 _background_started
+    # 幂等标志）；main() 只做纯配置校验，然后把进程交给 uvicorn。
     host = os.environ.get("AIDUMEM_HOST", "127.0.0.1")
     # v20.2.3（外审 M-2）：端口曾是裸 int() —— 写错一个字符服务直接起不来，
     # 且报错是 ValueError 而非「端口配置无效」。回退默认 + 点名出声。
@@ -826,7 +951,13 @@ def main():
     # 早晚会长歪一份，而长歪的那份恰好是没人跑的那条路。
     _enforce_public_binding_policy()
     _enforce_single_process_policy()
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # 🔴v20.3.2 正式版（外审 GLM F-1）：**proxy_headers=False。**
+    # uvicorn 默认 True → ProxyHeadersMiddleware 用 X-Forwarded-For 的**值**改写
+    # request.client.host。于是 _client_is_loopback 在生产路径上读到的是伪造 IP，
+    # AIDUMEI_TRUST_PROXY=1 也恒 503 —— 而 TestClient 不经过这层，9 条守卫全绿。
+    # 全仓「不采信 XFF 值」的哲学，被一个默认启动参数推翻了。现在 client.host
+    # 保持 TCP 对端语义；反代痕迹只看头**在不在**（_request_via_proxy），不读值。
+    uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=False)
 
 
 if __name__ == "__main__":

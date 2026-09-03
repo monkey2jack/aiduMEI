@@ -5,7 +5,7 @@
 第 4 步：装依赖。python3.12 -m venv .venv && source .venv/bin/activate，然后 pip install -r requirements.txt。
 第 5 步：选挡位。读 AGENTS.md 的挡位决策表。如果机器没有 API Key，选 local 档（零依赖、零 token），并追加运行 pip install .[local-embed] && python scripts/fetch_local_embed_model.py。如果有 key，选 cloud 或 auto 档。
 第 6 步：配配置。cp mem0_config_local.json.example mem0_config_local.json 并填入 LLM 与 Embedding 的 API Key 及 Base URL。同时 cp .env.example .env 并编辑 AIDUMEM_ENTITY_KEYWORDS（填入用户的人名/项目代号）和 AIDUMEM_API_TOKEN。Key 向我索要，不要自己编造。
-第 7 步：起服务。运行 python api_server.py 启动服务（默认监听 http://127.0.0.1:8767）。确认 curl -s http://127.0.0.1:8767/health 返回 health_status=ok 且 runtime_paths.data_dir_writable=true。
+第 7 步：起服务。运行 python api_server.py 启动服务（默认监听 http://127.0.0.1:8767）。确认 curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health 返回 health_status=ok 且 probes.runtime_paths.data_dir_writable=true（第 6 步配了 token 后，完整探针需要带上它；不带凭据时 probes 会被脱敏并附 _redacted 说明，但 data_dir_writable 仍可读）。
 第 8 步：验证生效。运行 python scripts/e2e_smoke.py --json，确认输出 status=PASS 且 0 failures。这不是只看 /health=ok——e2e 会写入唯一 nonce、跨新会话召回、查看 trace、清理临时租户。WARN 不是 PASS，必须修复到 0 warnings 才算通过。
 第 9 步：接入宿主。按 docs/AGENT_INTEGRATION.md 把 aiduMEI 接到我正在用的 AI 宿主（Hermes Agent、Claude Code 等）上，并做一次真实对话验证记忆能被读写。运行 python scripts/agent_integration_check.py 确认全部通过。
 第 10 步：初始化维护。运行 bash scripts/update_crontab.sh install 安装 8 项定时任务，然后用 crontab -l 数一遍 —— 实文 8 条才算装上（--list 只报意图清单）。运行 bash scripts/backup_gate.sh create initial 创建首次备份并用 bash scripts/backup_gate.sh verify latest 验证。

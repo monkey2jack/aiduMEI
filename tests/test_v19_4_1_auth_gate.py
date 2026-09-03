@@ -325,9 +325,16 @@ def test_health_exposes_auth_gate_state(env, monkeypatch):
 
 
 def test_health_warns_when_gate_disabled(env, monkeypatch):
+    """门禁未启用 → /health 对所有人给全量探针，并如实报 auth_gate_enabled=False。
+
+    v20.3.2 正式版（P0-2 · Codex F-12）改口径：此前无凭据实例也脱敏 —— 但门禁没开
+    就不存在「需要防的侦察者」，把字段藏给唯一有权看的人，安全收益为零、可用性代价全付。
+    """
     monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
     data = env.client().get("/health").json()
-    assert set(data) == {"status", "version", "health_status", "degraded", "warming_up"}
+    assert {"status", "version", "health_status", "degraded", "warming_up", "probes"} <= set(data)
+    assert "_redacted" not in data["probes"], "门禁未启用仍脱敏"
+    assert data["probes"]["auth_gate_enabled"] is False
 
 
 def test_frontend_sends_credentials():

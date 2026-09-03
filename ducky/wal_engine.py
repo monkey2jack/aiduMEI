@@ -267,6 +267,8 @@ class WALEngine:
         self.wal_dir.mkdir(parents=True, exist_ok=True)
         self.wal_file = self.wal_dir / "mem_mutations.wal"
         self._write_lock = threading.Lock()
+        self.compactions = 0          # P1-17：已执行的 compaction 次数（可观测）
+        self._compact_floor = 0       # 滞回：上次收敛后仍 > 阈值时，下次触发点抬到 2×
 
     @classmethod
     def get_instance(cls) -> WALEngine:
@@ -302,6 +304,7 @@ class WALEngine:
                         except OSError:
                             pass
         logger.debug("WAL append: %s [%s] user=%s", entry.wal_id, entry.operation, entry.user_id)
+        self.compact_if_large()  # P1-17：锁外体积触发
         return entry.wal_id
 
     def mark_status(self, wal_id: str, status: Literal["committed", "failed"], error: str = "") -> None:
@@ -314,6 +317,75 @@ class WALEngine:
             payload={"target_wal_id": wal_id, "updated_status": status},
         )
         self.append(entry)
+
+    # v20.3.2 正式版（P1-17 · Gemini P0-1）：账本只追加不收敛 —— 每条写 + 每次状态更新
+    # 各一行，无界增长；且 get_pending_entries 每次全量 O(n) 解析。compaction 把终态条目
+    # 与其状态行折叠/丢弃，pending 一条不丢，tmp 写 + fsync + os.replace 原子替换。
+    COMPACT_SIZE_TRIGGER = 10 * 1024 * 1024
+
+    def compact(self, keep_recent_seconds: float = 86400.0) -> Dict[str, Any]:
+        """收敛账本：pending 全留；终态条目只留最近 keep_recent_seconds 内的（状态折叠进条目）。"""
+        with self._write_lock:
+            if not self.wal_file.exists():
+                return {"kept": 0, "dropped": 0, "unparsable_dropped": 0, "bytes_before": 0, "bytes_after": 0}
+            before = self.wal_file.stat().st_size
+            entries_by_id: Dict[str, WALEntry] = {}
+            order: List[str] = []
+            status_updates: Dict[str, tuple] = {}
+            bad = 0
+            with open(self.wal_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    entry = WALEntry.from_json(line)
+                    if not entry:
+                        if line.strip():
+                            bad += 1
+                        continue
+                    tgt = entry.payload.get("target_wal_id")
+                    if tgt:
+                        status_updates[tgt] = (entry.payload.get("updated_status", ""),
+                                               entry.payload.get("error", "") or entry.error)
+                    else:
+                        if entry.wal_id not in entries_by_id:
+                            order.append(entry.wal_id)
+                        entries_by_id[entry.wal_id] = entry
+            now = time.time()
+            kept: List[WALEntry] = []
+            dropped = 0
+            for wid in order:
+                ent = entries_by_id[wid]
+                final_status, err = status_updates.get(wid, (ent.status, ent.error))
+                if final_status:
+                    ent.status = final_status  # type: ignore[assignment]
+                if err:
+                    ent.error = err
+                if ent.status == "pending" or (now - float(ent.timestamp or 0)) < keep_recent_seconds:
+                    kept.append(ent)
+                else:
+                    dropped += 1
+            tmp = self.wal_file.with_name(self.wal_file.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                for ent in kept:
+                    f.write(ent.to_json() + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.wal_file)
+            after = self.wal_file.stat().st_size
+            self.compactions += 1
+            # 滞回：账本若全是近期条目，收敛后仍可能 > 阈值；不设滞回会每次 append 重写整个文件
+            self._compact_floor = after * 2 if after > self.COMPACT_SIZE_TRIGGER else 0
+            if dropped or bad:
+                logger.info("WAL compaction：留 %d 丢 %d（坏行 %d）%d→%d 字节", len(kept), dropped, bad, before, after)
+            return {"kept": len(kept), "dropped": dropped, "unparsable_dropped": bad,
+                    "bytes_before": before, "bytes_after": after}
+
+    def compact_if_large(self) -> Optional[Dict[str, Any]]:
+        """append 后的体积触发（锁外调用：_write_lock 不可重入）。"""
+        try:
+            if self.wal_file.exists() and self.wal_file.stat().st_size > max(self.COMPACT_SIZE_TRIGGER, self._compact_floor):
+                return self.compact()
+        except Exception as exc:
+            logger.warning("WAL 体积触发 compaction 失败（留账）: %s", exc)
+        return None
 
     def get_pending_entries(self) -> List[WALEntry]:
         """读取所有未提交的有效操作。"""
@@ -1346,11 +1418,18 @@ def reconcile_startup() -> Dict[str, Any]:
 def _finish_reconcile(report: Dict[str, Any]) -> Dict[str, Any]:
     """启动对账收尾（两条返回路径共用）。
 
+    v20.3.2 正式版（P1-17）：对账后顺手 compaction —— 否则重放账本永远只增不减。
+
     v20.2.1（外审 R2）：欠账重放此前只挂在「升挡事件」上，而重启把挡位
     重置回 closed —— 升挡事件重启后永不再来，lite 期欠账成永久赖账。
     这里兜底扫一遍（守护线程不阻塞启动；零欠账不起线程；claiming 抢占
     防与升挡重放并发）。顺带打一条挡位/限流参数自检日志（外审 R1 配套：
     回退语义下坏配置不再炸，就必须在启动面**出声**可查）。"""
+    try:
+        report["compacted"] = WALEngine.get_instance().compact()
+    except Exception as exc:
+        logger.warning("启动 WAL compaction 失败（留账，不阻塞启动）: %s", exc)
+        report["compacted"] = {"error": str(exc)[:120]}
     try:
         from ducky.dual_index import spawn_replay_daemon
         report["pending_replay_spawned"] = spawn_replay_daemon(

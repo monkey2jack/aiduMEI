@@ -29,6 +29,7 @@ import logging
 import math
 import sqlite3
 import time
+from ducky.shutdown import sleep as _shutdown_sleep
 from typing import Literal
 
 from ducky.utils import DATA_DIR, get_salience_conn
@@ -526,4 +527,5 @@ def evolve_background_loop() -> None:
             )
         except Exception as e:
             logger.error(f"[evolve-bg] 进化循环异常: {e}", exc_info=True)
-        time.sleep(EVOLUTION_INTERVAL_HOURS * 3600)
+        if not _shutdown_sleep(EVOLUTION_INTERVAL_HOURS * 3600):
+            return  # 停机请求（P2-20）：收尾退出

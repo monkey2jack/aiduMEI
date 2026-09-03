@@ -58,18 +58,30 @@ import json, sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     health = json.load(f)
 probes = health.get("probes") or {}
+# v20.3.2 正式版（我上一轮如实交代的「乙」条，用户方建议授权修）：
+# 原 5 项判据里 4 项恒真 —— `isinstance({}, dict)` 对空字典也是 True，
+# `warming_up`/`degraded` 读的是顶层键（脱敏载荷里也有）。于是**拿到脱敏 /health**
+# （没带凭据）时探针全空，drill 照样报 pass。一个 5 项里 4 项恒真的自检，
+# 比没有自检更危险。现在每项都要求**实质内容**，探针被脱敏时明说原因。
+redacted = isinstance(probes.get("_redacted"), str) or not probes
 engine_policy = probes.get("engine_mode_policy") or {}
 llm_gear = probes.get("llm_gear") or {}
 pending = probes.get("pending_embeddings") or {}
 checks = {
+    "probes_visible": not redacted,
     "engine_mode_present": isinstance(engine_policy.get("configured") or engine_policy.get("mode"), str),
-    "llm_gear_present": isinstance(llm_gear, dict),
-    "pending_replay_present": "pending_count" in pending or isinstance(pending, dict),
-    "warming_up_present": isinstance(health.get("warming_up"), list),
-    "degraded_present": isinstance(health.get("degraded"), list),
+    "llm_gear_present": isinstance(llm_gear, dict) and bool(llm_gear) and any(k in llm_gear for k in ("gear", "state", "mode", "current")),
+    # 真实形状（2026-09-03 生产 /health 实读）：{"cloud": n, "local": n, "last_replay": ..., "verdict": {...}}；
+    # 第一版按我自造的测试负载写成 "pending_count" —— 判据没读世界，在生产上是假红灯。两种形状都认。
+    "pending_replay_present": isinstance(pending, dict) and (
+        ("cloud" in pending and "local" in pending) or "pending_count" in pending),
+    "warming_up_present": isinstance(health.get("warming_up"), list) and "warming_up" in health,
+    "degraded_present": isinstance(health.get("degraded"), list) and "degraded" in health,
 }
+if redacted:
+    checks["_why"] = "probes 被脱敏（未带凭据）：请设 AIDUMEM_API_TOKEN 后重跑 —— 这不是自动挡故障，是探针没拿到"
 result = {
-    "status": "pass" if all(checks.values()) else "fail",
+    "status": "pass" if all(v for k, v in checks.items() if not k.startswith("_")) else "fail",
     "checks": checks,
     "engine_mode": engine_policy.get("configured") or engine_policy.get("mode"),
     "llm_gear": llm_gear,

@@ -319,34 +319,36 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 pip install -r requirements.txt -r requirements-dev.txt
 pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
-pytest tests/ -q -rs | tail -1                                 # no host: 1637 passed, 12 skipped
-HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1649 passed
-HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1637 passed, 12 skipped
+pytest tests/ -q -rs | tail -1                                 # no host: 1714 passed, 12 skipped
+HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1726 passed
+HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1714 passed, 12 skipped
 
 # Basic source-install path
 pip install -r requirements.txt -r requirements-dev.txt
-pytest tests/ -q -rs | tail -1                                 # basic path: 1617 passed, 32 skipped
+pytest tests/ -q -rs | tail -1                                 # basic path: 1694 passed, 32 skipped
 ```
+
+> How to read the table: in every row, passed + skipped equals the `pytest --collect-only` count **for that form on that date**; rows measured on different dates may have different denominators (the tree grows), so trust the date in each row. Skips are explained per axis (table below); they are not failures.
 
 | Dimension | Status |
 |---|---|
-| Total cases | **1649** (measured via `pytest --collect-only`, 2026-09-02) |
-| Clean dev machine | 1637 passed · **12 skipped** — host Hermes source absent (measured 2026-09-02) |
-| Basic install path | 1617 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-02**) |
-| Sandbox on the production box | 1576 passed · **5 skipped** — **measured on the production box, 2026-09-02** |
+| Total cases | **1726** (measured via `pytest --collect-only`, 2026-09-03) |
+| Clean dev machine | 1714 passed · **12 skipped** — host Hermes source absent (measured 2026-09-03) |
+| Basic install path | 1694 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-03**) |
+| Sandbox on the production box | 1721 passed · **5 skipped** — **measured on the production box, 2026-09-03** (no `.env`; skips = ruff×3 + mcp×2) |
 | All axes present | 1581 passed · **0 skipped** — **measured on the production box, 2026-09-02** |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1637 and 1617**: they are measurements of different environments. The commands and their dependency assumptions therefore stay together. With the complete optional environment, the expected host-axis pair is:
+**Why report both 1714 and 1694**: they are measurements of different environments. The commands and their dependency assumptions therefore stay together. With the complete optional environment, the expected host-axis pair is:
 
 ```text
-no host: 1637 passed, 12 skipped
-with host: 1649 passed
-forced off: 1637 passed, 12 skipped
+no host: 1714 passed, 12 skipped
+with host: 1726 passed
+forced off: 1714 passed, 12 skipped
 ```
 
-On a production host where other optional axes are absent, the bare command **actually prints 1576 passed, 5 skipped** (measured 2026-09-02). A number without its environment and date is not a reproducible claim.
+On a production host where other optional axes are absent, the bare command **actually prints 1721 passed, 5 skipped** (measured 2026-09-03, no `.env`). A number without its environment and date is not a reproducible claim.
 
 ### Skip-axis census
 

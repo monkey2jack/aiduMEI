@@ -33,12 +33,61 @@ def _mask_key(key: Optional[str]) -> str:
     return key[:3] + "***" + key[-4:]
 
 
+class ConfigUnreadable(RuntimeError):
+    """配置文件**在**但读不出来 —— 这不是「空配置」，是部署坏了。
+
+    v20.3.2 正式版（外审 Codex F-05）：原 `_load_raw_config` 任何异常一律 `return {}`，
+    随后 PUT 基于这个空字典写临时文件并 `os.replace`。原子写只保证「不出现半个文件」，
+    **不保证写的内容基于正确的旧状态** —— 一次瞬时 I/O 抖动 + 一次保存，其余全部配置段
+    就没了。读路径可以宽（GET 拿不到就显示空），**写路径必须严**。
+    """
+
+
 def _load_raw_config() -> dict:
+    """读路径：拿不到就当空（供 GET / 展示用）。写路径不许用这个。"""
     try:
         with open(_CFG_PATH) as f:
             return json.load(f)
     except Exception:
         return {}
+
+
+def _load_raw_config_for_write() -> dict:
+    """写路径：**只有「文件不存在」才允许初始化为空**；损坏/无权限/IO 一律抛。"""
+    try:
+        with open(_CFG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        raise ConfigUnreadable(
+            f"配置文件存在但无法读取（{type(exc).__name__}: {str(exc)[:80]}）；"
+            "拒绝在其上覆盖写入，原文件保持不变。请先修复或手动备份后删除。"
+        ) from exc
+
+
+def _atomic_write_config(raw: dict) -> None:
+    """写前留 .bak，临时文件 fsync 后 replace —— 掉电只见旧版或完整新版。"""
+    cfg_dir = os.path.dirname(_CFG_PATH) or "."
+    if os.path.exists(_CFG_PATH):
+        try:
+            import shutil
+            shutil.copy2(_CFG_PATH, _CFG_PATH + ".bak")
+        except Exception as exc:  # 备份失败不阻塞写入，但必须出声
+            logger.warning("配置备份 .bak 失败（继续写入）: %s", exc)
+    fd, tmp_path = tempfile.mkstemp(dir=cfg_dir, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(raw, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, _CFG_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
 
 
 def _build_config_view() -> dict:
@@ -141,7 +190,11 @@ def register_config_routes(app: FastAPI) -> None:
                 status_code=400,
             )
         with _WRITE_LOCK:
-            raw = _load_raw_config()
+            try:
+                raw = _load_raw_config_for_write()
+            except ConfigUnreadable as exc:
+                return JSONResponse({"status": "error", "code": "config_unreadable",
+                                     "detail": str(exc)}, status_code=409)
             old_section = dict(raw.get(section) or {})
             old_cfg = dict(old_section.get("config") or {})
             new_cfg = dict((body.get("config") or {}))
@@ -166,15 +219,7 @@ def register_config_routes(app: FastAPI) -> None:
                 old_section["provider"] = new_provider
                 old_section["config"] = old_cfg
                 raw[section] = old_section
-            cfg_dir = os.path.dirname(_CFG_PATH)
-            fd, tmp_path = tempfile.mkstemp(dir=cfg_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(raw, f, ensure_ascii=False, indent=2)
-                os.replace(tmp_path, _CFG_PATH)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
+            _atomic_write_config(raw)
         logger.info("🛠️ 配置段已在线更新: %s", section)
         return {"status": "ok", "updated": section, "config": _build_config_view()}
 
@@ -193,21 +238,17 @@ def register_config_routes(app: FastAPI) -> None:
         if not updates:
             return {"status": "error", "detail": "未提供要更新的参数"}
         with _WRITE_LOCK:
-            raw = _load_raw_config()
+            try:
+                raw = _load_raw_config_for_write()
+            except ConfigUnreadable as exc:
+                return JSONResponse({"status": "error", "code": "config_unreadable",
+                                     "detail": str(exc)}, status_code=409)
             speed_section = dict(raw.get("_speed") or {})
             for k, v in updates.items():
                 speed_section[k] = v
             raw["_speed"] = speed_section
             # 原子写入：先写临时文件再 rename，避免中途崩溃损坏配置
-            cfg_dir = os.path.dirname(_CFG_PATH)
-            fd, tmp_path = tempfile.mkstemp(dir=cfg_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(raw, f, ensure_ascii=False, indent=2)
-                os.replace(tmp_path, _CFG_PATH)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
+            _atomic_write_config(raw)
         return {"status": "ok", "updated": updates, "_speed": load_speed_cfg()}
 
     # ═══════════════════════════════════════════════════════════════════

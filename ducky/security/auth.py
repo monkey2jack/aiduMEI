@@ -209,7 +209,10 @@ def write_password_hash(hashed: str, source: str = _SOURCE_USER) -> bool:
     path = password_hash_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        # v20.3.2 正式版（P2-19）：原来是 open(w) 再 chmod —— 创建到收紧之间有一个
+        # 0644 的窗口。改为 os.open 带 0o600 创建，窗口消失；已存在的文件仍补一次 chmod。
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(f"{hashed}\nsource={source}\n")
         try:
             os.chmod(path, 0o600)

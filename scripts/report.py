@@ -36,6 +36,34 @@ def _get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
         return json.load(response)
 
 
+def _git_describe() -> dict[str, Any]:
+    """这台机器是哪个发布点、脏了多少（v20.3.2 正式版 · 用户审计 A）。
+
+    上一版只报 `git_commit`。生产上它自报了一个**不在任何 tag 血脉上**的 hash ——
+    脱敏重写历史后生产 `.git` 停在旧血脉，文件内容却与新 tag 逐字节一致。
+    用户拿那个 hash 回小仓对不上任何东西。**用户要的不是 hash，是「我这台机器是
+    哪个发布点，脏了多少」。** 所以：
+      · `describe`：`git describe --tags --always --dirty`
+      · `exact_tag`：恰好在某个 tag 上（`--exact-match`），否则 None
+      · `dirty`：工作树有未提交改动
+      · `anchored`：exact_tag 且不 dirty —— 只有它为 True，这份报告才配替机器背书
+    """
+    root = Path(__file__).resolve().parents[1]
+    out: dict[str, Any] = {"describe": None, "exact_tag": None, "dirty": None, "anchored": False}
+    def _run(args: list[str]) -> str | None:
+        try:
+            r = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=3)
+            return r.stdout.strip() if r.returncode == 0 else None
+        except Exception:
+            return None
+    out["describe"] = _run(["describe", "--tags", "--always", "--dirty"])
+    out["exact_tag"] = _run(["describe", "--tags", "--exact-match"])
+    porcelain = _run(["status", "--porcelain", "--untracked-files=no"])
+    out["dirty"] = None if porcelain is None else bool(porcelain.strip())
+    out["anchored"] = bool(out["exact_tag"]) and out["dirty"] is False
+    return out
+
+
 def _git_commit() -> str | None:
     try:
         result = subprocess.run(
@@ -160,6 +188,7 @@ def _public_report(health: dict[str, Any]) -> dict[str, Any]:
         "generated_at": int(time.time()),
         "service_version": SERVICE_VERSION,
         "git_commit": _git_commit(),
+        "git_describe": _git_describe(),
         "health_status": health.get("health_status"),
         "status": health.get("status"),
         "engine_mode": _engine_mode_of(health),
@@ -195,6 +224,11 @@ def _full_report(health: dict[str, Any]) -> dict[str, Any]:
 def _exit_code(report: dict[str, Any]) -> int:
     if report.get("health_status") != "ok" or report.get("degraded"):
         return 3
+    # v20.3.2 正式版（用户审计 A）：一台脱锚的机器（不在任何 tag 上 / 工作树脏）
+    # 不许拿到 0。0 等于替它背书；2（warning）让读者去看 git_describe。
+    gd = report.get("git_describe") or {}
+    if gd.get("describe") is not None and not gd.get("anchored"):
+        return 2
     if report.get("warming_up") or report.get("anomalies", {}).get("warnings"):
         return 2
     maintenance = report.get("maintenance", {}) or {}

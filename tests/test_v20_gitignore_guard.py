@@ -225,6 +225,9 @@ _PRUNE_NAMES = {
     "dist": "dist/aidumei-20.0.whl",
     "build": "build/lib/ducky/x.py",
     ".eggs": ".eggs/x.egg",
+    # v20.3.2 正式版：备胎嵌入模型缓存是运行期产物（生产机 91MB），.gitignore 已挡；
+    # 09-03 生产复测本守卫把缓存里的模型元数据 json 当成「该发布的文件」报红 —— 守卫的世界模型缺这一区。
+    "local_embed_cache": "local_embed_cache/models--Qdrant--x/config.json",
 }
 # 前缀判据：`data`、`data_real`、`data_mock`、`data_smoke` … 代表路径必须打在
 # **通配那条规则**上（`data_*/`），不能拿被单独规则挡住的名字充数。

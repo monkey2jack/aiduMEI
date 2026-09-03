@@ -16,7 +16,7 @@ from ducky.scoring import (
     DEFAULT_WEIGHTS,
     RECENCY_LAMBDA,
     RERANK_WEIGHT,
-    calc_bm25_score,
+    calc_token_overlap_score,
     compute_time_decay,
     extract_timestamp,
     normalize_score,

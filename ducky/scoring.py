@@ -172,12 +172,31 @@ def calc_token_overlap_score(query: str, text: str) -> float:
     """
     if not query or not text:
         return 0.0
-    q_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", query.lower()))
+    q_tokens = _overlap_tokens(query)
     if not q_tokens:
         return 0.0
     t_lower = text.lower()
     hits = sum(1 for tok in q_tokens if tok in t_lower)
     return round(hits / len(q_tokens), 4)
+
+
+def _overlap_tokens(text: str) -> set:
+    """词法重合用的切词：ASCII 按词；中文按 **bigram**（1–2 字的整段保留）。
+
+    v20.3.2 正式版（P1-8 · Gemini P0-4）：原正则 `[一-鿿]+` 把整句连续汉字当**一个**
+    token —— 「用户喜欢吃苹果」对「用户非常喜欢吃红富士苹果」得 0.0，多词中文查询在
+    融合分 0.25 权重的词法支路上恒为零。
+
+    与 text_fts 的 trigram 索引是**两个口径、一个理由**：索引要压误召回所以用三字窗；
+    这里只是软信号，要的是区分度 —— 同一对句子 trigram 得 1/5，bigram 得 4/6。
+    """
+    toks: set = set()
+    for seg in re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text.lower()):
+        if seg[0] < "\u4e00" or len(seg) <= 2:
+            toks.add(seg)
+        else:
+            toks.update(seg[i:i + 2] for i in range(len(seg) - 1))
+    return toks
 
 
 def extract_timestamp(item: dict) -> float:
@@ -348,7 +367,7 @@ def score_and_rank_candidates(
 
         # BM25 分
         content_text = str(item.get("memory") or item.get("content") or item.get("fact_value") or "")
-        bm25_s = (item.get("metadata") or {}).get("bm25_score", 0) or calc_bm25_score(query, content_text)
+        bm25_s = (item.get("metadata") or {}).get("bm25_score", 0) or calc_token_overlap_score(query, content_text)
         # v20.2.4（F-20）：外部数值一律过有限性闸门 —— min(nan, 1.0) 返回 nan
         bm25_s = min(finite_or(bm25_s, 0.0), 1.0)
 

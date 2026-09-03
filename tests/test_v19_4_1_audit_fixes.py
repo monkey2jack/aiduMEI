@@ -1234,7 +1234,11 @@ def _git_gated_cases():
 # 一条（这条纪律本来就写在 _sandbox_gated_cases 的 docstring 里）。
 # 注：fastembed_local 轴在沙箱的缺席形态是「模块在、模型文件不在」——
 # is_local_embed_available() 探的是模型文件路径，不是 import。
-_SANDBOX_ABSENT_AXES = ("ruff_installed", "mcp_extra", "fastembed_local")
+# v20.3.2 正式版（2026-09-03 生产沙箱实读）：备胎模型轴**不在**缺席表里 —— 沙箱形态（不带 .env）全量
+# 实测 5 跳 = ruff×3 + mcp×2，fastembed_local 门控的那 1 条**实际没跳**：fresh 进程里
+# is_local_embed_available() 为 False（默认缓存路径无模型），但会话内其他用例装载过模型后模块级
+# 缓存命中，门控判据读到的是会话状态而不是机器 —— 登记为待查（用例隔离问题），登记表按实际跳过登记。
+_SANDBOX_ABSENT_AXES = ("ruff_installed", "mcp_extra")
 
 
 @functools.lru_cache(maxsize=1)
@@ -1368,7 +1372,7 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 模型文件×1 = 5，git 轴 1 条跑过了。推导式保留给「无 .git 白名单拷贝」
     # 形态兜底，但文档一旦带着「实测」标注，就按 MEASURED_SANDBOX 断言 ——
     # 实测值不可被推导式覆盖（这正是本守卫哲学：测不到就明说测不到）。
-    MEASURED_SANDBOX = (1576, 5)  # 2026-09-02 生产机沙箱实测（v20.3.2 树，bundle clone 含 .git）；换树必须重测后改这里
+    MEASURED_SANDBOX = (1721, 5)  # 2026-09-03 生产机沙箱实测（v20.3.2 正式版树，bundle clone 含 .git，不带 .env）；换树必须重测后改这里
     # 2026-09-02 生产机全轴齐备实测（五轴：.git + ruff + mcp extra + 宿主 + 备胎模型缓存），v20.3.2 树。
     # 这一格从前是「待复测 + 推导值」，推导值恰好等于实测值 —— 但推导对了不等于
     # 测过了；换树必须重测后改这里。
@@ -1377,7 +1381,7 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，
     # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
     # 现在两套环境各配各的命令、各报各的数，且必须同屏。
-    MEASURED_BASIC = (1617, 32)   # 2026-09-02 干净 venv 实测（Python 3.12，只装 requirements*）
+    MEASURED_BASIC = (1694, 32)   # 2026-09-03 干净 venv 实测（Python 3.12，只装 requirements*）
     sandbox_row_re = re.compile(
         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*(\d{4}-\d{2}-\d{2})\s*生产机实测\*\*")
 

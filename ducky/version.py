@@ -3,7 +3,57 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v20.3.2-beta (七方外审整改 · 默认配置面 · 2026-09-02)
+v20.3.2 (正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03)
+    主题：**pre 修的是「代码算错了」，beta 修的是「默认值是错的」，正式版修的是
+    「边界不成立」—— 串行、正常、凭据齐全的路上全绿；换到并发 / 异常 / 中文 / 浏览器 /
+    真 uvicorn / 长期运行，边界就不在了。**
+    五方外审（用户方 + Gemini 3.8 Flash + GLM-5.3 + GPT-5.6 + Kimi-k3）34 项发现全部坐实、
+    零假指控；本版按《外审后任务书》全部闭合。不升 20.3.3：pre → beta → 正式，版本身份不变。
+    1. P0-4/P0-5（GLM F-1/F-2 · Codex F-08）逃生阀 AIDUMEI_TRUST_PROXY 在**真 uvicorn**下恒 503：
+       uvicorn 默认 proxy_headers=True 用 XFF 的**值**改写 client.host —— 全仓「不采信 XFF 值」
+       被启动参数一行推翻；TestClient 不经过那一层，所以 9 条守卫全绿。main() 显式
+       proxy_headers=False。中间件真实顺序与注释相反：鉴权最外层，401/503 不进计数、不带
+       安全头 —— 物理调序。**纪律：凡与请求来源 / 请求头 / 中间件层次有关的判据，一律起真
+       uvicorn.Server + 真 socket 验；TestClient 只许测路由内部逻辑。**
+    2. P0-1/P0-2/P0-3（用户审计 A/B/C）report.py 自报的 commit 不在任何 tag 血脉上却退出 0 →
+       git describe + anchored 判定，脱锚退出 2；/health 匿名视图**留键说明不删键**（一行
+       Prompt 第 7 步要读的 data_dir_writable 对未带凭据的 agent 仍可读），门禁未启用时全量
+       开放，匿名结果 30s 缓存；acceptance 的「hard gate: push_gate exits 0」只测执行位 → 真跑；
+       push_gate 改 bash + 解释器探测（生产只有 bash 与 venv/）。
+    3. P1-7 MCP 14 个工具补 bank_id（v20 最核心的多域隔离此前在 Claude Desktop / Cursor / Hermes
+       生态里不可达）；P1-11 top_k 加 1–100 边界并给后端 fan-out 硬顶；P1-13 配置损坏 ≠ 空配置
+       （ConfigUnreadable → 409，原子写带 .bak）；P1-14 main() 不再自己起后台（lifespan 唯一
+       负责人，策略检查前零副作用）。
+    4. P1-8 中文词元：原正则把整句连续汉字当**一个** token，多词中文查询词法分恒 0 →
+       中文 bigram（与 FTS trigram 两个口径一个理由：索引压误召回，重合分要区分度）；
+       旧名 calc_bm25_score 自家零调用（守卫）。
+    5. P1-9 事务卫生：_ConnProxy.__exit__ 由裸 pass 恢复 sqlite3 契约（异常 rollback / 正常
+       commit）；借出时发现悬挂事务**出声** + /health 计数（不自动回滚：同线程嵌套借用合法）；
+       db_tx() 供新代码；无 rollback 写函数棘轮 96 → 93 只降不升。
+    6. P1-10 幂等：claim 由 SELECT→INSERT 两步改 INSERT…ON CONFLICT DO NOTHING 原子抢占（barrier
+       并发双 new 验红）；pending → 409 不再继续写；finalize 失败释放 key，而不是把合法重试
+       锁死 10 分钟。
+    7. P1-12 无凭据模式 Host 校验（Codex F-04 · DNS rebinding）：Host ∉ 回环 / AIDUMEM_HOST /
+       AIDUMEI_TRUSTED_HOSTS → 421；浏览器跨站写（Origin 非受信 / Sec-Fetch-Site: cross-site）
+       → 403；无 Origin 的 CLI / MCP / cron 不受影响；有凭据或 TRUST_PROXY=1 时让位。
+    8. P1-15 环境变量注册表（用户审计 H / GLM F-3）：双前缀 90 个名字单一真相源，AST 抽取与注册表
+       **完全相等**（新增忘登记 / 登记不存在的名都红），启动期对未知 AIDUME?_ 变量 WARNING +
+       最近似名；动态前缀单独登记；salience 两个名字此前由 f-string 拼出、从未文档化 →
+       改字面量并采用当前前缀 AIDUMEI_SALIENCE_*。
+    9. P1-16 drill 5 项判据 4 项恒真 → 脱敏 / 空探针必 fail 并说明原因；P1-17 WAL compaction
+       （pending 全留、终态折叠、tmp+fsync+replace 原子替换、体积触发带滞回、对账后收敛）；
+       P0-6 mem0ai 2.0.19 → 2.0.20 双文件对齐 + 补丁台账上 /health（probes.mem0_patches）。
+    10. P2 批次：互斥规则逃生阀真接线（DATA_DIR/conflict_rules.json）；七循环 + coalesce 刷写器
+       可中断睡眠 + lifespan 停机 join；口令哈希创建即 0600；召回 INFO 日志不落 query 原文；搜索错误信封
+       error_code / retryable；注入拒绝文案给出路（如实：/add/raw 同受守卫）；水位告警如实说明
+       refine_memory 无 LLM 时有损；两条生产红的用例改为自造世界；沙箱缺席轴登记表增加
+       特征识别对照；TROUBLESHOOTING +2 条、OPERATIONS 基座升级仪式、README 数字表读表口径。
+       logger 契约处数 93 → 95（+env_registry +idempotency）。
+    11. 用例总数 1573 → 1726（上一发布 v20.3.1 → 本发布；`--collect-only` 2026-09-03 实测；
+       pre / beta 两个阶段快照均为 1649）。各形态通过 / 跳过数见 README 表，全部随本树重测
+       后填数，不沿用旧日期。
+
+v20.3.2 (beta 阶段快照 · 七方外审整改 · 默认配置面 · 2026-09-02)
     主题：**前十轮修的是「代码算错了」，这七份翻出的是「默认值是错的」。**
     三条最重的发现——反代裸奔、迁移顺序、绑定来源——代码逐行都对，
     错在默认配置与真实部署形态的接缝。「首跑没问题」不等于「按标准形态部署没问题」。
@@ -31,7 +81,7 @@ v20.3.2-beta (七方外审整改 · 默认配置面 · 2026-09-02)
        消解规则移除脱敏占位符（两条死规则）；calc_bm25_score → calc_token_overlap_score
        （**全仓两个同名函数都不是 BM25**，一起改）；单进程契约落成启动期守卫并
        接进 lifespan 与 main 两条路。
-    8. 用例总数 1589 → 1649。本机 1637 passed + 12 skipped（2026-09-02 实测）；
+    8. 用例数由 1589 增至 1649（阶段快照）。本机 1637 passed + 12 skipped（2026-09-02 实测）；
        基础安装路径 1617 passed + 32 skipped（同日干净 venv + 真实 clone 实测）。
     9. 脱敏：公开大仓全历史身份重写（94 个提交的 author/committer + 1 处提交信息
        部署域名），内容树逐字节未变，三面归零并由全新克隆独立复验。
@@ -42,7 +92,7 @@ v20.3.2-beta (七方外审整改 · 默认配置面 · 2026-09-02)
        3 轮全绿）。机制假设是 caplog 捕获全局 logger 后被异步日志污染。
        **不宣布已修**，登记待查。
 
-v20.3.2 (第 10 轮独立审计整改 · 零凭据首跑 · 2026-09-02)
+v20.3.2 (pre 阶段快照 · 第 10 轮独立审计整改 · 零凭据首跑 · 2026-09-01)
     主题：换一个模型、脱离本地笔记、把公开仓重新克隆到干净环境里审一遍。
     结论：代码是上游水平，问题全在代码与文档的接缝处 —— 三条主要发现没有一条
     是「代码算错了」，全是「文档说的和代码做的在某个特定环境下不一致」。而那个
@@ -65,7 +115,7 @@ v20.3.2 (第 10 轮独立审计整改 · 零凭据首跑 · 2026-09-02)
     7. 守卫世界模型修正：沙箱推导式仍把 git 轴算作缺席，而沙箱自 v20.3.1 起是
        bundle clone（有 .git）—— 守卫报「README 写错了」而 README 是对的。
        本仓第三次「守卫的世界模型落后于它守的现实」。
-    8. 用例总数 1573 → 1649。本机 1637 passed + 12 skipped（2026-09-02 实测）；
+    8. 用例数由 1573 增至 1649（阶段快照）。本机 1637 passed + 12 skipped（2026-09-02 实测）；
        基础安装路径 1617 passed + 32 skipped（同日干净 venv 实测）；生产机沙箱与
        全轴齐备两行待本树复测后填数。
     9. 被实测推翻的猜测一：「字段拼错会静默写入空记忆」→ 实测 422，必填校验正常。
@@ -1554,7 +1604,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("20.3.2", "", "v20.3.2", "第 10 轮独立审计整改 · 零凭据首跑 · 2026-09-02"),
+    ("20.3.2", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
     ("20.3.1", "", "v20.3.1", "九份审计整改 · 仪器读世界 · 2026-09-01"),
     ("20.3.0", "", "", "优忆思 · Agent 入口与可操作性 · 生效自证"),
     ("20.2.5", "", "", "两份审计整改 · F-03 假修复真修 · 删除三态 · Ruff 进门禁"),

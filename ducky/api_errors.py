@@ -32,3 +32,27 @@ def api_error_detail(exc: Exception, *, hint: str = "") -> str:
     tail = f"原始错误：{raw[:_MAX_RAW]}"
     guide = hint.strip() or "可用 GET /health 查看 degraded 与 degraded_details 确认组件状态"
     return f"服务端处理失败（非调用参数问题）。{guide}。{tail}"
+
+
+# v20.3.2 正式版（P2-34 · Codex F-11 部分采纳）：搜索路径的 200+status=error 信封
+# **不改状态码**（老客户端按 200 解析），但补两个机器可读字段：
+#   error_code —— 异常类名（不含消息，不泄内部路径）；
+#   retryable  —— 调用方能否原样重试（超时 / 连接 / 忙锁 / 限流 → True；参数、配置类 → False）。
+_RETRYABLE_MARKERS = ("timeout", "timed out", "connection", "temporarily", "unavailable",
+                      "rate limit", "ratelimit", "429", "503", "database is locked", "busy")
+
+
+def is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    text = (str(exc) + " " + exc.__class__.__name__).lower()
+    return any(m in text for m in _RETRYABLE_MARKERS)
+
+
+def error_envelope(exc: Exception, *, hint: str = "") -> dict:
+    """{"detail": 对外正文, "error_code": 异常类名, "retryable": bool} —— 搜索类 200 信封用。"""
+    return {
+        "detail": api_error_detail(exc, hint=hint),
+        "error_code": exc.__class__.__name__,
+        "retryable": is_retryable(exc),
+    }

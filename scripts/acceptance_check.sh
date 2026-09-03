@@ -115,7 +115,9 @@ check "hard gate: pytest sentinel subset exits 0" bash -c '
     tests/test_v20_3_1_integration_check.py tests/test_v20_3_1_idempotency_paths.py \
     tests/test_first_run_experience.py -q >/dev/null 2>&1
 ' _ "${PY}"
-check "hard gate: push_gate exits 0" bash -c 'test -x scripts/push_gate.sh'
+# v20.3.2 正式版（用户审计 C）：用例名说「exits 0」，判据原先只测 `test -x` —— 与 P2-16
+# 同型，同一个文件里。27 项全 PASS 有一项是这么 PASS 的。现在真跑。
+check "hard gate: push_gate exits 0" env AIDUMEM_PYTHON="${PY}" bash scripts/push_gate.sh
 
 if (( errors > 0 )); then
   printf '%d acceptance check(s) failed\n' "$errors" >&2

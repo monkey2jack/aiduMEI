@@ -100,7 +100,10 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=100)
     # MCP 等调用方传的是 top_k；显式接收，避免被 Pydantic 静默丢弃
     # 导致调用方指定数量永远不生效（P2-1 审计发现）。
-    top_k: int = 0
+    # 🔴v20.3.2 正式版（外审 Codex F-03）：top_k 原是裸 int，**覆盖** limit 的 1–100 边界，
+    # 一个 top_k=100000 就把向量查询、候选合并、排序、序列化全放大 —— limit 的上限
+    # 因此形同虚设。边界落在模型（所有调用方共同入口），与 limit 同顶。0 = 用 limit。
+    top_k: int = Field(default=0, ge=0, le=100)
     # P0-4 时间窗口过滤（可选，兼容旧调用方）
     before: str = ""
     after: str = ""

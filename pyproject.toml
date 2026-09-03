@@ -29,7 +29,7 @@ classifiers = [
 # 依赖树上 —— 前者可能装到 2023 年的 fastapi，行为与我们测过的完全不同。
 # 现在下限对齐实锁的主版本，上限拦住已知不兼容的下一个大版本。
 dependencies = [
-    "mem0ai==2.0.19",
+    "mem0ai==2.0.20",
     "fastapi>=0.115,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
     "pydantic>=2.9,<3.0",

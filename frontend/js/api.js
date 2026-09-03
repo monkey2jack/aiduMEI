@@ -248,7 +248,8 @@ function esc(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');   // v20.3.2：OWASP 第五个字符；单引号包裹属性时缺它就是 XSS 出口
 }
 
 function clip(s, n) {

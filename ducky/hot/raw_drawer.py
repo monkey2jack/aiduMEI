@@ -60,6 +60,14 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
             response["idempotency_replayed"] = True
             response["request_id"] = idem_state["key"]
             return response
+        if idem_state["action"] == "pending":
+            # v20.3.2 正式版（P1-10）：同键的前一个请求还在处理中。原实现对 pending
+            # 不做任何事、继续往下写 —— 幂等键在并发重试下反而制造重复。
+            raise HTTPException(
+                409,
+                "idempotency_key is still being processed by an earlier request; "
+                "retry after it completes (or after 600s)",
+            )
         if idem_state["action"] == "conflict":
             raise HTTPException(
                 409, "idempotency_key is already bound to a different payload")
@@ -74,7 +82,12 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         is_safe, sanitized_content, rejection = validate_and_sanitize_memory_content(req.content.strip())
         if not is_safe:
             logger.warning("🛡️ /add/raw rejected injection: %s", rejection)
-            raise HTTPException(400, f"Memory content rejected: {rejection}")
+            raise HTTPException(
+                400,
+                f"Memory content rejected: {rejection}. "
+                "If this is legitimate verbatim text, set AIDUMEM_INJECTION_GUARD_MODE=log_only "
+                "to store it with a warning instead of blocking; the guard applies to /add and /add/raw alike.",
+            )
 
         content = sanitized_content
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
