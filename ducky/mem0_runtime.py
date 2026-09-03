@@ -32,7 +32,10 @@ MEM0_CONFIG = mem0_config_path()   # v20.2.4 F-22：支持 AIDUMEM_CONFIG_FILE
 def _clear_qdrant_lock():
     """启动前清理 Qdrant 残留锁文件，防止服务崩溃后锁死"""
     try:
-        qdrant_path = os.path.join(BASE_DIR, "data", "qdrant")
+        # v20.3.2（外审 Gemini P2-3）：部署方设了 AIDUMEM_DATA_DIR 时，锁文件在那边，
+        # 硬编码 BASE_DIR/data 会去清一个不存在的路径 —— 崩溃重启后真锁清不掉。
+        from ducky.utils import DATA_DIR as _DATA_DIR
+        qdrant_path = os.path.join(_DATA_DIR, "qdrant")
         lock_file = os.path.join(qdrant_path, ".lock")
         if os.path.exists(lock_file):
             os.remove(lock_file)

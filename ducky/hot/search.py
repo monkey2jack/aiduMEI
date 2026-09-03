@@ -7,7 +7,14 @@ import os
 from fastapi import FastAPI, HTTPException
 
 from ducky.api_models import SearchRequest, SearchResponse
-from ducky.api_errors import api_error_detail
+from ducky.api_errors import api_error_detail, error_envelope
+
+
+def _query_fingerprint(q: str) -> str:
+    """P2-18（v20.3.2 正式版）：INFO 日志不落用户查询原文 —— 日志是第八个泄露面。
+    只留 sha1 前 10 位，够在同一份日志里把「同一查询多次召回」串起来。"""
+    import hashlib
+    return hashlib.sha1((q or "").encode("utf-8", "ignore")).hexdigest()[:10]
 from ducky.mem0_runtime import (
     _normalize_user_id,
     boost_salience_for_results,
@@ -329,18 +336,19 @@ def register_search_routes(app: FastAPI) -> None:
                 pass
 
             results = []
-            effective_limit = req.top_k if req.top_k and req.top_k > 0 else req.limit
+            # v20.3.2：模型层已 le=100，这里再 clamp 一次 —— 内部调用方可能绕过 Pydantic。
+            effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
             try:
                 results = lazy_import_hybrid()(
                     mem, req.query, uid, effective_limit,
                     before=req.before, after=req.after,
                     bank_id=bank_id,
                 )
-                logger.info(f"🔍 hybrid 召回: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
+                logger.info("🔍 hybrid 召回: query_len=%d query_fp=%s user_id=%s bank_id=%s → %d 条", len(req.query), _query_fingerprint(req.query), _normalize_user_id(req.user_id), req.bank_id, len(results))
             except Exception as e:
                 recall_path = "mem0_degraded"
                 logger.debug(f"混合召回不可用，降级 mem0 搜索: {e}")
-                raw = mem.search(req.query, filters=vector_scope_filters(uid, bank_id), top_k=max(effective_limit * 3, 20))
+                raw = mem.search(req.query, filters=vector_scope_filters(uid, bank_id), top_k=min(max(effective_limit * 3, 20), 300))   # v20.3.2：扇出硬顶，不靠输入边界间接保证
                 results = raw.get("results", raw) if isinstance(raw, dict) else raw
                 # 🔴v20：默认域不下推 bank_id（下推=清空存量），命名域的点在这里剔除。
                 results = [it for it in (results or []) if vector_item_in_bank(it, bank_id)]
@@ -348,7 +356,7 @@ def register_search_routes(app: FastAPI) -> None:
                     # 降级路径也必须兑现 P0-4 时间窗口，否则混合召回一挂
                     # before/after 就被静默丢弃，时间推理返回错误结果。
                     _filter_results_by_time(results, req.before, req.after)
-                logger.info(f"🔍 mem0 裸搜: query='{req.query}' user_id='{_normalize_user_id(req.user_id)}' → {len(results)} 条")
+                logger.info("🔍 mem0 裸搜: query_len=%d query_fp=%s user_id=%s bank_id=%s → %d 条", len(req.query), _query_fingerprint(req.query), _normalize_user_id(req.user_id), req.bank_id, len(results))
 
             boost_salience_for_results(results)
             _annotate_memory_types(results, user_id=_normalize_user_id(req.user_id),
@@ -436,14 +444,14 @@ def register_search_routes(app: FastAPI) -> None:
             return resp
         except Exception as e:
             logger.error(f"search 失败: {e}")
-            return {"status": "error", "results": [], "detail": api_error_detail(e)}
+            return {"status": "error", "results": [], **error_envelope(e)}
 
     @app.post("/search_trace")
     def search_trace(req: SearchRequest):
         """搜索记忆 + Recall Funnel trace（带分阶段耗时）"""
         try:
             mem = get_memory()
-            effective_limit = req.top_k if req.top_k and req.top_k > 0 else req.limit
+            effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
             scope = make_scope(req.user_id, req.bank_id)
             result = lazy_import_funnel()(mem, req.query, _normalize_user_id(scope.user_id), effective_limit, bank_id=scope.bank_id)
             # P0-4：与 /search 保持一致的时间窗口过滤。funnel 若返回
@@ -464,7 +472,7 @@ def register_search_routes(app: FastAPI) -> None:
                 "status": "error",
                 "trace": {"stages": [], "total_ms": 0, "final_count": 0},
                 "results": [],
-                "detail": api_error_detail(e),
+                **error_envelope(e),
             }
 
     # 🔴1：Tahoe-Gate 相关性闸门端点。此前 relevance_check 全库零生产调用，

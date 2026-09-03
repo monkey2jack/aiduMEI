@@ -24,6 +24,7 @@ import logging
 import os
 import sqlite3
 import time
+from ducky.shutdown import sleep as _shutdown_sleep
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -609,7 +610,8 @@ def reflect_background_loop() -> None:
     # 先睡一个间隔再反思：避免服务每次重启都立刻消耗一次 LLM 调用。
     # 手动 POST /reflect 不受此影响。
     try:
-        time.sleep(REFLECT_INTERVAL_HOURS * 3600)
+        if not _shutdown_sleep(REFLECT_INTERVAL_HOURS * 3600):
+            return  # 停机请求（P2-20）：收尾退出
     except Exception as e:
         logger.debug(f"reflect_background_loop: suppressed exception: {e}")
     while True:
@@ -622,4 +624,5 @@ def reflect_background_loop() -> None:
                 )
         except Exception as e:
             logger.error(f"[reflect-bg] 反思异常: {e}", exc_info=True)
-        time.sleep(REFLECT_INTERVAL_HOURS * 3600)
+        if not _shutdown_sleep(REFLECT_INTERVAL_HOURS * 3600):
+            return  # 停机请求（P2-20）：收尾退出
