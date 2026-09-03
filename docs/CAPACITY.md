@@ -23,6 +23,7 @@ aiduMEI exposes deployment capacity through `/health` and `scripts/report.py`. U
 - `facts_active_count`: number of active fact rows.
 - `facts_watermark_effective`: configured archive/refinement threshold.
 - `watermark_warning` is true when active facts exceed the effective threshold.
+- Threshold basis (v20.3.2, 2026-09-03): the shipped default of 800 is a conservative constant from v20.1, not a measured limit. On the reference production box, 1303 fact rows occupy a 4.9 MB `facts.db` with a 484 MB service RSS and all health probes green; the operator set `AIDUMEI_FACTS_WATERMARK=3000` (≈2.3× the current count) with two review triggers: `facts.db` above 15 MB or recall P95 above 300 ms. Raise the threshold only with a measurement like this; `refine_memory` without an LLM gear is lossy (v20.0 measured 20 memories → 1 summary line) and is not the default remedy.
 - If the warning appears, run the consolidation workflow rather than silently increasing the threshold.
 
 ## WAL
