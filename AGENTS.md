@@ -50,7 +50,8 @@ Expected output: JSON ending with `"status": "PASS"`, zero failures, and zero wa
 ## Three probes to check first
 
 ```bash
-curl -s http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.runtime_paths'
+curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.runtime_paths'
+# Without the token (auth gate on) probes are redacted: you get probes._redacted and only runtime_paths.data_dir_writable.
 ```
 
 1. `health_status` must be `ok`.

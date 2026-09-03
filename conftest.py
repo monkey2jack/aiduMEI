@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import pytest
 import shutil
 import tempfile
 
@@ -219,3 +220,59 @@ def _reap_test_tempdirs():
     except Exception:
         pass        # 清理失败不许影响测试结论
 
+
+# ── 会话收尾（v20.3.2 正式版）────────────────────────────────────────────────
+# 现象：全量 1714 passed 之后，解释器退出期偶发
+#   libc++abi: terminating due to uncaught exception of type std::__1::system_error:
+#   recursive_mutex lock failed: Invalid argument   （Abort trap: 6，今日 9 跑 2 崩）
+# 现场：会话末仍活着的线程只有 mem0 遥测的 posthog Consumer 与 aiduMEM-coalesce-flush；
+# 崩点在 C++ 静态析构（grpcio / onnxruntime 随 qdrant_client / fastembed 被 import），
+# 是第三方库在 macOS 上有名的终结期竞态，与被测代码无关 —— 但它让 push_gate 的
+# 测试关把「全绿」读成「红」。处置分两步：先礼后兵 —— 叫停全部后台循环并 join，
+# 显式跑完本文件登记的清理；然后带着 pytest 自己的退出码硬退出，不进入原生析构。
+# 只在测试进程生效，生产服务是长驻进程不经过这条路。设 AIDUMEI_TEST_HARD_EXIT=0 可关闭。
+_SESSION_EXIT_STATUS = {"code": None}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _SESSION_EXIT_STATUS["code"] = int(exitstatus)
+    try:
+        from ducky.shutdown import request_shutdown
+        request_shutdown()
+    except Exception:
+        pass
+    import threading as _th
+    import time as _t
+    deadline = _t.monotonic() + 3.0
+    for th in list(_th.enumerate()):
+        if th is _th.main_thread() or not th.name.startswith("aiduMEM-"):
+            continue
+        th.join(max(0.0, deadline - _t.monotonic()))
+    try:  # mem0 遥测消费者线程：让它把队列刷完并退出
+        import posthog as _ph
+        _ph.shutdown()
+    except Exception:
+        pass
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    if os.environ.get("AIDUMEI_TEST_HARD_EXIT", "1") == "0":
+        return
+    code = _SESSION_EXIT_STATUS["code"]
+    if code is None:
+        return
+    import logging as _lg
+    import sys as _sys
+    # 只删自己建的那一个（与上方 atexit 同一句判据）：套件里有用例会再起 pytest 子进程，
+    # 子进程沿用父进程目录 —— 第一版这里无条件 rmtree，把父进程后半程 29 条落盘用例
+    # 全部打成 FileNotFoundError（现场与本文件开头那段记录一字不差：护栏的 bug 伪装成产品的 bug）。
+    if REDIRECTED_DATA_DIR and OWNS_REDIRECTED_DIR:
+        try:
+            shutil.rmtree(REDIRECTED_DATA_DIR, True)
+        except Exception:
+            pass
+    _lg.shutdown()
+    _sys.stdout.flush()
+    _sys.stderr.flush()
+    os._exit(code)

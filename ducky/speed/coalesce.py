@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from ducky.shutdown import sleep as _shutdown_sleep
 from typing import Callable, Optional
 
 from ducky.utils import DEFAULT_USER_ID
@@ -518,7 +519,8 @@ def _coalesce_worker_loop() -> None:
     while True:
         try:
             cfg = _coalesce_cfg()
-            time.sleep(max(0.2, cfg["tick"]))
+            if not _shutdown_sleep(max(0.2, cfg["tick"])):
+                return  # 停机请求（P2-20）：收尾退出
             if not cfg["enabled"]:
                 continue
             due = coalesce_flush_due()
@@ -550,7 +552,8 @@ def _coalesce_worker_loop() -> None:
                         )
         except Exception as e:
             logger.debug(f"coalesce worker tick skip: {e}")
-            time.sleep(1.0)
+            if not _shutdown_sleep(1.0):
+                return  # 停机请求（P2-20）：收尾退出
 
 
 def ensure_coalesce_worker() -> None:

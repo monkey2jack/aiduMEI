@@ -87,6 +87,8 @@ def parse_iso_timestamp(ts_str: str) -> float:
 # ═══════════════════════════════════════════════
 import os
 import sqlite3
+import time as _time
+from contextlib import contextmanager
 
 # 安装根目录 — 单一真源。默认取本文件的上两级（即仓库根），
 # 也可用环境变量覆盖以支持任意部署路径：
@@ -268,8 +270,44 @@ class _ConnProxy:
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
-        pass  # 不关闭
+    def __exit__(self, exc_type, exc, tb):
+        """恢复 sqlite3 的语言级契约：正常退出 commit，异常退出 rollback；连接本身不关。
+
+        v20.3.2 正式版（P1-9 · Gemini P0-2）：原来是裸 pass —— `with conn:` 块里抛异常，
+        底层连接永久停在 in_transaction，持有 RESERVED 锁；其他线程的写排队到
+        busy_timeout 后 `database is locked`。close() 也是 no-op，所以没有任何路径能收尾。
+        """
+        try:
+            if exc_type is not None:
+                self._conn.rollback()
+            else:
+                self._conn.commit()
+        except sqlite3.Error as e:
+            logger.warning("_ConnProxy.__exit__ 收尾失败（%s）：%s", "rollback" if exc_type else "commit", e)
+        return False
+
+
+# P1-9 配套：借出时发现悬挂事务的计数（/health 可见）。不在借出时自动回滚 ——
+# 同一线程内的嵌套借用（helper 再拿一次连接）是合法的，自动回滚会毁掉外层在途写入。
+_LEAKED_TX = {"seen": 0}
+
+
+def leaked_transaction_count() -> int:
+    return _LEAKED_TX["seen"]
+
+
+@contextmanager
+def db_tx(conn):
+    """显式事务块：成功 commit，异常 rollback 后重抛。新代码优先用它，别再 try/except: pass。"""
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
 
 
 def _get_thread_conn(db_path: str) -> sqlite3.Connection:
@@ -285,6 +323,18 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
     if real_conn is not None:
         try:
             real_conn.execute("SELECT 1")  # 健康检查
+            if real_conn.in_transaction:
+                # 上一位借用者没 commit/rollback 就返回了（典型：except: pass）。出声 + 计数，
+                # 每线程每 60s 最多一条 WARNING，避免嵌套借用把日志刷满。
+                _LEAKED_TX["seen"] += 1
+                _last = getattr(_thread_local, "tx_warned_at", 0.0)
+                _now = _time.time()
+                if _now - _last > 60.0:
+                    setattr(_thread_local, "tx_warned_at", _now)
+                    logger.warning(
+                        "⚠️ 借出 SQLite 连接时发现悬挂事务（in_transaction=True，db=%s）："
+                        "上一位借用者异常返回未回滚，或正在嵌套借用；持续出现请查 /health "
+                        "probes.sqlite_leaked_transactions", os.path.basename(db_path))
             return _ConnProxy(real_conn)
         except Exception:
             # 连接已断开，重新创建
@@ -295,7 +345,17 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
     # 新建连接
     real_conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10.0)
     real_conn.row_factory = sqlite3.Row
-    real_conn.execute("PRAGMA journal_mode=WAL")
+    # v20.3.2 正式版：切 WAL 是「改日志模式」，另一连接同时首次打开同一新库时 SQLite 可能
+    # 直接回 SQLITE_BUSY 而不走 busy handler（生产库早已是 WAL，这里是 no-op；空库 + 并发
+    # 首开才会撞）。短重试而不是让整个借连接失败。
+    for _attempt in range(5):
+        try:
+            real_conn.execute("PRAGMA journal_mode=WAL")
+            break
+        except sqlite3.OperationalError as _e:
+            if "locked" not in str(_e).lower() or _attempt == 4:
+                raise
+            _time.sleep(0.05 * (_attempt + 1))
     real_conn.execute("PRAGMA busy_timeout=10000")
     real_conn.execute("PRAGMA cache_size=-500")  # 500KB/conn (default -2000=2MB)
     # 🔴9：注册 REGEXP 函数。SQLite 不原生支持 REGEXP，conflict_resolver 的

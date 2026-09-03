@@ -259,8 +259,16 @@ def test_cascade_delete_isolation_and_exact_match():
         conn.close()
 
 
-def test_cascade_delete_all_guards():
+def test_cascade_delete_all_guards(monkeypatch):
     """测试 delete_all 强制指定 user_id 与 default 租户二次确认防爆门禁 (P0-3)"""
+    # v20.3.2 正式版（P2-31）：本条在生产机红 —— 那里 mem0 后端真启用，向量层对一个
+    # 不存在的沙箱租户做删除会按后端状态给出 partial/failed。门禁判据与后端无关，
+    # 用例自造「mem0 未启用」的世界：只允许初始化边界的专用类型让删除链跳过该层。
+    import ducky.mem0_runtime as _mr
+
+    def _not_configured(*_a, **_k):
+        raise _mr.Mem0NotConfiguredError("test-sandbox: mem0 未启用（用例自造世界）")
+    monkeypatch.setattr(_mr, "get_memory", _not_configured)
     # 1. 空参数或空白字符必须直接抛出 ValueError
     with pytest.raises(ValueError, match="user_id 必须显式指定"):
         cascade_delete_all(user_id="")

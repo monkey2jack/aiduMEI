@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from ducky.shutdown import sleep as _shutdown_sleep
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -92,7 +93,8 @@ def auto_memory_background_loop():
     while True:
         try: _run_auto_memory()
         except Exception as e: logger.error(f"auto_memory 后台: {e}")
-        time.sleep(600)
+        if not _shutdown_sleep(600):
+            return  # 停机请求（P2-20）：收尾退出
 
 def _auto_expire_loop():
     """后台线程：每小时清理过期事实"""
@@ -110,7 +112,8 @@ def _auto_expire_loop():
             db.close()
         except Exception as e:
             logger.error(f"自动遗忘异常: {e}")
-        time.sleep(3600)
+        if not _shutdown_sleep(3600):
+            return  # 停机请求（P2-20）：收尾退出
 
 def _wrapper_auto_memory():
     try: _run_auto_memory()
