@@ -11,6 +11,7 @@ v8 重构 (2026-07-13):
 """
 
 import json, logging, os, sqlite3, time, re
+from ducky.shutdown import sleep as _shutdown_sleep
 import datetime as _dt
 from typing import Optional
 from datetime import datetime, timezone
@@ -385,7 +386,8 @@ def _background_consolidation_loop():
     while True:
         try: _run_consolidation(max_obs=30)
         except Exception as e: logger.error(f"consolidation 后台失败: {e}")
-        time.sleep(interval_s)
+        if not _shutdown_sleep(interval_s):
+            return  # 停机请求（P2-20）：收尾退出
 
 def _background_scene_cluster_loop():
     """后台场景聚类——如果 facts 表不存在则静默跳过"""
@@ -397,7 +399,8 @@ def _background_scene_cluster_loop():
             if first_run or "no such table" not in str(e):
                 logger.warning(f"scene cluster 跳过: {e}")
         first_run = False
-        time.sleep(43200)
+        if not _shutdown_sleep(43200):
+            return  # 停机请求（P2-20）：收尾退出
 
 def _observations_columns(conn) -> set:
     """返回 observations 表的实际列集（表不存在返回空集）。"""

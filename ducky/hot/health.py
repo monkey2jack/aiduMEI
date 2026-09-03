@@ -94,10 +94,68 @@ def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
     return out
 
 
+# ── 公开 /health 视图（v20.3.2 正式版 · 用户审计 B + Codex F-12）────────────────
+#
+# 两个问题一起解：
+#   · 用户审计 B：一行 Prompt 第 7 步要读 `runtime_paths.data_dir_writable`，而门禁启用后
+#     未授权调用方拿到的载荷里 **probes 整个键不存在** → jq 得 null → 按指令必须判失败停工。
+#     越按文档做（第 6 步配 token）越走不通。
+#   · Codex F-12：脱敏发生在**末尾** —— 匿名请求照样跑完 640 行、38 个 try 的深度探针，
+#     才在最后一行把结果扔掉。高频匿名探测 = 免费的数据库压力。
+#
+# 处置：
+#   1. 门禁**未启用** → 放行完整 probes（此时不存在需要防的侦察者，藏字段只伤自己人）；
+#   2. 门禁启用且未授权 → **留键说明**而不是删键：`probes._redacted` 告诉调用方「是你没带凭据」，
+#      `probes.runtime_paths` 只放 `data_dir_writable` 布尔（路径不外泄，第 7 步能过）；
+#   3. 匿名视图带 TTL 缓存：30 秒内重复匿名请求 **O(1)** 返回，不重跑探针。
+_PUBLIC_TTL_SECONDS = 30
+_PUBLIC_CACHE: dict = {"ts": 0.0, "full": None}
+
+
+def _auth_gate_enabled() -> bool:
+    """门禁是否启用；判定失败按启用处理（fail-closed）。"""
+    try:
+        from api_server import _auth_enabled
+        return bool(_auth_enabled())
+    except Exception:
+        return True
+
+
+def _public_view(full: dict) -> dict:
+    rp = (full.get("probes") or {}).get("runtime_paths") or {}
+    return {
+        "status": full.get("status"),
+        "version": full.get("version"),
+        "health_status": full.get("health_status"),
+        "degraded": full.get("degraded", []),
+        "warming_up": full.get("warming_up", []),
+        "probes": {
+            "_redacted": "authenticate (Authorization: Bearer <AIDUMEM_API_TOKEN>) to view runtime probes",
+            "runtime_paths": {
+                "data_dir_writable": rp.get("data_dir_writable"),
+                "_redacted": "paths hidden for unauthenticated callers",
+            },
+        },
+    }
+
+
 def register_health_routes(app: FastAPI) -> None:
     @app.get("/health")
     def health(request: Request):
         """B 档：lazy 预热 + 真实探针 + 反静默降级追踪 + 水位预警。"""
+        import time as _time
+        from ducky.security.auth import SESSION_COOKIE_NAME, validate_session
+        _gate = _auth_gate_enabled()
+        try:
+            from api_server import _request_authorized
+            _authz = _request_authorized(request)
+        except Exception:
+            _authz = validate_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
+        _anonymous = _gate and not _authz
+        if _anonymous and _PUBLIC_CACHE["full"] is not None \
+                and _time.time() - _PUBLIC_CACHE["ts"] < _PUBLIC_TTL_SECONDS:
+            # 匿名 + 30s 内已有全量结果：不重跑探针（Codex F-12）。
+            return _public_view(_PUBLIC_CACHE["full"])
         module_ok = {}
         try:
             lazy_import_layer1()
@@ -207,6 +265,21 @@ def register_health_routes(app: FastAPI) -> None:
             probes["injection_rejections"] = rejection_stats()
         except Exception as _rj_exc:
             probes["injection_rejections"] = {"error": str(_rj_exc)[:100]}
+
+        # v20.3.2 正式版（基座 mem0ai 2.0.19→2.0.20 配套）：**补丁台账上 /health。**
+        # 上一轮外审说「补丁台账逐条上 /health」—— 本文件此前 0 处引用 mem0_patches，
+        # 那句话是错的。基座每升一次小版本，运维必须一眼看到 applied / not_needed /
+        # drift；没有这个探针，「补丁层在 2.0.20 上还对不对」只能靠跑测试才知道。
+        try:
+            from ducky.mem0_patches import patch_status
+            probes["mem0_patches"] = patch_status()
+            try:
+                from ducky.utils import leaked_transaction_count
+                probes["sqlite_leaked_transactions"] = {"seen_since_start": leaked_transaction_count()}
+            except Exception as _exc:  # 探针失败不许拖垮 /health
+                probes["sqlite_leaked_transactions"] = {"error": str(_exc)[:80]}
+        except Exception as _mp_exc:
+            probes["mem0_patches"] = {"error": str(_mp_exc)[:100]}
 
         # v20.2.4（外审 F-03）：本地档拦下的云出口计数。
         # 「local 档零外呼」这句话需要一个能被观察的凭据，而不只是一条测试。
@@ -623,7 +696,7 @@ def register_health_routes(app: FastAPI) -> None:
                     )
             probes["facts_watermark_effective"] = watermark_threshold
             if facts_count > watermark_threshold:
-                warnings.append(f"事实库水位较高（当前有效事实 {facts_count} 条，阈值 {watermark_threshold}），建议触发 refine_memory 归档精炼")
+                warnings.append(f"事实库水位较高（当前有效事实 {facts_count} 条，阈值 {watermark_threshold}）。注意：refine_memory 在无 LLM 挡位下会把多条记忆压成一句目录（有损，v20.0 实测 20 条换 1 句），先确认 LLM 挡位可用再触发；或按容量规划调高 AIDUMEI_FACTS_WATERMARK")
                 probes["watermark_warning"] = True
             else:
                 probes["watermark_warning"] = False
@@ -732,22 +805,11 @@ def register_health_routes(app: FastAPI) -> None:
             health_status=status,
         )
         # Public health must remain useful for load balancers without becoming a
-        # reconnaissance report. Unauthenticated callers receive a strict allow-list.
-        from ducky.security.auth import SESSION_COOKIE_NAME, validate_session
-        authorized = False
-        try:
-            from api_server import _request_authorized
-            authorized = _request_authorized(request)
-        except Exception:
-            authorized = validate_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
-        if not authorized:
-            return {
-                "status": status,
-                "version": _version_info["service_version"],
-                "health_status": status,
-                "degraded": degraded,
-                "warming_up": warming_up,
-            }
+        # reconnaissance report. 门禁启用且未授权 → 留键说明的公开视图（见模块头注释）。
+        _PUBLIC_CACHE["ts"] = _time.time()
+        _PUBLIC_CACHE["full"] = full
+        if _anonymous:
+            return _public_view(full)
         return full
 
     @app.get("/metrics")

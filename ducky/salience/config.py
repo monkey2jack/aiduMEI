@@ -7,13 +7,21 @@ import os
 from ducky.utils import SALIENCE_DB, get_salience_conn  # noqa: F401 — re-export 兼容
 
 
+# 环境变量覆盖名必须是**字面量**：ducky.env_registry 从 AST 字符串常量抽名单，
+# f-string 拼出来的名字对守卫不可见（用户拼错也就没人提醒）。
+_ENV_OVERRIDES = {
+    "salience_half_life_days": "AIDUMEI_SALIENCE_HALF_LIFE_DAYS",
+    "salience_floor": "AIDUMEI_SALIENCE_FLOOR",
+}
+
+
 def _manifest_num(key: str, fallback: float) -> float:
     """🔴10：从 manifest.json 的 config 段读取可配置项默认值，环境变量优先。
 
     此前 manifest 的 salience_half_life_days / salience_floor 等只是摆设，代码全硬编码，
     「可配置」卖点失效。现在真正读取：环境变量 AIDUMEM_<KEY大写> > manifest default > fallback。
     """
-    env = os.getenv(f"AIDUMEM_{key.upper()}")
+    env = os.getenv(_ENV_OVERRIDES[key])  # 未登记的键直接 KeyError：拼名必须是字面量
     if env:
         try:
             return float(env)
