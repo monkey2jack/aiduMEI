@@ -99,3 +99,8 @@ scan_words.txt
 ._*
 .DS_Store
 docs/README_draft.md
+
+# v20.3.2 正式版（用户方）：生产机上躺着 91MB 备胎模型缓存与私人音乐，
+# 下一个 `git add -A` 就会把它们推上公开仓 —— 一行的事，别等出事。
+local_embed_cache/
+*.mp3

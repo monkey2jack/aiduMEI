@@ -74,6 +74,14 @@ def register_add_routes(app: FastAPI) -> None:
                 response["idempotency_replayed"] = True
                 response["request_id"] = idempotency_state["key"]
                 return response
+            if idempotency_state["action"] == "pending":
+                # v20.3.2 正式版（P1-10）：同键的前一个请求还在处理中。原实现对 pending
+                # 不做任何事、继续往下写 —— 幂等键在并发重试下反而制造重复。
+                raise HTTPException(
+                    409,
+                    "idempotency_key is still being processed by an earlier request; "
+                    "retry after it completes (or after 600s)",
+                )
             if idempotency_state["action"] == "conflict":
                 raise HTTPException(
                     409,
@@ -238,7 +246,13 @@ def register_add_routes(app: FastAPI) -> None:
             _is_safe, _, _rejection = validate_and_sanitize_memory_content(_full_text)
             if not _is_safe:
                 logger.warning(f"🛡️ [InjectionGuard] POST /add 拦截注入: {_rejection}")
-                raise HTTPException(400, f"Memory content rejected: {_rejection}")
+                raise HTTPException(
+                    400,
+                    f"Memory content rejected: {_rejection}. "
+                    "If this is legitimate verbatim text (e.g. a quoted prompt-injection sample), "
+                    "set AIDUMEM_INJECTION_GUARD_MODE=log_only to store it with a warning instead of "
+                    "blocking; the guard applies to /add and /add/raw alike.",
+                )
 
             # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文保真层
             # 注入防御通过后，把逐字原文并行落库（mem0 抽取之外的第二层）。

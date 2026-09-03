@@ -467,23 +467,9 @@ def test_all_axes_number_is_measured_and_attributed():
         )
 
 
-def test_every_registered_skip_axis_has_a_probe():
-    """每条登记的跳过轴都必须有探测器 —— 少一个，齐备判定就永远说不出「齐备」。
-
-    **本函数的前身是一条绊线**（`test_no_machine_here_satisfies_every_axis`）：
-    它在「本机九轴齐备」时故意 `pytest.fail`，用来保全「我们手上没有那样一台机器」
-    这句话 —— 让它变成一条会随环境失效的断言，而不是 README 里一句无人复核的话。
-
-    2026-08-24 那条绊线**按设计亮红了**：生产实机九轴同时齐备，全量 0 跳过。
-    绊线自己的报错原文就是「这是好事：现在可以真跑一次全量，把 README 里
-    「推导值，从未实测」改成实测值，并删掉这条断言」。照办 —— 绊线已拆，
-    README 的那一行换成带日期的实测值，由
-    `test_all_axes_number_is_measured_and_attributed` 接着守。
-
-    **保留下来的是探测器完备性这一半，它和绊线是两件事。**
-    轴从四条长到九条时若不补探测器，`len(present)` 永远小于 `len(_AXES)`，
-    任何基于「齐备与否」的判断都会静默失真 —— 这个风险和绊线在不在无关。
-    """
+def _present_axes() -> list:
+    """本机在场的跳过轴（特征探测，非登记表）。v20.3.2 正式版（P2-32 · Kimi M-3）从
+    test_every_registered_skip_axis_has_a_probe 抽出，供「登记表 vs 世界」守卫复用。"""
     present = []
     # ⚠️ 探测器必须问**闸门本身**，不许自己另写一套判据。
     #
@@ -507,13 +493,21 @@ def test_every_registered_skip_axis_has_a_probe():
                      ("regex", "bench_dep_regex"),
                      ("numpy", "bench_dep_numpy"),
                      ("nltk", "bench_dep_nltk"),
-                     ("mem0", "mem0_base"),
-                     ("fastembed", "fastembed_local")):
+                     ("mem0", "mem0_base")):
         try:
             __import__(mod)
         except ImportError:
             continue
         present.append(key)
+    # fastembed_local 的真闸门是「模型文件在场」（is_local_embed_available 探路径），不是「模块能 import」。
+    # v20.3.2 正式版（P2-32）：上一版这里按 import 判 —— 生产沙箱里 fastembed 模块在、模型文件（按默认
+    # 缓存路径）不在，探针报「在场」而用例实际 skip；探针与闸门两套口径，登记表对照守卫因此假红。
+    try:
+        from ducky.local_embed import is_local_embed_available as _le_ok
+        if _le_ok():
+            present.append("fastembed_local")
+    except Exception:
+        pass
     from benchmarks import download as _bdl      # 走产品自己的解析器，不另立门户
     if pathlib.Path(_bdl.data_dir(), "locomo10.json").exists():
         present.append("locomo_dataset")
@@ -543,6 +537,27 @@ def test_every_registered_skip_axis_has_a_probe():
     except (ImportError, ValueError):
         pass
 
+    return present
+
+
+def test_every_registered_skip_axis_has_a_probe():
+    """每条登记的跳过轴都必须有探测器 —— 少一个，齐备判定就永远说不出「齐备」。
+
+    **本函数的前身是一条绊线**（`test_no_machine_here_satisfies_every_axis`）：
+    它在「本机九轴齐备」时故意 `pytest.fail`，用来保全「我们手上没有那样一台机器」
+    这句话 —— 让它变成一条会随环境失效的断言，而不是 README 里一句无人复核的话。
+
+    2026-08-24 那条绊线**按设计亮红了**：生产实机九轴同时齐备，全量 0 跳过。
+    绊线自己的报错原文就是「这是好事：现在可以真跑一次全量，把 README 里
+    「推导值，从未实测」改成实测值，并删掉这条断言」。照办 —— 绊线已拆，
+    README 的那一行换成带日期的实测值，由
+    `test_all_axes_number_is_measured_and_attributed` 接着守。
+
+    **保留下来的是探测器完备性这一半，它和绊线是两件事。**
+    轴从四条长到九条时若不补探测器，`len(present)` 永远小于 `len(_AXES)`，
+    任何基于「齐备与否」的判断都会静默失真 —— 这个风险和绊线在不在无关。
+    """
+    present = _present_axes()
     probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
               "bench_dep_regex", "bench_dep_numpy", "bench_dep_nltk",
                   "locomo_dataset", "git_binary", "mem0_base", "fastembed_local",

@@ -312,9 +312,14 @@ def test_unauthenticated_health_uses_strict_allowlist(monkeypatch):
     monkeypatch.setenv("AIDUMEM_API_TOKEN", "secret")
     response = client.get("/health")
     assert response.status_code == 200
-    assert set(response.json()) == {
-        "status", "version", "health_status", "degraded", "warming_up"
-    }
+    body = response.json()
+    # v20.3.2 正式版（P0-2 · 用户审计 B）：匿名视图**留键说明而不删键** —— 文档配方
+    # `.probes.runtime_paths.data_dir_writable` 对未带凭据的 agent 仍可读，其余探针以
+    # _redacted 说明代替。顶层键集与嵌套内容都要钉死，侦察面不许悄悄变宽。
+    assert set(body) == {"status", "version", "health_status", "degraded", "warming_up", "probes"}
+    assert set(body["probes"]) == {"_redacted", "runtime_paths"}
+    assert set(body["probes"]["runtime_paths"]) == {"data_dir_writable", "_redacted"}
+    assert isinstance(body["probes"]["runtime_paths"]["data_dir_writable"], bool)
 
 def test_authenticated_health_returns_full_diagnostics(monkeypatch):
     import os
@@ -355,11 +360,13 @@ def test_report_public_payload_hides_sensitive_fields(monkeypatch):
     assert public["schema_version"] == 1
     assert set(public) == {
         "schema_version", "generated_at", "service_version", "git_commit",
+        "git_describe",  # v20.3.2 正式版 P0-1：锚定判定（describe/exact_tag/dirty/anchored），不含路径
         "health_status", "status", "engine_mode", "degraded", "warming_up",
         "maintenance", "next_actions",
     }
     assert "runtime_paths" not in public
     assert "probes" not in public
+    assert set(public["git_describe"]) == {"describe", "exact_tag", "dirty", "anchored"}
 
 def test_report_engine_mode_reads_probes_not_top_level():
     """用户审计 🟡-7：engine_mode 真身在 probes.engine_mode_policy，顶层没有这个键。"""

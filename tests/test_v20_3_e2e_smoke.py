@@ -68,6 +68,13 @@ def test_health_success_requires_core_probes(smoke):
 
 
 def test_missing_config_is_warning_not_silent_pass(smoke, monkeypatch):
+    # v20.3.2 正式版（P2-31）：生产机 .env 在 import 期灌回 AIDUMEM_CONFIG_FILE，
+    # 本条在那里读到真配置而 PASS —— 用例必须自造世界，不许依赖宿主环境。
+    monkeypatch.delenv("AIDUMEM_CONFIG_FILE", raising=False)
+    # config() 真正读的是 mem0_config_path()（产品自己的解析器）——生产机上仓库根就躺着真配置，
+    # 只改 _REPO 拦不住它（09-03 生产复测仍 PASS）。把解析器钉到一个不存在的路径，世界才是自造的。
+    monkeypatch.setitem(smoke.config.__globals__, "mem0_config_path",
+                        lambda: "/tmp/definitely-not-a-real-repo/mem0_config_local.json")
     monkeypatch.setattr(smoke, "_REPO_LOCAL_MISSING", True, raising=False)
     # The script intentionally reads the repo path from the module-level _REPO.
     smoke.config.__globals__["_REPO"] = pathlib.Path("/tmp/definitely-not-a-real-repo")
