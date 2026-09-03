@@ -184,11 +184,15 @@ def test_sandbox_absent_axes_registry_matches_feature_detection():
     assert registry <= all_axes, f"登记了不存在的轴：{registry - all_axes}"
     present = set(C._present_axes())
     absent_here = all_axes - present
+    # fastembed_local 轴单列不参与等式：它的门控判据 is_local_embed_available() 在 pytest 会话内
+    # 读的是模块级模型缓存 —— 生产沙箱实测「全量里不跳、单跑会跳」（2026-09-03，顺序依赖来源待查），
+    # 无论把它算在场还是缺席，等式都会在某一种跑法下假红。守卫只判它能判的，把判不了的说出来。
+    undecidable = {"fastembed_local"}
     prefix = pathlib.Path(sys.prefix)
     in_sandbox_form = (prefix / "pyvenv.cfg").exists() and prefix.name == "venv"
     if in_sandbox_form:
-        assert absent_here == registry, (
-            f"生产沙箱实测缺席轴 {sorted(absent_here)} ≠ 登记表 {sorted(registry)} —— 世界模型又落后了")
+        assert absent_here - undecidable == registry - undecidable, (
+            f"生产沙箱实测缺席轴 {sorted(absent_here)} ≠ 登记表 {sorted(registry)}（不含 fastembed_local）—— 世界模型又落后了")
     else:
         assert registry <= all_axes  # 开发机：特征识别结论仅供人读
 

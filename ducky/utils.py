@@ -87,6 +87,8 @@ def parse_iso_timestamp(ts_str: str) -> float:
 # ═══════════════════════════════════════════════
 import os
 import sqlite3
+import sys
+import threading as _threading
 import time as _time
 from contextlib import contextmanager
 
@@ -289,11 +291,38 @@ class _ConnProxy:
 
 # P1-9 配套：借出时发现悬挂事务的计数（/health 可见）。不在借出时自动回滚 ——
 # 同一线程内的嵌套借用（helper 再拿一次连接）是合法的，自动回滚会毁掉外层在途写入。
+#
+# v20.3.2 正式版收口后修正：第一版把「借出时 in_transaction」一律计为悬挂，生产首日报了 2 次，
+# 仪器补上调用点后现场是 write_fact（INSERT 已执行、尚未 commit）→ 治理钩子 ensure_governance_schema
+# 再借一次 —— 正是**嵌套借用**，不是泄漏。区分办法：请求入口给本次请求盖一个上下文戳
+# （BORROW_CONTEXT，contextvars 随 anyio 线程池传播），事务由哪个戳开启就记在连接旁；
+# 再借时戳相同 = 嵌套（不计数、DEBUG），戳不同或上一位戳已不在 = 上一位请求留下的悬挂（计数、WARNING）。
+# 无戳的场景（后台循环、脚本）分不出嵌套与泄漏，只记 DEBUG、不计数 —— 仪器只报它能判的。
+import contextvars as _contextvars
+BORROW_CONTEXT: "_contextvars.ContextVar[str | None]" = _contextvars.ContextVar("aidumem_borrow_context", default=None)
 _LEAKED_TX = {"seen": 0}
 
 
 def leaked_transaction_count() -> int:
     return _LEAKED_TX["seen"]
+
+
+def leaked_transaction_last() -> dict:
+    """最近一次借出时发现悬挂事务的现场（线程 / 上一位与本次借用者调用点），供 /health 定位。"""
+    return dict(_LEAKED_TX.get("last") or {})
+
+
+def _caller_site(depth: int = 3) -> str:
+    """借用者调用点 `file:line func`（跳过 utils 自己的帧）。sys._getframe 比 traceback 便宜两个量级。"""
+    try:
+        f = sys._getframe(depth)
+        while f is not None and f.f_code.co_filename.endswith(("utils.py",)):
+            f = f.f_back
+        if f is None:
+            return "?"
+        return f"{os.path.basename(os.path.dirname(f.f_code.co_filename))}/{os.path.basename(f.f_code.co_filename)}:{f.f_lineno} {f.f_code.co_name}"
+    except Exception:
+        return "?"
 
 
 @contextmanager
@@ -324,17 +353,32 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
         try:
             real_conn.execute("SELECT 1")  # 健康检查
             if real_conn.in_transaction:
-                # 上一位借用者没 commit/rollback 就返回了（典型：except: pass）。出声 + 计数，
-                # 每线程每 60s 最多一条 WARNING，避免嵌套借用把日志刷满。
-                _LEAKED_TX["seen"] += 1
-                _last = getattr(_thread_local, "tx_warned_at", 0.0)
-                _now = _time.time()
-                if _now - _last > 60.0:
-                    setattr(_thread_local, "tx_warned_at", _now)
-                    logger.warning(
-                        "⚠️ 借出 SQLite 连接时发现悬挂事务（in_transaction=True，db=%s）："
-                        "上一位借用者异常返回未回滚，或正在嵌套借用；持续出现请查 /health "
-                        "probes.sqlite_leaked_transactions", os.path.basename(db_path))
+                _prev = getattr(_thread_local, f"borrower_{cache_key}", "?")
+                _owner = getattr(_thread_local, f"txowner_{cache_key}", None)
+                _cur = BORROW_CONTEXT.get()
+                _site = _caller_site()
+                if _cur is not None and _owner is not None and _owner != _cur:
+                    # 事务由**另一个请求**开启且没收尾 —— 这才是悬挂：计数 + WARNING（每线程 60s 限流）
+                    _LEAKED_TX["seen"] += 1
+                    _LEAKED_TX["last"] = {"thread": _threading.current_thread().name, "db": os.path.basename(db_path),
+                                          "previous_borrower": _prev, "current_borrower": _site}
+                    _last = getattr(_thread_local, "tx_warned_at", 0.0)
+                    _now = _time.time()
+                    if _now - _last > 60.0:
+                        setattr(_thread_local, "tx_warned_at", _now)
+                        logger.warning(
+                            "⚠️ 借出 SQLite 连接时发现上一个请求留下的悬挂事务（db=%s，线程=%s）："
+                            "上一位借用者=%s，本次借用者=%s；上一位异常返回未 rollback/commit；"
+                            "详见 /health probes.sqlite_leaked_transactions",
+                            os.path.basename(db_path), _threading.current_thread().name, _prev, _site)
+                else:
+                    # 同一请求嵌套借用（合法），或无上下文戳分不清 —— 只记 DEBUG，不计数
+                    logger.debug("借出连接时事务在途（嵌套借用或无戳场景）：db=%s 上一位=%s 本次=%s",
+                                 os.path.basename(db_path), _prev, _site)
+            else:
+                # 事务尚未开启：本次借用者（所属请求戳）将成为下一个事务的主人
+                setattr(_thread_local, f"txowner_{cache_key}", BORROW_CONTEXT.get())
+            setattr(_thread_local, f"borrower_{cache_key}", _caller_site())
             return _ConnProxy(real_conn)
         except Exception:
             # 连接已断开，重新创建
@@ -365,6 +409,8 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
     except Exception:
         real_conn.create_function("REGEXP", 2, _sqlite_regexp)
     setattr(_thread_local, cache_key, real_conn)
+    setattr(_thread_local, f"borrower_{cache_key}", _caller_site())
+    setattr(_thread_local, f"txowner_{cache_key}", BORROW_CONTEXT.get())
     return _ConnProxy(real_conn)
 
 
