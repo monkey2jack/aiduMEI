@@ -1372,7 +1372,7 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 模型文件×1 = 5，git 轴 1 条跑过了。推导式保留给「无 .git 白名单拷贝」
     # 形态兜底，但文档一旦带着「实测」标注，就按 MEASURED_SANDBOX 断言 ——
     # 实测值不可被推导式覆盖（这正是本守卫哲学：测不到就明说测不到）。
-    MEASURED_SANDBOX = (1721, 5)  # 2026-09-03 生产机沙箱实测（v20.3.2 正式版树，bundle clone 含 .git，不带 .env）；换树必须重测后改这里
+    MEASURED_SANDBOX = (1723, 5)  # 2026-09-03 生产机沙箱实测（v20.3.2 正式版树，bundle clone 含 .git，不带 .env）；换树必须重测后改这里
     # 2026-09-02 生产机全轴齐备实测（五轴：.git + ruff + mcp extra + 宿主 + 备胎模型缓存），v20.3.2 树。
     # 这一格从前是「待复测 + 推导值」，推导值恰好等于实测值 —— 但推导对了不等于
     # 测过了；换树必须重测后改这里。
@@ -1381,7 +1381,7 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，
     # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
     # 现在两套环境各配各的命令、各报各的数，且必须同屏。
-    MEASURED_BASIC = (1694, 32)   # 2026-09-03 干净 venv 实测（Python 3.12，只装 requirements*）
+    MEASURED_BASIC = (1696, 32)   # 2026-09-03 干净 venv 实测（Python 3.12，只装 requirements*）
     sandbox_row_re = re.compile(
         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*(\d{4}-\d{2}-\d{2})\s*生产机实测\*\*")
 
