@@ -123,16 +123,63 @@ def test_leaked_transaction_is_visible_at_borrow_time(facts_conn, caplog):
     conn = u.get_facts_conn()
     conn.execute("CREATE TABLE IF NOT EXISTS t_leak(x INTEGER)")
     conn.commit()
+    # 请求 A 开了事务没收尾；请求 B（另一个上下文戳）借到同一线程连接 → 这才是悬挂
+    tok_a = u.BORROW_CONTEXT.set("request-A")
+    conn = u.get_facts_conn()
     conn.execute("INSERT INTO t_leak VALUES(1)")  # 开事务、不提交、模拟 except: pass 后返回
+    u.BORROW_CONTEXT.reset(tok_a)
+    before = u.leaked_transaction_count()
     monkeypatch_attr = getattr(u._thread_local, "tx_warned_at", None)
     u._thread_local.tx_warned_at = 0.0  # 每线程 60s 限流：前序用例可能刚出过声
+    tok_b = u.BORROW_CONTEXT.set("request-B")
     with caplog.at_level(logging.WARNING):
         u.get_facts_conn()
+    u.BORROW_CONTEXT.reset(tok_b)
     if monkeypatch_attr is not None:
         u._thread_local.tx_warned_at = monkeypatch_attr
-    assert any("悬挂" in r.getMessage() or "in_transaction" in r.getMessage() for r in caplog.records), (
-        "借出时发现悬挂事务却一声不响")
+    assert u.leaked_transaction_count() == before + 1, "另一个请求留下的悬挂事务没计数"
+    assert any("悬挂" in r.getMessage() for r in caplog.records), "借出时发现悬挂事务却一声不响"
+    last = u.leaked_transaction_last()
+    assert last.get("previous_borrower") and last.get("current_borrower"), f"现场没记调用点：{last}"
     conn.rollback()
+
+
+def test_nested_borrow_in_same_request_is_not_counted_as_leak(facts_conn, caplog):
+    """**收口后修正（生产首日 2 次「悬挂」的真相）**：同一请求内 INSERT 后再借一次连接 = 嵌套借用，不计数。
+
+    现场：write_fact 执行 INSERT（事务在途）→ 治理钩子 ensure_governance_schema 再借同一线程连接。
+    第一版探测器把它计成泄漏 —— 假红。仪器必须分得清「谁开的事务」。
+    """
+    import logging
+    u = facts_conn
+    tok = u.BORROW_CONTEXT.set("request-same")
+    try:
+        conn = u.get_facts_conn()
+        conn.execute("CREATE TABLE IF NOT EXISTS t_nest(x INTEGER)")
+        conn.commit()
+        before = u.leaked_transaction_count()
+        conn.execute("INSERT INTO t_nest VALUES(1)")   # 事务在途
+        u._thread_local.tx_warned_at = 0.0
+        with caplog.at_level(logging.WARNING):
+            inner = u.get_facts_conn()                 # 同一请求嵌套借用
+        inner.execute("INSERT INTO t_nest VALUES(2)")
+        conn.commit()
+        assert u.leaked_transaction_count() == before, "同一请求的嵌套借用被计成了悬挂事务（假红）"
+        assert not any("悬挂" in r.getMessage() for r in caplog.records)
+        assert conn._conn.in_transaction is False
+    finally:
+        u.BORROW_CONTEXT.reset(tok)
+
+
+def test_request_middleware_stamps_borrow_context():
+    """定义了不接线 = 没做：最外层中间件必须给每个请求盖戳。"""
+    import ast as _ast
+    import pathlib as _pl
+    src = (_pl.Path(__file__).resolve().parents[1] / "api_server.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    fn = next(n for n in _ast.walk(tree) if isinstance(n, _ast.AsyncFunctionDef) and n.name == "_record_http_outcome")
+    seg = _ast.get_source_segment(src, fn) or ""
+    assert "BORROW_CONTEXT" in seg and ".set(" in seg, "请求入口没有盖借用上下文戳，探测器分不出嵌套与悬挂"
 
 
 def test_write_functions_without_rollback_only_decrease():
