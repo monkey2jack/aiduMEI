@@ -274,8 +274,9 @@ def register_health_routes(app: FastAPI) -> None:
             from ducky.mem0_patches import patch_status
             probes["mem0_patches"] = patch_status()
             try:
-                from ducky.utils import leaked_transaction_count
-                probes["sqlite_leaked_transactions"] = {"seen_since_start": leaked_transaction_count()}
+                from ducky.utils import leaked_transaction_count, leaked_transaction_last
+                probes["sqlite_leaked_transactions"] = {"seen_since_start": leaked_transaction_count(),
+                                                        "last": leaked_transaction_last() or None}
             except Exception as _exc:  # 探针失败不许拖垮 /health
                 probes["sqlite_leaked_transactions"] = {"error": str(_exc)[:80]}
         except Exception as _mp_exc:

@@ -59,6 +59,7 @@ import logging
 from contextlib import asynccontextmanager as _asynccontextmanager
 import os
 import threading
+import uuid as _uuid
 import time
 import hmac
 from pathlib import Path
@@ -659,6 +660,10 @@ async def _record_http_outcome(request: Request, call_next):
     「计数（最外）→ 安全头 → 鉴权（最内）→ 路由」。tests/test_v20_3_2_release_real_asgi.py
     用真 uvicorn + 真 socket 钉行为，用 AST 钉顺序 —— 两条都要。
     """
+    # P1-9（收口后修正）：给本次请求盖借用上下文戳。contextvars 随 anyio 线程池传播到同步路由的
+    # 工作线程，utils 据此把「同一请求嵌套借连接」与「上一个请求留下悬挂事务」分开 —— 后者才计数。
+    from ducky.utils import BORROW_CONTEXT as _BORROW_CONTEXT
+    _BORROW_CONTEXT.set(_uuid.uuid4().hex)
     from ducky import http_metrics
     try:
         response = await call_next(request)
