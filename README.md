@@ -117,7 +117,6 @@
 裸装（不配任何云服务密钥）时它天然一直跑在本地档——**开箱即用的零依赖记忆库**；配上密钥自动升挡。
 一个包，三种活法，你说了算。
 
-
 > 三轮安全外审与社区 issue 的完整账本见 [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md)：只保留结论，过程与证据移出主 README。
 
 > 竞品定位、版本谱系与架构演进见 [docs/POSITIONING.md](docs/POSITIONING.md)、[docs/VERSION-LINEAGE.md](docs/VERSION-LINEAGE.md)。
@@ -275,6 +274,7 @@ Write and search must use the same `user_id` and `bank_id`. `/search` returns an
 
 两种方式**不要同时开**（会重复注入白烧 token）。完整步骤、验证方法与回滚见 [integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md)。
 
+> 💡 **宿主适配提示**：已原生适配 Hermes Agent 模块化解耦重构架构；注入超时收敛至 1.5s，确保对话流绝不阻塞。
 > ⚠️ **安全**：默认只监听 `127.0.0.1`；设置 `AIDUMEM_API_TOKEN` 或 UI 口令后接口会强制鉴权。跨机访问请配置凭据并前置 TLS 反代，别把无凭据实例暴露到公网。
 >
 > ⚠️ **会话是进程内的**（单机自托管形态下的有意取舍）：服务重启后所有登录会话失效，需要重新登录；**多实例部署时会话不共享**——同一个用户被负载均衡打到另一个实例上会被要求重新登录，那不是 token 坏了。真要多实例，请在反代上做会话粘滞（sticky session）。
@@ -415,7 +415,6 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 完整清单连注释见 [`.env.example`](.env.example)，`cp .env.example .env` 起步。
 
 ---
-
 
 ## 测试与质量
 
