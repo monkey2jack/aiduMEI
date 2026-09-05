@@ -3,6 +3,12 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.3.3 (生产小版本升级 · 宿主 Hermes 重构适配 · 2026-09-05)
+    主题：**宿主 Hermes Agent 架构重构适配与超时加固**
+    1. 宿主 Hermes Agent 升级至 September 2026 拆解后版本，MemoryProvider 12 项宿主集成测试 100% 全绿（12 passed in 0.23s）。
+    2. `integrations/aidumem-inject.sh` 注入超时从 2.0s 严格收紧至 1.5s，并在生产环境部署同步，防止慢调用拖累对话。
+    3. 用例总数 1728 → 1728（1728 通过率验证，全绿零回归）。
+
 v20.3.2 (正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03)
     主题：**pre 修的是「代码算错了」，beta 修的是「默认值是错的」，正式版修的是
     「边界不成立」—— 串行、正常、凭据齐全的路上全绿；换到并发 / 异常 / 中文 / 浏览器 /
@@ -1595,7 +1601,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.3.2"
+SERVICE_VERSION = "20.3.3"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1609,6 +1615,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.3.3", "", "v20.3.3", "宿主 Hermes 重构适配 · 注入超时收紧至 1.5s · 生产小版本升级 · 2026-09-05"),
     ("20.3.2", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
     ("20.3.1", "", "v20.3.1", "九份审计整改 · 仪器读世界 · 2026-09-01"),
     ("20.3.0", "", "", "优忆思 · Agent 入口与可操作性 · 生效自证"),
