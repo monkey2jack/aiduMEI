@@ -66,6 +66,7 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 - Backup, restore, upgrade, rollback: `docs/BACKUP_RESTORE.md`
 - Host integration and memory ownership: `docs/AGENT_INTEGRATION.md`
 - Script index: `scripts/README.md`
+- Deploy on Dockhold: `docs/DEPLOY_DOCKHOLD.md`
 
 ### Self-report
 
