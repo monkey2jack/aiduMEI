@@ -333,7 +333,7 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 169
 | Dimension | Status |
 |---|---|
 | Total cases | **1728** (measured via `pytest --collect-only`, 2026-09-03) |
-| Clean dev machine | 1716 passed · **12 skipped** — host Hermes source absent (measured 2026-09-03) |
+| Clean dev machine | 1715 passed · **13 skipped** — host Hermes source absent (measured 2026-09-03) |
 | Basic install path | 1696 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-03**) |
 | Sandbox on the production box | 1723 passed · **5 skipped** — **measured on the production box, 2026-09-03** (no `.env`; skips = ruff×3 + mcp×2) |
 | All axes present | 1728 passed · **0 skipped** — **measured on the production box, 2026-09-03** (separate all-axes venv) |
