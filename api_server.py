@@ -943,6 +943,13 @@ def main():
     _port_name, _port_raw = "AIDUMEM_API_PORT", os.environ.get("AIDUMEM_API_PORT")
     if not _port_raw:
         _port_name, _port_raw = "MEM0_API_PORT", os.environ.get("MEM0_API_PORT")
+    if not _port_raw:
+        # 容器 PaaS（Dockhold / Heroku / Railway / Render / Fly / Cloud Run 等）在**运行时**
+        # 才分配端口，且只通过 `PORT` 传入。部署方事先不知道值，写不进
+        # AIDUMEM_API_PORT —— 于是服务监听 8767、平台往另一个端口转发，
+        # 表现为「进程健康、外面 502」，日志里一句异常都没有。
+        # 排在两个专名之后：本地与 compose 部署的行为完全不变。
+        _port_name, _port_raw = "PORT", os.environ.get("PORT")
     port = _int_env(_port_name, 8767, minimum=1, maximum=65535, raw=_port_raw)
     if not _api_token():
         logger.warning(

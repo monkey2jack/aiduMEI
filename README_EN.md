@@ -301,7 +301,7 @@ Since v14 Aegis, all deployment-specific settings are injected via environment v
 | `AIDUMEM_ENTITY_KEYWORDS` | empty | Custom entity keywords for relevance gate, `\|` separated |
 | `AIDUMEM_LEGACY_USER_IDS` | empty | Historical `user_id` aliases (comma-separated, e.g. `admin,user`); without the mapping, older rows cannot be recalled. The hardcoded `admin`/`user` mapping was removed in v19.1.1 |
 | `AIDUMEM_API_TOKEN` | empty | REST API token. Once set, **every** endpoint requires `Authorization: Bearer`. Optional on loopback; **mandatory for any deployment reachable from outside** |
-| `AIDUMEM_API_PORT` | `8767` | API + console listen port |
+| `AIDUMEM_API_PORT` | `8767` | API + console listen port. Falls back to `MEM0_API_PORT`, then to `PORT` (the standard name container PaaS platforms use to inject a runtime port) |
 | `AIDUMEM_CONFIG_READONLY` | `0` | `1` makes the console's config endpoints read-only |
 | `UI_DIR` | `<repo>/frontend` | Console static files (API-only mode if absent) |
 | `AIDUMEM_URL` | `http://127.0.0.1:8767` | Hermes plugin / hook service URL |
