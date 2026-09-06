@@ -6,6 +6,22 @@
 
 ---
 
+## v20.3.3 — 容器托管平台适配 · Dockhold 部署指南（2026-09-04）
+
+> **开源生态第一次主动找上门**：Dockhold 的 Maziar110 在 Issue #6 看到嵌入式 SQLite + Qdrant 架构适合托管，
+> 随后提交 PR #10 修三个容器部署真问题、PR #11 补部署指南。问题与我们在 systemd 侧已修过的 HOME 坑同构，
+> 只是发生在容器侧；改动小而克制，Dockerfile 行为对本地/compose 不变。
+
+- **端口链回落到标准 `PORT`**（容器 PaaS 运行时注入）：`AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767`；
+  Dockerfile 删掉恒占第一环的 `ENV AIDUMEM_API_PORT`（默认仍是 8767，本地/compose 不变）。
+- **`/app/data` `/app/logs` 改为 `aidumem:0` + `chmod g=u`**：托管平台分配的任意 uid 惯例在 gid 0，
+  原来 `10001:10001 0755` 导致只读，死在 import 期且无日志。
+- **Dockerfile 加 `ENV HOME=/app/data`**：`useradd --no-create-home` 后 $HOME 不存在，mem0 SDK 在 import 期写它，
+  症状与生产那次「带着绿灯失能」一模一样（/health ok 但向量零召回）。
+- **新增 `docs/DEPLOY_DOCKHOLD.md`**（Maziar110 实测撰写）+ `AGENTS.md` 链接；文档提醒应用别叫 `aidumei`，
+  否则 Dockhold 注入的 `AIDUMEI_<id>_PORT_*` 会撞我们的命名空间。
+- **用例总数 1728 → 1728**（PR 的 15 行断言并入既有测试文件，README 数字表不变）。
+
 ## v20.3.2 — 正式版：五方外审整改 · 一致性与底层（2026-09-03；pre 09-01 · beta 09-02）
 
 ### 正式版（2026-09-03）
