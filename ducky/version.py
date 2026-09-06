@@ -3,6 +3,20 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.3.3 (容器托管平台适配 · Dockhold 部署指南 · 2026-09-04)
+    主题：**开源生态第一次主动找上门**：Dockhold 的 Maziar110 在 Issue #6 看到
+    嵌入式 SQLite + Qdrant 架构适合托管，随后提交 PR #10 修三个容器部署真问题、
+    PR #11 补部署指南。问题与我们在 systemd 侧已修过的 HOME 坑同构，只是发生在容器侧。
+    1. 端口链回落到标准 `PORT`（容器 PaaS 运行时注入）：`AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767`，
+       Dockerfile 删掉恒占第一环的 `ENV AIDUMEM_API_PORT`（默认仍是 8767，本地/compose 不变）。
+    2. `/app/data` `/app/logs` 改为 `aidumem:0` + `chmod g=u`：托管平台分配的任意 uid 惯例在 gid 0，
+       原来 10001:10001 0755 导致只读，死在 import 期且无日志。
+    3. Dockerfile 加 `ENV HOME=/app/data`：`useradd --no-create-home` 后 $HOME 不存在，
+       mem0 SDK 在 import 期写它，症状与生产那次「带着绿灯失能」一模一样（/health ok 但向量零召回）。
+    4. 新增 `docs/DEPLOY_DOCKHOLD.md`（Maziar110 实测撰写）+ `AGENTS.md` 链接；
+       文档提醒应用别叫 `aidumei`，否则 Dockhold 注入的 `AIDUMEI_<id>_PORT_*` 会撞我们的命名空间。
+    5. 用例总数 1728 → 1728（PR 的 15 行断言并入既有测试文件，README 数字表不变）。
+
 v20.3.2 (正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03)
     主题：**pre 修的是「代码算错了」，beta 修的是「默认值是错的」，正式版修的是
     「边界不成立」—— 串行、正常、凭据齐全的路上全绿；换到并发 / 异常 / 中文 / 浏览器 /
@@ -1595,7 +1609,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.3.2"
+SERVICE_VERSION = "20.3.3"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1609,6 +1623,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.3.3", "", "v20.3.3", "容器托管平台适配 · Dockhold 部署指南 · 2026-09-04"),
     ("20.3.2", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
     ("20.3.1", "", "v20.3.1", "九份审计整改 · 仪器读世界 · 2026-09-01"),
     ("20.3.0", "", "", "优忆思 · Agent 入口与可操作性 · 生效自证"),
