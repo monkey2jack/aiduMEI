@@ -340,6 +340,21 @@ def test_dockerfile_hands_over_only_the_writable_dirs():
     assert re.search(r"chown[^\n]*/app/data", df), "Dockerfile 没有把 /app/data 交给运行账号"
     assert re.search(r"chown[^\n]*/app/logs", df), "Dockerfile 没有把 /app/logs 交给运行账号"
 
+    # 交出可写目录还不够 —— $HOME 得**指到**其中一个。
+    # 这一条是 test_api_unit_gives_the_service_a_writable_home 的容器侧对偶：
+    # 那边生产实测踩过（mem0 SDK import 期写 $HOME，缺了就带着绿灯失能），
+    # systemd 一侧修了并立了守卫，Dockerfile 一侧同样的洞没人看着。
+    home = re.findall(r'^\s*ENV\s+HOME=[\"\']?(\S+?)[\"\']?\s*$', df, re.M)
+    assert home, (
+        "Dockerfile 没有 ENV HOME —— useradd --no-create-home 之后 $HOME 指向"
+        "不存在的目录，mem0 SDK 在 import 期写它，失败后服务照常起、/health 照常绿，"
+        "只有向量检索静默零召回。"
+    )
+    assert home[-1] in ("/app/data", "/app/logs"), (
+        f"ENV HOME={home[-1]} 不是交给运行账号的那两个目录之一 —— "
+        "指到只读目录等于没设。"
+    )
+
 
 def test_compose_drops_capabilities_and_blocks_privilege_gain():
     """compose 侧再补一道：cap_drop ALL + no-new-privileges。
