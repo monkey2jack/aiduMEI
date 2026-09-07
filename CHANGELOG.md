@@ -12,29 +12,18 @@
 
 ---
 
-## v20.3.4 — 容器托管平台适配 · Dockhold 部署指南（2026-09-07）
+## v20.3 · main 维护增量（2026-09-07，公开版本与 Release 不变）
 
-> **开源生态第一次主动找上门**：Dockhold 的 Maziar110 在 Issue #6 看到嵌入式 SQLite + Qdrant 架构适合托管，
-> 随后提交 PR #10 修三个容器部署真问题、PR #11 补部署指南。问题与我们在 systemd 侧已修过的 HOME 坑同构，
-> 只是发生在容器侧；改动小而克制，Dockerfile 行为对本地/compose 不变。
+感谢 [Maziar110](https://github.com/Maziar110) 在 [PR #10](https://github.com/monkey2jack/aiduMEI/pull/10)、
+[PR #11](https://github.com/monkey2jack/aiduMEI/pull/11) 和 [issue #6](https://github.com/monkey2jack/aiduMEI/issues/6)
+中提供修复、部署指南与复现信息。本次变化可从 `main` 获取；源码版本保持 `20.3`，既有 `v20.3` Tag / Release 不变。
 
-- **端口链回落到标准 `PORT`**（容器 PaaS 运行时注入）：`AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767`；
-  Dockerfile 删掉恒占第一环的 `ENV AIDUMEM_API_PORT`（默认仍是 8767，本地/compose 不变）。
-- **`/app/data` `/app/logs` 改为 `aidumem:0` + `chmod g=u`**：托管平台分配的任意 uid 惯例在 gid 0，
-  原来 `10001:10001 0755` 导致只读，死在 import 期且无日志。
-- **Dockerfile 加 `ENV HOME=/app/data`**：`useradd --no-create-home` 后 $HOME 不存在，mem0 SDK 在 import 期写它，
-  症状与生产那次「带着绿灯失能」一模一样（/health ok 但向量零召回）。
-- **新增 `docs/DEPLOY_DOCKHOLD.md`**（Maziar110 实测撰写）+ `AGENTS.md` 链接；文档提醒应用别叫 `aidumei`，
-  否则 Dockhold 注入的 `AIDUMEI_<id>_PORT_*` 会撞我们的命名空间。
-- **合并后补修**：冒烟脚本端口解析同步服务的优先级、边界与非法值回退；指南补齐配置文件、向量库、历史库的持久化路径和容器重建验收。
-- **构建上下文收紧**：排除本地虚拟环境、模型缓存、运行库、日志与备份。
-- **用例总数 1728 → 1743**（2026-09-07 收集实测；新增 15 项端口行为测试）。
+- **托管平台端口**：`api_server.py` 与 `scripts/e2e_smoke.py` 统一采用 `AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767` 的优先级，兼容平台注入的 `PORT`。
+- **容器权限**：`Dockerfile` 支持任意 UID + gid 0，data / logs 和 `HOME=/app/data` 可写，应用代码保持只读；`.dockerignore` 排除本地缓存与运行状态。
+- **持久化部署指南**：`docs/DEPLOY_DOCKHOLD.md` 补齐模型配置、Qdrant 与历史数据库的持久化路径，以及鉴权、换容器后的原文与向量召回验收；双语 README 和 `AGENTS.md` 提供入口。容器实测覆盖端口、权限、鉴权和原文留存；没有把未执行的云向量召回或平台账户部署写成已通过。
+- **用例总数 1728 → 1743**：新增真实启动入口与冒烟端口解析回归；README 与 `docs/TESTING.md` 分别注明测量环境、来源和验证边界。以下 2026-09-03 正式版记录保留当时的历史数据。
 
-## v20.3.3 — 宿主 Hermes 适配（2026-09-04）
-
-- 保留既有宿主模块化重构适配与 1.5s 注入超时。容器升级在此基础上递增版本。
-
-## v20.3.2 — 正式版：五方外审整改 · 一致性与底层（2026-09-03；pre 09-01 · beta 09-02）
+## v20.3 (2026-09-03 · 正式版)：五方外审整改 · 一致性与底层（2026-09-03；pre 09-01 · beta 09-02）
 
 ### 正式版（2026-09-03）
 
