@@ -3,26 +3,19 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
-v20.3.4 (容器托管平台适配 · Dockhold 部署指南 · 2026-09-07)
-    主题：**开源生态第一次主动找上门**：Dockhold 的 Maziar110 在 Issue #6 看到
-    嵌入式 SQLite + Qdrant 架构适合托管，随后提交 PR #10 修三个容器部署真问题、
-    PR #11 补部署指南。问题与我们在 systemd 侧已修过的 HOME 坑同构，只是发生在容器侧。
-    1. 端口链回落到标准 `PORT`（容器 PaaS 运行时注入）：`AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767`，
-       Dockerfile 删掉恒占第一环的 `ENV AIDUMEM_API_PORT`（默认仍是 8767，本地/compose 不变）。
-    2. `/app/data` `/app/logs` 改为 `aidumem:0` + `chmod g=u`：托管平台分配的任意 uid 惯例在 gid 0，
-       原来 10001:10001 0755 导致只读，死在 import 期且无日志。
-    3. Dockerfile 加 `ENV HOME=/app/data`：`useradd --no-create-home` 后 $HOME 不存在，
-       mem0 SDK 在 import 期写它，症状与生产那次「带着绿灯失能」一模一样（/health ok 但向量零召回）。
-    4. 新增 `docs/DEPLOY_DOCKHOLD.md`（Maziar110 实测撰写）+ `AGENTS.md` 链接；
-       文档提醒应用别叫 `aidumei`，否则 Dockhold 注入的 `AIDUMEI_<id>_PORT_*` 会撞我们的命名空间。
-    5. 冒烟端口解析同步服务优先级、边界和非法值回退；容器指南补齐配置、向量与历史持久化。
-    6. 构建上下文排除本地虚拟环境、模型缓存、运行库、日志与备份。
-    7. 用例总数 1728 → 1743（2026-09-07 收集实测；新增 15 项端口行为测试）。
+v20.3 (main 维护增量 · 容器托管适配 · 2026-09-07)
+    本次维护进入 main，公开源码版本与既有 v20.3 Tag / Release 保持不变。
+    感谢 Maziar110 在 PR #10、#11 和 issue #6 中提供修复、部署指南与复现信息。
+    1. api_server.py 与 scripts/e2e_smoke.py 统一端口优先级：
+       AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767，兼容托管平台注入端口。
+    2. Dockerfile 为任意 UID + gid 0 提供可写 data / logs 与 HOME=/app/data，
+       应用代码保持只读；.dockerignore 避免把本地缓存与运行状态带入构建。
+    3. docs/DEPLOY_DOCKHOLD.md 补齐模型配置、Qdrant 与历史数据库的持久化路径，
+       区分原文留存与向量召回验收，并链接双语 README 和 AGENTS.md。
+    4. 用例总数 1728 → 1743：新增真实启动入口与冒烟端口解析回归；
+       README 与 docs/TESTING.md 分别注明测量环境、来源与容器验证边界。
 
-v20.3.3 (宿主 Hermes 适配 · 2026-09-04)
-    保留宿主模块化重构适配及 1.5s 注入超时，后续容器升级以此为基线。
-
-v20.3.2 (正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03)
+v20.3 (正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03)
     主题：**pre 修的是「代码算错了」，beta 修的是「默认值是错的」，正式版修的是
     「边界不成立」—— 串行、正常、凭据齐全的路上全绿；换到并发 / 异常 / 中文 / 浏览器 /
     真 uvicorn / 长期运行，边界就不在了。**
@@ -1614,7 +1607,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.3.4"
+SERVICE_VERSION = "20.3"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1628,9 +1621,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("20.3.4", "", "v20.3.4", "容器托管平台适配 · Dockhold 部署指南 · 2026-09-07"),
-    ("20.3.3", "", "", "宿主 Hermes 适配 · 注入超时 1.5s · 2026-09-04"),
-    ("20.3.2", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
+    ("20.3", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
     ("20.3.1", "", "v20.3.1", "九份审计整改 · 仪器读世界 · 2026-09-01"),
     ("20.3.0", "", "", "优忆思 · Agent 入口与可操作性 · 生效自证"),
     ("20.2.5", "", "", "两份审计整改 · F-03 假修复真修 · 删除三态 · Ruff 进门禁"),
