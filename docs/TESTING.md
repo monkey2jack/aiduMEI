@@ -18,6 +18,10 @@ HERMES_SRC=none pytest tests/ -q -rs
 HERMES_SRC=/path/to/hermes-agent pytest tests/ -q -rs
 ```
 
+公开 LoCoMo 数据集也必须单独就位；按 [评测协议](../benchmarks/PROTOCOL.md) 获取 `locomo10.json`，并把 `AIDUMEI_BENCH_DATA_DIR` 指向其目录。测试树不携带数据本体；隔离 HOME 后尤其不能假定默认路径仍能找到原数据。
+
+2026-09-07 的 v20.3.4 远程两形态基于源码 `877310a`，均使用隔离 HOME、不带 `.env`，显式指定模型缓存和公开基准数据目录；全轴 venv 与生产 venv 分别测量，最终进程均退出 0。具体数字见 README 当前表。
+
 基础安装测量必须另建干净 venv，仅安装 `requirements.txt` 和 `requirements-dev.txt`，不能在完整环境里重新执行安装命令便称为“基础路径”。模型路径和宿主探测状态也要一并记录。
 
 新增用例后，先更新实际收集数。未复测的环境标记“待复测”，保留原日期、原总数的历史基线；按轴推导的数字必须明确称为推导值。不要把新数字配上旧测量日期，也不要把额外跳过改写成只有 Hermes 缺席的完整环境。
