@@ -117,6 +117,7 @@
 裸装（不配任何云服务密钥）时它天然一直跑在本地档——**开箱即用的零依赖记忆库**；配上密钥自动升挡。
 一个包，三种活法，你说了算。
 
+
 > 三轮安全外审与社区 issue 的完整账本见 [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md)：只保留结论，过程与证据移出主 README。
 
 > 竞品定位、版本谱系与架构演进见 [docs/POSITIONING.md](docs/POSITIONING.md)、[docs/VERSION-LINEAGE.md](docs/VERSION-LINEAGE.md)。
@@ -274,7 +275,6 @@ Write and search must use the same `user_id` and `bank_id`. `/search` returns an
 
 两种方式**不要同时开**（会重复注入白烧 token）。完整步骤、验证方法与回滚见 [integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md)。
 
-> 💡 **宿主适配提示**：已原生适配 Hermes Agent 模块化解耦重构架构；注入超时收敛至 1.5s，确保对话流绝不阻塞。
 > ⚠️ **安全**：默认只监听 `127.0.0.1`；设置 `AIDUMEM_API_TOKEN` 或 UI 口令后接口会强制鉴权。跨机访问请配置凭据并前置 TLS 反代，别把无凭据实例暴露到公网。
 >
 > ⚠️ **会话是进程内的**（单机自托管形态下的有意取舍）：服务重启后所有登录会话失效，需要重新登录；**多实例部署时会话不共享**——同一个用户被负载均衡打到另一个实例上会被要求重新登录，那不是 token 坏了。真要多实例，请在反代上做会话粘滞（sticky session）。
@@ -416,6 +416,7 @@ v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注�
 
 ---
 
+
 ## 测试与质量
 
 ```bash
@@ -430,17 +431,17 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **1728**（`pytest --collect-only` 实测，2026-09-03） |
-| 独立开发机 | 1715 通过 · **13 跳过** —— 缺宿主 Hermes 源码，有 git 工作区（**2026-09-03 实测**，v20.3.3树） |
-| 基础安装路径 | 1696 通过 · **32 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`，**这是新用户实际会得到的数**（**2026-09-03 干净 venv 实测**，Python 3.12） |
-| 生产机沙箱 | 1723 通过 · **5 跳过** —— **2026-09-03 生产机实测**（bundle clone 含 `.git`，不带 `.env`；跳过 = ruff×3 + mcp×2，与按轴推导值逐条吻合；备胎模型轴门控用例在此形态实际不跳） |
-| 全轴齐备 | 1728 通过 · **0 跳过** —— **2026-09-03 生产机实测**（五轴齐备：`.git` + `ruff` + `mcp` extra + 宿主源码 + 备胎模型缓存；独立全轴 venv，不带 `.env` 其余项） |
+| 用例总数 | **1743**（`pytest --collect-only` 实测，2026-09-07，v20.3.4 候选树） |
+| 独立开发机 | 1731 通过 · **12 跳过** —— **按当前收集数与宿主轴推导，待实测**；完整 extras + 模型缓存，只缺 Hermes 宿主 |
+| 基础安装路径 | 1696 通过 · **32 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`，**这是该日期基础环境的实测基线，当前树待复测**（**2026-09-03 干净 venv 实测**，Python 3.12） |
+| 生产机沙箱 | 1723 通过 · **5 跳过** —— **2026-09-03 生产机实测**（v20.3.2 历史基线；当前树待复测；bundle clone 含 `.git`，不带 `.env`；跳过 = ruff×3 + mcp×2，与按轴推导值逐条吻合；备胎模型轴门控用例在此形态实际不跳） |
+| 全轴齐备 | 1728 通过 · **0 跳过** —— **2026-09-03 生产机实测**（v20.3.2 历史基线；当前树待复测；五轴齐备：`.git` + `ruff` + `mcp` extra + 宿主源码 + 备胎模型缓存；独立全轴 venv，不带 `.env` 其余项） |
 | 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
 | 平台前提 | 全量套件按 **Linux/macOS（POSIX）**口径维护：`backup_gate` 轴要 POSIX shell；`/health` 的 CPU/RSS 指标走 `resource` 模块，非 POSIX 平台诚实置 `None` 不崩（v20.1 整改）。Windows 未列为全量测试平台 |
 | 语句覆盖率 | 约 51%（`ducky/` + 入口，`coverage` 实测） |
 | 未覆盖 | 真实 mem0 / Qdrant 集成、真实 LLM 调用、并发压测 —— 这些依赖外部服务，由生产环境实机冒烟承担 |
 
-### 环境矩阵：同一套测试，五种环境，差异逐条归因（2026-08-29 实测）
+### 环境矩阵：环境、日期与测试树分别标注
 
 > **为什么要做成矩阵。** v20.2.5 里有四条测试**在沙箱绿、在部署机红** —— 唯一的变量是
 > 重排服务可不可达（沙箱拿不到凭据 → 降级保分；部署机凭据齐全 → 真融合，分数就变了）。
@@ -449,13 +450,13 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | # | 环境 | 通过 | 跳过 | 跳过归因 |
 |---|------|-----:|-----:|---------|
-| ① | 独立开发机 · 完整 extras | 1715 | 13 | 宿主 Hermes 源码缺席 ×12（2026-09-03 实测，v20.3.3树） |
+| ① | 独立开发机 · 完整 extras + 模型缓存 | 1731 | 12 | 当前 1743 条收集数减宿主 ×12 的推导值，待实测 |
 | ② | 干净克隆 · **无配置** · 有 `.git`（≈ 第一次拿到本项目的人） | 1497 | 2 | `ruff` 未安装 ×2 —— **2026-08-29 基线（总数 1499 时代）**，已被 ④⑤ 取代 |
 | ③ | 干净克隆 · **带生产配置** · 有 `.git`（重排可达） | 1497 | 2 | `ruff` 未安装 ×2 —— **2026-08-29 基线（总数 1499 时代）**，已被 ④⑤ 取代 |
-| ④ | 生产机沙箱 · 宿主源码 · 生产 venv · 不带 `.env` | 1723 | 5 | 2026-09-03 实测（v20.3.3树；ruff×3 + mcp×2） |
+| ④ | 生产机沙箱 · 宿主源码 · 生产 venv · 不带 `.env` | 1723 | 5 | 2026-09-03 实测（v20.3.2 基线；ruff×3 + mcp×2） |
 | ⑤ | 全轴齐备 · 有 `.git` · `ruff` · `mcp` extra · 宿主 · 备胎模型缓存 | **1728** | **0** | 2026-09-03 生产机实测（五轴齐备，独立全轴 venv） |
 
-已测行满足 `通过 + 跳过 = 1728`（②③ 是总数 1499 时代的基线，已标注日期）；未实测的行必须重新实测后填数，不许沿用旧日期改数字 ——
+每行 `通过 + 跳过` 对应各自测试树的总数：① 为当前 1743 条的推导值；②③ 为 1499 条历史基线；④⑤ 为 1728 条历史基线。当前树未复测的环境不能沿用旧日期改数字 ——
 **归因不了的差异，就是还藏着一条「换个环境才现形」的缺陷。**
 
 **② 与 ③ 数字完全相同，这一格是重点。** 两者唯一的差别就是重排服务可不可达；
@@ -469,26 +470,26 @@ python -m compileall ducky api_server.py mcp_server.py
 
 > **⚠️ 这些数字对应「装齐可选依赖」的环境**（v20.2.5 补记，外审指出的口径缺口）。
 >
-> 上表的 1728/1715/13 跑在完整环境下：`regex`、`nltk`、`numpy`、`qdrant_client`、
-> `mem0ai`、`fastembed` 都在场。而 README「30 秒上手」教的基础路径只装
+> 当前完整环境的推导对为 1743/1731/12（待实测），前提是：`regex`、`nltk`、`numpy`、`qdrant_client`、
+> `mem0ai`、`fastembed` 都在场，且本地嵌入模型已部署到测试使用的缓存目录。而 README「30 秒上手」教的基础路径只装
 > `requirements.txt` —— 那些可选依赖不在，对应的跳过轴会**一起跳掉**，
 > 于是 passed 更少、skipped 更多。第三方外审在基础路径下实测到的是
 > **1415 passed · 27 skipped**（他们的 Python 3.14 环境）。
 >
-> **两个数字都是真的，差别只在环境。** 之前只写了一套，读者按 README 装完
+> **当前推导值与历史实测值分别标注。** 之前只写了一套，读者按 README 装完
 > 跑出别的数会以为哪里错了 —— 这是口径没写清，不是数字造假。复现命令：
 >
 > ```bash
-> # 完整环境（上表那一套）
+> # 完整环境（另须按下方命令部署本地模型缓存）
 > uv sync --all-extras && uv run pytest tests/ -q
 > # 基础路径（README「30 秒上手」教的那条）
 > pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
 > ```
 
-> **为什么要把 1715 和 1723 都写出来**：同一份测试集在不同环境下跑出不同数字，只报其中一个都会误导读者。
+> **为什么要把 1731 和 1723 都写出来**：前者是当前开发环境的推导值，后者是旧生产沙箱的实测基线；数字必须与环境、日期、测试树和证据类型一起读。
 > **跳过不止一条轴**（v20.0 实测补正）：此前这一段只认「宿主 Hermes 源码」一条轴，于是把「全绿」
 > 当成了装上宿主就能拿到的东西。生产实跑打脸 —— 沙箱里宿主明明在场，跑出来**仍有 1 条跳过**。
-> 全量普查后，跳过其实有**十一条互不相干的轴**（v20.1 补第十条 mem0 基座；v20.2 补第十一条 fastembed 备胎）：
+> 全量普查登记了**十三条跳过轴**：宿主、工具、可选依赖和模型文件分别门控，不能只看安装包是否在场。
 >
 > | 跳过轴 | 门控用例数 | 位点 |
 > |--------|-----------|------|
@@ -503,10 +504,10 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `git` 可执行文件在场 | 6 | `tests/test_v20_gitignore_guard.py` 整份（拿一个临时空仓当 ignore 判据，不碰本仓的 `.git`） |
 > | `mem0ai` 已安装 | 20 | `tests/test_v20_mem0_patch_layer.py` 整份（补丁层疗法要真实基座在场；此前缺 mem0 是 20 条 ERROR 冒充真缺陷，现在诚实跳过） |
 > | `fastembed` 已安装 | 1 | `tests/test_v20_2_autoshift.py`（自动挡备胎真模型测试；缺依赖诚实跳过，模型未部署时用例内二次跳过） |
-> | `ruff` 已安装 | 3 |
-| `mcp` extra 已安装 | 2 | `tests/test_v20_2_5_audit_remediation.py`（第四道关的真缺陷类规则 F821/F811/F841；缺依赖时**诚实跳过而不是静默当成无命中** —— 第一版就是那样写的，被沙箱实测抓出：生产 venv 没有 ruff，守卫于是永远绿。push_gate 侧仍会拦） |
+> | `ruff` 已安装 | 3 | 静态规则守卫：F821/F811/F841；缺依赖时跳过，发布门禁仍会拦截 |
+> | `mcp` extra 已安装 | 2 | MCP 导入面守卫 |
 >
-> 开发机缺第一条 → 1715 + 13；基础安装路径（只装 `requirements*`，新用户实际得到的形态）
+> 开发机只缺第一条 → 1731 + 12（当前推导，待实测）；基础安装路径（只装 `requirements*`，新用户实际得到的形态）
 > → **1696 + 32**（2026-09-03 干净 venv 实测）；生产机沙箱 → 1723 + 5（2026-09-03）；
 > 五轴齐备（`.git` + `ruff` + `mcp` extra + 宿主 + 备胎模型缓存）→ **1728 + 0**（2026-09-03 生产机实测）。
 >
@@ -516,15 +517,15 @@ python -m compileall ducky api_server.py mcp_server.py
 > 跳过条件是宿主 `agent/memory_provider.py` 找不到。`HERMES_SRC` 三态可控，**两个方向都能复现**：
 >
 > ```bash
-> # 装齐可选依赖 —— 下面这三行命令产出的就是 12 跳过
+> # 装齐依赖和模型；当前树数字为按轴推导值，待本轮实测
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py                       # 必须取模；运行时 HF_HUB_OFFLINE=1，只有安装包仍会多跳 1 条
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：1715 passed, 13 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：1728 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 1715 passed, 13 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：1731 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：1743 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 1731 passed, 12 skipped
 >
-> # 基础安装路径（只装 requirements*，不装任何可选组）—— 新用户实际会跑到的形态
+> # 基础安装路径须另建干净 venv；下列为 2026-09-03 基线，当前树待复测
 > pip install -r requirements.txt -r requirements-dev.txt
 > pytest tests/ -q -rs | tail -1                                 # 基础路径：1696 passed, 32 skipped
 > ```
@@ -537,10 +538,10 @@ python -m compileall ducky api_server.py mcp_server.py
 > 现在命令与数字同屏，且各配各的环境。
 >
 > 「跳过」必须能被复现成「通过」，**反过来也必须成立**。机器上恰好装着宿主时（`/hermes/hermes-agent`
-> 会被自动发现，我们自己的生产机就是这样），上面第一条命令跑出来就不是 1715 + 13 —— 2026-09-03
+> 会被自动发现，我们自己的生产机就是这样），宿主在场时不能套用 1731 + 12。历史对照：2026-09-03
 > 在生产机沙箱上跑出来是 1723 passed、5 skipped（2026-09-03 实测，不带 `.env`）。剩下那 5 条卡在 `ruff` ×3、
 > `mcp` extra ×2 两条轴上（沙箱用生产 venv，不装 lint 工具与可选 extra；备胎模型轴门控的那 1 条在此形态实际不跳）。
-> 上面代码块里的 `有宿主：1728 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 ——
+> 上面代码块里的 `有宿主：1743 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 ——
 > 别把「装上宿主」当成「全绿」。2026-09-02 在生产机上为它单独建了一个带 `mcp` extra 的测试
 > venv，五轴齐备后实测到 **1728 passed、0 skipped**。
 > 没有 `HERMES_SRC=none` 这一档，读者根本无法在自己机器上把我们宣称的「12 跳过」复现出来。

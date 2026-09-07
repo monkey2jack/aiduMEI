@@ -7,8 +7,10 @@ recall, and failed cleanup instead of collapsing them into one green output.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 from types import SimpleNamespace
@@ -39,6 +41,60 @@ def test_script_is_executable_and_has_json_contract():
     text = path.read_text(encoding="utf-8")
     assert "--json" in text
     assert "raise SystemExit(main())" in text
+
+
+@pytest.mark.parametrize(("env", "expected_port"), [
+    ({}, 8767),
+    ({"PORT": "19001"}, 19001),
+    ({"PORT": "19001", "MEM0_API_PORT": "19002"}, 19002),
+    ({"PORT": "19001", "MEM0_API_PORT": "19002", "AIDUMEM_API_PORT": "19003"}, 19003),
+    ({"AIDUMEM_API_PORT": "", "MEM0_API_PORT": "19002", "PORT": "19001"}, 19002),
+    ({"AIDUMEM_API_PORT": "", "MEM0_API_PORT": "", "PORT": "19001"}, 19001),
+    ({"PORT": " 19001 "}, 19001),
+    ({"PORT": "1"}, 1),
+    ({"PORT": "65535"}, 65535),
+    ({"PORT": "0"}, 8767),
+    ({"PORT": "65536"}, 8767),
+    ({"PORT": "invalid"}, 8767),
+    ({"AIDUMEM_API_PORT": "invalid", "MEM0_API_PORT": "19002", "PORT": "19001"}, 8767),
+    ({"AIDUMEM_API_PORT": " ", "PORT": "19001"}, 8767),
+])
+def test_default_api_matches_server_listen_port(monkeypatch, env, expected_port):
+    """Execute the actual entry function without importing the service runtime."""
+    from ducky import env_config
+
+    monkeypatch.setattr(env_config, "_errors", {})
+    for name in ("AIDUMEM_API_BASE", "AIDUMEM_API_PORT", "MEM0_API_PORT", "PORT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    module = _load_smoke()
+    main_node = next(
+        node for node in ast.parse((_ROOT / "api_server.py").read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    captured = {}
+    namespace = {
+        "os": os,
+        "logger": SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
+        "_api_token": lambda: "test-token",
+        "_enforce_public_binding_policy": lambda: None,
+        "_enforce_single_process_policy": lambda: None,
+        "uvicorn": SimpleNamespace(run=lambda *args, **kwargs: captured.update(kwargs)),
+        "app": object(),
+    }
+    exec(compile(ast.Module(body=[main_node], type_ignores=[]), "api_server.main", "exec"), namespace)
+    namespace["main"]()
+    assert captured["port"] == expected_port
+    assert module._default_api() == f"http://127.0.0.1:{expected_port}"
+
+
+def test_explicit_api_base_overrides_platform_port(monkeypatch):
+    monkeypatch.setenv("AIDUMEM_API_BASE", "https://example.test/memory/")
+    monkeypatch.setenv("AIDUMEM_API_PORT", "19003")
+    monkeypatch.setenv("MEM0_API_PORT", "19002")
+    monkeypatch.setenv("PORT", "19001")
+    assert _load_smoke()._default_api() == "https://example.test/memory"
 
 
 def test_health_failure_is_recorded_as_failure(smoke):
