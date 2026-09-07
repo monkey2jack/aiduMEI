@@ -315,8 +315,9 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 ## Testing & quality
 
 ```bash
-# Complete local environment: no-host results measured 2026-09-07; with-host result pending
-# Cache the model explicitly because runtime is offline-only
+# Complete environment: with-host and no-host results measured 2026-09-07
+# Configure AIDUMEI_LOCAL_EMBED_CACHE and AIDUMEI_BENCH_DATA_DIR (containing locomo10.json)
+# Deploy the model before testing; runtime is offline-only
 pip install -r requirements.txt -r requirements-dev.txt
 pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
@@ -336,12 +337,12 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 171
 | Total cases | **1743** (measured via `pytest --collect-only`, 2026-09-07, v20.3.4 candidate) |
 | Clean dev machine | 1731 passed · **12 skipped** — **measured 2026-09-07** (v20.3.4, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1711 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-07**, v20.3.4) |
-| Sandbox on the production box | 1723 passed · **5 skipped** — **measured on the production box, 2026-09-03** (historical v20.3.2 baseline; current tree pending; no `.env`; skips = ruff×3 + mcp×2) |
-| All axes present | 1728 passed · **0 skipped** — **measured on the production box, 2026-09-03** (historical v20.3.2 baseline; current tree pending; separate all-axes venv) |
+| Sandbox on the production box | 1738 passed · **5 skipped** — **measured on the production box, 2026-09-07** (v20.3.4; isolated HOME, `.git` present, no `.env`; model cache and public LoCoMo dataset configured; skips = ruff×3 + mcp×2) |
+| All axes present | 1743 passed · **0 skipped** — **measured on the production box, 2026-09-07** (v20.3.4; separate all-axes venv, isolated HOME, no `.env`; tools, extras, host, model cache and public LoCoMo dataset present) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1731 and 1711**: these are the 2026-09-07 measurements of the complete and basic environments on the same v20.3.4 source tree. The no-host result below is measured; the with-host result is axis-derived and pending re-measurement:
+**Why report both 1731 and 1711**: these are the 2026-09-07 measurements of the complete and basic environments on the same v20.3.4 source tree. With the complete optional environment, model cache and public LoCoMo dataset present, both host states were measured:
 
 ```text
 no host: 1731 passed, 12 skipped
@@ -349,7 +350,7 @@ with host: 1743 passed
 forced off: 1731 passed, 12 skipped
 ```
 
-On a production host where other optional axes are absent, the bare command **actually prints 1723 passed, 5 skipped** (measured 2026-09-03, no `.env`). A number without its environment and date is not a reproducible claim.
+On a production host where other optional axes are absent, the bare command **actually prints 1738 passed, 5 skipped** (measured 2026-09-07, no `.env`, isolated HOME with model cache and benchmark-data paths configured). A number without its environment and date is not a reproducible claim.
 
 ### Skip-axis census
 
