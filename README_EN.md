@@ -178,6 +178,12 @@ AIDUMEI_ENGINE_MODE=cloud   # lean: cloud only; local model is never loaded
 AIDUMEI_ENGINE_MODE=local   # zero model API calls; deterministic + local embedding
 ```
 
+### Containers and Dockhold
+
+The 2026-09-07 `main` maintenance update adds container-hosting support; the public version and Release remain **v20.3**. Port priority is `AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767`; leave the first two unset to use the platform's injected `PORT`. The image provides a writable HOME and supports platform-assigned UIDs in group 0.
+
+Persist the data, model configuration, Qdrant vectors and history database. Setting `AIDUMEM_DATA_DIR` alone does not relocate the last two. Follow the [Dockhold deployment guide](docs/DEPLOY_DOCKHOLD.md) for credentials, storage and recall checks across container replacement. Thanks to [Maziar110](https://github.com/Maziar110) for [container fixes #10](https://github.com/monkey2jack/aiduMEI/pull/10) and [the deployment guide #11](https://github.com/monkey2jack/aiduMEI/pull/11).
+
 ### Measured deployment footprint
 
 Measured on a 2-core / 3.5 GB host on 2026-08-27:
@@ -245,7 +251,7 @@ IDE adapters live under `integrations/`; they call the same API rather than main
 ## Tech Stack
 
 - **Runtime**: Python 3.10–3.12 (3.12 recommended), FastAPI, Uvicorn
-- **Memory Kernel**: mem0 v2.0.19 (v20.3)
+- **Memory Kernel**: mem0ai v2.0.20
 - **Vector Store**: Qdrant (via qdrant-client)
 - **Structured Data**: SQLite (facts.db, observations.db, scenes.db, fact_events.db)
 - **Full-Text Search**: SQLite FTS5 + trigram tokenizer
@@ -314,6 +320,8 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 
 ## Testing & quality
 
+The four environment results below come from the **v20.3.4 validation work on 2026-09-07**; its functional implementation was deployed at `7e63fbd`. Public `main` carries that implementation with **v20.3** version metadata and public documentation. The two full remote runs used `877310a`; 126 related guards also passed on the final commit. The public maintenance candidate requires a separate gate on its exact commit; see [validation provenance and container coverage](docs/TESTING.md#2026-09-07-公开维护与验证来源).
+
 ```bash
 # Complete environment: with-host and no-host results measured 2026-09-07
 # Configure AIDUMEI_LOCAL_EMBED_CACHE and AIDUMEI_BENCH_DATA_DIR (containing locomo10.json)
@@ -342,7 +350,7 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 171
 | Statement coverage | ~51% over `ducky/` and entry points |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1731 and 1711**: these are the 2026-09-07 measurements of the complete and basic environments on the same v20.3.4 source tree. With the complete optional environment, model cache and public LoCoMo dataset present, both host states were measured:
+**Why report both 1731 and 1711**: these are the 2026-09-07 measurements of the complete and basic environments during v20.3.4 validation. With the complete optional environment, model cache and public LoCoMo dataset present, both host states were measured:
 
 ```text
 no host: 1731 passed, 12 skipped
