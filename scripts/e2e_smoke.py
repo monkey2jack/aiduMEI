@@ -24,12 +24,18 @@ if str(_REPO) not in sys.path:
 
 from ducky.utils import api_auth_headers as auth_headers  # noqa: E402
 from ducky.utils import mem0_config_path  # noqa: E402
+from ducky.env_config import int_env  # noqa: E402
 
 
 def _default_api() -> str:
     if os.environ.get("AIDUMEM_API_BASE"):
         return os.environ["AIDUMEM_API_BASE"].rstrip("/")
-    port = os.environ.get("AIDUMEM_API_PORT") or os.environ.get("MEM0_API_PORT") or "8767"
+    # Match api_server.main(), including invalid-value fallback and bounds.
+    for name in ("AIDUMEM_API_PORT", "MEM0_API_PORT", "PORT"):
+        raw = os.environ.get(name)
+        if raw:
+            break
+    port = int_env(name, 8767, minimum=1, maximum=65535, raw=raw)
     return f"http://127.0.0.1:{port}"
 
 

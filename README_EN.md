@@ -315,15 +315,16 @@ Full list with comments: [`.env.example`](.env.example). Start with `cp .env.exa
 ## Testing & quality
 
 ```bash
-# Complete local test environment (model cached explicitly because runtime is offline-only)
+# Complete local environment; current counts below are axis-derived, pending measurement
+# Cache the model explicitly because runtime is offline-only
 pip install -r requirements.txt -r requirements-dev.txt
 pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
-pytest tests/ -q -rs | tail -1                                 # no host: 1716 passed, 12 skipped
-HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1728 passed
-HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1716 passed, 12 skipped
+pytest tests/ -q -rs | tail -1                                 # no host: 1731 passed, 12 skipped
+HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1743 passed
+HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1731 passed, 12 skipped
 
-# Basic source-install path
+# Basic source-install path: use a separate clean venv; count is the 2026-09-03 baseline
 pip install -r requirements.txt -r requirements-dev.txt
 pytest tests/ -q -rs | tail -1                                 # basic path: 1696 passed, 32 skipped
 ```
@@ -332,20 +333,20 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 169
 
 | Dimension | Status |
 |---|---|
-| Total cases | **1728** (measured via `pytest --collect-only`, 2026-09-03) |
-| Clean dev machine | 1715 passed · **13 skipped** — host Hermes source absent (measured 2026-09-03) |
-| Basic install path | 1696 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-03**) |
-| Sandbox on the production box | 1723 passed · **5 skipped** — **measured on the production box, 2026-09-03** (no `.env`; skips = ruff×3 + mcp×2) |
-| All axes present | 1728 passed · **0 skipped** — **measured on the production box, 2026-09-03** (separate all-axes venv) |
+| Total cases | **1743** (measured via `pytest --collect-only`, 2026-09-07, v20.3.4 candidate) |
+| Clean dev machine | 1731 passed · **12 skipped** — **axis-derived, pending measurement**; complete extras and model cache, only Hermes source absent |
+| Basic install path | 1696 passed · **32 skipped** — historical v20.3.2 baseline; current tree pending; requirements files only, clean Python 3.12 venv (**measured 2026-09-03**) |
+| Sandbox on the production box | 1723 passed · **5 skipped** — **measured on the production box, 2026-09-03** (historical v20.3.2 baseline; current tree pending; no `.env`; skips = ruff×3 + mcp×2) |
+| All axes present | 1728 passed · **0 skipped** — **measured on the production box, 2026-09-03** (historical v20.3.2 baseline; current tree pending; separate all-axes venv) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1716 and 1696**: they are measurements of different environments. The commands and their dependency assumptions therefore stay together. With the complete optional environment, the expected host-axis pair is:
+**Why report both 1731 and 1696**: the former is a current expectation and the latter a historical basic-install measurement. Their environments, dates and evidence types must stay with the numbers. The basic figure remains a 2026-09-03 baseline; the current complete-environment figures below are axis-derived and pending measurement:
 
 ```text
-no host: 1716 passed, 12 skipped
-with host: 1728 passed
-forced off: 1716 passed, 12 skipped
+no host: 1731 passed, 12 skipped
+with host: 1743 passed
+forced off: 1731 passed, 12 skipped
 ```
 
 On a production host where other optional axes are absent, the bare command **actually prints 1723 passed, 5 skipped** (measured 2026-09-03, no `.env`). A number without its environment and date is not a reproducible claim.
@@ -364,7 +365,7 @@ On a production host where other optional axes are absent, the bare command **ac
 | `nltk` installed | 13 | official stemming metrics |
 | `git` executable present | 6 | throwaway-repository oracle |
 | `mem0ai` installed | 20 | real patch-layer tests |
-| `fastembed` installed | 1 | real local-model fallback test |
+| `fastembed` installed | 1 | real local-model fallback test; the configured model cache must also be present |
 | `ruff` installed | 3 | real-defect static rules |
 | `mcp` extra installed | 2 | product import-surface tests |
 
