@@ -16,7 +16,7 @@
 #   AIDUMEM_MIN_HISTORY     少于 N 条历史不注入检索，默认 4
 #   AIDUMEM_NEW_SESSION_MAX 历史 ≤ N 条视为新会话（注入 checkpoint），默认 8
 #   AIDUMEM_SEARCH_LIMIT    检索条数，默认 5
-#   AIDUMEM_TIMEOUT         单次 HTTP 超时秒数，默认 2.0
+#   AIDUMEM_TIMEOUT         单次 HTTP 超时秒数，默认 1.5
 #   AIDUMEM_API_TOKEN       鉴权门禁 token（见下方「凭据」段，可由 .env 兜底）
 #   AIDUMEM_ENV_FILE        指定 .env 路径，优先级最高
 #   AIDUMEM_HOME            部署根目录，会找 $AIDUMEM_HOME/.env
