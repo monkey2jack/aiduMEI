@@ -1381,7 +1381,7 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，
     # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
     # 现在两套环境各配各的命令、各报各的数，且必须同屏。
-    MEASURED_BASIC = (1696, 32)   # 2026-09-03 干净 venv 实测（Python 3.12，只装 requirements*）
+    MEASURED_BASIC = (1711, 32)   # 2026-09-07 v20.3.4 干净 venv 实测（Python 3.12，只装 requirements*；退出 0）
     sandbox_row_re = re.compile(
         r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*(\d{4}-\d{2}-\d{2})\s*生产机实测\*\*")
 
