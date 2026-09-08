@@ -416,7 +416,9 @@ def test_ci_has_the_three_new_acceptance_jobs():
 # 临时目录登记制（2026-08-28 生产机清理战场时触发）
 # ════════════════════════════════════════════════════════════════════
 
-_MKDTEMP_BASELINE = 45          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改
+_MKDTEMP_BASELINE = 46          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改
+                                # 46 = 45 + test_v20_4_evolve_index.py:26（v20.4.0-alpha P1-8，
+                                # 模块级 tmpdir 钉 salience/facts 库路径，沿用 v20 各 bank_scope 测试同型）
 
 
 def test_mkdtemp_sites_are_registered():
