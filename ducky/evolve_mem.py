@@ -43,6 +43,15 @@ logger = logging.getLogger("aiduMEM.evolve")
 # ── 进化阈值配置 ──
 HIGH_HIT_THRESHOLD = 5        # 命中 ≥5 次 → 高价值记忆，boost salience
 LOW_HIT_WINDOW_DAYS = 14      # 14 天内 0 命中 → 降低 salience
+
+# v20.4.0-alpha（P1-8）：进化循环候选 SQL —— 与 run_evolution_cycle 的
+# Python 写分支同条件：boost 支（acc≥阈值 且 sal<0.9）∪ decay 支
+# （超窗 且 sal>0.25）。两析取支分别走 idx_access_count / idx_last_access。
+_EVOLVE_CANDIDATE_SQL = (
+    "SELECT memory_id, salience, access_count, last_access FROM salience "
+    "WHERE (access_count >= ? AND salience < 0.9) "
+    "OR (last_access < ? AND salience > 0.25)"
+)
 FEEDBACK_BOOST_USEFUL = 0.15  # 用户标记「有用」→ +0.15 salience
 FEEDBACK_PENALTY_USELESS = 0.12  # 用户标记「无用」→ -0.12 salience
 EVOLUTION_INTERVAL_HOURS = 6  # 每 6 小时自动进化一次
@@ -381,8 +390,16 @@ def run_evolution_cycle() -> dict:
     # ── Step 1: 拿近期搜索命中统计 ──
     # 按 memory_id 聚合（通过 evolve_queries 间接推断：高质量搜索命中哪些 salience 记录）
     # 简化：直接用 salience 表的 access_count + last_access 做判断
+    #
+    # v20.4.0-alpha（P1-8，三方外审共识）：候选集下推 SQL，不再全表拉进内存。
+    # 逐行逻辑里只有两类行会被写 —— 高频命中待 boost、超窗未访问待 decay，
+    # 其余行读完即弃；SQL 析取两个写分支的条件，Python 分支原样保留，
+    # 语义逐行等价（含「两条件都中的行只 boost 不 decay」：析取含 boost 条件
+    # 的行回到 Python 仍先命中 if 分支）。全库维护语义不变：仍不按域隔离
+    # （见函数 docstring 乙1 条），只是候选集从「全表」收窄到「会被写的行」。
     all_memories = sal_conn.execute(
-        "SELECT memory_id, salience, access_count, last_access FROM salience"
+        _EVOLVE_CANDIDATE_SQL,
+        (HIGH_HIT_THRESHOLD, window_start),
     ).fetchall()
     sal_conn.close()
 
