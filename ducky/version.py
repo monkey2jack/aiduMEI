@@ -17,8 +17,14 @@ v20.4.0 (alpha 阶段快照 · 开工 · 六方外审整改 · 2026-09-08)
        Ruff 扩围（F841/W/UP015 清零入门禁）；版本治理成文；ARCHITECTURE 时代标注前置；
        /health 按探针成本拆 /livez·/readyz·/diagnostics；README 叙事下沉 docs、
        双语关键段（安装/安全/三探针）对齐。
-    6. 用例总数 1743 → 1806（--collect-only 2026-09-08 实测）：本轮守卫用例净增 63 条；
+    6. 用例总数 1743 → 1812（--collect-only 2026-09-08 实测）：本轮守卫用例净增 69 条；
        README 双语数字表同步刷新，沙箱与全轴两行待生产机复测（按轴推导值已注明）。
+    7. 生产热修 3219f8c4e 并回（2026-09-07 生产机直改、从未推远端）：两段 inline
+       <script> 逐字搬进 frontend/js/auth-guard.js 与
+       frontend/js/login.js（CSP script-src 保持
+       'self'，不放宽）；Vision 请求补 User-Agent 且版本号取本模块单源。三面守卫
+       在 tests/test_v20_4_prod_hotfix_reconcile.py：HTML 无 inline、实测响应头无
+       unsafe-inline、被引用 src 可服务。P2-11 只钉了 style 那一格是射程教训。
 
 v20.3 (main 维护增量 · 容器托管适配 · 2026-09-07)
     本次维护进入 main，公开源码版本与既有 v20.3 Tag / Release 保持不变。
