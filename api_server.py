@@ -668,7 +668,7 @@ async def _security_headers(request: Request, call_next):
     （tests/test_v20_4_misc_guards.py 守卫防回流），`style-src` 收紧为 'self'。
     JS 的 `el.style.x = ...` 是 CSSOM 写操作，不受 style-src 管辖，不受影响。
 
-    `script-src` 同理，但这一格是**生产替我们发现的**：2026-09-07 猴哥在生产机
+    `script-src` 同理，但这一格是**生产替我们发现的**：2026-09-07 在生产机
     上把它加回 'unsafe-inline'（热修 `3219f8c4e`，未推远端），因为
     `frontend/index.html` 与 `login.html` 各有一段 inline `<script>` 被打死——
     登录页的背景/版本徽章/口令提示与主控台的未登录跳转全不动。P2-11 当时只
