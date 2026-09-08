@@ -3,6 +3,17 @@ ducky.version — aiduMEI 版本信息唯一真相源
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 所有版本号从这里导入，禁止在其他模块硬编码。
 
+v20.4.0 (alpha 阶段快照 · 开工 · 六方外审整改 · 2026-09-08)
+    主题：**防线都在，证据不够 —— 对外声称的与外界能对账。**
+    六方网页版外审（Sonnet 5 / Qwen3.8-Max / GPT Luna / Grok / GLM 5.3 / Gemini 3.1 Pro）
+    约 45 条指控经逐项 file:line 复核：实锤/半实锤采纳 14 条，误报驳回 12 条。
+    1. P0-1 /add 输入边界：messages 长度/序列化上限 + 全局 body 硬顶 + 写端点普查守卫。
+    2. P0-2 正式基准首跑：judge prompt/seed 冻结后按协议跑 LongMemEval-S 与 LoCoMo，
+       四件套留证，RESULTS.md 填真分数。
+    3. P0-3 文档数字自洽：README 内存口径修正 + 关键数字 machine-readable 同源守卫。
+    4. P1：CI 手动关内 pip-audit + gitleaks 真扫描、兼容层 Deprecation 台账、MCP 鉴权
+       文档化、LLM 密钥 env 覆盖、evolve_mem 索引化、模型下载哈希校验、env 前缀台账。
+
 v20.3 (main 维护增量 · 容器托管适配 · 2026-09-07)
     本次维护进入 main，公开源码版本与既有 v20.3 Tag / Release 保持不变。
     感谢 Maziar110 在 PR #10、#11 和 issue #6 中提供修复、部署指南与复现信息。
@@ -1607,7 +1618,7 @@ v19.3.1 (审计修复与发布链对齐版 · 2026-08-16)
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.3"
+SERVICE_VERSION = "20.4.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -1621,6 +1632,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.4.0", "", "v20.4.0-alpha", "alpha 阶段快照 · 六方外审整改 · 对外声称与外界对账 · 开工 2026-09-08"),
     ("20.3", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
     ("20.3.1", "", "v20.3.1", "九份审计整改 · 仪器读世界 · 2026-09-01"),
     ("20.3.0", "", "", "优忆思 · Agent 入口与可操作性 · 生效自证"),
