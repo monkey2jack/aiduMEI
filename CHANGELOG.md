@@ -1,5 +1,14 @@
 # aiduMEI 版本演进史
 
+## v20.4.0 (alpha 阶段快照 · 开工 2026-09-08)：六方外审整改 · 对外声称与外界对账
+
+> **防线都在，证据不够。** 六方网页版外审（Sonnet 5 / Qwen3.8-Max / GPT Luna / Grok / GLM 5.3 / Gemini 3.1 Pro）约 45 条指控逐项 `file:line` 复核：实锤/半实锤采纳 14 条，误报驳回 12 条。本条目随 alpha 施工推进持续回填，收口时以实测数字为准。
+
+- **P0-1 `/add` 输入边界**：`messages` 长度/序列化上限 + 全局 body 硬顶 + 全量写端点普查守卫。
+- **P0-2 正式基准首跑**：judge prompt/seed 先冻结，按协议跑 LongMemEval-S 与 LoCoMo，数据哈希 + 配置 + JSONL + digest 四件套留证，`benchmarks/RESULTS.md` 填真分数。
+- **P0-3 文档数字自洽**：README 内存口径修正（旧文 430−280≠151 且 75+122≠151），关键数字锚定 machine-readable 源并设守卫。
+- **P1**：CI 手动关内增 pip-audit + gitleaks 真扫描（触发方式维持手动不变）；兼容层 Deprecation 台账；MCP 鉴权文档化；LLM 密钥 env 覆盖；evolve_mem 索引化；模型下载 sha256 校验；env 变量前缀台账。
+
 ## 2026-09-05 · 维护增量（不改 release tag）
 
 - 零凭据首跑扫描补充测试世界自证：确认 `BASE_DIR`、`DATA_DIR`、鉴权状态与后端配置状态后，才统计路由结果，避免把真实部署环境误判成新用户首跑。
