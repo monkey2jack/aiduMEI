@@ -345,8 +345,26 @@ def test_frontend_sends_credentials():
     assert api_js.count("credentials: 'same-origin'") >= 2, "前端 get/post 都必须带 credentials"
     assert "handleAuthFailure" in api_js, "401 必须跳回登录页"
 
-    login_html = pathlib.Path(_REPO_ROOT, "frontend", "login.html").read_text(encoding="utf-8")
-    assert "credentials: 'same-origin'" in login_html, "登录请求不带 credentials 则 cookie 不会被保存"
+    # v20.4.0-alpha：判据从「login.html 文本里有这个串」改成「登录页真正加载的
+    # 脚本集合里有」。原写法把守卫钉在一个文件名上，P2-11 把 inline <script>
+    # 收进 frontend/js/login.js（CSP script-src 'self' 不执行 inline 块）之后
+    # 它立刻变成假红灯 —— 断言的东西一点没变坏，只是搬了家。
+    # 现在按「HTML + 它引用的每个本地脚本」取并集，脚本再搬家也不影响射程。
+    import re
+    login_dir = pathlib.Path(_REPO_ROOT, "frontend")
+    login_html = (login_dir / "login.html").read_text(encoding="utf-8")
+    bundle = [login_html]
+    for src in re.findall(r"<script\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']",
+                          login_html, re.IGNORECASE):
+        if src.startswith(("http://", "https://", "//")):
+            continue
+        asset = login_dir / src.split("?", 1)[0]
+        if asset.is_file():
+            bundle.append(asset.read_text(encoding="utf-8"))
+    assert len(bundle) > 1, "login.html 一个本地脚本都没引用，判据失去射程"
+    assert any("credentials: 'same-origin'" in part for part in bundle), (
+        "登录请求不带 credentials 则 cookie 不会被保存（已查 login.html 及其"
+        f"引用的 {len(bundle) - 1} 个本地脚本）")
 
 
 def test_frontend_has_no_external_cdn():
