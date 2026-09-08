@@ -56,12 +56,20 @@ def test_security_headers_are_present(client, header, expected):
 
 
 def test_csp_allows_the_console_to_work(client):
-    """CSP 不许把自家控制台打死：现状有 inline style，必须显式容纳。"""
+    """CSP 不许把自家控制台打死，也不许再为 inline style 开口子。
+
+    v20.4.0-alpha（P2-11，外审 Qwen #3）：inline style 已全部收进
+    `frontend/css/style.css`（六块蜂窝砖的坐标按既有 id 落规则，
+    更新徽章默认 display:none 由 JS 以 CSSOM 覆盖），`style-src`
+    收紧为 `'self'`。JS 侧的 `el.style.x = ...` 是 CSSOM 写操作，
+    不走 style-src 管辖，不受影响 —— 收紧不会白屏。
+    """
     csp = client.get("/health").headers.get("Content-Security-Policy", "")
     assert "default-src" in csp
     assert "'self'" in csp
-    assert "style-src" in csp and "unsafe-inline" in csp, (
-        f"CSP 未容纳现状 inline style，前端会白屏：{csp}")
+    assert "style-src" in csp, f"CSP 缺 style-src 指令：{csp}"
+    assert "unsafe-inline" not in csp, (
+        f"style-src 仍含 unsafe-inline —— P2-11 已把 inline style 收进样式表：{csp}")
 
 
 # ══════════════ P2-8 · 消解规则不留占位符 ══════════════
