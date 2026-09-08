@@ -22,7 +22,7 @@ paths = [
 ]
 regexes = [
   '''release-scan:allow''',
-  '''ghp_abcdefghij1234567890''',
+  '''ghp_abcdefghij1234567890''',  # release-scan:allow — P1-4 负向对照假令牌，刻意植入
   '''sk-abcdef1234567890abcdef''',
   '''sk-live-[0-9a-f]{12}''',
   '''change-me-please''',
