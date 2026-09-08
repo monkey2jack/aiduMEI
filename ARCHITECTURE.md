@@ -1,5 +1,7 @@
 # aiduMEI 架构速览
 
+> ⚠️ **本文描述 v14 时代架构，保留为设计史。现行架构以 [AGENTS.md](AGENTS.md) 与 [README.md](README.md) 为准。**
+
 > 优忆思目录地图。细节见各模块 docstring。
 
 ## 神谱
