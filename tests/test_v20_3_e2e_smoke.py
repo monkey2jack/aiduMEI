@@ -233,6 +233,31 @@ def test_readme_is_a_navigation_entry_not_a_knowledge_dump():
     assert "[🤖 Agent Guide](AGENTS.md)" in readme
     assert "python scripts/e2e_smoke.py --json" in readme
 
+def test_readme_en_key_sections_align_with_zh():
+    """v20.4 P2-15：英文 README 关键段对齐 + 体量比率棘轮（六方外审 Sonnet A4）。
+
+    外审实测英文版信息量只有中文版的 77%：中文安全章成文、英文只有一句警告；
+    三探针双语都缺。判据两件：
+      ① 关键段（安装/安全/三探针）双语都必须成文在场；
+      ② 行数比率 EN/ZH ≥ 0.90 —— 只加中文不加英文的提交会立刻红，
+         这正是「英文版悄悄落后」上一次的复发形态。
+    """
+    zh = (_ROOT / "README.md").read_text(encoding="utf-8")
+    en = (_ROOT / "README_EN.md").read_text(encoding="utf-8")
+    for text, name, needles in (
+        (zh, "README.md", ("pip install -r requirements.txt", "安全模型", "三个数")),
+        (en, "README_EN.md", ("pip install -r requirements.txt", "Security Model", "Three probes")),
+    ):
+        for needle in needles:
+            assert needle in text, f"{name} 缺关键段要素 {needle!r}（安装/安全/三探针必须双语成文）"
+    zh_lines = len(zh.splitlines())
+    en_lines = len(en.splitlines())
+    ratio = en_lines / zh_lines
+    assert ratio >= 0.90, (
+        f"README_EN/README 行数比率 {ratio:.2%} < 90%（{en_lines}/{zh_lines}）—— "
+        "中文版新增的内容必须同步英文化，别让英文页再次悄悄落后"
+    )
+
 def test_v20_3_current_facts_are_not_contradicted():
     zh = (_ROOT / "README.md").read_text(encoding="utf-8")
     architecture = (_ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")

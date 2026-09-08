@@ -5,15 +5,11 @@
 > **防线都在，证据不够。** 六方网页版外审（Sonnet 5 / Qwen3.8-Max / GPT Luna / Grok / GLM 5.3 / Gemini 3.1 Pro）约 45 条指控逐项 `file:line` 复核：实锤/半实锤采纳 14 条，误报驳回 12 条。本条目随 alpha 施工推进持续回填，收口时以实测数字为准。
 
 - **P0-1 `/add` 输入边界**：`messages` 长度/序列化上限 + 全局 body 硬顶 + 全量写端点普查守卫。
-- **P0-2 正式基准首跑**：judge prompt/seed 先冻结，按协议跑 LongMemEval-S 与 LoCoMo，数据哈希 + 配置 + JSONL + digest 四件套留证，`benchmarks/RESULTS.md` 填真分数。
+- **P0-2 正式基准首跑**：judge prompt/seed 先冻结，按协议跑 LongMemEval-S 与 LoCoMo，数据哈希 + 配置 + JSONL + digest 四件套留证，`benchmarks/RESULTS.md` 填真分数。（待拍板乙：judge 预算与口径，未跑。）
 - **P0-3 文档数字自洽**：README 内存口径修正（旧文 430−280≠151 且 75+122≠151），关键数字锚定 machine-readable 源并设守卫。
 - **P1**：CI 手动关内增 pip-audit + gitleaks 真扫描（触发方式维持手动不变）；兼容层 Deprecation 台账；MCP 鉴权文档化；LLM 密钥 env 覆盖；evolve_mem 索引化；模型下载 sha256 校验；env 变量前缀台账。
-
-## 2026-09-05 · 维护增量（不改 release tag）
-
-- 零凭据首跑扫描补充测试世界自证：确认 `BASE_DIR`、`DATA_DIR`、鉴权状态与后端配置状态后，才统计路由结果，避免把真实部署环境误判成新用户首跑。
-- 该项属于测试与审计加固，不改变公开版本号、运行时 API 或既有 `v20.3` release tag。
-- README 当前的版本、测试数字与部署说明已覆盖本次变更范围，无需额外改动。
+- **P2**：CSP 去 `unsafe-inline`；SSH known_hosts 预置文档化；`except Exception` 密度棘轮 601 只降不升；Ruff 扩围（F841/W/UP015 清零并入门禁）；版本治理成文；ARCHITECTURE 时代标注前置；`/health` 按探针成本拆 `/livez`·`/readyz`·`/diagnostics`；README 叙事下沉 docs、双语关键段对齐（安装/安全/三探针）。
+- **用例总数 1743 → 1806**（`pytest --collect-only`，2026-09-08 实测）：本轮 P0/P1/P2 守卫用例净增 63 条；README 双语数字表同步刷新，沙箱与全轴两行待生产机复测（按轴推导值已在表内注明）。
 
 > 从 mem0 裸壳到五脉架构，再到 Pantheon 万神殿与 Aegis 神盾，经 Zeus 多模态感知，至 v19.2.0 雅典娜生产级加固，v19.3.0 架构大一统，v19.3.1 审计修复与发布链对齐，v19.3.2 legacy 路由 import 修复，v19.3.3 审计回归修复与发布链接续，v19.4.0 明镜工程原文保真层 + Mímir 借鉴六项 + 生产审计修复版，v19.4.1 审计补丁鉴权贯通与租户闭环，v19.4.2 守卫扩面与集成件凭据贯通，v19.4.3 发布卫生，v19.5.0 脱敏闸门，v20.0 全量记忆域隔离，v20.1 确定性兜底与诚实召回，v20.1.1 公开后外审加固，至 v20.2.0 智慧引擎自动挡。
 
@@ -31,6 +27,12 @@
 - **容器权限**：`Dockerfile` 支持任意 UID + gid 0，data / logs 和 `HOME=/app/data` 可写，应用代码保持只读；`.dockerignore` 排除本地缓存与运行状态。
 - **持久化部署指南**：`docs/DEPLOY_DOCKHOLD.md` 补齐模型配置、Qdrant 与历史数据库的持久化路径，以及鉴权、换容器后的原文与向量召回验收；双语 README 和 `AGENTS.md` 提供入口。容器实测覆盖端口、权限、鉴权和原文留存；没有把未执行的云向量召回或平台账户部署写成已通过。
 - **用例总数 1728 → 1743**：新增真实启动入口与冒烟端口解析回归；README 与 `docs/TESTING.md` 分别注明测量环境、来源和验证边界。以下 2026-09-03 正式版记录保留当时的历史数据。
+
+## 2026-09-05 · 维护增量（不改 release tag）
+
+- 零凭据首跑扫描补充测试世界自证：确认 `BASE_DIR`、`DATA_DIR`、鉴权状态与后端配置状态后，才统计路由结果，避免把真实部署环境误判成新用户首跑。
+- 该项属于测试与审计加固，不改变公开版本号、运行时 API 或既有 `v20.3` release tag。
+- README 当前的版本、测试数字与部署说明已覆盖本次变更范围，无需额外改动。
 
 ## v20.3 (2026-09-03 · 正式版)：五方外审整改 · 一致性与底层（2026-09-03；pre 09-01 · beta 09-02）
 
