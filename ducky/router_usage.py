@@ -91,11 +91,24 @@ def router_usage_enabled() -> bool:
     }
 
 
+_TOFU_WARNED = False
+
+
 def fetch_router_llm_usage() -> Dict[str, Any]:
     """按日汇总上游网关的 LLM token 用量；未启用/未配置/全部失败均返回 {}。"""
     if not router_usage_enabled():
         logger.debug("router_usage 未启用（设 AIDUMEM_ROUTER_USAGE_ENABLED=1 开启），跳过")
         return {}
+    global _TOFU_WARNED
+    if os.environ.get("AIDUMEM_ROUTER_SSH_STRICT", "accept-new") == "accept-new" and not _TOFU_WARNED:
+        # v20.4.0-alpha（P2-12，外审 Qwen #4）：TOFU 此前是**静默**的——
+        # accept-new 意味着首连无条件信任对方主机密钥，注释里写了风险，
+        # 但运行时不响一声。改为每进程 WARNING 一次（只响一次：
+        # 每 5 分钟轮询的运维路径禁得起一次提醒，禁不起日志轰炸）。
+        _TOFU_WARNED = True
+        logger.warning(
+            "⚠️ router_usage 主机密钥策略为 accept-new（TOFU）：首连即中间人窗口。"
+            "生产请先预置 known_hosts，再设 AIDUMEM_ROUTER_SSH_STRICT=yes 收紧。")
     hosts = _ssh_hosts()
     ssh_key = os.environ.get("AIDUMEM_ROUTER_SSH_KEY", "")
     if not hosts or not ssh_key:
