@@ -255,12 +255,17 @@ _DOC_PATHS = frozenset({
 
 # 登录与健康检查必须永久免凭据：前者是拿到凭据的唯一入口，
 # 后者是监控探针的依赖，锁死会让服务「看起来挂了」。
+# /livez、/readyz 同理（v20.4 P2-17）：负载均衡器/编排器无凭据高频探测，
+# 两者响应只含版本与检查名布尔，不泄路径；/diagnostics 是完整深度探针，
+# 一律留在门禁后，不进本集合。
 _ALWAYS_PUBLIC_PATHS = frozenset({
     "/", "/ui",
     "/login", "/api/login",
     "/login/hint", "/api/login/hint",
     "/logout", "/api/logout",
     "/health", "/api/health",
+    "/livez", "/api/livez",
+    "/readyz", "/api/readyz",
 })
 
 
