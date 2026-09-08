@@ -33,7 +33,7 @@ def get_vision_config():
 
 def extract_vision_caption(media_url_or_base64: str) -> str:
     """
-    通过 OpenAI 兼容 Vision API 提取图片 caption 
+    通过 OpenAI 兼容 Vision API 提取图片 caption
     返回一段详细的文本描述，该描述将作为记忆本体被存入数据库
     """
     cfg = get_vision_config()
@@ -49,7 +49,7 @@ def extract_vision_caption(media_url_or_base64: str) -> str:
         return "图片解析失败：未配置 api_key 或 base_url"
 
     logger.info(f"正在通过 {model} 提取多模态记忆...")
-    
+
     # 构造标准 OpenAI 多模态请求
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -77,7 +77,7 @@ def extract_vision_caption(media_url_or_base64: str) -> str:
         "max_tokens": 500,
         "temperature": 0.1
     }
-    
+
     try:
         # v20.2.4（外审 F-03 / 门槛 3）：Vision 也是云出口。
         # 这处是本轮**门槛测试当场抓出来的漏项** —— 我按 `ducky/*.py` 顶层

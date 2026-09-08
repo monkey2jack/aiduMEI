@@ -97,7 +97,7 @@ def _load_checkpoint(checkpoint_path: str, collection: str, dest: str) -> dict:
     if not os.path.exists(checkpoint_path):
         return {"collection": collection, "dest": os.path.abspath(dest),
                 "next_offset": None, "migrated": 0, "done": False}
-    with open(checkpoint_path, "r", encoding="utf-8") as f:
+    with open(checkpoint_path, encoding="utf-8") as f:
         ckpt = json.load(f)
     if ckpt.get("collection") != collection or ckpt.get("dest") != os.path.abspath(dest):
         raise BackendError(
