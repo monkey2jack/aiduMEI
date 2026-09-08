@@ -1,0 +1,16 @@
+{
+  "_comment": "BAAI/bge-small-zh-v1.5 本地嵌入模型（fastembed 缓存产物）的 sha256 清单。生成日期 2026-09-08：在本机已就位的缓存（~/.cache/aidumei/fastembed，fastembed 自 HuggingFace 拉取的产物，模型仓 Qdrant/bge-small-zh-v1.5，revision 46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59）逐文件算出。scripts/fetch_local_embed_model.py 部署期取模后按本清单逐文件校验：不匹配即删除该文件并非 0 退出；标 \"unverified\" 的条目跳过并 WARNING，不阻塞部署。相对路径以 fastembed 缓存目录（AIDUMEI_LOCAL_EMBED_CACHE，默认 ~/.cache/aidumei/fastembed）为根；snapshots/ 下是指向 blobs/ 的符号链接，钉 blobs 即钉住其内容。",
+  "model": "BAAI/bge-small-zh-v1.5",
+  "generated": "2026-09-08",
+  "source": "本机实测缓存（fastembed 下载产物，revision 46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59）",
+  "files": {
+    "models--Qdrant--bge-small-zh-v1.5/blobs/1294ea4b6331115a353d81f96b85e8c8d7fdcc284453d5b2fab5b016230aad38": "1294ea4b6331115a353d81f96b85e8c8d7fdcc284453d5b2fab5b016230aad38",
+    "models--Qdrant--bge-small-zh-v1.5/blobs/3a59388f0fd1bd22dec2ce7902c1be8e1fb84107": "e6f3b96db926a37d4039995fbf5ad17de158dfb8f6343d607e4dbaad18d75f5a",
+    "models--Qdrant--bge-small-zh-v1.5/blobs/60938626ad1097a0c1a14be4f8340e32c714a056": "9088751d39abbf86ec3d19ffca92ad62ad19075f7e59712e6c71217fa125d1d3",
+    "models--Qdrant--bge-small-zh-v1.5/blobs/a8b3208c2884c4efb86e49300fdd3dc877220cdf": "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3",
+    "models--Qdrant--bge-small-zh-v1.5/blobs/cdb3043fc938fc918c06e66cf704c2ba58f88747": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26",
+    "models--Qdrant--bge-small-zh-v1.5/files_metadata.json": "6a13b77fcc0c3e797c8df75b6dfe9cfc13f26cdbfa8f5c848bc4ce9672ce4af2",
+    "models--Qdrant--bge-small-zh-v1.5/refs/main": "d96bbba2e83389b41a9df058631daa5a8b6f3fcb4444a1a8a4acfd063636f3db",
+    "models--Qdrant--bge-small-zh-v1.5/trees/46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59.json": "c8fdaa22239c10b54c8766db68edf254f02a85a93c601a123a8d857d6071b51e"
+  }
+}
