@@ -170,7 +170,7 @@ python scripts/e2e_smoke.py --json
 python scripts/report.py --json
 ```
 
-For the local spare tire, install `.[local-embed]` and run `python scripts/fetch_local_embed_model.py` before starting the service.
+For the local spare tire, install `.[local-embed]` and run `python scripts/fetch_local_embed_model.py` before starting the service. Fetched model files are verified file-by-file against the sha256 manifest `scripts/local_embed_model_sha256.json` — a mismatch is deleted and the script exits non-zero.
 </details>
 
 Choose one mode in `.env`:
@@ -201,6 +201,53 @@ The ~150 MB resident difference is the prepared local vector leg: it must index 
 
 ---
 
+## 🔐 Security Model
+
+**One gate, two keys.** Both are accepted; either one grants access:
+
+| Key | Who uses it | How |
+|-----|-------------|-----|
+| Session cookie | Browser console | `POST /login` with the console password; the server issues an HttpOnly, SameSite=Lax session cookie |
+| Bearer token | Scripts, MCP, CI | `Authorization: Bearer <AIDUMEM_API_TOKEN>` |
+
+The gate activates when **either** `AIDUMEM_API_TOKEN` is set **or** the console password is set explicitly
+(via env var, or by changing it through the console). A password auto-generated at first boot guards the console
+login only — it deliberately does **not** activate the REST gate, so existing loopback callers (Hermes plugin,
+MCP, cron) keep working across an upgrade. Check `probes.auth_gate_enabled` in `/health` to see the current state.
+
+- **The service binds `127.0.0.1` by default.** A credential-less instance refuses to start on a non-loopback
+  bind (explicit escape valves: `AIDUMEI_TRUST_PROXY=1` to declare a trusted proxy,
+  `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` to allow credential-less public exposure — both off by default).
+  For cross-machine access, configure a credential and put a TLS reverse proxy in front; never expose a
+  credential-less instance to the public internet.
+- **Tenant scoping is not a SaaS security boundary.** `(user_id, bank_id)` separates memory ownership among
+  agents/identities inside one single-machine self-hosted deployment; `AIDUMEM_STRICT_TENANT=1` switches to
+  strict mode (no fallback for unlabeled historical rows). Host mutually untrusted parties as
+  separate instances.
+- **Sessions are in-process**: a restart invalidates all login sessions, and sessions are not shared across
+  instances — put sticky sessions on the proxy for multi-instance deployments.
+- **Passwords** are stored as PBKDF2-HMAC-SHA256 (200k rounds) in `data/.ui_password_hash` with mode 0600;
+  pre-v19.4.1 single-round SHA-256 hashes are upgraded automatically on first successful login.
+- **MCP shares REST's credential**: all 41 MCP tools land their writes through the REST API, and a
+  non-loopback SSE bind requires `AIDUMEM_API_TOKEN` (see the integration section below).
+
+## 🩺 Three probes to check first
+
+```bash
+curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.runtime_paths'
+```
+
+1. `health_status` must be `ok`;
+2. every item in `degraded` must have an explanation in `degraded_details`;
+3. `probes.runtime_paths.data_dir` must be the directory you intend to persist, with `data_dir_writable: true`.
+
+Probes are graded by cost (since v20.4.0): `/livez` (O(1) liveness), `/readyz` (cheap readiness checks,
+503 takes the instance out of rotation), `/diagnostics` (full deep probe, credential required); the `/health`
+contract is unchanged. Field semantics: [docs/HEALTH.md](docs/HEALTH.md). **`/health: ok` alone does not prove
+memory works** — run the write→recall→cleanup smoke: `python scripts/e2e_smoke.py --json`.
+
+---
+
 ## Architecture
 
 ```text
@@ -225,13 +272,19 @@ Key capabilities include relevance-gated recall, tidal write coalescing, time-aw
 
 | Method | Path | Contract |
 |---|---|---|
-| `POST` | `/add` | Distilled or deterministic durable write |
+| `POST` | `/add` | Distilled or deterministic durable write; `action` states direct/async/coalesce behavior |
 | `POST` | `/add/raw` | Zero-LLM verbatim write |
-| `POST` | `/search` | Hybrid recall with verdict and per-request gear |
+| `POST` | `/search` | Hybrid recall with verdict, confidence, engine mode, and trace fields |
 | `POST` | `/search_trace` | Recall with funnel evidence |
 | `DELETE` / `POST` | `/delete` | Scoped idempotent single deletion |
 | `POST` | `/delete_all` | Confirmed scoped purge |
 | `GET` | `/health` | Probe details, active modes and actual runtime paths |
+| `GET` | `/gate` | Decide whether a turn needs memory retrieval |
+| `GET` | `/stats` | Scope-scoped memory statistics |
+| `POST` | `/api/core-memory/inject` | Inject core memory context |
+| `POST` | `/facts/inject-context` | Inject fact context |
+| `POST` | `/session/start` / `/session/end` | Session lifecycle |
+| `GET` | `/metrics` | JSON metrics (not Prometheus format) |
 
 Deletion outcomes are `committed`→200, `partial`→207, `failed`→500 and `not_found`→200. `failed_layers` reports failures on this call; `not_cleared` reports declared matrix exemptions. A configured-but-unreachable vector backend is a failure. Only the typed initialization signal for a never-configured backend may skip the mem0 leg, and non-committed WAL work stays replayable.
 
@@ -245,9 +298,40 @@ Interactive API documentation is served at `/docs`. Extended endpoint groups and
 
 The recommended host path is the Hermes MemoryProvider plugin: it injects durable context at turn start, archives in the background, rescues context before compression and mirrors native long-term-memory writes. A shell hook is available when a host cannot load plugins. **Do not enable both**, because duplicate injection wastes context. Follow [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md) and [integrations/INTEGRATION_GUIDE.md](integrations/INTEGRATION_GUIDE.md) for verification and rollback.
 
-The MCP server listens on `:8766` and exposes **41 tools** for CRUD, health, facts, code impact, session reporting, reflection, core memory, AutoDream, persona, evolution, crystals and conflict resolution. Run `python mcp_server.py --help` for transports and flags.
+The MCP server listens on `:8766` and exposes **41 tools**. Run `python mcp_server.py --help` for transports and flags.
+
+> **Auth policy (stated explicitly since v20.4.0):** MCP tool writes land through the REST API and share its
+> credential. stdio and SSE bound to loopback (`127.0.0.1`/`localhost`/`::1`) trust the local machine and need
+> no credential; **SSE bound to a non-loopback address must configure `AIDUMEM_API_TOKEN`** (injected as Bearer
+> at startup) — without one the server refuses to start, so the 41 tools cannot become a backdoor around REST
+> auth. For deliberate credential-less exposure, the explicit escape valve is `AIDUMEM_ALLOW_INSECURE_PUBLIC=1`
+> (same name and behavior as the REST public valve; off by default, logs at critical level when enabled).
+
+| Tool group | Count | Notes |
+|--------|------|------|
+| Core CRUD | 6 | add / search / delete / update / recent / stats |
+| Facts | 4 | facts_add / facts_search / facts_list / facts_delete |
+| Code Graph | 2 | code_impact / code_graph |
+| Session | 2 | session_list / session_history |
+| Reflect | 2 | reflect_recent / reflect_trace |
+| Core Memory | 3 | core_memory_get / core_memory_set / core_memory_list |
+| AutoDream | 2 | dream_trigger / dream_status |
+| Raw Drawer | 2 | raw_add / raw_search |
+| Knowledge Tree | 3 | tree_nodes / tree_node / tree_ancestors |
+| Crystals | 3 | crystals_list / crystals_detect / crystals_approve |
+| Conflict | 1 | conflict_resolve |
+| Evolve | 2 | evolve_feedback / evolve_report |
+| Federation | 6 | fed_recall / fed_add / fed_agents / fed_register / fed_broadcast / fed_awareness |
+| Persona | 3 | persona_build / persona_retrieve / persona_banks |
 
 IDE adapters live under `integrations/`; they call the same API rather than maintaining a second memory implementation.
+
+```bash
+# Cursor: copy the rules file into your project
+cp integrations/cursor-hook/cursor-aidumem.mdc .cursor/rules/
+# Claude Code hook: store / search / impact from the shell
+python integrations/cursor-hook/claude-code-hook.py store --file my_code.py
+```
 
 ---
 
@@ -257,7 +341,7 @@ IDE adapters live under `integrations/`; they call the same API rather than main
 - **Memory Kernel**: mem0ai v2.0.20
 - **Vector Store**: Qdrant (via qdrant-client)
 - **Structured Data**: SQLite (facts.db, observations.db, scenes.db, fact_events.db)
-- **Full-Text Search**: SQLite FTS5 + trigram tokenizer
+- **Full-Text Search**: SQLite FTS5 + trigram tokenizer. Chinese queries shorter than 3 characters fall back to `LIKE` (a tokenizer definition, not a defect); the `_recall_path` field (`fts` / `like`) records which path each recall actually took
 - **Embeddings**: Configurable (OpenAI Embedding API compatible)
 - **Reranking**: Configurable (OpenAI Rerank API compatible)
 - **LLM**: Any OpenAI-compatible API
@@ -265,103 +349,73 @@ IDE adapters live under `integrations/`; they call the same API rather than main
 
 ---
 
-## Security Model (v19.4.1)
-
-**One gate, two keys.** Both are accepted; either one grants access:
-
-| Key | Who uses it | How |
-|-----|-------------|-----|
-| Session cookie | Browser console | `POST /login` with the console password; the server issues an HttpOnly, SameSite=Lax session cookie |
-| Bearer token | Scripts, MCP, CI | `Authorization: Bearer <AIDUMEM_API_TOKEN>` |
-
-The gate activates when **either** `AIDUMEM_API_TOKEN` is set **or** the console password is set explicitly
-(via env var, or by changing it through the console). A password auto-generated at first boot guards the console
-login only — it deliberately does **not** activate the REST gate, so existing loopback callers (Hermes plugin,
-MCP, cron) keep working across an upgrade. Check `probes.auth_gate_enabled` in `/health` to see the current state.
-
-**Tenant scoping is not a SaaS security boundary.** aiduMEI is a single-machine self-hosted engine; the tenant
-dimension separates different agents/identities within one deployment. Recall-side scoping covers the facts layer
-as of v19.4.1, and `AIDUMEM_STRICT_TENANT=1` switches to strict mode (no fallback for unlabeled historical rows).
-If you need to host mutually untrusted parties, isolate by deployment instance rather than relying on this layer.
-
-**Passwords** are stored as PBKDF2-HMAC-SHA256 (200k rounds) in `data/.ui_password_hash` with mode 0600;
-pre-v19.4.1 single-round SHA-256 hashes are upgraded automatically on first successful login.
-
----
-
 ## Configuration
 
 Copy `mem0_config_local.json.example` to `mem0_config_local.json` and edit the nested `llm.config`, `embedder.config`, `vector_store.config` and optional `rerank.config` sections. The shipped example is the schema reference; keeping a second JSON copy here would let the two drift. Use `GET /health` to confirm the paths and backend state actually in effect.
+Since v20.4.0, the `AIDUMEI_LLM_API_KEY` / `AIDUMEI_EMBEDDER_API_KEY` / `AIDUMEI_RERANKER_API_KEY` environment variables override the JSON `api_key` values, so secrets never have to touch the file.
 
 ---
 
 ## Environment Variables
 
-Since v14 Aegis, all deployment-specific settings are injected via environment variables — **all optional**, safe defaults when unset.
+Since v14 Aegis, all deployment-specific settings are injected via environment variables — **all optional**, safe defaults when unset. The deployment-critical rows:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIDUMEM_HOME` | Repo root (auto-detected) | Override repository root |
 | `AIDUMEM_DATA_DIR` | `<repo>/data` | Database & vector store location |
-| `AIDUMEM_LOG_DIR` | `<repo>/logs` | Log directory |
-| `AIDUMEM_CONFIG_FILE` | `<repo>/mem0_config_local.json` | mem0 config file path |
-| `AIDUMEM_DEFAULT_USER_ID` | `default` | Default user_id |
-| `AIDUMEM_DEFAULT_AGENT_ID` | `default` | Federation default agent_id |
-| `AIDUMEM_ENTITY_KEYWORDS` | empty | Custom entity keywords for relevance gate, `\|` separated |
-| `AIDUMEM_LEGACY_USER_IDS` | empty | Historical `user_id` aliases (comma-separated, e.g. `admin,user`); without the mapping, older rows cannot be recalled. The hardcoded `admin`/`user` mapping was removed in v19.1.1 |
 | `AIDUMEM_API_TOKEN` | empty | REST API token. Once set, **every** endpoint requires `Authorization: Bearer`. Optional on loopback; **mandatory for any deployment reachable from outside** |
 | `AIDUMEM_API_PORT` | `8767` | API + console listen port. Falls back to `MEM0_API_PORT`, then to `PORT` (the standard name container PaaS platforms use to inject a runtime port) |
+| `AIDUMEM_ENTITY_KEYWORDS` | empty | Custom entity keywords for relevance gate, `\|` separated |
+| `AIDUMEM_LEGACY_USER_IDS` | empty | Historical `user_id` aliases (comma-separated); without the mapping, older rows cannot be recalled |
 | `AIDUMEM_CONFIG_READONLY` | `0` | `1` makes the console's config endpoints read-only |
-| `UI_DIR` | `<repo>/frontend` | Console static files (API-only mode if absent) |
-| `AIDUMEM_URL` | `http://127.0.0.1:8767` | Hermes plugin / hook service URL |
-| `AIDUMEM_USER_ID` | `default` | Hermes plugin / hook memory namespace |
-| `AIDUMEM_MIN_HISTORY` | `6` | shell hook: skip injection when session history below this |
 
-Full list with comments: [`.env.example`](.env.example). Start with `cp .env.example .env`.
+Full list (host integration, federation, log directory and more) with comments: [`.env.example`](.env.example). Start with `cp .env.example .env`.
 
 ---
 
 ## Testing & quality
 
-The four environment results below come from the **v20.3.4 validation work on 2026-09-07**; its functional implementation was deployed at `7e63fbd`. Public `main` carries that implementation with **v20.3** version metadata and public documentation. The two full remote runs used `877310a`; 126 related guards also passed on the final commit. The public maintenance candidate requires a separate gate on its exact commit; see [validation provenance and container coverage](docs/TESTING.md#2026-09-07-公开维护与验证来源).
+The Total cases, Clean dev machine and Basic install path rows below are **measured on this tree (v20.4.0-alpha candidate) on 2026-09-08**. The Sandbox and All-axes rows are **pending re-measurement** on the production box for this tree; per guard rules they list the axis-derived value alongside the previous measured baseline (2026-09-07, v20.3.4 tree). Historical validation provenance: [docs/TESTING.md](docs/TESTING.md#2026-09-07-公开维护与验证来源).
 
 ```bash
-# Complete environment: with-host and no-host results measured 2026-09-07
+# Complete environment: no-host result measured on this tree, 2026-09-08
 # Configure AIDUMEI_LOCAL_EMBED_CACHE and AIDUMEI_BENCH_DATA_DIR (containing locomo10.json)
 # Deploy the model before testing; runtime is offline-only
 pip install -r requirements.txt -r requirements-dev.txt
 pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
-pytest tests/ -q -rs | tail -1                                 # no host: 1731 passed, 12 skipped
-HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1743 passed
-HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1731 passed, 12 skipped
+pytest tests/ -q -rs | tail -1                                 # no host: 1794 passed, 12 skipped
+HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1806 passed
+HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1794 passed, 12 skipped
 
-# Basic source-install path: use a separate clean venv; measured 2026-09-07
+# Basic source-install path: use a separate clean venv; measured 2026-09-08
 pip install -r requirements.txt -r requirements-dev.txt
-pytest tests/ -q -rs | tail -1                                 # basic path: 1711 passed, 32 skipped
+pytest tests/ -q -rs | tail -1                                 # basic path: 1771 passed, 35 skipped
 ```
 
 > How to read the table: in every row, passed + skipped equals the `pytest --collect-only` count **for that form on that date**; rows measured on different dates may have different denominators (the tree grows), so trust the date in each row. Skips are explained per axis (table below); they are not failures.
 
 | Dimension | Status |
 |---|---|
-| Total cases | **1743** (measured via `pytest --collect-only`, 2026-09-07, v20.3.4 candidate) |
-| Clean dev machine | 1731 passed · **12 skipped** — **measured 2026-09-07** (v20.3.4, Python 3.12; complete extras and model cache, only Hermes source absent) |
-| Basic install path | 1711 passed · **32 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-07**, v20.3.4) |
-| Sandbox on the production box | 1738 passed · **5 skipped** — **measured on the production box, 2026-09-07** (v20.3.4; isolated HOME, `.git` present, no `.env`; model cache and public LoCoMo dataset configured; skips = ruff×3 + mcp×2) |
-| All axes present | 1743 passed · **0 skipped** — **measured on the production box, 2026-09-07** (v20.3.4; separate all-axes venv, isolated HOME, no `.env`; tools, extras, host, model cache and public LoCoMo dataset present) |
+| Total cases | **1806** (measured via `pytest --collect-only`, 2026-09-08, v20.4.0-alpha candidate) |
+| Clean dev machine | 1794 passed · **12 skipped** — **measured 2026-09-08** (v20.4.0-alpha candidate, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Basic install path | 1771 passed · **35 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-08**, v20.4.0-alpha candidate) |
+| Sandbox on the production box | **pending re-measurement** (axis-derived 1798 passed + 8 skipped for this tree; previous measured baseline 1738 + 5, 2026-09-07 v20.3.4: isolated HOME, `.git` present, no `.env`, model cache and dataset configured) |
+| All axes present | **pending re-measurement** (axis-derived 1806/0 for this tree; previous measured baseline 1743 + 0, 2026-09-07 v20.3.4: separate all-axes venv, isolated HOME, no `.env`) |
 | Statement coverage | ~51% over `ducky/` and entry points |
+| Test layering | Mostly module-level unit tests plus source-level guard assertions, with `TestClient`-driven API tests in support |
+| Platform premise | The suite is maintained for Linux/macOS (POSIX): the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms. Windows is not a full-suite platform |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1731 and 1711**: these are the 2026-09-07 measurements of the complete and basic environments during v20.3.4 validation. With the complete optional environment, model cache and public LoCoMo dataset present, both host states were measured:
+**Why report both 1794 and 1771**: the first is the 2026-09-08 measurement of the complete optional environment on this tree; the second is the same-day clean-venv measurement of the basic install path (requirements files only). With the complete environment, model cache and public LoCoMo dataset present, both host states produce:
 
 ```text
-no host: 1731 passed, 12 skipped
-with host: 1743 passed
-forced off: 1731 passed, 12 skipped
+no host: 1794 passed, 12 skipped
+with host: 1806 passed
+forced off: 1794 passed, 12 skipped
 ```
 
-On a production host where other optional axes are absent, the bare command **actually prints 1738 passed, 5 skipped** (measured 2026-09-07, no `.env`, isolated HOME with model cache and benchmark-data paths configured). A number without its environment and date is not a reproducible claim.
+On a production host where other optional axes are absent, the previous tree's bare command **actually prints 1738 passed, 5 skipped** (measured 2026-09-07 on the v20.3.4 tree, no `.env`, isolated HOME with model cache and benchmark-data paths configured; this tree's sandbox row is pending re-measurement, axis-derived 1798 + 8). A number without its environment and date is not a reproducible claim.
 
 ### Skip-axis census
 
@@ -379,7 +433,7 @@ On a production host where other optional axes are absent, the bare command **ac
 | `mem0ai` installed | 20 | real patch-layer tests |
 | `fastembed` installed | 1 | real local-model fallback test; the configured model cache must also be present |
 | `ruff` installed | 3 | real-defect static rules |
-| `mcp` extra installed | 2 | product import-surface tests |
+| `mcp` extra installed | 5 | MCP import-surface guards + auth-behavior cases |
 
 The suite is maintained for Linux/macOS POSIX. Guards that lack their tool skip honestly instead of reporting zero findings. Every payload-, credential- or response-shape fix needs its production shape plus a discriminating negative control; named tests must be PASSED, not silently SKIPPED.
 

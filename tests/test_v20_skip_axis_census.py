@@ -181,8 +181,10 @@ _AXES = (
     {
         # v20.3 外审整改轮：生产 venv 不装 [mcp] optional extra。直接 import
         # mcp_server 会在启动阶段连带 import fastmcp；缺依赖按轴跳过，不是失败。
+        # v20.4 P1-6 的行为用例同轴（test_v20_4_mcp_auth_doc.py 三条三态用例
+        # 也要真 import mcp_server；同文件的 AST 守卫读磁盘源码，不占这条轴）。
         "key": "mcp_extra",
-        "file": "test_first_run_experience.py",
+        "files": ["test_first_run_experience.py", "test_v20_4_mcp_auth_doc.py"],
         "scope": "callsite",
         "match": r'importorskip\("mcp_server"\)',
         "doc_zh": "`mcp` extra 已安装",

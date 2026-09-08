@@ -73,10 +73,10 @@ class TestCiSecretScanIsNotFakeGreen:
             text = f.read()
         assert "pip-audit" in text and "gitleaks" in text, \
             "test.yml 缺 dependency-audit / secret-scan job（P1-4）"
-        # 触发方式维持猴哥 08-27 手动裁决：只许 workflow_dispatch / workflow_call
+        # 触发方式维持 2026-08-27 的手动裁决：只许 workflow_dispatch / workflow_call
         on_block = text.split("on:", 1)[1].split("jobs:", 1)[0]
         assert "push" not in on_block and "pull_request" not in on_block, \
-            "触发器被改动 —— 手动触发是猴哥裁决，不许顺手改回自动"
+            "触发器被改动 —— 手动触发是既定裁决，不许顺手改回自动"
 
 
 class TestNoInlineStyleInFrontend:
