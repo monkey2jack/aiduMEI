@@ -52,7 +52,7 @@ def _load_stats_unlocked() -> dict:
         return _stats_cache
     try:
         if os.path.isfile(_STATS_PATH):
-            with open(_STATS_PATH, "r", encoding="utf-8") as f:
+            with open(_STATS_PATH, encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict) and "total" in data:
                 _stats_cache = data

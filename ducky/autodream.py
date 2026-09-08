@@ -64,7 +64,7 @@ def _load_last_dream_time():
     global _last_dream_time
     if os.path.exists(REPORT_FILE):
         try:
-            with open(REPORT_FILE, "r", encoding="utf-8") as f:
+            with open(REPORT_FILE, encoding="utf-8") as f:
                 data = json.load(f)
                 _last_dream_time = data.get("dream_time")
         except Exception as e:
@@ -93,7 +93,7 @@ def get_dream_status() -> dict:
     _load_last_dream_time()
     next_dream = None
     status = "never_run"
-    
+
     if _last_dream_time:
         try:
             last = datetime.fromisoformat(_last_dream_time)
@@ -102,7 +102,7 @@ def get_dream_status() -> dict:
             status = "ready"
         except Exception as e:
             logger.warning(f"Parse last dream time error: {e}")
-            
+
     return {
         "last_dream": _last_dream_time,
         "next_dream": next_dream,
@@ -240,7 +240,7 @@ def _simple_merge(clusters: dict) -> dict:
         conn.rollback()
     finally:
         conn.close()
-        
+
     return stats
 
 
@@ -284,7 +284,7 @@ def get_dream_report() -> dict:
     if not os.path.exists(REPORT_FILE):
         return {"status": "no_report"}
     try:
-        with open(REPORT_FILE, "r", encoding="utf-8") as f:
+        with open(REPORT_FILE, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"Failed to read dream report: {e}")
@@ -299,7 +299,7 @@ def autodream_background_loop():
         try:
             _ensure_table()
             status = get_dream_status()
-            
+
             # 如果从没运行过，1小时后触发第一次
             if status["status"] == "never_run":
                 logger.info("  → 首次运行，等待 1 小时后触发首轮蒸馏...")
@@ -307,12 +307,12 @@ def autodream_background_loop():
                     return  # 停机请求（P2-20）：收尾退出
                 trigger_dream()
                 continue
-                
+
             next_dream_str = status["next_dream"]
             if next_dream_str:
                 next_dream = datetime.fromisoformat(next_dream_str)
                 now = datetime.now()
-                
+
                 # 如果当前时间已超过 next_dream，立即触发
                 if now >= next_dream:
                     logger.info(f"  → 当前时间 {now.isoformat()} 已过蒸馏周期 {next_dream_str}，启动蒸馏...")

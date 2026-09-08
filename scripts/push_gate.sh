@@ -28,14 +28,16 @@ fail() { echo "🛑 [停推] $1"; exit 1; }
 "$PY" -m pytest tests/ -q > /tmp/g_t.log 2>&1 || fail "测试关未过：$(tail -1 /tmp/g_t.log)"
 
 # v20.2.5：静态关。只拦**真缺陷类** —— F821 未定义名（运行时 NameError，
-# 本版就抓到一条被 except 吞了很久的）、F811 重复定义。F841「算了不用」走
-# 登记制（tests 里的基线守卫），不在这里阻塞：存量里混着无害残留，
-# 一次全拦会让人绕过整道关。
+# 本版就抓到一条被 except 吞了很久的）、F811 重复定义。
+# v20.4.0-alpha（P2-14）：F841「算了不用」24 处存量已清零（此前走登记制是因为
+# 存量混着无害残留，一次全拦会逼人绕过整道关 —— 那个前提已不存在），
+# W/UP015 空白与冗余 open mode 卫生同批清零；四类一并进门禁，与
+# pyproject.toml [tool.ruff.lint] select 保持一致。
 if "$PY" -c "import ruff" >/dev/null 2>&1; then
   "$PY" -m ruff check ducky/ api_server.py mcp_server.py scripts/ conftest.py tests/ \
-      --select F821,F811 --output-format concise > /tmp/g_ruff.log 2>&1 \
-      || fail "静态关未过（F821/F811 是运行时会炸的形态）：$(head -3 /tmp/g_ruff.log | tr '\n' ' ')"
-  echo "  ✅ 静态关：F821/F811 零命中"
+      --select F821,F811,F841,W,UP015 --output-format concise > /tmp/g_ruff.log 2>&1 \
+      || fail "静态关未过（F821/F811/F841/W/UP015 全清零后入门禁）：$(head -3 /tmp/g_ruff.log | tr '\n' ' ')"
+  echo "  ✅ 静态关：F821/F811/F841/W/UP015 零命中"
 else
   # 生产 venv 不装 lint 工具。**显式 SKIP 并计入**，不许静默当过（那就是假绿灯），
   # 也不许假红（那会逼人绕过整道关）。开发机推送前必须装 ruff。

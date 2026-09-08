@@ -459,12 +459,12 @@ def test_version_truth():
 
     assert _VERSION_RE.fullmatch(SERVICE_VERSION), f"版本号格式非法: {SERVICE_VERSION}"
 
-    with open(os.path.join(_REPO_ROOT, "manifest.json"), "r", encoding="utf-8") as f:
+    with open(os.path.join(_REPO_ROOT, "manifest.json"), encoding="utf-8") as f:
         manifest = json.load(f)
     assert manifest["version"] == SERVICE_VERSION, (
         f'manifest.json {manifest["version"]} ≠ version.py {SERVICE_VERSION}'
     )
 
-    with open(os.path.join(_REPO_ROOT, "pyproject.toml"), "r", encoding="utf-8") as f:
+    with open(os.path.join(_REPO_ROOT, "pyproject.toml"), encoding="utf-8") as f:
         toml_content = f.read()
     assert f'version = "{SERVICE_VERSION}"' in toml_content
