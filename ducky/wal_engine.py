@@ -333,7 +333,7 @@ class WALEngine:
             order: List[str] = []
             status_updates: Dict[str, tuple] = {}
             bad = 0
-            with open(self.wal_file, "r", encoding="utf-8") as f:
+            with open(self.wal_file, encoding="utf-8") as f:
                 for line in f:
                     entry = WALEntry.from_json(line)
                     if not entry:
@@ -396,7 +396,7 @@ class WALEngine:
         status_updates: Dict[str, str] = {}
 
         try:
-            with open(self.wal_file, "r", encoding="utf-8") as f:
+            with open(self.wal_file, encoding="utf-8") as f:
                 for line in f:
                     entry = WALEntry.from_json(line)
                     if not entry:

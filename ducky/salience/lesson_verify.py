@@ -31,7 +31,7 @@ def verify_lessons_closed() -> dict:
     errors_text = ""
     if os.path.exists(error_log_path):
         try:
-            with open(error_log_path, "r", encoding="utf-8") as f:
+            with open(error_log_path, encoding="utf-8") as f:
                 # 读最后 200 行
                 lines = f.readlines()
                 errors_text = "".join(lines[-200:]).lower()
@@ -44,12 +44,12 @@ def verify_lessons_closed() -> dict:
     for mid, val, content in lessons:
         if not content:
             continue
-        
+
         # 简单关键字提取：去掉符号和助词，匹配英文实体词或中文关键动宾
         # 我们用粗暴的方法：如果在错误日志中检测到这行记忆的 preview 里的核心关键字，就说明又犯错报错了！
         # 针对 key error / type error 等技术教训，通常带有具体的代码文件或异常名，例如 `vacuum_state.sh`、`elements.py`、`sqlite3`
         words_to_check = [w for w in ["elements.py", "vacuum_state.sh", "reap_idle", "db_path", "PM2", "gateway", "address already in use"] if w in content.lower()]
-        
+
         found_recent_error = False
         for word in words_to_check:
             if word in errors_text:

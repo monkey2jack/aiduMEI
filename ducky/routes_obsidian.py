@@ -96,7 +96,7 @@ def register_obsidian_routes(app: FastAPI) -> None:
             user_id = req.metadata.get("user_id", "default")
             from ducky.engine_mode import cloud_egress_allowed
             if cloud_egress_allowed("embedding"):
-                add_result = mem.add(text, user_id=user_id, metadata=meta)
+                mem.add(text, user_id=user_id, metadata=meta)
             else:
                 from ducky.dual_index import upsert_local_verbatim
                 upsert_local_verbatim(user_id, req.bank_id or "default",

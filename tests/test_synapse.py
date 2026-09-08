@@ -8,7 +8,7 @@ from ducky.autodream import trigger_dream, get_dream_status, get_dream_report
 
 def run_tests():
     print("🤖 启动 Synapse 模块单元测试...")
-    
+
     # 1. CoreMemory 测试
     init_core_memory()
     blocks = get_all_blocks()
@@ -55,7 +55,7 @@ def run_tests():
     # 无论 skipped 还是 completed，均应为 dict 且包含 status 键
     assert "status" in report, "报告缺少 status"
     print(f"  - [PASS] AutoDream 蒸馏触发成功，状态: {report['status']}")
-    
+
     print("\n🎉 所有新增模块单元测试 100% 通过！")
 
 if __name__ == "__main__":

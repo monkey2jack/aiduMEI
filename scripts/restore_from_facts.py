@@ -32,10 +32,10 @@ for i, row in enumerate(rows):
     content = f"{key}: {value}"
     if summary:
         content += f" ({summary})"
-    
+
     # messages必须是JSON字符串
     messages = json.dumps([{'role': 'user', 'content': content}])
-    
+
     body = {
         'messages': messages,
         'user_id': 'default',
@@ -45,7 +45,7 @@ for i, row in enumerate(rows):
             'fact_key': key,
         },
     }
-    
+
     try:
         resp = requests.post(f'{api}/add', json=body, timeout=30, headers=_auth_headers())
         if resp.status_code == 200:
@@ -58,7 +58,7 @@ for i, row in enumerate(rows):
         fail += 1
         if fail <= 3:
             print(f"  X id={mem_id}: {e}")
-    
+
     if (i+1) % 100 == 0:
         print(f"  进度: {i+1}/{len(rows)}")
 
