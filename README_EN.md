@@ -85,14 +85,17 @@ single call site.
 
 | | Cloud gear | Autoshift / Local gear | Difference |
 |---|---|---|---|
-| Resident memory | **~280 MB** | ~430 MB | **151 MB** |
+| Resident memory | **~280 MB** | ~430 MB | **150 MB** |
 | Dependency disk | ~275 MB | ~353 MB + 91 MB model | ~169 MB |
 
-And we account for those 151 MB out loud: **onnxruntime itself costs 75 MB just to import, and the
-model session and weights about 122 MB.** We tried to shrink it — `threads=1`, on-demand ONNX arena
+And we account for those 150 MB out loud: **onnxruntime itself costs about 75 MB just to import, and the
+model session and weights about 122 MB.** (The components are measured separately and total ~197 MB;
+that is a different yardstick from the 150 MB two-gear resident difference — the cloud gear carries
+baseline overhead too, and components share pages. We list both honestly instead of forcing the sum.)
+We tried to shrink it — `threads=1`, on-demand ONNX arena
 allocation, `malloc_trim`, `MALLOC_ARENA_MAX=2` — and **all four knobs measured as no-ops**
 (206–215 MB, within noise); the model is already the smallest usable Chinese-capable option.
-So we **didn't pretend to optimize — we made it a switch**: skip the spare tire and those 151 MB
+So we **didn't pretend to optimize — we made it a switch**: skip the spare tire and those 150 MB
 cost you nothing.
 
 > Why the spare tire stays resident rather than loading "only during an outage": the dual index
@@ -194,7 +197,7 @@ Measured on a 2-core / 3.5 GB host on 2026-08-27:
 | Dependencies | ~275 MB | ~353 MB + 91 MB model |
 | Suggested host | 1 core / 1 GB | 2 cores / 2 GB |
 
-The ~151 MB resident difference is the prepared local vector leg: it must index every write before an outage, so loading it only after failure would leave nothing local to recall. Full operations and capacity details: [docs/OPERATIONS.md](docs/OPERATIONS.md) · [docs/CAPACITY.md](docs/CAPACITY.md).
+The ~150 MB resident difference is the prepared local vector leg: it must index every write before an outage, so loading it only after failure would leave nothing local to recall. Full operations and capacity details: [docs/OPERATIONS.md](docs/OPERATIONS.md) · [docs/CAPACITY.md](docs/CAPACITY.md).
 
 ---
 
