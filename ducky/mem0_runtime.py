@@ -464,37 +464,57 @@ def _patch_usage_tracking(mem_instance):
 
 
 def _resolve_api_keys(cfg: dict) -> dict:
-    """替换 __SF_KEY__ 占位符为真实 key — 所有密钥从文件读取，禁止硬编码"""
+    """替换 __SF_KEY__ 占位符为真实 key — 所有密钥从文件读取，禁止硬编码
+
+    v20.4.0-alpha（P1-7，六方外审 GLM M-1 残余）：密钥此前**只能**明文落在
+    mem0_config_local.json —— 数据目录被共享卷/备份带走时密钥跟着扩散。
+    新增 env 覆盖且**优先级最高**：AIDUMEI_LLM_API_KEY / AIDUMEI_EMBEDDER_API_KEY /
+    AIDUMEI_RERANKER_API_KEY 非空时直接生效（连占位符都不必再写）；
+    未设时走原有 JSON → 密钥文件回退链，老部署零变化。
+    """
     import copy
     cfg = copy.deepcopy(cfg)
     base = BASE_DIR
 
+    env_llm = os.environ.get("AIDUMEI_LLM_API_KEY", "").strip()
+    env_emb = os.environ.get("AIDUMEI_EMBEDDER_API_KEY", "").strip()
+    env_rerank = os.environ.get("AIDUMEI_RERANKER_API_KEY", "").strip()
+
     emb_sec = cfg.get("embedder")
     if isinstance(emb_sec, dict) and isinstance(emb_sec.get("config"), dict):
-        emb_key = emb_sec["config"].get("api_key", "")
-        if emb_key == "__SF_KEY__" or not emb_key:
-            kp = os.path.join(base, ".sf_key")
-            if os.path.exists(kp):
-                with open(kp) as f:
-                    emb_sec["config"]["api_key"] = f.read().strip()
+        if env_emb:
+            emb_sec["config"]["api_key"] = env_emb
+        else:
+            emb_key = emb_sec["config"].get("api_key", "")
+            if emb_key == "__SF_KEY__" or not emb_key:
+                kp = os.path.join(base, ".sf_key")
+                if os.path.exists(kp):
+                    with open(kp) as f:
+                        emb_sec["config"]["api_key"] = f.read().strip()
 
     llm_sec = cfg.get("llm")
     if isinstance(llm_sec, dict) and isinstance(llm_sec.get("config"), dict):
-        llm_key = llm_sec["config"].get("api_key", "")
-        if llm_key == "__SF_KEY__" or llm_key == "__LLM_KEY__" or not llm_key:
-            kp = os.path.join(base, ".llm_key")
-            if os.path.exists(kp):
-                with open(kp) as f:
-                    llm_sec["config"]["api_key"] = f.read().strip()
+        if env_llm:
+            llm_sec["config"]["api_key"] = env_llm
+        else:
+            llm_key = llm_sec["config"].get("api_key", "")
+            if llm_key == "__SF_KEY__" or llm_key == "__LLM_KEY__" or not llm_key:
+                kp = os.path.join(base, ".llm_key")
+                if os.path.exists(kp):
+                    with open(kp) as f:
+                        llm_sec["config"]["api_key"] = f.read().strip()
 
     rerank_cfg = cfg.get("rerank")
     if isinstance(rerank_cfg, dict) and isinstance(rerank_cfg.get("config"), dict):
-        rk = rerank_cfg["config"].get("api_key", "")
-        if rk == "__SF_KEY__" or not rk:
-            kp = os.path.join(base, ".sf_key")
-            if os.path.exists(kp):
-                with open(kp) as f:
-                    rerank_cfg["config"]["api_key"] = f.read().strip()
+        if env_rerank:
+            rerank_cfg["config"]["api_key"] = env_rerank
+        else:
+            rk = rerank_cfg["config"].get("api_key", "")
+            if rk == "__SF_KEY__" or not rk:
+                kp = os.path.join(base, ".sf_key")
+                if os.path.exists(kp):
+                    with open(kp) as f:
+                        rerank_cfg["config"]["api_key"] = f.read().strip()
     return cfg
 
 

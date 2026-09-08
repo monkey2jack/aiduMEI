@@ -76,7 +76,10 @@ def get_llm_config() -> dict:
             cfg["base_url"] = llm_cfg.get("openai_base_url", "")
 
             api_key = llm_cfg.get("api_key", "")
-            cfg["api_key"] = _resolve_key(api_key, "llm")
+            # v20.4.0-alpha（P1-7）：env 覆盖与 mem0_runtime 同权同优先级 ——
+            # 两条读取链（SDK 初始化 / 直连通道）不许出现「一边 env 生效一边不生效」。
+            env_key = os.environ.get("AIDUMEI_LLM_API_KEY", "").strip()
+            cfg["api_key"] = env_key if env_key else _resolve_key(api_key, "llm")
             _config_cache = cfg
         except Exception as e:
             logger.warning(f"读取 LLM 配置失败（下次调用重试）: {e}")
