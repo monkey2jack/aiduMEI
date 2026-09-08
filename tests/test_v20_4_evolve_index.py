@@ -54,7 +54,22 @@ def _seed_salience(rows):
 
 @pytest.fixture()
 def evolve_sandbox(monkeypatch):
-    """隔离 salience/evolve 两库，并冻结时钟到 _NOW。"""
+    """隔离 salience/evolve 两库，并冻结时钟到 _NOW。
+
+    为什么必须在 fixture 里**重新钉路径**（不能只靠模块头那次赋值）：
+    pytest 收集期会 import 全部测试模块，本模块头对 utils.SALIENCE_DB 的
+    钉扎会被**字母序更靠后**的模块（test_v20_fallback_discipline /
+    test_v20_ledger_evolve_bank_scope / test_v20_salience_bank_scope 等）
+    在 import 时覆盖 —— 运行时 utils.SALIENCE_DB 指向的是别人的 tmpdir。
+    更糟的是 get_salience_conn 走线程本地连接缓存（按路径字符串做 key）：
+    排在本模块前面的用例会先把那条外来路径的连接缓存上，本 fixture 的
+    os.remove 只删文件、删不掉那条打开着的连接（旧 inode 还活着），
+    run_evolution_cycle 读到的就是别人库里的残行 —— 全量跑时曾因此
+    decayed=8（外来残行被冻结时钟全部判成超窗），单跑却全绿。
+    monkeypatch 钉扎在用例结束自动还原，也不把本模块的路径泄漏给别人。
+    """
+    monkeypatch.setattr(utils, "SALIENCE_DB", os.path.join(_TMPDIR, "salience.db"))
+    monkeypatch.setattr(utils, "FACTS_DB", os.path.join(_TMPDIR, "facts.db"))
     for f in (utils.SALIENCE_DB, utils.FACTS_DB):
         if os.path.exists(f):
             os.remove(f)
