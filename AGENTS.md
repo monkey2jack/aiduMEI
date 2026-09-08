@@ -62,7 +62,7 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 
 ## Operate
 
-- Health and failures: `docs/HEALTH.md`
+- Health and failures: `docs/HEALTH.md` — `/health` field guide plus the `/livez` (O(1) liveness), `/readyz` (cheap readiness, 503 on fatal local preconditions), and `/diagnostics` (full probe, credential required) split.
 - Daily and periodic jobs: `docs/OPERATIONS.md`
 - Failure scenarios and runbooks: `TROUBLESHOOTING.md`
 - Backup, restore, upgrade, rollback: `docs/BACKUP_RESTORE.md`
