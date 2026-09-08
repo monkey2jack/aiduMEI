@@ -554,7 +554,7 @@ python -m compileall ducky api_server.py mcp_server.py
 |---|------|------|
 | 1 | 租户隔离是按租户收窄可见性 | 非互不信任客户的硬隔离层。详见 `docs/SECURITY-AUDIT-LEDGER.md`。 |
 | 2 | `evolve_mem.py` 按 5000 条全库扫描 | 记忆量增长后需优化，详见 `ducky/evolve_mem.py`。 |
-| 3 | `fetch_local_embed_model.py` 必须部署期执行 | 运行时零网络；`ducky/local_embed.py` 强制 `HF_HUB_OFFLINE=1`。 |
+| 3 | `fetch_local_embed_model.py` 必须部署期执行 | 运行时零网络；`ducky/local_embed.py` 强制 `HF_HUB_OFFLINE=1`。取模后按 `scripts/local_embed_model_sha256.json` 逐文件 sha256 校验，不匹配即删除并非 0 退出。 |
 | 4 | `capture_wave` 的 `entity_keywords` 漏配时零召回 | 无报错，需配置 `AIDUMEM_ENTITY_KEYWORDS`。详见 `ducky/pipeline/memory_gate.py`。 |
 
 ## 仓库结构
