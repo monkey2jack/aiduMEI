@@ -14,6 +14,11 @@ from typing import Literal, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
+
 from ducky.evolve_mem import (
     ensure_evolve_schema,
     get_evolve_report,
@@ -25,21 +30,22 @@ logger = logging.getLogger("aiduMEM.routes.evolve")
 
 
 class FeedbackRequest(BaseModel):
-    memory_id: str = Field(..., description="记忆 UUID")
+    memory_id: str = Field(..., max_length=ID_FIELD_MAX_CHARS, description="记忆 UUID")
     signal: Literal["useful", "useless", "correction"] = Field(
         ..., description="反馈信号：useful=有用 / useless=无用 / correction=内容有误"
     )
-    query: str = Field(default="", description="触发这条记忆的搜索词（可选）")
+    query: str = Field(default="", max_length=QUERY_FIELD_MAX_CHARS,
+                       description="触发这条记忆的搜索词（可选）")
     correction_text: Optional[str] = Field(
-        default=None,
+        default=None, max_length=TEXT_FIELD_MAX_CHARS,
         description="signal=correction 时，填入修正后的正确内容"
     )
     user_id: str = Field(
-        default="",
+        default="", max_length=ID_FIELD_MAX_CHARS,
         description="v20 opt-in 作用域：不传保持 v19 管理员语义；传了则校验记忆归属"
     )
     bank_id: str = Field(
-        default="",
+        default="", max_length=ID_FIELD_MAX_CHARS,
         description="v20 opt-in 作用域：与 user_id 搭配，越库反馈直接拒"
     )
 
