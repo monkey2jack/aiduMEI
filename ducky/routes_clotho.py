@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
 
 from ducky.autodream import get_dream_report, get_dream_status, trigger_dream
 from ducky.checkpoint import (
@@ -23,7 +28,7 @@ from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
 
 
 class CheckpointPayload(BaseModel):
-    session_id: str
+    session_id: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
     blocks: dict
 
 

@@ -9,7 +9,12 @@ import os
 import secrets
 import re
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
 
 from ducky.mem0_runtime import get_memory, MEM0_CONFIG
 from ducky.utils import get_facts_conn
@@ -32,12 +37,12 @@ def _is_obsidian_enabled() -> bool:
 
 
 class ObsidianSyncRequest(BaseModel):
-    title: str
-    content: str
-    tags: list[str] = []
-    metadata: dict = {}
+    title: str = Field(..., max_length=1024)
+    content: str = Field(..., max_length=TEXT_FIELD_MAX_CHARS)
+    tags: list[str] = Field(default_factory=list, max_length=1000)
+    metadata: dict = Field(default_factory=dict)
     # v20 P0-2：同步目标记忆库。不传 = default 域（v19 行为零改动）
-    bank_id: str = ""
+    bank_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 def extract_wikilinks(content: str) -> list[str]:
     """提取 Markdown 中的 [[页面名]] 或 [[页面名|别名]] 双链语法"""
