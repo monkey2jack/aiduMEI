@@ -1380,7 +1380,7 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，
     # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
     # 现在两套环境各配各的命令、各报各的数，且必须同屏。
-    MEASURED_BASIC = (1711, 32)   # 2026-09-07 v20.3.4 干净 venv 实测（Python 3.12，只装 requirements*；退出 0）
+    MEASURED_BASIC = (1771, 35)   # 2026-09-08 v20.4.0-alpha 候选树干净 venv 实测（Python 3.12，只装 requirements*；退出 0）。跳过 32→35：P1-6 的 3 条 MCP 鉴权行为用例按 mcp_extra 轴诚实跳过（此前是 ImportError 假红）。
 
     def _read(name):
         return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")
