@@ -4,6 +4,7 @@ ducky.api_models — FastAPI 请求/响应模型（C 档从 api_server 抽出）
 2026-08-13: /add 的 messages 兼容 str / list / dict 三种输入
 """
 
+import json
 import re
 from typing import Any, Dict, List, Union
 
@@ -11,6 +12,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ducky.utils import DEFAULT_USER_ID
 from ducky.bank_contract import DEFAULT_BANK_ID
+
+# v20.4.0-alpha（P0-1，六方外审复核）：自由文本统一上限，供本模块与各 routes_*
+# 的载荷模型共用 —— 上限若各写一份，漏掉的那份不会有人发现（与 v20.2.5
+# 「校验落在模型上而不是路由里」同一理由）。
+# 依据：/search 的 query 已在 v20.2.5 钉 10,000（查询词量级）；写入侧单条原文
+# 生产实测远小于 5 万字符（一条 verbatim 的上限量级，见下方 metadata 4KB 单值注），
+# 50,000 给「粘贴长会话」留足余量，同时把「整本小说塞进一条记忆」挡在 422。
+# 台账与守卫：ducky/write_endpoint_budgets.py + tests/test_v20_4_add_bounds.py。
+TEXT_FIELD_MAX_CHARS = 50_000
+MESSAGES_SERIALIZED_MAX_BYTES = 64 * 1024
+QUERY_FIELD_MAX_CHARS = 10_000
+SHORT_TEXT_MAX_CHARS = 4_096
+ID_FIELD_MAX_CHARS = 256
 
 # 上游 mem0 与 aiduMEM 的历史调用方混用了三种形态：
 #   1) 纯文本字符串        → "今天开会"
@@ -49,9 +63,27 @@ class AddRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     messages: Messages = ""
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
     metadata: dict = Field(default_factory=dict)
+
+    @field_validator("messages")
+    @classmethod
+    def _messages_budget(cls, v: Messages) -> Messages:
+        # v20.4.0-alpha（P0-1）：v20.2.5 给 /search 加上限后，这里是写入口
+        # 唯一裸奔的自由文本载荷（六方外审复核实锤，GLM L-1 的半条）。
+        # str 按字符数（与 query 的口径一致）；list/dict 按 JSON 序列化字节数
+        # —— 元素多而单元素短的「碎消息轰炸」与「单条超长」是同一种放大。
+        if isinstance(v, str):
+            if len(v) > TEXT_FIELD_MAX_CHARS:
+                raise ValueError(
+                    f"messages 长度 {len(v)} 超上限 {TEXT_FIELD_MAX_CHARS} 字符")
+        else:
+            size = len(json.dumps(v, ensure_ascii=False).encode("utf-8"))
+            if size > MESSAGES_SERIALIZED_MAX_BYTES:
+                raise ValueError(
+                    f"messages 序列化 {size} 字节超上限 {MESSAGES_SERIALIZED_MAX_BYTES}")
+        return v
 
     @field_validator("metadata")
     @classmethod
@@ -95,8 +127,8 @@ class SearchRequest(BaseModel):
     # 校验落在**模型**上而不是路由里：模型是所有调用方的共同入口，
     # 放路由里就得每条路由各写一遍，而漏掉的那条不会有人发现。
     query: str = Field(default=..., max_length=10000)
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
     limit: int = Field(default=5, ge=1, le=100)
     # MCP 等调用方传的是 top_k；显式接收，避免被 Pydantic 静默丢弃
     # 导致调用方指定数量永远不生效（P2-1 审计发现）。
@@ -105,8 +137,8 @@ class SearchRequest(BaseModel):
     # 因此形同虚设。边界落在模型（所有调用方共同入口），与 limit 同顶。0 = 用 limit。
     top_k: int = Field(default=0, ge=0, le=100)
     # P0-4 时间窗口过滤（可选，兼容旧调用方）
-    before: str = ""
-    after: str = ""
+    before: str = Field(default="", max_length=64)
+    after: str = Field(default="", max_length=64)
 
 
 class SearchResponse(BaseModel):
@@ -123,17 +155,17 @@ class SearchResponse(BaseModel):
 class DeleteRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    memory_id: str
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    memory_id: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
 
 
 class DeleteAllRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     # 🔴P0-3: 必须显式指定 user_id，缺失拒绝执行
-    user_id: str = ""
-    bank_id: str = DEFAULT_BANK_ID
+    user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
     # 清空 default 租户必须显式传递 confirm=True
     confirm: bool = False
 
@@ -143,30 +175,30 @@ class TombstoneRestoreRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     tombstone_id: int
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
 
 class GovernanceReviewRequest(BaseModel):
     """🏛️ 治理管线人审请求（v19.4.0 Mímir 借鉴 B1）"""
     model_config = ConfigDict(extra="allow")
 
     candidate_id: int
-    decision: str  # approve | reject
-    reason: str = ""
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    decision: str = Field(..., max_length=64)  # approve | reject
+    reason: str = Field(default="", max_length=SHORT_TEXT_MAX_CHARS)
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
 
 class OpinionSetRequest(BaseModel):
     """🧭 信念层写入请求（v19.4.0 Mímir 借鉴 B6）"""
     model_config = ConfigDict(extra="allow")
 
     fact_id: int
-    stance: str  # support | oppose | neutral
+    stance: str = Field(..., max_length=64)  # support | oppose | neutral
     confidence: float = 0.5
-    evidence_ids: list = []
-    source: str  # 证据来源标识（必填，聚合按来源去重）
-    owner: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    evidence_ids: list = Field(default_factory=list, max_length=1000)
+    source: str = Field(..., max_length=ID_FIELD_MAX_CHARS)  # 证据来源标识（必填，聚合按来源去重）
+    owner: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
 
 
 class UpdateRequest(BaseModel):
@@ -174,19 +206,19 @@ class UpdateRequest(BaseModel):
     # 避免 data 被 Pydantic 静默丢弃后把记忆更新成空串。
     model_config = ConfigDict(extra="allow")
 
-    memory_id: str
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
-    content: str = ""
+    memory_id: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
 
 
 class InjectContextRequest(BaseModel):
     # 新 facts 注入协议；user_content 保留兼容旧调用方。
-    query: str = ""
-    k: int = 5
-    level: str = "L0"
+    query: str = Field(default="", max_length=QUERY_FIELD_MAX_CHARS)
+    k: int = Field(default=5, ge=1, le=100)
+    level: str = Field(default="L0", max_length=16)
     max_tokens: int = 1000
-    user_content: str = ""
-    assistant_content: str = ""
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    user_content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
+    assistant_content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)

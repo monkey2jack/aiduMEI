@@ -24,6 +24,11 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
+
 from ducky.utils import BASE_DIR
 
 logger = logging.getLogger("aiduMEM.code_graph")
@@ -171,8 +176,8 @@ def compute_blast_radius(
 
 class ImpactRequest(BaseModel):
     """爆炸半径查询请求"""
-    root_dir: str = ""
-    changed_files: list[str] = Field(default_factory=list)
+    root_dir: str = Field(default="", max_length=1024)
+    changed_files: list[str] = Field(default_factory=list, max_length=10_000)
     max_depth: int = 3
     max_files: int = Field(default=500, ge=1, le=2000)
 
