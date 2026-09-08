@@ -88,23 +88,10 @@
 
 ### 实事求是报消耗
 
-「省内存」和「让你自己选」在我们这儿是**同一件事**，因为我们先老老实实量过：
-
-| | 云端档 | 自动挡 / 本地档 | 差额 |
-|---|---|---|---|
-| 运行内存 | **约 280 MB** | 约 430 MB | **150 MB** |
-| 依赖磁盘 | 约 275 MB | 约 353 MB + 模型 91 MB | 约 169 MB |
-
-这 150 MB 的去向也摊开讲：**onnxruntime 运行库本身 import 就吃约 75 MB，模型会话与权重约 122 MB。**
-（构成项是单独实测，合计约 197 MB；它与两档常驻差 150 MB 口径不同——云端档同样背基线开销、
-构成项之间有共享页，两数不求相等，如实并列。）
-我们试过压它——`threads=1`、ONNX arena 按需分配、`malloc_trim`、`MALLOC_ARENA_MAX=2`，
-**四种旋钮实测全部无效**（206~215 MB，在噪声范围内）；模型也已经是能用的中文模型里最小的一档。
-所以我们**没有假装优化，而是把它做成了开关**：不需要备胎，那 150 MB 一分不花。
-
-> 备胎为什么会常驻、而不是「断供时才加载」：双索引要求**每一次写入**都同步算一份本地向量——
-> 不写就没数据，等断供那一刻再加载模型也召回不到任何东西。**备胎是提前备好的，不是临时找的。**
-> 这是设计取舍，写在这里让你自己判断值不值。完整实测（含冷启动、延迟、CPU）见下方「部署要求」章。
+「省内存」和「让你选」在我们这儿是**同一件事**：云端档约 280 MB、自动挡/本地档约 430 MB，
+差的 150 MB 就是常驻的本地备胎——我们压过它（四种旋钮实测全部无效），压不动就把它做成了开关。
+**备胎为什么常驻**：双索引要求每一次写入都同步算一份本地向量，断供那一刻再加载模型也召回不到任何东西。
+完整实测表、口径说明与冷启动/延迟数字见下方「📦 部署要求」章。
 
 ### 自动挡到底怎么工作
 
@@ -124,13 +111,9 @@
 
 > 竞品定位、版本谱系与架构演进见 [docs/POSITIONING.md](docs/POSITIONING.md)、[docs/VERSION-LINEAGE.md](docs/VERSION-LINEAGE.md)。
 
-## 一行 Prompt 部署
+## 部署：手动安装与容器
 
-把下面这段复制给你的 AI Agent（Claude Code、Cursor、Codex 等），它会自动完成全部部署和验证：
-
-```text
-请从官方仓库安装 aiduMEI，并严格读取 AGENTS.md：自动检查本机环境、选择最稳妥部署路径与 cloud/local/auto 挡位，完成配置、服务启动、e2e 生效验证、宿主记忆接入、维护任务初始化和 report.py 自检报告；每一步只以脚本退出码和 JSON 证据判定，遇到失败立即停止、修复并重试，最终向我汇报版本、挡位、健康、水位、召回质量、维护状态及未关闭风险。
-```
+顶部「一行 Prompt」是推荐的 Agent 路径；不用 Agent 时按下方手动步骤执行——两者殊途同归到同一份正典（[prompts/install.txt](prompts/install.txt)）。
 
 <details>
 <summary>📋 手动安装（不用 Agent 的话点这里展开）</summary>
@@ -228,32 +211,48 @@ AIDUMEI_ENGINE_MODE=local   # 零 token、零外部网络、不需要任何密�
 
 > 竞品定位与跑分态度见 [docs/POSITIONING.md](docs/POSITIONING.md) 与 [docs/BENCHMARKING-POSTURE.md](docs/BENCHMARKING-POSTURE.md)；完整版本谱系见 [docs/VERSION-LINEAGE.md](docs/VERSION-LINEAGE.md)。
 
+## 🔐 安全模型
+
+**一道门，两把钥匙**，任一把都可通行：
+
+| 钥匙 | 谁在用 | 怎么用 |
+|------|--------|--------|
+| 会话 Cookie | 浏览器控制台 | `POST /login` 提交控制台口令，服务端签发 HttpOnly、SameSite=Lax 会话 Cookie |
+| Bearer 令牌 | 脚本、MCP、CI | `Authorization: Bearer <AIDUMEM_API_TOKEN>` |
+
+门禁在「设了 `AIDUMEM_API_TOKEN` **或**显式设了控制台口令」时启用；首次启动自动生成的口令只守控制台登录，**不会**激活 REST 门禁——升级后原有回环调用方（Hermes 插件、MCP、cron）不受影响。当前状态查 `/health` 的 `probes.auth_gate_enabled`。
+
+- **默认只监听 `127.0.0.1`**；无凭据实例绑定非回环地址会被拒绝启动（显式逃生阀：`AIDUMEI_TRUST_PROXY=1` 声明受信反代、`AIDUMEM_ALLOW_INSECURE_PUBLIC=1` 放行无凭据公网，均默认关）。跨机访问请配置凭据并前置 TLS 反代，别把无凭据实例暴露到公网。
+- **租户维度不是 SaaS 安全边界**：`(user_id, bank_id)` 隔离的是同一部署内不同 Agent/身份的记忆归属；互不信任的各方请按实例隔离。
+- **会话是进程内的**：服务重启后所有登录会话失效；多实例部署会话不共享，需在反代做会话粘滞（sticky session）。
+- **口令**以 PBKDF2-HMAC-SHA256（200k 轮）存于 `data/.ui_password_hash`（权限 0600）。
+- **MCP 与 REST 同源鉴权**：41 个 MCP 工具的写操作最终经 REST 落地，非回环 SSE 必须配置 `AIDUMEM_API_TOKEN`（详见下方 MCP 章节）。
+
+## 🩺 启动后先查三个数
+
+```bash
+curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.runtime_paths'
+```
+
+1. `health_status` 必须是 `ok`；
+2. `degraded` 里每一项都要有 `degraded_details` 解释；
+3. `probes.runtime_paths.data_dir` 必须是你打算持久化的目录，且 `data_dir_writable` 为真。
+
+探针按成本分级（v20.4.0 起）：`/livez`（O(1) 探活）、`/readyz`（廉价就绪检查，失败 503 摘流）、`/diagnostics`（完整深度探针，需凭据）；`/health` 对外契约不变。字段语义见 [docs/HEALTH.md](docs/HEALTH.md)。**`/health: ok` 不证明记忆能用**——写→召回→清理的生效验证跑 `python scripts/e2e_smoke.py --json`。
+
 ## 架构
 
+```text
+宿主短期记忆（宿主负责）
+        │
+FastAPI REST :8767 · 控制台 /ui · MCP Server :8766 (41 tools)
+        ├─ 相关性闸门 → 召回漏斗（云向量 / 本地 ONNX / FTS5 三路混合）
+        ├─ Athena 智慧层（反思 · 自编辑 · 精炼 · Skill 生长）
+        ├─ 原文保真层 · 工作区/核心记忆 · WAL · 治理账本
+        └─ Qdrant（嵌入式向量存储） + facts.db（FTS5 trigram） + EvolveMem 自进化
 ```
-┌──────────────────────────────────────────────────────────┐
-│           aiduMEI⚕爱嘟优忆思 v20.3            │
-│              FastAPI REST API :8767                       │
-│              控制台 /ui :8767（自带静态托管）              │
-│              MCP Server :8766 (41 tools)                  │
-├──────────────────────────────────────────────────────────┤
-│  v19.3 Engine    → 注入防护 · WAL多仓级联 · 统一打分 · 动态健康
-│  Athena          → Reflect反思 · 自编辑 · 精炼 · Skill生长 · 人格基座 │
-│  Core (HOT)      → 搜索、添加、CRUD、健康检查              │
-│  v8 Pipeline     → 点火 · 工作区 · 广播 · 镜鉴 · 会话      │
-│  Clotho/Hyperion → CoreMemory · 检查点 · AutoDream       │
-│  Extended        → 15脉外延：自动记忆 · 过期 · 统计        │
-│  Federation      → 多 Agent 联邦 · MoE 门控 · 四级降级     │
-│  Octopus         → 冲突消解 · 树状记忆 · 技能结晶          │
-│  Zeus            → 原味抽屉 · 代码图谱 · 检索自进化         │
-│  Themis          → 事件账本 · 敏感分档 · 治理审计          │
-│  aiduMEI 控制台  → PULSE · VAULT · MAP · RECALL · EVOLVE · SETTINGS │
-├──────────────────────────────────────────────────────────┤
-│  mem0 (向量记忆) + Qdrant (向量存储)                       │
-│  facts.db (结构化知识 · FTS5 trigram 全文搜索)             │
-│  EvolveMem 检索自进化引擎 (后台自动衰减/提权)               │
-└──────────────────────────────────────────────────────────┘
-```
+
+模块边界与演进史见 [ARCHITECTURE.md](ARCHITECTURE.md)（v14 时代历史快照，现行形态以 [AGENTS.md](AGENTS.md) 数据流为准）。
 
 ---
 
@@ -350,9 +349,7 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 - **记忆内核**：mem0ai v2.0.20
 - **向量存储**：Qdrant（通过 qdrant-client）
 - **结构化数据**：SQLite（facts.db、observations.db、scenes.db、fact_events.db）
-- **全文搜索**：SQLite FTS5 + trigram 分词器
-  - **中文切词策略（v19.4.1 P1-2 更正）**：trigram 分词器索引的是 3 字符窗口，因此中文查询按 **3-gram** 切词才能命中索引。v19.4.0 及之前切 2-gram，与索引失配——中文查询实际一直落在 `LIKE` 全表扫描上（20 万条原文实测稀有词 32.8 ms）。现已对齐，同量级降至 0.05 ms。
-  - **trigram 的固有边界**：不足 3 字的查询（如「祖母」）无法用 trigram 表达，由 `LIKE` 兜底。这是分词器定义决定的，不是缺陷；召回结果的 `_recall_path` 字段（`fts` / `like`）会如实标注本次真走的哪条路，降级不再静默。
+- **全文搜索**：SQLite FTS5 + trigram 分词器。不足 3 字的中文查询由 `LIKE` 兜底（分词器定义决定，不是缺陷）；召回结果的 `_recall_path` 字段（`fts` / `like`）如实标注本次真走的哪条路
 - **向量化**：可配置（兼容 OpenAI Embedding API）
 - **重排序**：可配置（兼容 OpenAI Rerank API · 多 provider 抽象：OpenAI-compatible / Jina / Cohere）
 - **大模型**：兼容任何 OpenAI 格式的 API
@@ -363,46 +360,11 @@ python integrations/cursor-hook/claude-code-hook.py impact --file ducky/utils.py
 
 ## 配置说明
 
-aiduMEI 从 `mem0_config_local.json` 读取配置。主要字段：
-
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "config": {
-      "model": "你的模型",
-      "api_key": "你的密钥",
-      "openai_base_url": "你的接口地址",
-      "is_reasoning_model": false,
-      "reasoning_effort": "none"
-    }
-  },
-  "embedder": {
-    "provider": "openai",
-    "config": {
-      "model": "your-embedding-model",
-      "api_key": "你的密钥",
-      "openai_base_url": "你的接口地址"
-    }
-  },
-  "rerank": {
-    "enabled": true,
-    "provider": "openai_compatible",
-    "config": {
-      "model": "你的重排模型",
-      "api_key": "你的密钥",
-      "openai_base_url": "你的接口地址"
-    }
-  },
-  "vector_store": {
-    "provider": "qdrant",
-    "config": {
-      "path": "./data/qdrant",
-      "embedding_model_dims": 1024
-    }
-  }
-}
-```
+aiduMEI 从 `mem0_config_local.json` 读取配置。随包的 [`mem0_config_local.json.example`](mem0_config_local.json.example)
+就是 schema 正典（`llm.config` / `embedder.config` / `vector_store.config` / 可选 `rerank.config` 的嵌套形状
+以它为准）——此处不再夹带第二份 JSON 副本，两份并存迟早漂移（英文版早先就这么翻过车）。
+`AIDUMEI_LLM_API_KEY` / `AIDUMEI_EMBEDDER_API_KEY` / `AIDUMEI_RERANKER_API_KEY` 环境变量优先于 JSON 里的
+`api_key`，密钥不落文件（v20.4.0 起）。
 
 > 💡 LLM 的 `is_reasoning_model: false` + `reasoning_effort: "none"` 是刻意写死关闭的——记忆提取需要快速直答，不需要深度推理。控制台 SETTINGS 面板的"思考模式"区块只读展示这一状态。
 
@@ -411,33 +373,25 @@ aiduMEI 从 `mem0_config_local.json` 读取配置。主要字段：
 ## 环境变量
 
 v14 Aegis 起，所有与部署环境相关的可变项都通过环境变量注入，**全部可选**——不设置就走安全默认值。
+部署最关键的几行：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `AIDUMEM_HOME` | 仓库根（`__file__` 自动解析） | 覆盖仓库根目录 |
 | `AIDUMEM_DATA_DIR` | `<repo>/data` | 数据库与向量库落盘位置 |
-| `AIDUMEM_LOG_DIR` | `<repo>/logs` | 日志目录 |
-| `AIDUMEM_CONFIG_FILE` | `<repo>/mem0_config_local.json` | mem0 配置文件路径（由 `AIDUMEM_HOME` 推导，固定文件名） |
-| `AIDUMEM_DEFAULT_USER_ID` | `default` | 默认 user_id |
-| `AIDUMEM_DEFAULT_AGENT_ID` | `local` | 联邦默认 agent_id |
-| `AIDUMEM_LEGACY_USER_IDS` | 空 | 历史 user_id 映射（逗号分隔，如 `admin,user`），映射后老数据才能被召回。v19.1.1 起不再硬编码 `admin/user` 映射 |
 | `AIDUMEM_API_TOKEN` | 空 | REST API 访问令牌；设置后所有接口强制 `Authorization: Bearer`。本地/回环可不设，对外部署必设 |
-| `AIDUMEM_API_PORT` | `8767` | API + 控制台监听端口。未设时回落 `MEM0_API_PORT`，再回落 `PORT`（容器 PaaS 在运行时注入端口用的标准名） |
+| `AIDUMEM_API_PORT` | `8767` | API + 控制台监听端口。未设时回落 `MEM0_API_PORT`，再回落 `PORT`（容器 PaaS 注入端口的标准名） |
 | `AIDUMEM_ENTITY_KEYWORDS` | 空 | 相关性闸门的自定义实体词表，`\|` 分隔 |
-| `UI_DIR` | `<repo>/frontend` | 控制台静态文件目录（不存在则仅 API 模式） |
-| `AIDUMEM_URL` | `http://127.0.0.1:8767` | 宿主插件 / shell hook 访问服务的地址 |
-| `AIDUMEM_USER_ID` | `default` | 宿主插件 / hook 使用的记忆命名空间 |
-| `AIDUMEM_MIN_HISTORY` | `6` | shell hook：会话历史少于这个条数就不注入 |
+| `AIDUMEM_LEGACY_USER_IDS` | 空 | 历史 user_id 映射（逗号分隔），映射后老数据才能被召回 |
 | `AIDUMEM_CONFIG_READONLY` | `0` | 控制台配置只读模式（1=禁止在线改配置） |
 
-完整清单连注释见 [`.env.example`](.env.example)，`cp .env.example .env` 起步。
+完整清单（含宿主接入、联邦、日志目录等）连注释见 [`.env.example`](.env.example)，`cp .env.example .env` 起步。
 
 ---
 
 
 ## 测试与质量
 
-下表四环境结果来自 **2026-09-07 的 v20.3.4 验证线**，功能实现已在 `7e63fbd` 部署；公开 `main` 沿用该实现，并保留 **v20.3** 版本元数据与公开说明。两种远程完整测量基于 `877310a`，最终提交另通过 126 项相关守卫。公开维护候选的门禁按其精确提交单独执行，见 [验证来源与容器验证范围](docs/TESTING.md#2026-09-07-公开维护与验证来源)。
+下表的「用例总数 / 独立开发机 / 基础安装路径」三行是 **2026-09-08 在本树（v20.4.0-alpha 候选树）的实测**；「生产机沙箱 / 全轴齐备」两行本树**待复测**（生产机复测前排产中），按守卫口径并列按轴推导值与上一实测基线（2026-09-07，v20.3.4 树）。历史验证线见 [验证来源与容器验证范围](docs/TESTING.md#2026-09-07-公开维护与验证来源)。
 
 ```bash
 # 全量回归
@@ -451,11 +405,11 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **1743**（`pytest --collect-only` 实测，2026-09-07，v20.3.4 候选树） |
-| 独立开发机 | 1731 通过 · **12 跳过** —— **2026-09-07 实测**（v20.3.4，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
-| 基础安装路径 | 1711 通过 · **32 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-07 干净 venv 实测**，v20.3.4，Python 3.12） |
-| 生产机沙箱 | 1738 通过 · **5 跳过** —— **2026-09-07 生产机实测**（v20.3.4；隔离 HOME、含 `.git`、不带 `.env`；模型缓存与 LoCoMo 数据集显式配置；跳过 = ruff×3 + mcp×2） |
-| 全轴齐备 | 1743 通过 · **0 跳过** —— **2026-09-07 生产机实测**（v20.3.4；独立全轴 venv、隔离 HOME、不带 `.env`；`.git`、工具、extras、宿主、模型缓存与 LoCoMo 数据集齐备） |
+| 用例总数 | **1806**（`pytest --collect-only` 实测，2026-09-08，v20.4.0-alpha 候选树） |
+| 独立开发机 | 1794 通过 · **12 跳过** —— **2026-09-08 实测**（v20.4.0-alpha 候选树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 基础安装路径 | 1771 通过 · **35 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-08 干净 venv 实测**，v20.4.0-alpha 候选树，Python 3.12） |
+| 生产机沙箱 | **待复测**（按轴推导值为 1798 + 8 跳过；上一实测基线 1738 + 5，2026-09-07 v20.3.4 生产机：隔离 HOME、含 `.git`、不带 `.env`、模型与数据集显式配置） |
+| 全轴齐备 | **待复测**（按轴推导值为 1806/0；上一实测基线 1743 + 0，2026-09-07 v20.3.4 生产机独立全轴 venv：隔离 HOME、不带 `.env`、全轴齐备） |
 | 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
 | 平台前提 | 全量套件按 **Linux/macOS（POSIX）**口径维护：`backup_gate` 轴要 POSIX shell；`/health` 的 CPU/RSS 指标走 `resource` 模块，非 POSIX 平台诚实置 `None` 不崩（v20.1 整改）。Windows 未列为全量测试平台 |
 | 语句覆盖率 | 约 51%（`ducky/` + 入口，`coverage` 实测） |
@@ -465,17 +419,17 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | # | 环境 | 通过 | 跳过 | 跳过归因 |
 |---|------|-----:|-----:|---------|
-| ① | 独立开发机 · 完整 extras + 模型缓存 | 1731 | 12 | 2026-09-07 实测（v20.3.4；只缺宿主 Hermes ×12） |
-| ② | 干净克隆 · **无配置** · 有 `.git`（≈ 第一次拿到本项目的人） | 1497 | 2 | `ruff` 未安装 ×2 —— **2026-08-29 基线（总数 1499 时代）**，已被 ④⑤ 取代 |
-| ③ | 干净克隆 · **带生产配置** · 有 `.git`（重排可达） | 1497 | 2 | `ruff` 未安装 ×2 —— **2026-08-29 基线（总数 1499 时代）**，已被 ④⑤ 取代 |
-| ④ | 生产机沙箱 · 宿主源码 · 生产 venv · 不带 `.env` | 1738 | 5 | 2026-09-07 实测（v20.3.4；ruff×3 + mcp×2；模型与数据集已就位） |
-| ⑤ | 全轴齐备 · 有 `.git` · 工具 · extras · 宿主 · 模型缓存 · 数据集 | **1743** | **0** | 2026-09-07 生产机实测（v20.3.4，独立全轴 venv） |
+| ① | 独立开发机 · 完整 extras + 模型缓存 | 1794 | 12 | 2026-09-08 实测（v20.4.0-alpha 候选树；只缺宿主 Hermes ×12） |
+| ② | 干净克隆 · **无配置** · 有 `.git`（≈ 第一次拿到本项目的人） | 1497 | 2 | `ruff` 未安装 ×2 —— **2026-08-29 基线（总数 1499 时代）**，已被 ①④⑤ 取代 |
+| ③ | 干净克隆 · **带生产配置** · 有 `.git`（重排可达） | 1497 | 2 | `ruff` 未安装 ×2 —— **2026-08-29 基线（总数 1499 时代）**，已被 ①④⑤ 取代 |
+| ④ | 生产机沙箱 · 宿主源码 · 生产 venv · 不带 `.env` | 待复测（推导 1798） | 推导 8 | 上一实测 1738+5：2026-09-07（v20.3.4）；本树缺席轴推导 = ruff×3 + mcp×5 |
+| ⑤ | 全轴齐备 · 有 `.git` · 工具 · extras · 宿主 · 模型缓存 · 数据集 | 待复测（推导 1806） | 推导 0 | 上一实测 1743+0：2026-09-07 生产机（v20.3.4，独立全轴 venv） |
 
-每行 `通过 + 跳过` 对应各自测试树的总数：①④⑤ 为上述 v20.3.4 验证线的 1743 条实测值；②③ 为 1499 条历史基线。历史对照的用途和测量规则见 [docs/TESTING.md](docs/TESTING.md#历史矩阵的口径)，公开候选未复测的环境不能沿用旧结果冒充新测量。
+每行 `通过 + 跳过` 对应各自测试树的总数：① 为本树（1806 条）2026-09-08 实测；④⑤ 为待复测行，推导值按本树 1806 条减缺席轴、上一实测基线为 v20.3.4 树的 1743 条；②③ 为 1499 条历史基线。历史对照的用途和测量规则见 [docs/TESTING.md](docs/TESTING.md#历史矩阵的口径)，公开候选未复测的环境不能沿用旧结果冒充新测量。
 
 > **⚠️ 这些数字对应「装齐可选依赖」的环境**（v20.2.5 补记，外审指出的口径缺口）。
 >
-> 2026-09-07 完整开发环境实测为 1743/1731/12，前提是：`regex`、`nltk`、`numpy`、`qdrant_client`、
+> 2026-09-08 完整开发环境实测为 1806/1794/12，前提是：`regex`、`nltk`、`numpy`、`qdrant_client`、
 > `mem0ai`、`fastembed` 都在场，模型缓存与公开 LoCoMo `locomo10.json` 也已就位（路径由 `AIDUMEI_LOCAL_EMBED_CACHE` 与 `AIDUMEI_BENCH_DATA_DIR` 指定）。而 README「30 秒上手」教的基础路径只装
 > `requirements.txt` —— 那些可选依赖不在，对应的跳过轴会**一起跳掉**，
 > 于是 passed 更少、skipped 更多。第三方外审在基础路径下实测到的是
@@ -491,7 +445,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
 > ```
 
-> **为什么要把 1731 和 1738 都写出来**：v20.3.4 验证线在开发环境和生产沙箱的跳过轴不同；数字必须与环境、日期和测试树一起读。
+> **为什么要把 1794 和 1738 都写出来**：1794 是本树开发环境 2026-09-08 实测；1738 是上一棵 v20.3.4 树 2026-09-07 的生产沙箱实测基线（本树沙箱待复测，按轴推导值为 1798）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
 > **跳过不止一条轴**（v20.0 实测补正）：此前这一段只认「宿主 Hermes 源码」一条轴，于是把「全绿」
 > 当成了装上宿主就能拿到的东西。生产实跑打脸 —— 沙箱里宿主明明在场，跑出来**仍有 1 条跳过**。
 > 全量普查登记了**十三条跳过轴**：宿主、工具、可选依赖和模型文件分别门控，不能只看安装包是否在场。
@@ -510,11 +464,11 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` 已安装 | 20 | `tests/test_v20_mem0_patch_layer.py` 整份（补丁层疗法要真实基座在场；此前缺 mem0 是 20 条 ERROR 冒充真缺陷，现在诚实跳过） |
 > | `fastembed` 已安装 | 1 | `tests/test_v20_2_autoshift.py`（自动挡备胎真模型测试；缺依赖诚实跳过，模型未部署时用例内二次跳过） |
 > | `ruff` 已安装 | 3 | 静态规则守卫：F821/F811/F841；缺依赖时跳过，发布门禁仍会拦截 |
-> | `mcp` extra 已安装 | 2 | MCP 导入面守卫 |
+> | `mcp` extra 已安装 | 5 | MCP 导入面守卫 + 鉴权行为用例 |
 >
-> 开发机只缺第一条 → 1731 + 12（2026-09-07 实测）；基础安装路径（只装 `requirements*`，新用户实际得到的形态）
-> → **1711 + 32**（2026-09-07 干净 venv 实测）；生产机沙箱 → 1738 + 5（2026-09-07）；
-> 全轴齐备（`.git`、工具、extras、宿主、模型缓存与数据集）→ **1743 + 0**（2026-09-07 生产机实测）。
+> 开发机只缺第一条 → 1794 + 12（2026-09-08 实测）；基础安装路径（只装 `requirements*`，新用户实际得到的形态）
+> → **1771 + 35**（2026-09-08 干净 venv 实测）；生产机沙箱 → 待复测（按轴推导 1798 + 8；基线 1738 + 5，2026-09-07）；
+> 全轴齐备（`.git`、工具、extras、宿主、模型缓存与数据集）→ 待复测（按轴推导 1806/0；基线 1743 + 0，2026-09-07 生产机实测）。
 >
 > 这两行数字的来历与踩坑史见 [`docs/TESTING.md`](docs/TESTING.md)。一句话：**测的是哪棵树，就只许报哪棵树。**
 >
@@ -522,17 +476,17 @@ python -m compileall ducky api_server.py mcp_server.py
 > 跳过条件是宿主 `agent/memory_provider.py` 找不到。`HERMES_SRC` 三态可控，**两个方向都能复现**：
 >
 > ```bash
-> # 2026-09-07 实测：先装齐依赖、部署模型缓存，并让 AIDUMEI_BENCH_DATA_DIR 指向含 locomo10.json 的目录
+> # 2026-09-08 实测：先装齐依赖、部署模型缓存，并让 AIDUMEI_BENCH_DATA_DIR 指向含 locomo10.json 的目录
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py                       # 必须取模；运行时 HF_HUB_OFFLINE=1，只有安装包仍会多跳 1 条
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：1731 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：1743 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 1731 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：1794 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：1806 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 1794 passed, 12 skipped
 >
-> # 基础安装路径须另建干净 venv；2026-09-07 实测
+> # 基础安装路径须另建干净 venv；2026-09-08 实测
 > pip install -r requirements.txt -r requirements-dev.txt
-> pytest tests/ -q -rs | tail -1                                 # 基础路径：1711 passed, 32 skipped
+> pytest tests/ -q -rs | tail -1                                 # 基础路径：1771 passed, 35 skipped
 > ```
 >
 > **为什么两套都写在这里**（v20.3.3，第 10 轮外部审计 P0-3）：这一段上一版的标题是
@@ -543,61 +497,42 @@ python -m compileall ducky api_server.py mcp_server.py
 > 现在命令与数字同屏，且各配各的环境。
 >
 > 「跳过」必须能被复现成「通过」，**反过来也必须成立**。机器上恰好装着宿主时（`/hermes/hermes-agent`
-> 会被自动发现，我们自己的生产机就是这样），宿主在场时不能套用 1731 + 12。2026-09-07
-> 在生产机沙箱上跑出来是 1738 passed、5 skipped（2026-09-07 实测，不带 `.env`）。剩下那 5 条卡在 `ruff` ×3、
-> `mcp` extra ×2 两条轴上（沙箱用生产 venv，不装 lint 工具与可选 extra；模型缓存和公开基准数据已显式配置）。
-> 上面代码块里的 `有宿主：1743 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 ——
-> 别把「装上宿主」当成「全绿」。2026-09-07 在生产机独立全轴 venv 中，隔离 HOME、去掉 `.env`，
-> 显式配置模型缓存和公开数据集后，实测到 **1743 passed、0 skipped**。
+> 会被自动发现，我们自己的生产机就是这样），宿主在场时不能套用 1794 + 12。上一实测基线：2026-09-07
+> 在 v20.3.4 树的生产机沙箱上跑出来是 1738 passed、5 skipped（实测，不带 `.env`），那 5 条卡在 `ruff` ×3、
+> `mcp` extra ×2 两条轴上（沙箱用生产 venv，不装 lint 工具与可选 extra；模型缓存和公开基准数据已显式配置；
+> 本树 mcp 轴已增至 ×5，沙箱行待复测）。
+> 上面代码块里的 `有宿主：1806 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 ——
+> 别把「装上宿主」当成「全绿」。基线：2026-09-07 在 v20.3.4 树的生产机独立全轴 venv 中，隔离 HOME、去掉 `.env`，
+> 显式配置模型缓存和公开数据集后，实测到 **1743 passed、0 skipped**；本树全轴行待复测（按轴推导 1806/0）。
 > 没有 `HERMES_SRC=none` 这一档，读者根本无法在自己机器上把我们宣称的「12 跳过」复现出来。
 > **双向可复现才叫可证伪**：一个你没法让它跳过的「跳过」，和一个你没法让它通过的「通过」，同样不可信。
 >
 > 另外：`HERMES_SRC` 指向的路径若不含 `agent/memory_provider.py`，会**直接报错**，
 > 而不会静默回退到自动发现的路径 —— 指了 A 却在测 B 还给绿灯，是最难发现的一种假绿灯。
 
-**为什么把这些写清楚**：v19.4.0 的 README 只写「全量测试 244 通过」，读者会理解为端到端保障。但 244 用例 0.88 秒跑完，显然不含任何真实外部依赖。更关键的是——v19.4.0 的幂等去重测试是绿的，却只覆盖了带显式时间戳的 `list[dict]` 载荷，而生产实际走的是无时间戳的纯字符串载荷，真 bug 就从这条缝里带着绿灯上线了。
-
-因此 v19.4.1 起执行**反假绿灯纪律**：涉及载荷形态、凭据形态、查询形态的测试一律多形态并测；性能与索引类断言必须校验 `_recall_path` 这类自证字段，而不是只看「有没有命中」。
-
 ---
+
 ## 已知例外与本版不覆盖
 
 | # | 例外 | 说明 |
 |---|------|------|
-| 1 | 租户隔离是按租户收窄可见性 | 非互不信任客户的硬隔离层。详见 `docs/SECURITY-AUDIT-LEDGER.md`。 |
-| 2 | `evolve_mem.py` 按 5000 条全库扫描 | 记忆量增长后需优化，详见 `ducky/evolve_mem.py`。 |
-| 3 | `fetch_local_embed_model.py` 必须部署期执行 | 运行时零网络；`ducky/local_embed.py` 强制 `HF_HUB_OFFLINE=1`。取模后按 `scripts/local_embed_model_sha256.json` 逐文件 sha256 校验，不匹配即删除并非 0 退出。 |
-| 4 | `capture_wave` 的 `entity_keywords` 漏配时零召回 | 无报错，需配置 `AIDUMEM_ENTITY_KEYWORDS`。详见 `ducky/pipeline/memory_gate.py`。 |
+| 1 | 租户隔离是按租户收窄可见性 | 非互不信任客户的硬隔离层；域契约见 `ducky/bank_contract.py`，边界详录 `docs/SECURITY-AUDIT-LEDGER.md`。 |
+| 2 | `fetch_local_embed_model.py` 必须部署期执行 | 运行时零网络；`ducky/local_embed.py` 强制 `HF_HUB_OFFLINE=1`。取模后按 `scripts/local_embed_model_sha256.json` 逐文件 sha256 校验，不匹配即删除并非 0 退出。 |
+| 3 | `capture_wave` 的 `entity_keywords` 漏配时零召回 | 无报错，需配置 `AIDUMEM_ENTITY_KEYWORDS`。详见 `ducky/pipeline/memory_gate.py`。 |
 
 ## 仓库结构
 
-```
+```text
 aiduMEI/
-├── AGENTS.md              # Agent 部署/验证/运维入口
-├── llms.txt               # Agent 文档索引
-├── api_server.py          # 主入口（API + /ui 控制台托管）
-├── ducky/                 # 业务逻辑（各神祇模块）
-│   ├── hot/               #   搜索/健康/遗留端点
-│   ├── pipeline/          #   相关性闸门
-│   ├── speed/             #   潮浪合并/速度优化
-│   ├── salience/          #   显著性/车道衰减
-│   ├── federation/        #   万神殿联邦
-│   ├── evolve_mem.py      #   检索自进化
-│   ├── routes_config.py   #   控制台 /config 路由
-│   └── ...
-├── frontend/              # aiduMEI 控制台（零构建纯静态）
-│   ├── index.html
-│   ├── css/style.css
-│   ├── js/                # api.js · panels.js · main.js
-│   ├── js/vendor/         # echarts（本地随包分发，不依赖外部 CDN）
-│   ├── *.png              # 六面板图标 + logo
-│   └── dev_server.py      # 本地开发代理（可选）
-├── tests/                 # 回归测试集（pytest）
-├── tools/                 # 开发工具（截屏脚本等）
-├── seed_demo.py           # 脱敏演示数据种子（虚构人物/公司）
-├── seed_facts.py          # 知识树事实种子（6 域 28 条）
-├── mem0_config_local.json # 模型配置（gitignored，含密钥）
-└── requirements.txt
+├── AGENTS.md / llms.txt    # Agent 部署入口与文档索引
+├── api_server.py           # 主入口（API + /ui 控制台托管）
+├── ducky/                  # 业务逻辑（hot/ pipeline/ speed/ salience/ federation/ evolve_mem.py …）
+├── frontend/               # 控制台（零构建纯静态；js/vendor/ 本地 echarts）
+├── tests/                  # 回归测试集（pytest）
+├── prompts/install.txt     # 一行 Prompt 部署正典
+├── docs/                   # 运维/健康/备份/容量/测试口径
+├── scripts/                # e2e_smoke.py · report.py · restore_gate.sh 等
+└── mem0_config_local.json  # 模型配置（gitignored，含密钥）
 ```
 
 <p align="center">
