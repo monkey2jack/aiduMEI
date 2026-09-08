@@ -8,6 +8,7 @@ import base64
 import os
 import requests
 from ducky.failure_ledger import feature_failed
+from ducky.version import SERVICE_VERSION
 
 logger = logging.getLogger("aiduMEM.Vision")
 
@@ -51,9 +52,13 @@ def extract_vision_caption(media_url_or_base64: str) -> str:
     logger.info(f"正在通过 {model} 提取多模态记忆...")
 
     # 构造标准 OpenAI 多模态请求
+    # v20.4-alpha：并回 2026-09-07 生产热修 3219f8c4e ——10router 多模态网关
+    # 不认没有 User-Agent 的请求。版本号取 version.py 单源：热修里写死的
+    # "20.3" 版本一升就成了假话（SOP 铁律 18：实测宣称的数字与版本一体）。
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": f"aiduMEI-Vision/{SERVICE_VERSION}",
     }
 
     # 简单判断是否是纯 base64 (没有 data:image 前缀) 或 URL
