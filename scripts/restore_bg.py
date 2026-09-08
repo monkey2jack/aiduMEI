@@ -35,10 +35,10 @@ for i, row in enumerate(rows):
     content = f"{key}: {value}"
     if summary:
         content += f" ({summary})"
-    
+
     messages = json.dumps([{'role': 'user', 'content': content}])
     body = {'messages': messages, 'user_id': 'default', 'metadata': {'fact_id': mem_id, 'category': category, 'fact_key': key}}
-    
+
     try:
         resp = requests.post(f'{api}/add', json=body, timeout=30, headers=_auth_headers())
         if resp.status_code == 200:
@@ -47,7 +47,7 @@ for i, row in enumerate(rows):
             fail += 1
     except Exception:
         fail += 1
-    
+
     if (i+1) % 200 == 0:
         print(f'PROGRESS {i+1}/{total} ok={success} fail={fail}', flush=True)
     time.sleep(0.1)  # 别打太猛
