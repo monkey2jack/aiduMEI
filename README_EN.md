@@ -400,8 +400,8 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 177
 | Total cases | **1812** (measured via `pytest --collect-only`, 2026-09-08, v20.4.0-alpha candidate) |
 | Clean dev machine | 1800 passed · **12 skipped** — **measured 2026-09-08** (v20.4.0-alpha candidate, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1777 passed · **35 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-08**, v20.4.0-alpha candidate) |
-| Sandbox on the production box | **pending re-measurement** (axis-derived 1804 passed + 8 skipped for this tree; previous measured baseline 1738 + 5, 2026-09-07 v20.3.4: isolated HOME, `.git` present, no `.env`, model cache and dataset configured) |
-| All axes present | **pending re-measurement** (axis-derived 1812/0 for this tree; previous measured baseline 1743 + 0, 2026-09-07 v20.3.4: separate all-axes venv, isolated HOME, no `.env`) |
+| Sandbox on the production box | 1803 passed · **9 skipped** — **measured 2026-09-08** (isolated sandbox on the production box: same interpreter as the deployed tree, isolated HOME, `.git` present, no `.env`, public dataset reused read-only; peak RSS 408 MB, 1m35s) |
+| All axes present | 1812 passed · **0 skipped** — **measured 2026-09-08** (separate all-axes venv on the production box: tools, extras, host source, model cache and the public LoCoMo dataset all present; peak RSS 530 MB, 1m37s) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | Test layering | Mostly module-level unit tests plus source-level guard assertions, with `TestClient`-driven API tests in support |
 | Platform premise | The suite is maintained for Linux/macOS (POSIX): the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms. Windows is not a full-suite platform |
@@ -415,7 +415,7 @@ with host: 1812 passed
 forced off: 1800 passed, 12 skipped
 ```
 
-On a production host where other optional axes are absent, the previous tree's bare command **actually prints 1738 passed, 5 skipped** (measured 2026-09-07 on the v20.3.4 tree, no `.env`, isolated HOME with model cache and benchmark-data paths configured; this tree's sandbox row is pending re-measurement, axis-derived 1804 + 8). A number without its environment and date is not a reproducible claim.
+On a production host where other optional axes are absent, the bare command **actually prints 1803 passed, 9 skipped** (measured 2026-09-08 in an isolated sandbox on the production box, no `.env`, isolated HOME, public dataset reused read-only; the 9 are `ruff` ×3, `mcp` ×5 and an empty local-embedding model cache ×1). A number without its environment and date is not a reproducible claim.
 
 ### Skip-axis census
 
