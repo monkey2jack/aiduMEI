@@ -18,7 +18,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
 
 logger = logging.getLogger("aiduMEM.routes_persona")
 
@@ -26,28 +31,28 @@ logger = logging.getLogger("aiduMEM.routes_persona")
 class PersonaBuildRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    persona_card: str = ""            # 合成模式：简短人设
-    persona_name: str = ""
-    persona_key: str = ""             # 省略则从 persona_name/card 推导
-    mode: str = "synthesis"           # synthesis | grounded
-    source_material: str = ""         # 真实模式：素材原文（多行）
+    persona_card: str = Field(default="", max_length=SHORT_TEXT_MAX_CHARS)  # 合成模式：简短人设
+    persona_name: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
+    persona_key: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)     # 省略则从 persona_name/card 推导
+    mode: str = Field(default="synthesis", max_length=64)                   # synthesis | grounded
+    source_material: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)  # 真实模式：素材原文（多行）
     use_llm: bool = True
 
 
 class PersonaRetrieveRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    situation: str                    # 当前情境描述
-    persona_key: str = ""
+    situation: str = Field(..., max_length=SHORT_TEXT_MAX_CHARS)  # 当前情境描述
+    persona_key: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
     bank_id: int = 0
     k: int = 5
-    level: str = ""                   # 可选只取某层 L/G/E
+    level: str = Field(default="", max_length=16)                 # 可选只取某层 L/G/E
 
 
 class PersonaRollbackRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    persona_key: str
+    persona_key: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
     to_version: int
 
 

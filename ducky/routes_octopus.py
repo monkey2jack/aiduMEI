@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import logging
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
 
 from ducky.conflict_resolver import resolve_fact_conflict, scan_and_resolve_text_conflicts
 from ducky.utils import DEFAULT_USER_ID
@@ -31,18 +36,18 @@ logger = logging.getLogger("aiduMEM.OctopusRoutes")
 
 
 class ConflictCheckRequest(BaseModel):
-    category: str = "general"
-    fact_key: str = ""
-    fact_value: str = ""
-    text: str = ""
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    category: str = Field(default="general", max_length=ID_FIELD_MAX_CHARS)
+    fact_key: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
+    fact_value: str = Field(default="", max_length=SHORT_TEXT_MAX_CHARS)
+    text: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
 
 
 class TreeNodeRequest(BaseModel):
-    name: str
-    parent_path: str = "/aidu"
-    description: str = ""
+    name: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
+    parent_path: str = Field(default="/aidu", max_length=1024)
+    description: str = Field(default="", max_length=SHORT_TEXT_MAX_CHARS)
 
 
 def register_octopus_routes(app: FastAPI) -> None:

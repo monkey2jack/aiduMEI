@@ -10,7 +10,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
 
 from ducky.utils import DEFAULT_USER_ID
 
@@ -26,14 +31,14 @@ class ReflectRequest(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    user_id: str = DEFAULT_USER_ID
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     top_k: int = 20
-    source: str = "manual"
+    source: str = Field(default="manual", max_length=ID_FIELD_MAX_CHARS)
     save: bool = True
     # 兼容 MCP mem_reflect 旧调用方：显式 topic 时围绕该主题检索反思。
-    topic: str = ""
+    topic: str = Field(default="", max_length=SHORT_TEXT_MAX_CHARS)
     # v20 P0-2：反思作用域。不传 = default 域（v19 行为零改动）。
-    bank_id: str = ""
+    bank_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 class RollbackRequest(BaseModel):

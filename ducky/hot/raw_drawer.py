@@ -15,6 +15,7 @@ import uuid
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ducky.api_models import ID_FIELD_MAX_CHARS, TEXT_FIELD_MAX_CHARS
 from ducky.bank_contract import DEFAULT_BANK_ID
 from ducky.utils import DEFAULT_USER_ID
 from ducky.security.injection_guard import validate_and_sanitize_memory_content
@@ -23,19 +24,21 @@ logger = logging.getLogger("aiduMEM.raw_drawer")
 
 
 class RawDrawerRequest(BaseModel):
-    content: str
-    user_id: str = DEFAULT_USER_ID
+    # v20.4.0-alpha（P0-1）：content 与 /add 同一自由文本上限（50,000），
+    # 原文抽屉不是绕开 /add 上限的后门。
+    content: str = Field(..., max_length=TEXT_FIELD_MAX_CHARS)
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     # 🔴v20：原味抽屉此前完全不知道「域」的存在 —— /add/raw 写入的原文
     # 恒落默认域，任何命名域都无法用它存原文。补齐后与 /add 同一套契约。
-    bank_id: str = DEFAULT_BANK_ID
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
     metadata: dict = Field(default_factory=dict)
-    source: str = "raw_drawer"
+    source: str = Field(default="raw_drawer", max_length=ID_FIELD_MAX_CHARS)
     dedup: bool = True
     # v20.3.1（九份审计 P0-5 / 用户审计 🟡-3）：重试幂等键。/add 有了、
     # /add/raw 没有 —— 原文抽屉在重试场景（网络抖动、客户端超时重发）
     # 仍可能重复写。与 /add 同一实现（ducky.idempotency），同键同负载
     # 重发回放首次响应，不重复落库。
-    idempotency_key: str = ""
+    idempotency_key: str = Field(default="", max_length=128)
 
 
 def register_raw_drawer_routes(app: FastAPI) -> None:

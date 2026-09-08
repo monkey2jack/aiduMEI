@@ -612,6 +612,44 @@ async def _require_credentials(request: Request, call_next):
     )
 
 
+# v20.4.0-alpha（P0-1）：全局 body 硬顶。/add 序列化上限 64 KiB 的 16 倍余量，
+# 正常调用远够不着；超过的一定是异常载荷或客户端 bug。
+_MAX_BODY_BYTES = 1024 * 1024
+
+
+@app.middleware("http")
+async def _payload_too_large_guard(request: Request, call_next):
+    """全局 Content-Length 硬顶（v20.4.0-alpha · P0-1）。
+
+    字段级上限（api_models 的 max_length）挡得住「声明了的字段」，挡不住
+    「整个请求体就是垃圾」：extra="allow" 的兼容设计意味着未声明字段也能进
+    JSON 解析 —— 10 MB 的匿名 JSON 照样吃内存。所以在鉴权之前按
+    Content-Length 硬顶 1 MiB。
+
+    无 Content-Length 的 chunked 请求**不拦**：拦它就得先读完整 body 再转发，
+    读爆的内存和没拦一样 —— 那一层的职责属于反向代理（nginx
+    client_max_body_size），取舍写在这里而不是假装已覆盖。
+
+    注册位置（源码序）：鉴权 → 本闸 → 安全头 → 计数；运行层次即
+    计数（最外）→ 安全头 → 本闸 → 鉴权 → 路由 —— 被挡的 413 照样计数、
+    照样带安全头（v20.3.2 中间件顺序教训：自己加的头要盖到自己加的拒绝分支）。
+    """
+    raw = request.headers.get("content-length", "")
+    if raw.isdigit() and int(raw) > _MAX_BODY_BYTES:
+        logger.warning("🛑 [Security] 拒绝超大请求体：%s 字节 > %d，路径=%s",
+                       raw, _MAX_BODY_BYTES, request.url.path)
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": f"Request body too large: {raw} bytes exceeds the "
+                          f"{_MAX_BODY_BYTES}-byte hard cap. Split the payload "
+                          "or send it in multiple calls.",
+                "code": "payload_too_large",
+            },
+        )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
     """浏览器侧兜底（v20.3.2-beta · 外审 F-4 / DeepSeek P1-6）。
