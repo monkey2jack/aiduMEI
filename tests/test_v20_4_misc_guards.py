@@ -55,3 +55,25 @@ class TestArchitectureBanner:
             head = f.read(600)
         assert "v14 时代" in head and "设计史" in head, \
             "ARCHITECTURE.md 文首缺「v14 时代 · 设计史」横幅（P2-18）"
+
+
+class TestCiSecretScanIsNotFakeGreen:
+    """P1-4 负向对照钉：gitleaks 自定义配置**整体替换**默认规则集 ——
+    没有 useDefault 的配置 = 只有豁免没有检测 = 永真绿灯
+    （2026-09-08 本机实测：缺这一句时连植入的 ghp_ 探针都扫不出）。"""
+
+    def test_gitleaks_config_extends_default_rules(self):
+        with open(os.path.join(_ROOT, ".github", "gitleaks.toml"), encoding="utf-8") as f:
+            text = f.read()
+        assert "useDefault" in text and "true" in text, \
+            "gitleaks.toml 未 extend 默认规则集 —— 扫描形同虚设（P1-4 假绿灯陷阱）"
+
+    def test_workflow_has_audit_jobs_but_no_new_triggers(self):
+        with open(os.path.join(_ROOT, ".github", "workflows", "test.yml"), encoding="utf-8") as f:
+            text = f.read()
+        assert "pip-audit" in text and "gitleaks" in text, \
+            "test.yml 缺 dependency-audit / secret-scan job（P1-4）"
+        # 触发方式维持猴哥 08-27 手动裁决：只许 workflow_dispatch / workflow_call
+        on_block = text.split("on:", 1)[1].split("jobs:", 1)[0]
+        assert "push" not in on_block and "pull_request" not in on_block, \
+            "触发器被改动 —— 手动触发是猴哥裁决，不许顺手改回自动"
