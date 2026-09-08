@@ -13,7 +13,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from ducky.api_models import (
+    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+)
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 from ducky.bank_contract import DEFAULT_BANK_ID, make_scope, visible_user_clause
@@ -25,8 +30,8 @@ class BackfillRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     limit: int = 2000
-    user_id: str = DEFAULT_USER_ID
-    bank_id: str = DEFAULT_BANK_ID
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
 
 
 class TypeResetRequest(BaseModel):
@@ -49,19 +54,19 @@ class TypeResetRequest(BaseModel):
 class SkillGrowRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    trajectory: list[str]
-    task_name: str = ""
+    trajectory: list[str] = Field(..., max_length=10_000)
+    task_name: str = Field(default="", max_length=1024)
     use_llm: bool = True
-    source: str = "manual"
+    source: str = Field(default="manual", max_length=ID_FIELD_MAX_CHARS)
 
 
 class RefineGroupRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    category: str
-    user_id: str = DEFAULT_USER_ID
+    category: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
+    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     # v20.2.4（外审 F-10）：此前**没有这个字段**，于是跨 bank 合并
-    bank_id: str = DEFAULT_BANK_ID
+    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
     limit: int = 20
     use_llm: bool = True
 
@@ -72,8 +77,8 @@ class RefineActionRequest(BaseModel):
     refine_id: int
     # v20.2.4（外审 F-10）：apply / rollback **不许只凭自增 ID 执行**。
     # 声明了 scope 就严格匹配；缺省保持既有管理员语义（与治理 F-08 同口径）。
-    user_id: str = ""
-    bank_id: str = ""
+    user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 def register_p1_routes(app: FastAPI) -> None:
