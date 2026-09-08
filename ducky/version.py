@@ -9,7 +9,9 @@ v20.4.0 (alpha 阶段快照 · 开工 · 六方外审整改 · 2026-09-08)
     约 45 条指控经逐项 file:line 复核：实锤/半实锤采纳 14 条，误报驳回 12 条。
     1. P0-1 /add 输入边界：messages 长度/序列化上限 + 全局 body 硬顶 + 写端点普查守卫。
     2. P0-2 正式基准首跑：judge prompt/seed 冻结后按协议跑 LongMemEval-S 与 LoCoMo，
-       四件套留证，benchmarks/RESULTS.md 填真分数。（待拍板乙：judge 预算与口径，未跑。）
+       四件套留证格式全部在 benchmarks/PROTOCOL.md 锁定。**本轮不跑分（已裁决）**：不产生分数、
+       不宣称分数，benchmarks/RESULTS.md 保持「尚无任何成绩」，四行正式运行保持「未运行」，
+       立场见 docs/BENCHMARKING-POSTURE.md。
     3. P0-3 文档数字自洽：README 内存口径修正 + 关键数字 machine-readable 同源守卫。
     4. P1：CI 手动关内 pip-audit + gitleaks 真扫描、兼容层 Deprecation 台账、MCP 鉴权
        文档化、LLM 密钥 env 覆盖、evolve_mem 索引化、模型下载哈希校验、env 前缀台账。
