@@ -23,6 +23,9 @@ def _ensure_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_salience ON salience(salience)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_last_access ON salience(last_access)")
+    # v20.4.0-alpha（P1-8）：进化循环候选下推的 boost 析取支按 access_count 过滤，
+    # 无此索引时 10 万行库上该支退回全表扫（tests/test_v20_4_evolve_index.py 钉计划）。
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_access_count ON salience(access_count)")
 
     # v8.3.0 迁移: 添加 lane 列
     cols = [row[1] for row in conn.execute("PRAGMA table_info(salience)").fetchall()]
