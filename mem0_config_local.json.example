@@ -1,11 +1,11 @@
 {
-  "_comment": "aiduMEI 配置模板 — 复制为 mem0_config_local.json 后填入你自己的 key。该文件已在 .gitignore 中，不会被提交。",
+  "_comment": "aiduMEI 配置模板 — 复制为 mem0_config_local.json 后填入你自己的 key。该文件已在 .gitignore 中，不会被提交。密钥亦可不落盘：设 AIDUMEI_LLM_API_KEY / AIDUMEI_EMBEDDER_API_KEY / AIDUMEI_RERANKER_API_KEY 环境变量（非空时优先于本文件的 api_key，v20.4.0 起）。",
 
   "llm": {
     "provider": "openai",
     "config": {
       "model": "your-llm-model",
-      "api_key": "YOUR_LLM_API_KEY",
+      "api_key": "",
       "openai_base_url": "https://your-llm-endpoint/v1",
       "temperature": 0.1,
       "max_tokens": 2000
@@ -16,7 +16,7 @@
     "provider": "openai",
     "config": {
       "model": "your-embedding-model",
-      "api_key": "YOUR_EMBEDDING_API_KEY",
+      "api_key": "",
       "openai_base_url": "https://your-embedding-endpoint/v1",
       "embedding_dims": 1024
     }
@@ -39,7 +39,7 @@
     "provider": "openai_compatible",
     "config": {
       "model": "your-rerank-model",
-      "api_key": "YOUR_RERANK_API_KEY",
+      "api_key": "",
       "openai_base_url": "https://your-rerank-endpoint/v1"
     }
   },
