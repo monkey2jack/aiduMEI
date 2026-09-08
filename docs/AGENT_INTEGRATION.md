@@ -38,3 +38,7 @@ Write and search must use the same `(user_id, bank_id)`. If a write omitted `ban
 ## Non-Hermes hosts
 
 Use the HTTP API as the single integration surface: `/gate`, `/search`, `/add`, `/add/raw`, `/session/start`, and `/session/end`. The Hermes plugin is a convenience wrapper around the same lifecycle, not a required host.
+
+## MCP server (port 8766)
+
+The built-in MCP server exposes the same operations over stdio or SSE. Its write tools land on the REST API and share the REST credential. Trust model: stdio and loopback-bound SSE (`127.0.0.1`/`localhost`/`::1`) trust the local machine; **SSE bound to a non-loopback address refuses to start unless `AIDUMEM_API_TOKEN` is configured** (sent as Bearer), so the MCP surface cannot bypass REST auth. The explicit escape hatch `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` lifts the refusal (off by default, critical-level log when on).
