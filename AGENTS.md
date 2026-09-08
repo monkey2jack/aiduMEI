@@ -37,6 +37,8 @@ pip install .[local-embed]
 python scripts/fetch_local_embed_model.py
 ```
 
+Fetched model files are verified file-by-file against the sha256 manifest `scripts/local_embed_model_sha256.json` — a mismatch is deleted and the script exits non-zero; entries marked `unverified` are skipped with a WARNING and never block deployment.
+
 ## Prove memory is actually working
 
 Run the end-to-end smoke after the service starts:
