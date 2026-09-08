@@ -81,11 +81,7 @@ def dedup_check(memory, user_id: str, new_text: str,
             return None
         # mem0 search 返回的是按相似度排序的，第一条最相似
         top = results_list[0]
-        # mem0 的 search 结果中 score 通常是距离，越小越相似
-        # Qdrant 的 score 需要转换：score > 0.7 即相似
-        score = top.get("score", 0) if isinstance(top, dict) else 0
-        # 如果 score 较高（mem0 返回的距离越小越相似，但有些版本返回相似度）
-        # 我们同时检查文本相似度
+        # mem0 各版本 score 口径不一（距离/相似度混用），判据统一走文本相似度
         existing_text = top.get("memory", "") if isinstance(top, dict) else ""
         if existing_text and _text_similarity(new_text[:200], existing_text[:200]) > DEDUP_THRESHOLD:
             return top.get("id", "")
@@ -415,7 +411,7 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
 
             # 2. 算 Jaccard 相似度 (Lethe v9.2.0: 中文 bigram 级 Jaccard 相似度阈值 + 共同名词检测)
             sim = jaccard_sim(new_text, old_text)
-            
+
             # 中文特化共同话题检测 (如 "围棋", "羽毛球", "拿铁")
             has_common_topic = False
             import re
@@ -425,19 +421,17 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
             common_topics = (cn_new & cn_old) - stop_topics
             if common_topics:
                 has_common_topic = True
-                
+
             if sim < 0.12 and not has_common_topic:
                 continue
-                
+
             # 3. 判定关系类型
             relation = "enriches"
             reason = f"jaccard_sim={sim:.2f}"
-            
+
             replaces_keywords = ["改为", "取代", "更新为", "不用了", "废弃", "修改为", "修正为", "现在是", "而不是"]
-            negation_keywords = ["不", "否", "非", "no", "not"]
-            
             has_replaces = any(kw in new_text for kw in replaces_keywords)
-            
+
             text_a, text_b = old_text.lower(), new_text.lower()
             contradict_pos = ["use", "choose", "select", "recommend", "best", "optimal", "采用", "使用", "推荐"]
             contradict_neg = ["avoid", "not", "never", "wrong", "deprecated", "不要", "不应", "避免"]
@@ -445,12 +439,12 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
             b_neg = any(w in text_b for w in contradict_neg)
             a_neg = any(w in text_a for w in contradict_neg)
             b_pos = any(w in text_b for w in contradict_pos)
-            
+
             is_polar_flip = (a_pos and b_neg) or (a_neg and b_pos)
-            
+
             if has_replaces or is_polar_flip:
                 relation = "replaces"
-                
+
             # 4. 保存演化关系到 facts.db
             conn = get_facts_conn()
             conn.execute(
@@ -458,7 +452,7 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
                 "VALUES (?, ?, ?, ?, ?)",
                 (old_id, new_id, relation, sim, reason)
             )
-            
+
             # 5. 如果是 replaces，将旧记忆的状态标记为 superseded
             if relation == "replaces":
                 conn.execute(

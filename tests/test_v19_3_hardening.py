@@ -232,7 +232,7 @@ def test_v19_3_3_no_nested_except_same_name_shadowing():
 
     offenders = []
     for path in targets:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             try:
                 tree = ast.parse(fh.read())
             except SyntaxError:

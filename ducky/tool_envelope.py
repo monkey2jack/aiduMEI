@@ -3,7 +3,7 @@
 aiduMEM Tool Envelope — 统一 MCP 工具返回契约
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Osaurus Plugin v6 ToolEnvelope 灵感：
-- 成功: {result, warnings}  
+- 成功: {result, warnings}
 - 失败: {kind, message, retryable}
 
 本模块提供装饰器和包装函数，统一 aiduMEM 所有 MCP 工具返回格式。

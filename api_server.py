@@ -23,7 +23,7 @@ def _bootstrap_env_file() -> int:
     _path = _os.environ.get("AIDUMEM_ENV_FILE") or _os.path.join(_here, ".env")
     _n = 0
     try:
-        with open(_path, "r", encoding="utf-8") as _fh:
+        with open(_path, encoding="utf-8") as _fh:
             for _line in _fh:
                 _line = _line.strip()
                 if not _line or _line.startswith("#") or "=" not in _line:
