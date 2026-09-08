@@ -108,7 +108,7 @@ if [[ -z "${PY}" ]]; then
   printf 'FAIL hard gate: no interpreter with pytest found (set AIDUMEM_PYTHON)\n' >&2
   exit 1
 fi
-# ${PY} 作为位置参数传给 bash -c（"bash: /Users/jack/Documents/4.: No such
+# ${PY} 作为位置参数传给 bash -c（"bash: <含空格路径的前半段>: No such
 # file or directory" —— 路径含空格时把它拼进命令串会把解释器路径劈成两半）。
 check "hard gate: pytest sentinel subset exits 0" bash -c '
   "$1" -m pytest tests/test_v20_3_1_gear_probe.py tests/test_v20_3_1_drill_autoshift.py \
