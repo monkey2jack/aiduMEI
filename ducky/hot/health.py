@@ -7,6 +7,7 @@ import socket
 import time
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
 
@@ -111,6 +112,9 @@ def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
 _PUBLIC_TTL_SECONDS = 30
 _PUBLIC_CACHE: dict = {"ts": 0.0, "full": None}
 
+# v20.4 P2-17：/livez 的 uptime 基准。模块加载时刻 ≈ 进程起服务的时刻。
+_START_TS = time.time()
+
 
 def _auth_gate_enabled() -> bool:
     """门禁是否启用；判定失败按启用处理（fail-closed）。"""
@@ -119,6 +123,18 @@ def _auth_gate_enabled() -> bool:
         return bool(_auth_enabled())
     except Exception:
         return True
+
+
+def _resolve_authz(request: Request) -> tuple[bool, bool]:
+    """（门禁是否启用, 本请求是否已授权）—— /health 与 /diagnostics 共用。"""
+    from ducky.security.auth import SESSION_COOKIE_NAME, validate_session
+    gate = _auth_gate_enabled()
+    try:
+        from api_server import _request_authorized
+        authz = bool(_request_authorized(request))
+    except Exception:
+        authz = validate_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
+    return gate, authz
 
 
 def _public_view(full: dict) -> dict:
@@ -140,22 +156,12 @@ def _public_view(full: dict) -> dict:
 
 
 def register_health_routes(app: FastAPI) -> None:
-    @app.get("/health")
-    def health(request: Request):
-        """B 档：lazy 预热 + 真实探针 + 反静默降级追踪 + 水位预警。"""
-        import time as _time
-        from ducky.security.auth import SESSION_COOKIE_NAME, validate_session
-        _gate = _auth_gate_enabled()
-        try:
-            from api_server import _request_authorized
-            _authz = _request_authorized(request)
-        except Exception:
-            _authz = validate_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
-        _anonymous = _gate and not _authz
-        if _anonymous and _PUBLIC_CACHE["full"] is not None \
-                and _time.time() - _PUBLIC_CACHE["ts"] < _PUBLIC_TTL_SECONDS:
-            # 匿名 + 30s 内已有全量结果：不重跑探针（Codex F-12）。
-            return _public_view(_PUBLIC_CACHE["full"])
+    def _run_full_probe() -> dict:
+        """B 档：lazy 预热 + 真实探针 + 反静默降级追踪 + 水位预警。
+
+        授权 /health 与 /diagnostics 共用这一份完整载荷；调用方各自
+        决定匿名语义（/health 留键公开视图，/diagnostics 一律 401）。
+        """
         module_ok = {}
         try:
             lazy_import_layer1()
@@ -807,11 +813,104 @@ def register_health_routes(app: FastAPI) -> None:
         )
         # Public health must remain useful for load balancers without becoming a
         # reconnaissance report. 门禁启用且未授权 → 留键说明的公开视图（见模块头注释）。
-        _PUBLIC_CACHE["ts"] = _time.time()
+        return full
+
+    @app.get("/health")
+    def health(request: Request):
+        """对外契约端点：授权拿完整探针；匿名拿留键公开视图（30s TTL 缓存）。"""
+        _gate, _authz = _resolve_authz(request)
+        _anonymous = _gate and not _authz
+        if _anonymous and _PUBLIC_CACHE["full"] is not None \
+                and time.time() - _PUBLIC_CACHE["ts"] < _PUBLIC_TTL_SECONDS:
+            # 匿名 + 30s 内已有全量结果：不重跑探针（Codex F-12）。
+            return _public_view(_PUBLIC_CACHE["full"])
+        full = _run_full_probe()
+        _PUBLIC_CACHE["ts"] = time.time()
         _PUBLIC_CACHE["full"] = full
         if _anonymous:
             return _public_view(full)
         return full
+
+    @app.get("/livez")
+    def livez():
+        """O(1) 探活（v20.4 P2-17 探针成本分级）。
+
+        负载均衡器/编排器高频打这个端点：进程能应答即「活」。
+        不碰磁盘、数据库、单例 —— 那是 /readyz 与 /diagnostics 的事；
+        让探活为深度状态付成本，正是上轮 Codex F-12 要拆掉的形态。
+        """
+        return te_ok(
+            service=f"aiduMEM-v{_version_info['service_version']}",
+            version=f"{_version_info['service_version']}",
+            uptime_seconds=round(time.time() - _START_TS, 3),
+        )
+
+    @app.get("/readyz")
+    def readyz():
+        """就绪探针：只跑廉价确定性检查（v20.4 P2-17 探针成本分级）。
+
+        四项都是 O(毫秒) 的本地事实：库文件在场、数据目录可写、磁盘
+        schema 与代码期望对齐。任一失败 → 503 + failed 记名，编排器据此
+        摘流。不外呼、不 COUNT、不读大表 —— 那些属于 /diagnostics 档。
+
+        为什么不查 mem0 单例：单例惰性建，冷启动后首个请求前「尚未初始化」
+        是常态而非故障 —— 放进就绪判据会让每台新实例在首次使用前一直 503
+        （冷启动常态被当成事故，几次假警报后这栏就没人看了）。单例状态在
+        /diagnostics 的 mem0_singleton 探针里。响应只报检查名与布尔：
+        匿名调用方拿不到任何路径。
+        """
+        checks: dict[str, bool] = {}
+        checks["facts_db"] = os.path.exists(FACTS_DB)
+        checks["text_fts_db"] = os.path.exists(TEXT_FTS_DB)
+        # except 收窄（P2-13 棘轮只降不升）：import 失败只出 ImportError，
+        # os.access 对无效路径返回 False 不抛，OSError 兜路径类型边界。
+        try:
+            from ducky.utils import DATA_DIR as _DD
+            checks["data_dir_writable"] = os.access(_DD, os.W_OK)
+        except (ImportError, OSError) as _dd_exc:
+            logger.debug("readyz data_dir 检查失败: %s", _dd_exc)
+            checks["data_dir_writable"] = False
+        try:
+            import sqlite3 as _sqlite3
+            from ducky.schema_bootstrap import CURRENT_SCHEMA_VERSION
+            from ducky.utils import get_facts_conn
+            _rc = get_facts_conn()
+            try:
+                _on_disk = int(_rc.execute("PRAGMA user_version").fetchone()[0])
+            finally:
+                _rc.close()
+            checks["schema_version"] = _on_disk == int(CURRENT_SCHEMA_VERSION)
+        except (ImportError, _sqlite3.Error, ValueError, TypeError) as _sv_exc:
+            logger.debug("readyz schema 检查失败: %s", _sv_exc)
+            checks["schema_version"] = False
+        failed = [name for name, ok in checks.items() if not ok]
+        body = te_ok(
+            version=f"{_version_info['service_version']}",
+            ready=not failed,
+            checks=checks,
+            failed=failed,
+        )
+        if failed:
+            return JSONResponse(body, status_code=503)
+        return body
+
+    @app.get("/diagnostics")
+    def diagnostics(request: Request):
+        """完整深度探针（v20.4 P2-17）：与授权 /health 同一份载荷，
+        匿名语义不同 —— /health 为兼容给匿名调用方留键公开视图，
+        /diagnostics 是运维端点：门禁启用时无凭据一律 401，不做降级视图。
+        """
+        _gate, _authz = _resolve_authz(request)
+        if _gate and not _authz:
+            return JSONResponse(
+                {
+                    "error": "unauthorized",
+                    "detail": "Missing or invalid credentials: log in to the console "
+                              "or send Authorization: Bearer <AIDUMEM_API_TOKEN>",
+                },
+                status_code=401,
+            )
+        return _run_full_probe()
 
     @app.get("/metrics")
     def metrics(days: int = 7):
