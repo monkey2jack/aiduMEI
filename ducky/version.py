@@ -18,7 +18,8 @@ v20.4.0 (alpha 阶段快照 · 开工 · 六方外审整改 · 2026-09-08)
        /health 按探针成本拆 /livez·/readyz·/diagnostics；README 叙事下沉 docs、
        双语关键段（安装/安全/三探针）对齐。
     6. 用例总数 1743 → 1812（--collect-only 2026-09-08 实测）：本轮守卫用例净增 69 条；
-       README 双语数字表同步刷新，沙箱与全轴两行待生产机复测（按轴推导值已注明）。
+       README 双语数字表五行全部 2026-09-08 实测 —— 开发机 1800+12、干净 venv 1777+35、
+       生产机独立沙箱 1803+9、生产机独立全轴 venv 1812+0，两行推导值已被实测取代。
     7. 生产热修 3219f8c4e 并回（2026-09-07 生产机直改、从未推远端）：两段 inline
        <script> 逐字搬进 frontend/js/auth-guard.js 与
        frontend/js/login.js（CSP script-src 保持
