@@ -61,15 +61,7 @@
 <script src="js/vendor/echarts.min.js"></script>
 </head>
 <body>
-<script>
-/* v19.4.1 P0-1: this is a UX shortcut only — it avoids rendering an empty
-   console before the first 401. The real gate lives server-side (HttpOnly
-   session cookie validated by the auth middleware); API.get/post redirect
-   here on any 401. Clearing sessionStorage grants no access. */
-if (!sessionStorage.getItem('aidumei_auth')) {
-  location.replace('login.html');
-}
-</script>
+<script src="js/auth-guard.js?v=8"></script>
 
 <!-- random hexagon backdrop, filled by JS -->
 <div class="hex-bg" id="hexBg"></div>
