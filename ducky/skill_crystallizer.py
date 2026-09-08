@@ -114,8 +114,6 @@ def detect_and_crystallize_patterns() -> list[dict[str, Any]]:
     init_crystallizer_schema()
     conn = get_facts_conn()
     crystals_added: list[dict[str, Any]] = []
-    now_placeholder = "2099-12-31"  # valid_to 比较用
-
     try:
         # 查找有效状态的高频分类（精确过滤噪声分类）
         #

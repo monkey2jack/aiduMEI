@@ -113,7 +113,6 @@ def test_probe_schedules_single_active_timer(probe_rig):
     gear.ensure_half_open_probe_daemon()
     gear._schedule_probe_timer()      # 立刻再调一次重排
     gear._schedule_probe_timer()      # 再调
-    alive = [t for t in [gear._PROBE_TIMER] if t is not None and t.is_alive()]
     # _PROBE_TIMER 只有一个槽位，断言它指向的定时器仍只有一个活跃实例：
     # 通过名字数线程
     named = [t for t in threading.enumerate() if t.name == "aiduMEI-gear-probe"]

@@ -411,8 +411,6 @@ def test_api_unit_gives_the_service_a_writable_home():
         "aidumem-api.service 缺 StateDirectory —— mem0 SDK 需要可写 $HOME。"
         "缺了不会崩，只会让 vector_backend 静默失能而 /health 仍报 ok。"
     )
-    home = d.get("Environment", "")
-    envs = [v for k, v in _directives(_API_UNIT).items()]
     raw_env = [ln for ln in _unit_sections(_API_UNIT).get("Service", [])
                if ln.startswith("Environment=")]
     assert any("HOME=" in ln for ln in raw_env), (

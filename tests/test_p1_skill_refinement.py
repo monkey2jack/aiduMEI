@@ -114,7 +114,7 @@ def test_prune_skips_drafts():
 
 # ── 5. 路由 ──────────────────────────────────────────────
 def test_refinement_routes():
-    sc = _fresh()
+    _fresh()
     _seed_crystal("route-skill")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

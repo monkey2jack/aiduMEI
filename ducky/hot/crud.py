@@ -481,7 +481,7 @@ def register_crud_routes(app: FastAPI) -> None:
             if not content:
                 extra = getattr(req, "model_extra", None) or {}
                 content = extra.get("data", "")
-            
+
             scope = make_scope(req.user_id, req.bank_id)
             user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
             # /update 会把 bank_id 盖进向量 metadata 并按该域重建 FTS 索引，
@@ -492,7 +492,7 @@ def register_crud_routes(app: FastAPI) -> None:
             # INSERT OR IGNORE，幂等，对已注册域是 no-op。
             ensure_bank_registered(scope)
             mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id})
-            
+
             # 同步更新 FTS
             try:
                 from ducky.text_fts import _index_memory

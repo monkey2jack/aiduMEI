@@ -98,7 +98,7 @@ _ISOLATED_ENV = {
 
 
 def _gitignore_text():
-    with open(_GITIGNORE, "r", encoding="utf-8") as fh:
+    with open(_GITIGNORE, encoding="utf-8") as fh:
         return fh.read()
 
 
@@ -306,7 +306,7 @@ def test_oracle_only_reflects_our_own_file():
     """
     assert os.path.exists(_GITIGNORE), f"本仓没有 .gitignore？{_GITIGNORE}"
     tmp = _oracle(_gitignore_text())
-    with open(os.path.join(tmp, ".gitignore"), "r", encoding="utf-8") as fh:
+    with open(os.path.join(tmp, ".gitignore"), encoding="utf-8") as fh:
         seeded = fh.read()
     assert seeded == _gitignore_text(), "一次性仓里的规则和本仓这份不是同一份文本"
 

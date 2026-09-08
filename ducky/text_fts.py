@@ -241,11 +241,6 @@ def _init_text_fts():
     conn = get_text_conn()
     _ensure_trigram_fts(conn)
     conn.commit()
-    try:
-        cnt = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-    except Exception as e:
-        logger.debug(f"FTS count 跳过: {e}")
-        cnt = 0
     conn.close()
 
     def _delayed_backfill():

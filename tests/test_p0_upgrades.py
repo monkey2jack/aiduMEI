@@ -293,7 +293,7 @@ def test_self_edit_extract_text():
 
 def test_reflect_parse_json_array():
     from ducky.reflect import _parse_insights
-    raw = json_dumps = '[{"type":"pattern","content":"重复提到定位","confidence":0.8,"evidence":["m1"]}]'
+    raw = '[{"type":"pattern","content":"重复提到定位","confidence":0.8,"evidence":["m1"]}]'
     insights = _parse_insights(raw)
     assert len(insights) == 1
     assert insights[0]["type"] == "pattern"
@@ -407,7 +407,6 @@ def test_engine_time_decay_newer_higher():
     import math
     from ducky import engine as engine_mod
 
-    now = engine_mod.time.time()
     lam = engine_mod.RECENCY_LAMBDA
     new_score = math.exp(-lam * 1)     # 1 天前
     old_score = math.exp(-lam * 365)   # 1 年前
