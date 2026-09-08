@@ -1,0 +1,34 @@
+title = "aiduMEI gitleaks 配置（v20.4.0-alpha · P1-4）"
+
+# 目的：挡住 git 历史里的真实密钥，不挡样例与测试夹具。
+# 豁免三原则：① 样例模板文件（它们的存在就是让人看的）；② 明确的占位形态
+# （change-me / YOUR_ / sk-xxx / ci-fake）；③ 测试夹具里构造的假密钥。
+# 新增豁免必须附理由 —— 豁免面就是盲区面。
+#
+# ★ [extend] useDefault = true 是命脉：gitleaks 的自定义配置**整体替换**默认
+#   规则集，没有这一句，本文件就只剩 allowlist、没有任何检测规则 ——
+#   「扫描全绿」会变成「什么都没扫」的假绿灯（2026-09-08 本机负向对照抓到过）。
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "样例模板与占位形态（regexTarget=line：整行匹配，占位词在注释里也算）"
+regexTarget = "line"
+paths = [
+  '''^\.env\.example$''',
+  '''^mem0_config_local\.json\.example$''',
+  '''^benchmarks/fixtures/''',
+]
+regexes = [
+  '''release-scan:allow''',
+  '''ghp_abcdefghij1234567890''',
+  '''sk-abcdef1234567890abcdef''',
+  '''sk-live-[0-9a-f]{12}''',
+  '''change-me-please''',
+  '''ci-fake-[a-z0-9-]+''',
+  '''sk-xxx[a-z-]*''',
+  '''YOUR_[A-Z_]+''',
+  '''your-[a-z-]*(key|token|endpoint|model)''',
+  '''__SF_KEY__|__LLM_KEY__|__EMBED_KEY__''',
+]

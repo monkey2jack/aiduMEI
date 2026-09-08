@@ -98,6 +98,42 @@ jobs:
       - name: README 原文路径——import api_server 必须成功
         run: python -c "import api_server; print('✅ 裸装路径可 import')"
 
+  # ── v20.4.0-alpha（P1-4，六方外审 GLM L-4 + Sonnet/GPT/Grok 共识）─────
+  # 依赖漏洞扫描此前为零：pip-audit 全 CI 零命中。触发方式维持手动裁决不动，
+  # 但「手动」不等于「没有」——本 job 让每次手动触发都带上真扫描。
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: pip-audit 严格扫 requirements
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r requirements.txt --strict
+        # 基线：2026-09-08 本机实测「No known vulnerabilities found」。
+        # 今后每个命中只有两条路：升级依赖，或追加 --ignore-vuln GHSA-xxx
+        # 并写明可被第三方复核的理由（「误报」两个字不算理由）。
+
+  # ── v20.4.0-alpha（P1-4，六方外审 GLM H-1 残余）───────────────────────
+  # git 历史里的密钥泄漏：脱密 20 词表扫的是「我们知道自己怕什么」，
+  # gitleaks 扫的是「通用规则认为什么是密钥」—— 两张网孔形状不同。
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 全历史扫描必须完整克隆
+      - name: gitleaks 全历史扫描
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .github/gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+        # 占位符/样例豁免见 .github/gitleaks.toml；新增豁免必须附理由。
+
   # ── v20.2.4（外审 F-21）：可选依赖组装得上、工具起不来 ──────────────
   # `mcp` 此前没有上限，pip 解析到 2.x，而 mcp_server.py 导入的
   # `mcp.server.fastmcp` 在 2.x 里不存在。`pip install 'aidumei[mcp]'` 全绿，
