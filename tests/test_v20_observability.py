@@ -420,11 +420,16 @@ def test_health_schema_version_mismatch_is_not_reported_green(monkeypatch):
     如果这条还报 True，说明上面那条测试是空的 —— 它只是碰巧两边相等。
     """
     import ducky.schema_bootstrap as sb
+    from ducky.degradation import DegradationTracker
 
     monkeypatch.setattr(sb, "CURRENT_SCHEMA_VERSION", int(sb.CURRENT_SCHEMA_VERSION) + 7)
     probes = _health_probes(monkeypatch)
     assert probes["schema_version_ok"] is False, "版本对不上却报绿灯"
     assert probes["schema_version"] != probes["schema_version_expected"]
+    # 收尾义务（谁改坏的谁红）：探针会把这次记名降级写进 DegradationTracker
+    # 的 300 秒窗口；不清掉的话，同进程后跑的用例（如 first_run 的
+    # degraded_details 同源判据）会读到这条**测试制造的**降级而假红。
+    DegradationTracker.clear_degradation("schema_version")
 
 # ──────────────────────────────────────────────
 # v20.3 WP-A-01：配置样例必须长在代码认识的形状上

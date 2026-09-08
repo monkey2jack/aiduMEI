@@ -2,6 +2,19 @@
 
 The health endpoint is a diagnostic surface, not a guarantee that memory works. Use `scripts/e2e_smoke.py` for write→recall→trace→cleanup verification.
 
+## Probe endpoints by cost tier (v20.4)
+
+| Endpoint | Cost | Auth | Purpose |
+|---|---|---|---|
+| `/livez` | O(1): uptime + version only; no disk, DB, or singleton access | Public | Liveness for load balancers / orchestrators — if the process answers, it is alive. |
+| `/readyz` | O(ms): four cheap local checks (`facts_db`, `text_fts_db`, `data_dir_writable`, `schema_version`); 503 + `failed` list when any fails | Public (names and booleans only, never paths) | Readiness — pull the instance from rotation when a fatal local precondition is broken (e.g. wrong `DATA_DIR`). |
+| `/health` | Full deep probe; anonymous callers get a 30s-cached redacted public view | Public + token for full view | Backward-compatible contract used by e2e smoke, drills, MCP, and host plugins. |
+| `/diagnostics` | Same full deep probe as authenticated `/health`, always fresh | Token/session required (401 otherwise) | Operator diagnostics without the anonymous fallback view. |
+
+The mem0 singleton is deliberately **not** a `/readyz` check: it initializes lazily, so a cold-started instance would flap 503 until its first request. Its state is the `mem0_singleton` probe in `/diagnostics`.
+
+## `/health` fields
+
 | Field | Meaning | Healthy value | Failure direction |
 |---|---|---|---|
 | `health_status` | Overall endpoint health | `ok` | Inspect `degraded` and `warnings` |
