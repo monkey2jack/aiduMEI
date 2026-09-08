@@ -73,7 +73,7 @@ def test_draft_recorded_as_draft():
 
 
 def test_skill_grow_route():
-    sg = _fresh()
+    _fresh()
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.routes_p1 import register_p1_routes

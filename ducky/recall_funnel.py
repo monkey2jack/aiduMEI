@@ -35,7 +35,6 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     """
     start = time.time()
     stages = []
-    results = []
     ignited = []
     remaining = []
 
@@ -122,8 +121,7 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
 
     # Stage 4: 时间衰减 — 仅对非 Ignition 记忆降权
     t0 = time.time()
-    now_ts = time.time()
-    
+
     # Lethe v9.2.0: 批量获取 memory_states 状态
     superseded_ids = set()
     candidate_ids = [item.get("id") for item in (deduped_remaining + deduped_ignited) if item.get("id")]

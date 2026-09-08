@@ -153,7 +153,7 @@ def load_custom_exclusion_patterns_from_file(path: str | None = None) -> int:
     if not os.path.exists(path):
         return 0
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = json.load(f)
     except Exception as exc:
         logger.warning("🐙 [ConflictResolver] conflict_rules.json 不可读，未装载自定义规则：%s", exc)

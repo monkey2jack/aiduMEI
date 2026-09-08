@@ -1366,7 +1366,6 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     actual_total, hermes_cases = _collected_counts()
     passed = actual_total - hermes_cases   # 纯净开发机（无宿主，有 git 工作区）应有的通过数
     git_cases = _sandbox_gated_cases()
-    deployed_passed = actual_total - git_cases   # 旧「白名单拷贝无 .git」形态的推导值
     # v20.3.1：沙箱行已按 2026-09-01 生产机**实测**（1568+5）更新 —— 那个沙箱是
     # git init 出来的（有 .git），真实缺席轴是 ruff×2 + mcp_extra×2 + fastembed
     # 模型文件×1 = 5，git 轴 1 条跑过了。推导式保留给「无 .git 白名单拷贝」
@@ -1382,8 +1381,6 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
     # 现在两套环境各配各的命令、各报各的数，且必须同屏。
     MEASURED_BASIC = (1711, 32)   # 2026-09-07 v20.3.4 干净 venv 实测（Python 3.12，只装 requirements*；退出 0）
-    sandbox_row_re = re.compile(
-        r"\|\s*生产机沙箱\s*\|\s*(\d+)\s*通过\s*·\s*\*\*(\d+)\s*跳过\*\*[^\|]*\*\*(\d{4}-\d{2}-\d{2})\s*生产机实测\*\*")
 
     def _read(name):
         return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")

@@ -629,7 +629,7 @@ def _read_resolved_mem0_config() -> dict:
     path = mem0_config_path()
     if not os.path.isfile(path):
         raise Mem0NotConfiguredError("config_file_missing")
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         cfg = json.load(fh)
     # API-key file fallback is part of the production configuration path; do
     # not let a malformed top-level value be mistaken for an absent backend.

@@ -193,7 +193,7 @@ def daemon_loop():
         from inotify_simple import INotify, flags
         inotify = INotify()
         watch_dir = str(MEMORY_MD.parent)
-        wd = inotify.add_watch(watch_dir, flags.MODIFY | flags.CLOSE_WRITE | flags.CREATE)
+        inotify.add_watch(watch_dir, flags.MODIFY | flags.CLOSE_WRITE | flags.CREATE)
         logger.info(f"👀 监听 {MEMORY_MD}")
     except ImportError:
         logger.error("需要 inotify_simple: pip install inotify_simple")

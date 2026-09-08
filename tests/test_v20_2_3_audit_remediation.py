@@ -270,8 +270,6 @@ class TestLoginBruteForceGuard:
 
         reset_rate_windows()
         checked = {"n": 0}
-        real_check = api_server.__dict__.get("check_ui_password")
-
         import ducky.security.auth as auth
 
         def counting_check(pw):

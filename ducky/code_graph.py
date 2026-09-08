@@ -63,7 +63,7 @@ def parse_python_file(filepath: str) -> FileNode | None:
     """用标准库 ast 解析 Python 文件的结构"""
     node = FileNode(filepath)
     try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        with open(filepath, encoding="utf-8", errors="ignore") as f:
             source = f.read()
         tree = ast.parse(source, filename=filepath)
     except (SyntaxError, UnicodeDecodeError, OSError) as e:
