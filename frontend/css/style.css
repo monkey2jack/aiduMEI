@@ -101,7 +101,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 
 .foot-update-badge {
-  display: inline-block;
+  display: none; /* 默认隐藏；有更新时由 main.js 以 CSSOM 置 inline-block（v20.4.0-alpha P2-11：原 inline style 收编于此） */
   padding: 2px 8px;
   border-radius: 999px;
   background: #f5d04a;
@@ -163,6 +163,16 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   cursor: pointer;
   overflow: visible;
 }
+
+/* 六块砖的 1+2+3 金字塔坐标（v20.4.0-alpha P2-11：自 index.html 的 inline
+   style 收编，CSP style-src 因此可去 'unsafe-inline'；断点改 --hex-w /
+   --hex-row 时坐标随变量自动缩放） */
+#hexCrown  { left: var(--hex-w);             top: 0; }
+#hexPulse  { left: calc(var(--hex-w) * 0.5); top: var(--hex-row); }
+#hexVault  { left: calc(var(--hex-w) * 1.5); top: var(--hex-row); }
+#hexMap    { left: 0;                        top: calc(var(--hex-row) * 2); }
+#hexRecall { left: var(--hex-w);             top: calc(var(--hex-row) * 2); }
+#hexEvolve { left: calc(var(--hex-w) * 2);   top: calc(var(--hex-row) * 2); }
 
 /* frosted pane */
 .hex-btn::before {

@@ -657,9 +657,11 @@ async def _security_headers(request: Request, call_next):
     本服务自带 Web 控制台且常被放在反代之后，而全仓此前**一个安全头都没有**
     —— 与它在鉴权、注入、交付硬化上的完成度极不相称，属于低垂果实。
 
-    CSP 必须**容纳现状**：前端有 inline style（`style-src 'unsafe-inline'`）。
-    先宽后紧 —— 一个把自家控制台打成白屏的 CSP 会被下一个人直接删掉，
-    那比没有 CSP 更糟。收紧 style-src 登记为 v20.4 候选（需先把 inline style 抽出）。
+    CSP 演进：v20.3.2-beta 先宽后紧（当时前端有 inline style，`style-src`
+    带 'unsafe-inline' 容纳，登记收紧为 v20.4 候选）；v20.4.0-alpha（P2-11，
+    外审 Qwen #3）六块蜂窝砖坐标与更新徽章显隐已收进 `frontend/css/style.css`
+    （tests/test_v20_4_misc_guards.py 守卫防回流），`style-src` 收紧为 'self'。
+    JS 的 `el.style.x = ...` 是 CSSOM 写操作，不受 style-src 管辖，不受影响。
     """
     response = await call_next(request)
     # 已存在的值不覆盖（反代可能已经加过，部署方的显式设置优先）
@@ -670,7 +672,7 @@ async def _security_headers(request: Request, call_next):
         ("Content-Security-Policy",
          "default-src 'self'; "
          "img-src 'self' data: https:; "
-         "style-src 'self' 'unsafe-inline'; "
+         "style-src 'self'; "
          "script-src 'self'; "
          "connect-src 'self'; "
          "frame-ancestors 'none'; "
