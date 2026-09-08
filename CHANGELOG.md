@@ -5,7 +5,7 @@
 > **防线都在，证据不够。** 六方网页版外审（Sonnet 5 / Qwen3.8-Max / GPT Luna / Grok / GLM 5.3 / Gemini 3.1 Pro）约 45 条指控逐项 `file:line` 复核：实锤/半实锤采纳 14 条，误报驳回 12 条。本条目随 alpha 施工推进持续回填，收口时以实测数字为准。
 
 - **P0-1 `/add` 输入边界**：`messages` 长度/序列化上限 + 全局 body 硬顶 + 全量写端点普查守卫。
-- **P0-2 正式基准首跑**：judge prompt/seed 先冻结，按协议跑 LongMemEval-S 与 LoCoMo，数据哈希 + 配置 + JSONL + digest 四件套留证，`benchmarks/RESULTS.md` 填真分数。（待拍板乙：judge 预算与口径，未跑。）
+- **P0-2 正式基准首跑：本轮不跑分（已裁决）**。管线该冻结的都冻结了——judge prompt/seed、答案模型与网关、数据哈希、schema 校验、四件套留证格式，全部在 `benchmarks/PROTOCOL.md` 锁定；缺的只是按协议真跑一次。**本轮不跑，因此不产生任何分数，也不对外宣称任何分数**：`benchmarks/RESULTS.md` 保持「管线已建立，尚无任何成绩」，四行正式运行保持「未运行」，立场见 `docs/BENCHMARKING-POSTURE.md`。六方外审里四家拿「零基准分」当最大扣分项——我们的回答是把口径写清楚，而不是先放一个跑不出来的数字。
 - **P0-3 文档数字自洽**：README 内存口径修正（旧文 430−280≠151 且 75+122≠151），关键数字锚定 machine-readable 源并设守卫。
 - **P1**：CI 手动关内增 pip-audit + gitleaks 真扫描（触发方式维持手动不变）；兼容层 Deprecation 台账；MCP 鉴权文档化；LLM 密钥 env 覆盖；evolve_mem 索引化；模型下载 sha256 校验；env 变量前缀台账。
 - **P2**：CSP 去 `unsafe-inline`；SSH known_hosts 预置文档化；`except Exception` 密度棘轮 601 只降不升；Ruff 扩围（F841/W/UP015 清零并入门禁）；版本治理成文；ARCHITECTURE 时代标注前置；`/health` 按探针成本拆 `/livez`·`/readyz`·`/diagnostics`；README 叙事下沉 docs、双语关键段对齐（安装/安全/三探针）。
