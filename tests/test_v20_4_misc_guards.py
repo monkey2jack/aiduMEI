@@ -77,3 +77,23 @@ class TestCiSecretScanIsNotFakeGreen:
         on_block = text.split("on:", 1)[1].split("jobs:", 1)[0]
         assert "push" not in on_block and "pull_request" not in on_block, \
             "触发器被改动 —— 手动触发是猴哥裁决，不许顺手改回自动"
+
+
+class TestNoInlineStyleInFrontend:
+    """P2-11（外审 Qwen #3）：CSP `style-src` 去掉 'unsafe-inline' 的前提 ——
+    frontend/*.html 不得再出现 `style=` 内容属性（JS 的 el.style.x CSSOM
+    写操作不受 CSP 管辖，不在此列）。新增 inline style 必须先收进
+    frontend/css/，否则本守卫红给你看。"""
+
+    def test_html_has_no_style_attributes(self):
+        import glob
+        import re
+        offenders = []
+        for path in sorted(glob.glob(os.path.join(_ROOT, "frontend", "*.html"))):
+            with open(path, encoding="utf-8") as f:
+                for lineno, line in enumerate(f, 1):
+                    for m in re.finditer(r"\sstyle\s*=", line):
+                        offenders.append(f"{os.path.basename(path)}:{lineno + 0}: {line.strip()[:80]}")
+        assert not offenders, (
+            "frontend 出现 inline style 内容属性（P2-11 已清零，CSP 已不再容纳）：\n  "
+            + "\n  ".join(offenders[:10]))
