@@ -99,7 +99,6 @@ def session_search(
         sess["last_active"] = now
 
     sess = _sessions[session_id]
-    result_ids = []
     results = []
 
     # v20 P0-2：作用域随会话走——两条搜索路径共用同一套下推 + 复筛
@@ -118,7 +117,6 @@ def session_search(
             candidates = raw.get("results", raw) if isinstance(raw, dict) else raw
             results = list(candidates) if isinstance(candidates, list) else []
             results = [r for r in results if vector_item_in_bank(r, sess_bank)]
-            result_ids = [r.get("id", "") for r in results[:limit]]
         except Exception as e:
             logger.warning(f"Session search 失败: {e}")
             results = []

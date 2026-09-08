@@ -189,11 +189,15 @@ class TestA1AppliedSummaryScope:
 # 会炸的形态，必须零命中」，此前只对生产代码兑现。
 _RUFF_TARGETS = ["ducky/", "api_server.py", "mcp_server.py", "scripts/", "conftest.py",
                  "tests/"]
-# F841 登记制基线（v20.3.2-beta 外审 F-2：射程加 tests/ 后**拆分登记**）。
+# F841 基线（v20.3.2-beta 外审 F-2：射程加 tests/ 后**拆分登记**；
+# v20.4.0-alpha P2-14：存量 23 处**全部清零**，登记制结业）。
 # 拆开的理由：合成一个总数会让两侧互相遮蔽 —— 生产侧减 1、tests 侧加 1，
 # 总数不变而守卫全绿，那就又是一个「自洽但不属实」的数。
-_F841_BASELINE_PROD = 9     # 生产侧存量（ducky/ api_server mcp_server scripts conftest）
-_F841_BASELINE_TESTS = 14   # tests/ 侧存量（本轮首次纳入射程时的实测值）
+# 清零后「拆分不许涨」退化为「两侧都是零」；哨兵保留，作为
+# 「本地全绿 = 能推」的一致性证明 —— pyproject [tool.ruff.lint] 与
+# push_gate 静态关已把 F841 列入门禁，套件里这份是它的镜像。
+_F841_BASELINE_PROD = 0     # v20.4.0-alpha P2-14 清零（原登记 9）
+_F841_BASELINE_TESTS = 0    # v20.4.0-alpha P2-14 清零（原登记 14）
 _F841_BASELINE = _F841_BASELINE_PROD + _F841_BASELINE_TESTS
 
 
@@ -253,7 +257,10 @@ def test_no_undefined_names_or_redefinitions():
 
 
 def test_unused_locals_baseline_is_split_per_surface():
-    """两侧各自不许涨 —— 防「生产侧减 1、tests 侧加 1」把总数守卫骗过去。"""
+    """两侧各自不许涨 —— 防「生产侧减 1、tests 侧加 1」把总数守卫骗过去。
+
+    v20.4.0-alpha（P2-14）：两侧基线都已清零，「不许涨」即「保持零」。
+    """
     prod = [h for h in _ruff("F841") if not h.startswith("tests/")]
     tests = [h for h in _ruff("F841") if h.startswith("tests/")]
     assert len(prod) <= _F841_BASELINE_PROD, (
@@ -265,19 +272,23 @@ def test_unused_locals_baseline_is_split_per_surface():
 
 
 def test_unused_locals_stay_on_baseline():
-    """F841「算了不用」走登记制。
+    """F841「算了不用」：**v20.4.0-alpha（P2-14）起清零 + 门禁，不再走登记制**。
 
-    为什么不直接设成零：存量 10 处里混着无害残留（`results = []` 初始化后未用）
-    和**疑似真缺陷**（`recall_funnel.py:140` 查了库、建好 lane_map、然后丢掉 ——
-    白查一次库）。一次全清会淹没真信号，也会牵进 Lethe 子系统，不属本版范围。
-    所以钉住数量：**新增一条就红**，逼作者当场判断它是残留还是又一个 F-03。
+    登记制（v20.2.5 → v20.3.x）的前提：存量里混着无害残留
+    （`results = []` 初始化后未用）和**疑似真缺陷**（当年的
+    `recall_funnel.py` lane_map —— 查了库、建好映射、然后丢掉，
+    该例早在 v20.2.5 轮 `6ca5a70` 修掉）。P2-14 把登记 23 处连同
+    施工期新增 1 处共 24 处逐处处置（残留删除、缺陷修复），
+    登记制的前提已不存在：F841 进 pyproject [tool.ruff.lint] select
+    与 push_gate 静态关，本哨兵断言零命中 —— 新增一条就红，
+    逼作者当场判断它是残留还是又一个 F-03。
     """
     hits = _ruff("F841")
     assert len(hits) == _F841_BASELINE, (
-        f"F841 条数 {len(hits)} ≠ 登记基线 {_F841_BASELINE}：\n  "
+        f"F841 条数 {len(hits)} ≠ 基线 {_F841_BASELINE}（v20.4.0-alpha 起为零容忍）：\n  "
         + "\n  ".join(hits[:12])
-        + f"\n\n新增了？先判断是无害残留还是「算了该用没拼上」（F-03 的形态）。"
-          f"确实要留就把 _F841_BASELINE 改到 {len(hits)} 并在 CHANGELOG 说明。"
+        + "\n\n新增了？先判断是无害残留还是「算了该用没拼上」（F-03 的形态）——"
+          "残留就删，缺陷就修；这条规则已进门禁，没有登记位。"
     )
 
 

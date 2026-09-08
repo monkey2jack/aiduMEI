@@ -110,7 +110,7 @@ def test_refine_lifecycle_apply_and_rollback():
 
 
 def test_refine_routes():
-    rm = _fresh()
+    _fresh()
     _seed_facts("ops", n=4)
 
     from fastapi import FastAPI

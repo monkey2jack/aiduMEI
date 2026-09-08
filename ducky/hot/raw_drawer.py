@@ -152,7 +152,7 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
                 md["content_hash"] = content_hash
                 md["raw_length"] = len(content)
 
-                result = mem.add(
+                mem.add(
                     content,
                     user_id=req.user_id,
                     metadata=md,

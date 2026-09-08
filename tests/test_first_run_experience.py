@@ -538,7 +538,6 @@ def test_backup_gate_verify_resolves_latest(tmp_path):
         d.mkdir(parents=True)
         (d / "SHA256SUMS").write_text("")
         _time.sleep(0.01)
-    newer_mtime = (root / "pre-daily-newer").stat().st_mtime
     r = subprocess.run(
         ["bash", str(_ROOT / "scripts" / "backup_gate.sh"), "verify", "latest"],
         capture_output=True, text=True, timeout=15,
@@ -661,7 +660,6 @@ def test_service_units_have_memory_limits_and_consistent_runtime_paths():
         assert "MemoryHigh=768M" in text
         assert "MemoryMax=1G" in text
     api = (_ROOT / "deploy/aidumem-api.service").read_text(encoding="utf-8")
-    sync = (_ROOT / "deploy/aidumem-sync.service").read_text(encoding="utf-8")
     assert "Environment=AIDUMEM_DATA_DIR=/var/lib/aidumem/data" in api
     assert "ReadWritePaths=/var/lib/aidumem/data /var/lib/aidumem/logs" in api
     # Deployed runtime path must not appear as the active ReadWritePaths line.

@@ -85,7 +85,7 @@ def write_checkpoint(session_id: str, blocks: dict) -> dict:
     try:
         # 为防止同一个 session 重复写入，我们先删除该 session 已有的快照
         conn.execute("DELETE FROM checkpoints WHERE session_id = ?", (session_id,))
-        
+
         for key, label in CP_BLOCKS.items():
             content = blocks.get(key, "")
             if content and len(str(content).strip()) >= 3:
@@ -113,10 +113,10 @@ def get_latest_checkpoint() -> dict | None:
     try:
         # 找最新 session_id
         row = conn.execute("""
-            SELECT session_id, MAX(created_at) as latest 
-            FROM checkpoints 
-            GROUP BY session_id 
-            ORDER BY latest DESC 
+            SELECT session_id, MAX(created_at) as latest
+            FROM checkpoints
+            GROUP BY session_id
+            ORDER BY latest DESC
             LIMIT 1
         """).fetchone()
 
@@ -181,9 +181,9 @@ def cleanup_old_checkpoints() -> dict:
     try:
         # 找所有 session_id 按时间排序
         rows = conn.execute("""
-            SELECT session_id, MAX(created_at) as latest 
-            FROM checkpoints 
-            GROUP BY session_id 
+            SELECT session_id, MAX(created_at) as latest
+            FROM checkpoints
+            GROUP BY session_id
             ORDER BY latest DESC
         """).fetchall()
 
@@ -192,7 +192,7 @@ def cleanup_old_checkpoints() -> dict:
 
         # 保留最近 MAX_SESSIONS 个，删除更早的
         keep_sessions = [r["session_id"] for r in rows[:MAX_SESSIONS]]
-        
+
         # 构造安全占位符删除
         placeholders = ",".join("?" for _ in keep_sessions)
         cursor = conn.execute(
@@ -201,7 +201,7 @@ def cleanup_old_checkpoints() -> dict:
         )
         deleted = cursor.rowcount
         conn.commit()
-        
+
         logger.info(f"Checkpoint 清理: 保留 {len(keep_sessions)} 个会话, 删除 {deleted} 行记录")
         return {"kept": len(keep_sessions), "deleted": deleted, "status": "cleaned"}
     except Exception as e:

@@ -123,7 +123,11 @@ line-length = 120
 extend-exclude = ["frontend", "deploy", "benchmarks/fixtures"]
 
 [tool.ruff.lint]
-select = ["F821", "F811", "F841"]
+# v20.4.0-alpha（P2-14）：F841 存量 24 处清零后进门禁；W（空白卫生）与 UP015
+# （冗余 open mode）清零后同步进门禁。UP 其余系列（UP006/UP045/UP035/UP031/
+# UP037/UP009/UP012 存量 261 处，2026-09-08 实测）属大规模注解现代化，
+# 登记为后续批次，暂不在门禁 —— 防回退靠「已进门禁的规则集合只增不减」。
+select = ["F821", "F811", "F841", "W", "UP015"]
 
 [tool.pytest.ini_options]
 norecursedirs = [".*", "venv*", "backups", ".upgrade-artifacts", "data", "logs", "build", "dist"]

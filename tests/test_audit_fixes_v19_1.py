@@ -52,7 +52,6 @@ def test_session_unpin_logic():
     # 存在的 session：unpin 真正移除
     r = mp.session_unpin(sid, "mem-1")
     assert r["status"] == "ok"
-    report = mp.session_report(sid) if hasattr(mp, "session_report") else None
     # 直接查内部状态确认已移除
     assert "mem-1" not in mp._sessions[sid]["pinned_ids"]
 
