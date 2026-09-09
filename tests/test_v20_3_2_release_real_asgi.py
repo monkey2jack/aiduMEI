@@ -19,7 +19,6 @@ X-Forwarded-For 的**值**覆盖 `request.client.host`。于是「对端是不�
 所以本文件的纪律：**凡与请求来源 / 请求头 / 中间件层次有关的判据，一律起真
 uvicorn.Server + 真 socket 来验。** TestClient 只许测路由内部逻辑。
 """
-import os
 import socket
 import threading
 import time

@@ -4,10 +4,8 @@
 用法: python seed_facts.py
       AIDUMEM_API_BASE=http://127.0.0.1:8767 python seed_facts.py
 """
-import json
 import os
 import sys
-import time
 from urllib.parse import quote
 
 import requests

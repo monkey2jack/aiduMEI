@@ -118,7 +118,6 @@ def test_index_failure_never_breaks_the_write():
 
     但失败要留痕（走 P1-8 的账本），否则又是一次「绿灯亮着、活没干」。
     """
-    import ducky.core_memory as cm
     from ducky import failure_ledger as FL
     from ducky.core_memory import init_core_memory, put_block
     init_core_memory()

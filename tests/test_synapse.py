@@ -4,7 +4,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ducky.core_memory import init_core_memory, get_all_blocks, put_block, inject_context as cm_inject
 from ducky.checkpoint import write_checkpoint, get_latest_checkpoint, inject_context as cp_inject
-from ducky.autodream import trigger_dream, get_dream_status, get_dream_report
+from ducky.autodream import trigger_dream, get_dream_status
 
 def run_tests():
     print("🤖 启动 Synapse 模块单元测试...")

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ducky.refine_memory as refine_memory  # noqa: E402
 from ducky.pattern_extract import extract_patterns  # noqa: E402
-from ducky.refine_memory import _EXTRACTIVE_MAX_POINTS, _extractive_summary  # noqa: E402
+from ducky.refine_memory import _extractive_summary  # noqa: E402
 
 
 def _mk(items, category="rem_cat"):

@@ -12,8 +12,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from ducky.api_models import (
-    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
-    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+    ID_FIELD_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
 )
 
 from ducky.mem0_runtime import get_memory, MEM0_CONFIG

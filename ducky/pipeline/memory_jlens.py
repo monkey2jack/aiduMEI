@@ -13,8 +13,7 @@ Anthropic J-lens / J-space 启发：
 4. collect_jlens_report() 一键收集完整审计报告
 """
 
-import time, logging, math
-from typing import Optional
+import time, logging
 
 from ducky.utils import quick_sim
 

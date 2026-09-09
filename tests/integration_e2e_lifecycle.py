@@ -10,7 +10,6 @@ import sys
 import time
 import urllib.request
 import urllib.parse
-from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ducky.utils import api_auth_headers  # noqa: E402
@@ -212,7 +211,7 @@ print()
 cleanup()
 print("✅ 测试数据已清理")
 if FAIL == 0:
-    print(f"\n🎉 全部通过，aiduMEI 端到端 OK")
+    print("\n🎉 全部通过，aiduMEI 端到端 OK")
     sys.exit(0)
 else:
     print(f"\n⚠️ 有 {FAIL} 个测试失败，需要修")
