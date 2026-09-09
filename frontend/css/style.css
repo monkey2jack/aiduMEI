@@ -973,3 +973,57 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   padding: 12px 16px;
   background: rgba(255, 255, 255, 0.86);
 }
+
+/* =============================================================================
+   v20.4.0（三方审计 P0-2 · 动态审计 🔴-2）：CSP style-src 'self' 收编区。
+   panels.js 经 innerHTML 注入的 66 处内联 style 属性全部收进下面的类；
+   动态量（进度宽度/系列颜色）走 data-w/data-bg/data-bc + CSSOM 水合器
+   （见 panels.js 顶部）。新样式禁止回到 style="…" —— 守卫已扫 frontend JS。
+   ============================================================================= */
+
+/* 图表：容器与图例（chart-legend 基础规则在上方，这里补齐原内联的排布） */
+.chart-hint { display: flex; justify-content: space-between; font-size: 10px; color: #7c8ba0; margin-bottom: 4px; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; justify-content: space-between; align-items: center; }
+.chart-peak { font-size: 10px; color: #7c8ba0; }
+.chart-legend i.lg-swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 0; }
+.chart-legend i.lg-line { display: inline-block; width: 12px; height: 0; border-radius: 0; border-top: 2px dashed currentColor; vertical-align: middle; margin-right: 0; }
+
+/* 语义色 */
+.hexcn { color: var(--hex-cn, inherit); }
+.c-bad { color: var(--bad); }
+.c-ok { color: var(--ok); }
+.c-faint { color: var(--gray-faint); }
+.dot-sep { opacity: 0.4; }
+.dim55 { opacity: 0.55; }
+.dim80 { opacity: 0.8; }
+
+/* 布局工具 */
+.m0 { margin: 0; }
+.mt10 { margin-top: 10px; }
+.mt12 { margin-top: 12px; }
+.mt16 { margin-top: 16px; }
+.mb12 { margin-bottom: 12px; }
+.pt6 { padding-top: 6px; }
+.pt8 { padding-top: 8px; }
+.pt10 { padding-top: 10px; }
+.py6 { padding: 6px 0; }
+.pb0 { padding-bottom: 0; }
+.mh18 { min-height: 18px; }
+.flex1 { flex: 1; }
+.w90 { flex: 0 0 90px; }
+.w130 { flex: 0 0 130px; }
+.v-sm { font-size: 19px; }
+.lnum-sm { font-size: 13px; }
+.tiles-1col { grid-template-columns: 1fr; }
+
+/* 组件级 */
+.chip-obsidian { border-color: #5cb85c; }
+.rec-img-wrap { margin-top: 8px; }
+.rec-img { max-height: 80px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.1); }
+.pill-bad-strong { border-color: var(--bad); color: var(--bad); }
+.sec-tight { margin: 0 0 10px 0; }
+.sec-gap { margin: 12px 0 10px 0; }
+.sec-tight h4, .sec-gap h4 { margin: 0; }
+.h4-blue { color: var(--blue); }
+.h4-green { color: #007a5e; }
+.h4-purple { color: #7030a0; }

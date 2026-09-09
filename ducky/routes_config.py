@@ -24,6 +24,45 @@ _WRITE_LOCK = threading.Lock()
 # 允许通过 UI 在线编辑的配置段
 _PUT_SECTIONS = {"llm", "embedder", "rerank", "vector_store", "vision", "_features"}
 
+# v20.4.0（三方审计 P2-1 · Codex P1-10）：**字段级白名单**。原实现 body 的
+# config 字段全盘合并 —— 持普通 API 凭据的调用方可以写入任意键（含未来
+# 代码会消费的键），配置面成了权限升级面。每段只收它语义内的键；
+# base_url 只许 http(s)（挡 file:// 之类的协议走私），路径类键只许落在
+# 数据根内。全禁在线写走 AIDUMEM_CONFIG_READONLY=1（既有只读阀）。
+_SECTION_FIELD_ALLOWLIST: dict[str, set] = {
+    "llm": {"model", "openai_base_url", "api_key", "temperature", "max_tokens",
+            "top_p", "is_reasoning_model", "_note"},
+    "vision": {"model", "openai_base_url", "api_key", "_note"},
+    "embedder": {"model", "openai_base_url", "api_key", "embedding_dims", "_note"},
+    "rerank": {"model", "openai_base_url", "api_key", "top_n", "_note"},
+    "vector_store": {"collection_name", "path", "host", "port", "embedding_model_dims", "_note"},
+}
+_URL_FIELDS = {"openai_base_url", "host"}
+
+
+def _validate_config_fields(section: str, cfg: dict) -> str | None:
+    """返回错误文案；None = 通过。"""
+    allow = _SECTION_FIELD_ALLOWLIST.get(section)
+    if allow is None:
+        return None  # _features 走布尔合并分支，不进这里
+    unknown = sorted(set(cfg) - allow)
+    if unknown:
+        return f"配置段 {section} 不接受字段: {', '.join(unknown)}（字段级白名单，v20.4.0）"
+    for k in _URL_FIELDS & set(cfg):
+        v = str(cfg.get(k) or "").strip()
+        if v and not (v.startswith("http://") or v.startswith("https://")):
+            return f"{section}.{k} 只接受 http(s) URL，收到: {v[:40]}"
+    path_v = str(cfg.get("path") or "").strip()
+    if section == "vector_store" and path_v:
+        import os as _os
+        from ducky.utils import DATA_DIR
+        real = _os.path.realpath(path_v if _os.path.isabs(path_v)
+                                 else _os.path.join(DATA_DIR, path_v))
+        root = _os.path.realpath(DATA_DIR)
+        if real != root and not real.startswith(root + _os.sep):
+            return f"vector_store.path 必须位于数据根内（{root}），收到: {path_v[:60]}"
+    return None
+
 
 def _mask_key(key: Optional[str]) -> str:
     if not key:
@@ -198,6 +237,10 @@ def register_config_routes(app: FastAPI) -> None:
             old_section = dict(raw.get(section) or {})
             old_cfg = dict(old_section.get("config") or {})
             new_cfg = dict((body.get("config") or {}))
+            _field_err = _validate_config_fields(section, new_cfg)
+            if _field_err:
+                return JSONResponse({"status": "error", "detail": _field_err},
+                                    status_code=400)
             for k, v in new_cfg.items():
                 if k == "api_key" and (v is None or str(v).strip() == ""):
                     continue
