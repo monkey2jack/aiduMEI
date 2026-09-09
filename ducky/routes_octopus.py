@@ -48,6 +48,9 @@ class TreeNodeRequest(BaseModel):
     name: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
     parent_path: str = Field(default="/aidu", max_length=1024)
     description: str = Field(default="", max_length=SHORT_TEXT_MAX_CHARS)
+    # v20.4.0（P1-6）：节点落在调用方自己的域里
+    user_id: str = Field(default="default", max_length=ID_FIELD_MAX_CHARS)
+    bank_id: str = Field(default="default", max_length=ID_FIELD_MAX_CHARS)
 
 
 def register_octopus_routes(app: FastAPI) -> None:
@@ -84,10 +87,11 @@ def register_octopus_routes(app: FastAPI) -> None:
             raise HTTPException(500, api_error_detail(e))
 
     @app.get("/tree/nodes")
-    def tree_nodes_endpoint(root_path: str = Query("/aidu", description="根节点路径")):
-        """查询树状结构子树"""
+    def tree_nodes_endpoint(root_path: str = Query("/aidu", description="根节点路径"),
+                            user_id: str = Query("default"), bank_id: str = Query("default")):
+        """查询树状结构子树（v20.4.0 P1-6：仅本域节点与计数）"""
         try:
-            nodes = get_subtree(root_path)
+            nodes = get_subtree(root_path, user_id=user_id, bank_id=bank_id)
             return {"status": "ok", "root_path": root_path, "nodes": nodes, "count": len(nodes)}
         except Exception as e:
             logger.error("🐙 /tree/nodes 错误: %s", e)
@@ -97,7 +101,8 @@ def register_octopus_routes(app: FastAPI) -> None:
     def tree_node_add_endpoint(req: TreeNodeRequest):
         """新增/更新树状节点"""
         try:
-            res = add_tree_node(req.name, req.parent_path, req.description)
+            res = add_tree_node(req.name, req.parent_path, req.description,
+                                user_id=req.user_id, bank_id=req.bank_id)
             if "error" in res:
                 raise HTTPException(400, res["error"])
             return {"status": "ok", "node": res}

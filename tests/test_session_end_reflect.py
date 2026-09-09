@@ -35,7 +35,7 @@ def _bind_test_db():
 def test_pipeline_session_end_returns_user_id():
     from ducky.pipeline import memory_persistence as mp
     started = mp.session_start("u-42")
-    ended = mp.session_end(started["session_id"])
+    ended = mp.session_end(started["session_id"], user_id="u-42")
     assert ended["status"] == "ok"
     assert ended["user_id"] == "u-42"
     # 不存在的 session 仍返回 error
@@ -84,7 +84,8 @@ def test_session_end_route_triggers_reflect(monkeypatch):
     rv8.register_v8_routes(app)
     client = TestClient(app)
 
-    r = client.post("/session/end", params={"session_id": sid})
+    # P1-4 新契约：具名租户会话的操作带建会话时的 scope
+    r = client.post("/session/end", params={"session_id": sid, "user_id": "u-reflect"})
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"

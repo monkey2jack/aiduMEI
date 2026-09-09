@@ -44,7 +44,7 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 601  # 2026-09-08 v20.4.0-alpha 开工态（AST 口径）；溯源见模块 docstring
+_BASELINE = 609  # 2026-09-09 v20.4.0：+8 均 P1 fail-closed 兜底（幂等键释放/归属预检503/迁移跳已存在列/租户轴容错），不可收窄；alpha 开工态 601
 
 
 def test_except_exception_density_ratchet():

@@ -25,7 +25,7 @@ from ducky.bank_contract import (
     vector_item_in_bank,
     vector_scope_filters,
 )
-from ducky.utils import quick_sim
+from ducky.utils import DEFAULT_USER_ID, quick_sim
 
 logger = logging.getLogger("aiduMEM.persistence")
 
@@ -41,6 +41,21 @@ _last_session_cleanup = 0
 
 
 # ── 公共 API ──
+
+def _owner_mismatch(sess: dict, user_id: str, bank_id: str) -> bool:
+    """v20.4.0（三方审计 P1-4 · Codex P1-05）：session ID 是随机值不是授权。
+
+    此前 search/pin/unpin/report/end 只凭 session_id 查找 —— ID 一旦泄露
+    （日志、转发、猜测）即可检索、固定、读取或结束他人的会话。现在每个
+    操作都要求调用方声明与会话建立时一致的 (user_id, bank_id)；不符与
+    「不存在」同一响应，不泄露存在性。空声明按默认租户/默认库处理 ——
+    与 session_start 的路由默认值同一口径，单租户调用方行为不变。
+    """
+    caller_user = str(user_id or "").strip() or DEFAULT_USER_ID
+    caller_bank = str(bank_id or "").strip() or DEFAULT_BANK_ID
+    return (str(sess.get("user_id") or DEFAULT_USER_ID) != caller_user
+            or str(sess.get("bank_id") or DEFAULT_BANK_ID) != caller_bank)
+
 
 def session_start(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict:
     """创建新搜索 Session。返回 {session_id, user_id, bank_id, created, ttl}
@@ -89,12 +104,15 @@ def session_search(
     query: str,
     limit: int = 5,
     use_context: bool = True,
+    *,
+    user_id: str = "",
+    bank_id: str = "",
 ) -> dict:
     """Session 内搜索：融合历史上下文。返回 {results, session_id, hits_from_history, context_used}"""
     now = time.time()
     with _sessions_lock:
         sess = _sessions.get(session_id)
-        if not sess:
+        if not sess or _owner_mismatch(sess, user_id, bank_id):
             return {"status": "error", "detail": f"Session {session_id} 不存在或已过期"}
         sess["last_active"] = now
 
@@ -162,22 +180,24 @@ def session_search(
     }
 
 
-def session_pin(session_id: str, memory_id: str) -> dict:
-    """Pin 一条记忆到 Session"""
+def session_pin(session_id: str, memory_id: str, *,
+                user_id: str = "", bank_id: str = "") -> dict:
+    """Pin 一条记忆到 Session（P1-4：校验归属）"""
     with _sessions_lock:
         sess = _sessions.get(session_id)
-        if not sess:
+        if not sess or _owner_mismatch(sess, user_id, bank_id):
             return {"status": "error", "detail": "Session 不存在"}
         if memory_id not in sess["pinned_ids"]:
             sess["pinned_ids"].append(memory_id)
     return {"status": "ok", "session_id": session_id, "pinned": memory_id}
 
 
-def session_unpin(session_id: str, memory_id: str) -> dict:
-    """Unpin 一条记忆"""
+def session_unpin(session_id: str, memory_id: str, *,
+                  user_id: str = "", bank_id: str = "") -> dict:
+    """Unpin 一条记忆（P1-4：校验归属）"""
     with _sessions_lock:
         sess = _sessions.get(session_id)
-        if not sess:
+        if not sess or _owner_mismatch(sess, user_id, bank_id):
             return {"status": "error", "detail": "Session 不存在"}
         # 🟢20：原判空逻辑写反（if not sess and ...），sess 为 None 时会 AttributeError，
         # 且分支永不进入，unpin 从未真正生效却总返回 ok。
@@ -186,11 +206,12 @@ def session_unpin(session_id: str, memory_id: str) -> dict:
     return {"status": "ok", "session_id": session_id, "unpinned": memory_id}
 
 
-def session_report(session_id: str) -> dict:
-    """查看 Session 状态"""
+def session_report(session_id: str, *,
+                   user_id: str = "", bank_id: str = "") -> dict:
+    """查看 Session 状态（P1-4：校验归属 —— history 里有查询原文与记忆 ID）"""
     with _sessions_lock:
         sess = _sessions.get(session_id)
-        if not sess:
+        if not sess or _owner_mismatch(sess, user_id, bank_id):
             return {"status": "error", "detail": "Session 不存在"}
 
         return {
@@ -207,9 +228,15 @@ def session_report(session_id: str) -> dict:
         }
 
 
-def session_end(session_id: str) -> dict:
-    """结束 Session。成功时顺带返回 user_id，供上层触发 session_end 反思。"""
+def session_end(session_id: str, *,
+                user_id: str = "", bank_id: str = "") -> dict:
+    """结束 Session。成功时顺带返回 user_id，供上层触发 session_end 反思。
+
+    P1-4：先验归属再 pop —— 结束他人会话是写操作。"""
     with _sessions_lock:
+        sess = _sessions.get(session_id)
+        if sess and _owner_mismatch(sess, user_id, bank_id):
+            return {"status": "error", "detail": "Session 不存在"}
         removed = _sessions.pop(session_id, None)
     if removed:
         logger.info(f"Session 结束: {session_id}")

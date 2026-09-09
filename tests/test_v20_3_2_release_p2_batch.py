@@ -5,6 +5,7 @@
 import ast
 import json
 import logging
+import os
 import pathlib
 import sqlite3
 import sys
@@ -174,8 +175,13 @@ def test_prod_red_cases_now_build_their_own_world():
 def test_sandbox_absent_axes_registry_matches_feature_detection():
     """登记表描述的是「生产沙箱」这台机器；在那台机器上跑时，特征探测必须给出同一集合。
 
-    非沙箱形态只校验登记表 ⊆ 全轴（不 skip：不给普查添新轴）。沙箱形态识别：
-    解释器前缀下有 pyvenv.cfg 且目录名为 venv（生产 venv 不带点）。
+    非沙箱形态只校验登记表 ⊆ 全轴（不 skip：不给普查添新轴）。
+
+    v20.4.0（三方审计 P0-3 · 动态审计 🔴-3）：沙箱身份改为**显式声明**
+    ``AIDUMEI_SANDBOX_FORM=1``。原判据「解释器前缀下有 pyvenv.cfg 且目录名
+    为 venv」把任何叫 venv 的第三方环境都误认成生产沙箱——动态审计在干净副本
+    首跑就红了一条，而阶段报告写着全绿。用形态猜测冒充身份认定，正是
+    「改名默认身份失明」的同款病；判不了身份就走开发机分支，别猜。
     """
     import test_v19_4_1_audit_fixes as A
     import test_v20_skip_axis_census as C
@@ -188,8 +194,7 @@ def test_sandbox_absent_axes_registry_matches_feature_detection():
     # 读的是模块级模型缓存 —— 生产沙箱实测「全量里不跳、单跑会跳」（2026-09-03，顺序依赖来源待查），
     # 无论把它算在场还是缺席，等式都会在某一种跑法下假红。守卫只判它能判的，把判不了的说出来。
     undecidable = {"fastembed_local"}
-    prefix = pathlib.Path(sys.prefix)
-    in_sandbox_form = (prefix / "pyvenv.cfg").exists() and prefix.name == "venv"
+    in_sandbox_form = os.environ.get("AIDUMEI_SANDBOX_FORM", "").strip() == "1"
     if in_sandbox_form:
         assert absent_here - undecidable == registry - undecidable, (
             f"生产沙箱实测缺席轴 {sorted(absent_here)} ≠ 登记表 {sorted(registry)}（不含 fastembed_local）—— 世界模型又落后了")

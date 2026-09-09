@@ -2391,6 +2391,11 @@ def test_jia14_update_must_not_erase_the_category_it_never_asked_about(monkeypat
             self.updates.append((memory_id, data, dict(metadata or {})))
             return {"message": "ok"}
 
+        def get(self, memory_id):
+            # v20.4.0 P1-3：归属先验会先 get 再 update；回一条属于
+            # _JIA14_USER/default 的记录，让预检放行到 category 保真断言。
+            return {"id": memory_id, "user_id": _JIA14_USER}
+
     mem = _StubMemory()
     monkeypatch.setattr(crud, "get_memory", lambda: mem)
 

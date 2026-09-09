@@ -4,10 +4,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
+import threading
 import time
 from typing import Any
 
-from ducky.utils import get_facts_conn
+from ducky import utils as _utils
 
 logger = logging.getLogger("aiduMEM.idempotency")
 
@@ -24,6 +26,35 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 """
 _PENDING_TTL_SECONDS = 600
 
+# v20.4.0（Kimi P3-2/P3-3）：幂等层改用**独立短连接** + 建表 once 化。
+# 原实现借请求线程的共享连接（get_facts_conn 的 _ConnProxy），claim 里的
+# commit/rollback 会连带提交/回滚同一请求在途的其它 facts 写入 ——
+# utils 花大篇幅治理的「悬挂事务」雷区，幂等层自己踩在同一形态上。
+# 独立连接物理隔离事务边界；每请求一次的 CREATE TABLE 也一并消掉
+# （按库路径记账：测试沙箱切库后新库仍会建表）。
+_schema_lock = threading.Lock()
+_schema_ready_for: str = ""
+
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(_utils.FACTS_DB, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    _ensure_schema(conn)
+    return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    global _schema_ready_for
+    db_path = str(_utils.FACTS_DB)
+    if _schema_ready_for == db_path:
+        return
+    with _schema_lock:
+        if _schema_ready_for == db_path:
+            return
+        conn.execute(_SCHEMA)
+        conn.commit()
+        _schema_ready_for = db_path
+
 
 def _fingerprint(payload: Any) -> str:
     return hashlib.sha256(
@@ -38,9 +69,12 @@ def claim(key: str, user_id: str, bank_id: str, fingerprint_payload: Any) -> dic
         return {"action": "new", "key": ""}
     fingerprint = _fingerprint(fingerprint_payload)
     now = time.time()
-    conn = get_facts_conn()
     try:
-        conn.execute(_SCHEMA)
+        conn = _connect()
+    except Exception as exc:
+        logger.error("幂等层不可用（本次请求按无幂等处理，可能重复落库）：%s", exc)
+        return {"action": "disabled", "key": normalized, "error": str(exc)[:120]}
+    try:
         # v20.3.2 正式版（P1-10 · Codex F-01 / Gemini P1-3）：原实现 SELECT→INSERT
         # 两步，两个并发请求都读到 None、都 INSERT（第二个才撞主键，且撞了走
         # except → "disabled" → 业务照写）。改为一条 INSERT ... ON CONFLICT DO NOTHING
@@ -60,7 +94,7 @@ def claim(key: str, user_id: str, bank_id: str, fingerprint_payload: Any) -> dic
             "WHERE idempotency_key=? AND user_id=? AND bank_id=?",
             (normalized, user_id, bank_id),
         ).fetchone()
-        # SQLite Row is available from the production connector, but this
+        # SQLite Row is available from the dedicated connection, but this
         # module must also work with a plain tuple-based connection in tests.
         def _value(row: Any, key: str, index: int) -> Any:
             try:
@@ -104,7 +138,12 @@ def finalize(key: str, user_id: str, bank_id: str, response: Any) -> None:
     key = str(key or "").strip()
     if not key:
         return
-    conn = get_facts_conn()
+    try:
+        conn = _connect()
+    except Exception as exc:
+        logger.error("幂等 finalize 失败（key=%s），释放该 key 以免客户端被永久 409：%s", key, exc)
+        release(key, user_id, bank_id)
+        return
     try:
         conn.execute(
             "UPDATE idempotency_keys SET response_json=? "
@@ -130,7 +169,11 @@ def release(key: str, user_id: str, bank_id: str) -> None:
     key = str(key or "").strip()
     if not key:
         return
-    conn = get_facts_conn()
+    try:
+        conn = _connect()
+    except Exception as exc:
+        logger.warning("幂等 release 失败（key=%s）：%s", key, exc)
+        return
     try:
         conn.execute(
             "DELETE FROM idempotency_keys WHERE idempotency_key=? AND user_id=? AND bank_id=?",

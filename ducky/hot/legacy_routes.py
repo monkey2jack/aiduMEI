@@ -19,6 +19,7 @@ from ducky.utils import (
     OBS_DB,
     SCENES_DB,
 )
+from ducky.api_models import ID_FIELD_MAX_CHARS
 from ducky.bank_contract import BankScopeError, DEFAULT_BANK_ID, normalize_bank_id, normalize_user_id
 from ducky.facts_recall import _strict_tenant_enabled, tenant_clause
 from ducky.hot.legacy_helpers import (
@@ -175,7 +176,8 @@ def register_legacy_routes(app):
                 spawn_async_eval(gov["candidate_id"])
             except Exception as ae:
                 logger.debug("异步评估派发跳过: %s", ae)
-        auto_link = _auto_extract_and_link(fid, fact_value, conn)
+        auto_link = _auto_extract_and_link(fid, fact_value, conn,
+                                           user_id=scope_uid, bank_id=scope_bid)
         conn.close()
         return {"status":"ok","message":f"事实已存储: {category}/{fact_key}","level":resolved_level,
                 "validity":{"valid_from":vf,"valid_to":vt},
@@ -618,8 +620,10 @@ def register_legacy_routes(app):
     # 注：/persona/build 已让位给 v19.0 人格记忆基座（ducky.routes_persona）。
     # 旧「AI 自我人设刷新」逻辑保留为 /persona/refresh，避免路径冲突。
     @app.post("/persona/refresh")
-    def build_persona(name: str = Form("user"), user_id: str = Form(""),
-                      bank_id: str = Form("")):
+    def build_persona(name: str = Form("user", max_length=ID_FIELD_MAX_CHARS),
+                      user_id: str = Form("", max_length=ID_FIELD_MAX_CHARS),
+                      bank_id: str = Form("", max_length=ID_FIELD_MAX_CHARS)):
+        # v20.4.0（P1-11）：Form 字段并入上限体系（与 JSON 体 ID 字段同源）
         return _refresh_persona_inline(name, user_id=user_id, bank_id=bank_id)
 
     # ── §10  Skill 发现 ──

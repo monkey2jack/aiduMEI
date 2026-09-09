@@ -108,21 +108,21 @@ def test_session_scope_fixed_at_start_and_inherited_by_search():
     assert started["bank_id"] == "bank_a"
     sid = started["session_id"]
 
-    res = persistence.session_search(mem, sid, "猫的情况", limit=5)
+    res = persistence.session_search(mem, sid, "猫的情况", limit=5, user_id="user_x", bank_id="bank_a")
     assert res["status"] == "ok"
     assert mem.search_filters[-1] == {"user_id": "user_x", "bank_id": "bank_a"}
     ids = [r["id"] for r in res["results"]]
     assert "mem_a" in ids and "mem_b" not in ids and "mem_legacy" not in ids
 
     # 第二次搜索走「历史上下文」路径（Step 1），同样必须守域
-    res2 = persistence.session_search(mem, sid, "猫喜欢什么", limit=5)
+    res2 = persistence.session_search(mem, sid, "猫喜欢什么", limit=5, user_id="user_x", bank_id="bank_a")
     assert res2["status"] == "ok"
     assert mem.search_filters[-1]["bank_id"] == "bank_a"
     ids2 = [r["id"] for r in res2["results"]]
     assert "mem_b" not in ids2 and "mem_legacy" not in ids2
 
     # session_end 交还作用域，供 session_end 反思按域反思
-    ended = persistence.session_end(sid)
+    ended = persistence.session_end(sid, user_id="user_x", bank_id="bank_a")
     assert ended["status"] == "ok"
     assert ended["bank_id"] == "bank_a"
 
@@ -133,14 +133,14 @@ def test_session_default_bank_keeps_v19_filter_shape():
     assert started["bank_id"] == "default"
     sid = started["session_id"]
 
-    res = persistence.session_search(mem, sid, "记忆", limit=5)
+    res = persistence.session_search(mem, sid, "记忆", limit=5, user_id="user_x")
     assert res["status"] == "ok"
     assert mem.search_filters[-1] == {"user_id": "user_x"}, \
         "默认域 filters 必须保持 v19 形状（无 bank_id 键）"
     ids = [r["id"] for r in res["results"]]
     assert "mem_legacy" in ids
     assert "mem_a" not in ids and "mem_b" not in ids
-    persistence.session_end(sid)
+    persistence.session_end(sid, user_id="user_x")
 
 
 def test_session_start_invalid_bank_raises():

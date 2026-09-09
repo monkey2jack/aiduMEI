@@ -109,11 +109,23 @@ def register_obsidian_routes(app: FastAPI) -> None:
                     # 把页面标题自己也当成一个 Entity
                     entities_to_upsert = [req.title] + wikilinks
 
+                    # v20.4.0（P1-6 · Codex P2-05）：实体去重按域，不再全局按名
+                    from ducky.bank_contract import table_columns
+                    _scoped = "user_id" in table_columns(conn, "entities")
+                    _bid = str(req.bank_id or "").strip() or "default"
                     for ent in entities_to_upsert:
-                        # 如果没有这个实体，插入
-                        existed = conn.execute("SELECT entity_id FROM entities WHERE name = ?", (ent,)).fetchone()
-                        if not existed:
-                            conn.execute("INSERT INTO entities (name, entity_type) VALUES (?, ?)", (ent, "obsidian_node"))
+                        if _scoped:
+                            existed = conn.execute(
+                                "SELECT entity_id FROM entities WHERE name = ? AND user_id = ? AND bank_id = ?",
+                                (ent, user_id, _bid)).fetchone()
+                            if not existed:
+                                conn.execute(
+                                    "INSERT INTO entities (name, entity_type, user_id, bank_id) VALUES (?, ?, ?, ?)",
+                                    (ent, "obsidian_node", user_id, _bid))
+                        else:
+                            existed = conn.execute("SELECT entity_id FROM entities WHERE name = ?", (ent,)).fetchone()
+                            if not existed:
+                                conn.execute("INSERT INTO entities (name, entity_type) VALUES (?, ?)", (ent, "obsidian_node"))
                     conn.commit()
                     logger.info(f"成功将 {len(wikilinks)} 个双向链接同步至图谱节点。")
                 except Exception as db_err:

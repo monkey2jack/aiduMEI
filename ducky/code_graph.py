@@ -59,10 +59,18 @@ class FileNode:
 
 # ── 解析 ──
 
+# v20.4.0（三方审计 P2-7 · Codex P2-06）：资源预算硬顶。
+_MAX_FILE_BYTES = 1_000_000      # 单文件 1MB：超过的当生成物/数据文件跳过
+_MAX_BFS_DEPTH = 10              # BFS 深度模型上限（请求可给更小值，不许更大）
+
+
 def parse_python_file(filepath: str) -> FileNode | None:
     """用标准库 ast 解析 Python 文件的结构"""
     node = FileNode(filepath)
     try:
+        if os.path.getsize(filepath) > _MAX_FILE_BYTES:
+            logger.debug(f"跳过超预算文件（>{_MAX_FILE_BYTES}B）: {filepath}")
+            return None
         with open(filepath, encoding="utf-8", errors="ignore") as f:
             source = f.read()
         tree = ast.parse(source, filename=filepath)
@@ -97,6 +105,14 @@ def build_dependency_graph(root_dir: str, max_files: int = 500) -> dict[str, Fil
         # 跳过常见无意义目录
         parts = py_file.parts
         if any(skip in parts for skip in ("__pycache__", ".git", "node_modules", ".venv", "venv")):
+            continue
+        # v20.4.0（P2-7）：symlink 的真实目标必须仍在 root 内 —— 否则
+        # rglob 会顺着链接读工作区外的文件（Codex P2-06 点名的越界读面）。
+        try:
+            if not py_file.resolve().is_relative_to(root):
+                logger.debug(f"跳过越界 symlink: {py_file}")
+                continue
+        except OSError:
             continue
 
         rel_path = str(py_file.relative_to(root))
@@ -177,8 +193,11 @@ def compute_blast_radius(
 class ImpactRequest(BaseModel):
     """爆炸半径查询请求"""
     root_dir: str = Field(default="", max_length=1024)
-    changed_files: list[str] = Field(default_factory=list, max_length=10_000)
-    max_depth: int = 3
+    # v20.4.0（P2-7 · Codex P2-06）：changed_files 上限从 10,000 收到 2,000
+    # （与 max_files 顶格一致 —— 请求里列出比可扫文件数还多的变更文件没有语义）；
+    # max_depth 给模型层硬顶，杜绝深度放大。
+    changed_files: list[str] = Field(default_factory=list, max_length=2_000)
+    max_depth: int = Field(default=3, ge=0, le=_MAX_BFS_DEPTH)
     max_files: int = Field(default=500, ge=1, le=2000)
 
 def _workspace_root(root_dir: str) -> str:

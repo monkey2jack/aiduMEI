@@ -31,6 +31,23 @@ def register_add_routes(app: FastAPI) -> None:
         短句连发（async）：进入 coalesce 队列，idle/window 到后合并一次 LLM。
         默认同步：完整抽取后返回，兼容旧调用方。
         """
+        # v20.4.0（三方审计 P0-1 · 动态审计 🔴-1 = Kimi P1-1）：claim 成功后的
+        # 每一个失败出口（注入 400 / mem0 503 / 管线 500）都必须释放幂等键，
+        # 否则死键押着同 key 的合法重试 600 秒恒 409。只释放**本请求自己
+        # claim 到的键**（pending/conflict 属他人在途租约，释放即拆掉并发
+        # 重复写保护）。finalize 收口后清空槽位，成功路径不受影响。
+        _idem_claimed: list = []
+
+        def _release_failed_claim():
+            if not _idem_claimed:
+                return
+            k, uid, bid = _idem_claimed.pop()
+            try:
+                from ducky import idempotency
+                idempotency.release(k, uid, bid)
+            except Exception as _re:
+                logger.warning(f"失败出口释放幂等键失败（key={k}）: {_re}")
+
         try:
             # v20.3.1（九份审计 P1-1）：Idempotency-Key header 支持。
             # Release Notes 曾宣称 header 形态，实际只认 body 字段 —— 照
@@ -46,13 +63,17 @@ def register_add_routes(app: FastAPI) -> None:
             req.bank_id = scope.bank_id
             # v20.1.1（N-1）：写路径限流——拦失控循环，不拦正常流量
             # （默认 120/min，生产 14 天分钟峰值 35 的 3.4 倍）。
-            from ducky.rate_guard import add_rate_limit, check_rate
-            _retry = check_rate("add", req.user_id, limit=add_rate_limit())
+            from ducky.rate_guard import add_global_rate_limit, add_rate_limit, check_rate
+            # v20.4.0（P1-8 · Kimi P2-3）：叠加进程级全局桶 —— 轮换 user_id
+            # 绕不过总量上限。
+            _retry = check_rate("add", req.user_id, limit=add_rate_limit(),
+                                global_limit=add_global_rate_limit())
             if _retry is not None:
                 raise HTTPException(
                     status_code=429,
                     detail=f"写入频率超限（租户 {req.user_id}）：默认护栏用于拦截失控循环，"
-                           f"{_retry}s 后重试；上限可经 AIDUMEI_RATE_ADD_PER_MIN 调整（0=关闭）",
+                           f"{_retry}s 后重试；上限可经 AIDUMEI_RATE_ADD_PER_MIN / "
+                           f"AIDUMEI_RATE_ADD_GLOBAL_PER_MIN 调整（0=关闭）",
                     headers={"Retry-After": str(_retry)},
                 )
             ensure_bank_registered(make_scope(req.user_id, req.bank_id))
@@ -77,11 +98,17 @@ def register_add_routes(app: FastAPI) -> None:
             if idempotency_state["action"] == "pending":
                 # v20.3.2 正式版（P1-10）：同键的前一个请求还在处理中。原实现对 pending
                 # 不做任何事、继续往下写 —— 幂等键在并发重试下反而制造重复。
+                # v20.4.0（P0-1）：失败请求现在立即释放键，pending 真的只剩
+                # 「上一个请求还在跑」这一种含义 —— 文案照实说。
                 raise HTTPException(
                     409,
-                    "idempotency_key is still being processed by an earlier request; "
-                    "retry after it completes (or after 600s)",
+                    "idempotency_key is held by an in-flight request; failed requests "
+                    "release the key immediately, so retry shortly (in-flight lease "
+                    "expires after 600s)",
                 )
+            if idempotency_state["action"] == "new" and idempotency_state.get("key"):
+                _idem_claimed.append(
+                    (req.idempotency_key, req.user_id, req.bank_id))
             if idempotency_state["action"] == "conflict":
                 raise HTTPException(
                     409,
@@ -103,6 +130,7 @@ def register_add_routes(app: FastAPI) -> None:
                     idempotency.finalize(
                         req.idempotency_key, req.user_id, req.bank_id, resp
                     )
+                    _idem_claimed.clear()  # P0-1：已落账，失败释放不再适用
                 return resp
 
 
@@ -240,8 +268,10 @@ def register_add_routes(app: FastAPI) -> None:
                 elif bool(speed_cfg.get("async_default")):
                     async_flag = True
 
-            text_preview = messages_to_text(messages_json)[:120]
-            from ducky.security.injection_guard import validate_and_sanitize_memory_content
+            from ducky.security.injection_guard import (
+                sanitize_messages_struct,
+                validate_and_sanitize_memory_content,
+            )
             _full_text = messages_to_text(messages_json)
             _is_safe, _, _rejection = validate_and_sanitize_memory_content(_full_text)
             if not _is_safe:
@@ -253,6 +283,14 @@ def register_add_routes(app: FastAPI) -> None:
                     "set AIDUMEM_INJECTION_GUARD_MODE=log_only to store it with a warning instead of "
                     "blocking; the guard applies to /add and /add/raw alike.",
                 )
+
+            # v20.4.0（P1-9 · Kimi P2-1）：检测通过后**保结构**清洗控制字符，
+            # 让 verbatim / pattern_extract / dual_index / mem0 / FTS 全部下游
+            # 消费同一份净化字节 —— 与 /add/raw 落库 sanitized 的语义对齐。
+            # （换行/回车/制表符保留；结构化 messages 只洗 content 字段。）
+            messages_json = sanitize_messages_struct(messages_json)
+            _full_text = messages_to_text(messages_json)
+            text_preview = _full_text[:120]
 
             # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文保真层
             # 注入防御通过后，把逐字原文并行落库（mem0 抽取之外的第二层）。
@@ -483,7 +521,10 @@ def register_add_routes(app: FastAPI) -> None:
 
             # ── 异步路径 ──
             if async_flag and background_tasks is not None:
-                job_id = job_create({"text_preview": text_preview, "user_id": req.user_id})
+                # v20.4.0（P1-5 · Kimi P2-2）：job 记录带全两轴，查询端校验归属
+                job_id = job_create({"text_preview": text_preview,
+                                     "user_id": req.user_id,
+                                     "bank_id": req.bank_id})
 
                 # 短句连发 → 合并队列（省 LLM）
                 should, why = coalesce_should_buffer(
@@ -529,8 +570,12 @@ def register_add_routes(app: FastAPI) -> None:
                                 "window_sec": enq.get("window_sec"),
                             },
                         )
+                        # v20.4.0（P2-8 · Kimi P3-1）：accepted ≠ durable ——
+                        # 合并缓冲/job 状态在进程内存，重启即失。响应如实声明，
+                        # 落盘重放列 v20.5 候选（拍板戊：先诚实披露）。
                         return _finalize_and({
                             "status": "accepted",
+                            "durable": False,
                             "action": "coalesce_buffered",
                             "job_id": job_id,
                             "infer": infer_flag,
@@ -547,6 +592,7 @@ def register_add_routes(app: FastAPI) -> None:
                     # 当前句触发了满额即时冲刷
                     return _finalize_and({
                         "status": "accepted",
+                        "durable": False,
                         "action": "coalesce_flushed",
                         "job_id": job_id,
                         "infer": infer_flag,
@@ -567,6 +613,7 @@ def register_add_routes(app: FastAPI) -> None:
                 background_tasks.add_task(_bg_job)
                 return _finalize_and({
                     "status": "accepted",
+                    "durable": False,
                     "action": "async_queued",
                     "job_id": job_id,
                     "infer": infer_flag,
@@ -587,24 +634,34 @@ def register_add_routes(app: FastAPI) -> None:
                     idempotency.finalize(
                         req.idempotency_key, req.user_id, req.bank_id, out
                     )
+                    _idem_claimed.clear()  # P0-1：已落账
             return out
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
         except HTTPException:
+            _release_failed_claim()  # P0-1：拒绝（400/503/...）不许押着幂等键
             raise
         except Exception as e:
+            _release_failed_claim()  # P0-1：写没成功，键就不该占位
             feature_failed("index_memory", e)
             feature_failed("store_verbatim", e)
             logger.error(f"add 失败: {e}")
             raise HTTPException(500, api_error_detail(e))
 
     @app.get("/add/job/{job_id}")
-    def add_job_status(job_id: str):
-        """查询异步 /add 任务状态"""
+    def add_job_status(job_id: str, user_id: str = "", bank_id: str = ""):
+        """查询异步 /add 任务状态。
+
+        v20.4.0（P1-5 · Kimi P2-2）：查询按 (user_id, bank_id) 校验归属 ——
+        与写入同一套规范化链。不带参数按默认租户查（单租户调用方不破坏），
+        归属不符按 404（不泄露存在性）。
+        """
         try:
             from ducky.add_speed import job_get
-            rec = job_get(job_id)
+            scope = make_scope(user_id, bank_id)
+            uid = _normalize_user_id(scope.user_id) if scope.user_id else "default"
+            rec = job_get(job_id, user_id=uid, bank_id=scope.bank_id)
             if not rec:
                 raise HTTPException(404, f"job not found: {job_id}")
             return {"status": "ok", "job": rec}

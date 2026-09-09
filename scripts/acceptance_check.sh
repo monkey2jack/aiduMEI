@@ -108,6 +108,14 @@ if [[ -z "${PY}" ]]; then
   printf 'FAIL hard gate: no interpreter with pytest found (set AIDUMEM_PYTHON)\n' >&2
   exit 1
 fi
+# v20.4.0（三方审计 P0-3 · 动态审计 🔴-3）：门禁结论必须带解释器口径。
+# 「acceptance 全过」离开「在哪个解释器、装了哪些可选轴」就不可复现 ——
+# 动态审计换两种解释器各红一次，而报告只写了结论没写口径。自报家门：
+printf 'GATE interpreter: %s (%s)\n' "${PY}" "$("${PY}" -c 'import sys; print(sys.version.split()[0], "@", sys.prefix)')"
+if ! "${PY}" -c "import pytest" >/dev/null 2>&1; then
+  printf 'FAIL hard gate: AIDUMEM_PYTHON=%s has no pytest — gate verdicts from this interpreter are void\n' "${PY}" >&2
+  exit 1
+fi
 # ${PY} 作为位置参数传给 bash -c（"bash: <含空格路径的前半段>: No such
 # file or directory" —— 路径含空格时把它拼进命令串会把解释器路径劈成两半）。
 check "hard gate: pytest sentinel subset exits 0" bash -c '
