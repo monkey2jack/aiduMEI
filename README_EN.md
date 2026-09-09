@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.3" width="100%">
+  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.4" width="100%">
 </p>
 
 # 🤔 aiduMEI — AI Wisdom Engine
@@ -32,7 +32,7 @@ Install aiduMEI from the official repo strictly following AGENTS.md: deploy in i
 
 ## What is aiduMEI?
 
-aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current public release is **v20.3** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, first of its kind.** The Wisdom Engine Autoshift provides a dual engine with automatic gear shifting. When external services fail it downshifts automatically and keeps running seamlessly; when they recover it upshifts and replays the debt; the gear is always honestly visible. v20.1's "deterministic fallbacks and honest recall" (17 remediation items closed across five external reviews) is its foundation. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
+aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current public release is **v20.4** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, first of its kind.** The Wisdom Engine Autoshift provides a dual engine with automatic gear shifting. When external services fail it downshifts automatically and keeps running seamlessly; when they recover it upshifts and replays the debt; the gear is always honestly visible. v20.1's "deterministic fallbacks and honest recall" (17 remediation items closed across five external reviews) is its foundation. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
 <!-- distribution-policy: github-source-only -->
 > **Distribution (GitHub-only):** aiduMEI no longer publishes or maintains packages on PyPI or GHCR. Get ongoing updates from the repository's `main` branch or formal versions from [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases). The `pip install -r requirements.txt` command below installs dependencies from a cloned source tree; it is not a package distribution method.
