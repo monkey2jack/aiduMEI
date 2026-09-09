@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import sqlite3
-import time
 from ducky.shutdown import sleep as _shutdown_sleep
 from datetime import datetime, timezone
 from typing import Any, Optional

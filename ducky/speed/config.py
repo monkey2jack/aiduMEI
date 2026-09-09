@@ -6,7 +6,6 @@ import logging
 import os
 from typing import Optional
 
-from ducky.utils import BASE_DIR as _BASE_DIR
 
 logger = logging.getLogger("aiduMEM.speed")
 

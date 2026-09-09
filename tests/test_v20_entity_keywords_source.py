@@ -19,7 +19,6 @@ drop-in），`.env` 就成了纯装饰：改它没有任何效果，而且没有
 """
 from __future__ import annotations
 
-import importlib
 import logging
 import os
 import sys
@@ -151,7 +150,6 @@ def test_health_probe_exposes_source_and_warns_on_override(_sandbox, monkeypatch
     断言落在**探针函数的产物**上，而不是「源码里有没有这个字符串」：
     字符串级判据分不清代码和注释。
     """
-    import ducky.hot.health as health_mod
     src = open(os.path.join(_REPO_ROOT, "ducky/hot/health.py"), encoding="utf-8").read()
     assert "entity_keywords_source" in src, "/health 没有暴露来源字段"
 

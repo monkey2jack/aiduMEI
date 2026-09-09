@@ -12,7 +12,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import Form, HTTPException, Query
 
-from ducky.api_models import ID_FIELD_MAX_CHARS, TEXT_FIELD_MAX_CHARS
+from ducky.api_models import TEXT_FIELD_MAX_CHARS
 
 from ducky.facts_recall import tenant_clause
 

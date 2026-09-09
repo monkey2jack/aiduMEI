@@ -12,20 +12,32 @@
 #
 # 两个设计选择
 # ──────────
-# 1. 本工作流保留为**可复用工作流**和手动触发；不再随 main 推送自动运行，
-#    避免对外分发面收缩后继续产生 Actions 邮件噪音。
+# 1. 触发面（v20.4.1a 起，替代 2026-08-25 的「只留手动」策略）：
+#    「测试体系很强」≠「每次提交必经测试」—— 2026-09-09 四方网页外审
+#    （Sonnet P0 / GPT Luna P1 双证同调）指出本文件只留手动触发是全仓
+#    唯一的元问题：防线都在，但没接进提交链路。经维护者裁决改为：
+#      · pull_request：全量（pytest + 全部辅助 job），对外贡献的强制门禁；
+#      · push → main：精简（pytest job 跳过 —— PR 已把关、维护者直推有
+#        本地 push_gate 把关；辅助 job 照跑），控制 Actions 邮件噪音；
+#      · workflow_dispatch / workflow_call：保留（手动复跑 + 发布依赖）。
 # 2. `HERMES_SRC: "off"` 显式关掉宿主自动发现：让跳过行为**双向可复现**。
 #    不写这一句，CI 机器上有没有宿主源码就成了一个隐式变量，跳过条数飘忽不定，
 #    而 README 里那几个数字是按轴对得上号的。
 name: Tests
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
   workflow_call:
 
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    # push→main 精简集：全量 pytest 在 PR 与手动/复用触发上跑；
+    # 直推 main 由本地 push_gate 把关，这里跳过以控制 Actions 邮件噪音。
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       matrix:

@@ -11,7 +11,6 @@ checkpoint / session / jobs / refine / update / tree / entities 七个面
 必须在此登记 —— test_matrix_covers_all_registered_surfaces 比对防漏。
 """
 
-import sqlite3
 
 import pytest
 from fastapi import FastAPI

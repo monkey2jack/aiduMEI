@@ -194,7 +194,7 @@ def test_04_list_facts() -> bool:
             sample = facts[0]
             print(f"     示例: key={sample.get('fact_key')!r}, value={sample.get('fact_value', '')[:40]!r}")
         else:
-            print(f"     (user category 当前为空，但接口正常)")
+            print("     (user category 当前为空，但接口正常)")
     else:
         print(f"     响应: {body}")
     return ok
@@ -217,7 +217,7 @@ def test_05_search_facts() -> bool:
             for f in facts[:3]:
                 print(f"     命中: [{f.get('category')}/{f.get('fact_key')}] {f.get('fact_value', '')[:40]}")
         else:
-            print(f"     (无命中，但 search 接口正常)")
+            print("     (无命中，但 search 接口正常)")
     else:
         print(f"     响应: {body}")
     return ok
@@ -358,7 +358,7 @@ def _smoke_cleanup() -> None:
             "bank_id": _SMOKE_BANK,
         })
         if 200 <= code < 300:
-            print(f"\n🧹 清理完成：已按合成租户清空（未传 confirm）")
+            print("\n🧹 清理完成：已按合成租户清空（未传 confirm）")
             return
         failed += 1
 
@@ -383,9 +383,9 @@ def main() -> int:
     pre_code, _, pre_ms = _http("GET", "/health")
     if pre_code != 200:
         print(f"\n❌ 预检失败: GET /health → {pre_code} ({pre_ms}ms)")
-        print(f"   请先启动 aidumem-api 服务:")
-        print(f"     systemctl status aidumem-api")
-        print(f"     # 或: cd <仓库根> && source venv/bin/activate && python3 api_server.py")
+        print("   请先启动 aidumem-api 服务:")
+        print("     systemctl status aidumem-api")
+        print("     # 或: cd <仓库根> && source venv/bin/activate && python3 api_server.py")
         return 1
 
     # 跑 7 个测试

@@ -1,4 +1,3 @@
-import sqlite3
 from ducky.utils import get_facts_conn
 
 def _extract_key_facts(category: str, limit: int = 100) -> list:

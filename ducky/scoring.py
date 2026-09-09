@@ -16,7 +16,7 @@ import threading
 from ducky.env_config import float_env
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from ducky.salience.core import get_batch_salience_records
 from ducky.failure_ledger import feature_failed
@@ -298,41 +298,180 @@ def compute_time_decay(created_ts: float, now_ts: Optional[float] = None, recenc
     return round(math.exp(-lam * age_days), 4)
 
 
-def score_and_rank_candidates(
-    query: str,
-    candidates: List[dict],
-    *,
-    user_id: str = "default",
-    # v20.2.4（外审 F-15）：**此前连这个参数都没有**，于是类型账本查询用默认
-    # scope，命名 bank 下一条都查不到 —— 六型加权与差异化衰减在那些部署上
-    # 整体失效（实测偏好类记忆的时效分 1.0000 → 0.0111，被当 FACTS 打折 90 倍），
-    # 而检索照常返回、没有任何告警。
-    bank_id: str = "default",
-    limit: int = 10,
-    weights: Optional[Dict[str, float]] = None,
-    memory_type_filter: Optional[str] = None,
-) -> List[dict]:
-    """统一候选记忆打分与排序入口。
+# ── 打分因子（v20.4.1a · 外审整改 B2）──────────────────────────────
+#
+# score_and_rank_candidates 曾是圈复杂度 61（radon F 级）的巨函数：取字段、
+# 五个因子、两道闸门、rerank、直方图、遥测全在一个循环体里。这里只做
+# **换骨架**：每个打分因子/闸门一个可独立测试的纯函数，编排函数只负责
+# 批量预取、循环组合与出口；取字段顺序、权重、判据、遥测字段逐行未动。
 
-    1. 批量查询 Salience，消除 N+1 数据库往返；
-    2. 计算多维加权总分并应用六型优先加权；
-    3. 调用 Reranker 重排序并输出透明探针日志。
+
+def _candidate_mid(item: dict) -> str:
+    """候选的对外 id：``id`` 优先，``memory_id`` 兜底，缺失为空串。"""
+    return str(item.get("id") or item.get("memory_id") or "")
+
+
+def _candidate_memory_ids(candidates: List[dict]) -> List[str]:
+    """批量查 Salience 用的 id 列表（一次查询消除 N+1 往返）。"""
+    return [str(it.get("id") or it.get("memory_id") or "") for it in candidates
+            if it.get("id") or it.get("memory_id")]
+
+
+def _candidate_content_text(item: dict) -> str:
+    """候选正文文本的取字段顺序（BM25 与 rerank 的 docs 共用一把钥匙）。"""
+    return str(item.get("memory") or item.get("content") or item.get("fact_value") or "")
+
+
+def _resolve_memory_type(item: dict, type_map: Dict[str, str]) -> str:
+    """六型判定：候选自带 > metadata > 类型账本 > FACTS 兜底。
+
+    类型账本对存量记忆覆盖不全（2026-08-27 生产实测覆盖率 29%），查不到
+    回退 "FACTS" —— 与 TYPE_DECAY 注释里「未分类存量行为逐字不变」互为前提。
     """
-    if not candidates:
-        return []
+    from ducky.memory_types import memory_type_ref as _mt_ref
+    return (item.get("memory_type")
+            or (item.get("metadata") or {}).get("memory_type")
+            or type_map.get(_mt_ref(item))
+            or "FACTS")
 
-    w = weights or DEFAULT_WEIGHTS
-    now_ts = time.time()
-    is_fact_query = is_fact_seeking_query(query)
 
-    # v20.2.4：开关在循环外读一次（每条候选读 env 是白烧）
-    _type_decay_on = type_decay_enabled()
+def _passes_type_filter(mtype: str, memory_type_filter: Optional[str]) -> bool:
+    """六型过滤：``ALL`` 与空值放行，其余精确匹配（大小写不敏感）。"""
+    if memory_type_filter and memory_type_filter.upper() != "ALL":
+        return mtype.upper() == memory_type_filter.upper()
+    return True
 
-    # 1. 批量查询 Salience 记录（0 N+1）
-    mem_ids = [str(it.get("id") or it.get("memory_id") or "") for it in candidates if it.get("id") or it.get("memory_id")]
-    salience_map = get_batch_salience_records(mem_ids)
 
-    # 2. 批量查询 Memory Types（单次 SQL 批量加载，彻底消除 N+1 数据库往返）
+def _vector_factor(item: dict) -> float:
+    """向量相似度分（归一化到 [0, 1]）。"""
+    return normalize_score(item.get("score", 0) or 0)
+
+
+def _bm25_factor(query: str, item: dict, content_text: str) -> float:
+    """词法分：上游给了 bm25_score 就用，否则现算 token 覆盖率。
+
+    v20.2.4（F-20）：外部数值一律过有限性闸门 —— min(nan, 1.0) 返回 nan。
+    """
+    bm25_s = (item.get("metadata") or {}).get("bm25_score", 0) or calc_token_overlap_score(query, content_text)
+    return min(finite_or(bm25_s, 0.0), 1.0)
+
+
+def _time_factor(item: dict, now_ts: float, type_decay_on: bool, mtype: str) -> float:
+    """统一时效分；分类型衰减开关关闭时逐字回到全局 λ 的旧行为。"""
+    created_ts = extract_timestamp(item)
+    return compute_time_decay(created_ts, now_ts, RECENCY_LAMBDA,
+                              memory_type=mtype if type_decay_on else None)
+
+
+def _reliability_factor(item: dict) -> float:
+    """可靠性分（缺省 0.5；外部数值过有限性闸门）。"""
+    reliability = (item.get("metadata") or {}).get("reliability", 0.5) or 0.5
+    return min(finite_or(reliability, 0.5), 1.0)
+
+
+def _heat_factor(item: dict, sal_rec: dict) -> float:
+    """访问热度分：metadata 优先，salience 批量缓存兜底。"""
+    access_count = (item.get("metadata") or {}).get("access_count") or sal_rec.get("access_count", 1)
+    return min(finite_or(access_count, 1.0) / 100.0, 1.0)
+
+
+def _hybrid_base_score(
+    w: Dict[str, float],
+    vec_s: float,
+    bm25_s: float,
+    time_s: float,
+    reliability_s: float,
+    heat_s: float,
+) -> float:
+    """五维加权的基础综合得分。"""
+    return (
+        w["vector"] * vec_s
+        + w["bm25"] * bm25_s
+        + w["time"] * time_s
+        + w["reliability"] * reliability_s
+        + w["heat"] * heat_s
+    )
+
+
+def _fact_type_boost(base_score: float, is_fact_query: bool, mtype: str) -> float:
+    """六型加权增益：针对事实类查询，对 FACTS/PREFERENCES/DECISIONS 给予 1.35x 增益。"""
+    if is_fact_query and mtype in ("FACTS", "PREFERENCES", "DECISIONS"):
+        return base_score * 1.35
+    return base_score
+
+
+def _evidence_gated(vec_s: float, bm25_s: float, gate_on: bool) -> bool:
+    """证据闸门（Issue #5 · 承重）：向量分与 BM25 分**双零**的候选一律出局。
+
+    零证据候选此前照样能靠时效 + 可靠性 + 热度凑分进结果集：实测零证据
+    条目地板 0.2015，高信任高热度可到 0.4000，事实类查询再 ×1.35 到
+    0.5400，funnel 的 ignition 再 ×1.5 到 0.8100 —— **越过了「真相关」
+    参照的 0.6065**。
+
+    **ignited 条目不会被误杀**：`recall_funnel.py` 把 `_ignition_score`
+    并进了 `item["score"]`，走的就是向量分这个入口 —— 它有证据。
+    **向量腿断掉时也不误判**：那时所有候选 vec_s=0，还剩 BM25；两者都 0
+    就是真的没有证据。返回空不会冒充腿断 —— v20.2.4 的 `vector_leg`
+    三态遥测（ok/degraded/not_found）区分得开。
+    """
+    return bool(gate_on and vec_s <= 0 and bm25_s <= 0)
+
+
+def _score_one_candidate(
+    query: str,
+    item: Any,
+    *,
+    w: Dict[str, float],
+    now_ts: float,
+    is_fact_query: bool,
+    type_decay_on: bool,
+    salience_map: Dict[str, Any],
+    type_map: Dict[str, str],
+    memory_type_filter: Optional[str],
+    gate_on: bool,
+) -> tuple:
+    """对单条候选算五维分、过六型/证据两道闸门，并原地写回分数字段。
+
+    返回 ``(候选或 None, 是否被证据闸门拦下)`` —— 拦回计数要如实上报，
+    所以「被证据闸门拦」与「类型过滤/非 dict 跳过」必须分得开。
+    通过的候选原地写回 ``_hybrid_score`` / ``_time_decay`` / ``memory_type``
+    （与拆分前同一对象语义：调用方手里那份候选列表会被就地更新）。
+    """
+    if not isinstance(item, dict):
+        return None, False
+
+    mid = _candidate_mid(item)
+    mtype = _resolve_memory_type(item, type_map)
+
+    # 六型过滤
+    if not _passes_type_filter(mtype, memory_type_filter):
+        return None, False
+
+    # 五个打分因子（每个都是可独立测试的纯函数）
+    vec_s = _vector_factor(item)
+    content_text = _candidate_content_text(item)
+    bm25_s = _bm25_factor(query, item, content_text)
+    time_s = _time_factor(item, now_ts, type_decay_on, mtype)
+    reliability_s = _reliability_factor(item)
+    heat_s = _heat_factor(item, salience_map.get(mid, {}))
+
+    # 闸门放在这里（打分循环内、rerank 之前）有两个好处：垃圾候选不进
+    # 重排，省 token；两条调用链（engine / recall_funnel）同时受益，
+    # 因为它们共用打分出口这一个函数。
+    if _evidence_gated(vec_s, bm25_s, gate_on):
+        return None, True
+
+    base_score = _hybrid_base_score(w, vec_s, bm25_s, time_s, reliability_s, heat_s)
+    base_score = _fact_type_boost(base_score, is_fact_query, mtype)
+
+    item["_hybrid_score"] = round(base_score, 4)
+    item["_time_decay"] = round(time_s, 4)
+    item["memory_type"] = mtype
+    return item, False
+
+
+def _load_type_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[str, str]:
+    """批量查询 Memory Types（单次 SQL 批量加载，彻底消除 N+1 数据库往返）。"""
     type_map: Dict[str, str] = {}
     try:
         from ducky.memory_types import get_batch_memory_types, memory_type_ref
@@ -342,101 +481,20 @@ def score_and_rank_candidates(
         type_map = get_batch_memory_types(type_refs, user_id=user_id, bank_id=bank_id)
     except Exception as e:
         logger.debug(f"批量查询 memory_types 跳过: {e}")
+    return type_map
 
-    scored: List[dict] = []
-    _gate_on = _evidence_gate_on()
-    _evidence_filtered = 0
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
 
-        mid = str(item.get("id") or item.get("memory_id") or "")
-        from ducky.memory_types import memory_type_ref as _mt_ref
-        mtype = (item.get("memory_type")
-                 or (item.get("metadata") or {}).get("memory_type")
-                 or type_map.get(_mt_ref(item))
-                 or "FACTS")
+def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
+    """Rerank 重排序与透明探针回写；返回重排是否实际生效（原地改 scored）。
 
-        # 六型过滤
-        if memory_type_filter and memory_type_filter.upper() != "ALL":
-            if mtype.upper() != memory_type_filter.upper():
-                continue
-
-        # 向量分
-        vec_s = normalize_score(item.get("score", 0) or 0)
-
-        # BM25 分
-        content_text = str(item.get("memory") or item.get("content") or item.get("fact_value") or "")
-        bm25_s = (item.get("metadata") or {}).get("bm25_score", 0) or calc_token_overlap_score(query, content_text)
-        # v20.2.4（F-20）：外部数值一律过有限性闸门 —— min(nan, 1.0) 返回 nan
-        bm25_s = min(finite_or(bm25_s, 0.0), 1.0)
-
-        # 统一时效分
-        created_ts = extract_timestamp(item)
-        time_s = compute_time_decay(created_ts, now_ts, RECENCY_LAMBDA,
-                                    memory_type=mtype if _type_decay_on else None)
-
-        # 可靠性分
-        reliability = (item.get("metadata") or {}).get("reliability", 0.5) or 0.5
-        reliability_s = min(finite_or(reliability, 0.5), 1.0)
-
-        # 访问热度分（批量缓存读取）
-        sal_rec = salience_map.get(mid, {})
-        access_count = (item.get("metadata") or {}).get("access_count") or sal_rec.get("access_count", 1)
-        heat_s = min(finite_or(access_count, 1.0) / 100.0, 1.0)
-
-        # ── 证据闸门（Issue #5 · 承重）────────────────────────────────
-        # 向量分与 BM25 分**双零** = 这条候选与查询之间没有任何可解释的关联。
-        # 它此前照样能靠时效 + 可靠性 + 热度凑分进结果集：实测零证据条目
-        # 地板 0.2015，高信任高热度可到 0.4000，事实类查询再 ×1.35 到 0.5400，
-        # funnel 的 ignition 再 ×1.5 到 0.8100 —— **越过了「真相关」参照的 0.6065**。
-        #
-        # 放在这里（打分循环内、rerank 之前）有两个好处：垃圾候选不进重排，
-        # 省 token；两条调用链（engine / recall_funnel）同时受益，因为它们
-        # 共用本函数这一个出口。
-        #
-        # **ignited 条目不会被误杀**：`recall_funnel.py:176` 把 `_ignition_score`
-        # 并进了 `item["score"]`，走的就是向量分这个入口 —— 它有证据。
-        # **向量腿断掉时也不误判**：那时所有候选 vec_s=0，还剩 BM25；两者都 0
-        # 就是真的没有证据。返回空不会冒充腿断 —— v20.2.4 的 `vector_leg`
-        # 三态遥测（ok/degraded/not_found）区分得开。
-        if _gate_on and vec_s <= 0 and bm25_s <= 0:
-            _evidence_filtered += 1
-            continue
-
-        # 基础综合得分
-        base_score = (
-            w["vector"] * vec_s
-            + w["bm25"] * bm25_s
-            + w["time"] * time_s
-            + w["reliability"] * reliability_s
-            + w["heat"] * heat_s
-        )
-
-        # 六型加权增益：针对事实类查询，对 FACTS/PREFERENCES 给予 1.35x 增益
-        if is_fact_query and mtype in ("FACTS", "PREFERENCES", "DECISIONS"):
-            base_score *= 1.35
-
-        item["_hybrid_score"] = round(base_score, 4)
-        item["_time_decay"] = round(time_s, 4)
-        item["memory_type"] = mtype
-        scored.append(item)
-
-    if not scored:
-        # 全被闸门滤光也要如实回报 —— 否则「候选里一条有证据的都没有」
-        # 与「压根没有候选」在响应里长得一模一样，正是本仓反复修过的
-        # 「一个空列表说两件事」。
-        _set_gate_telemetry(evidence_filtered=_evidence_filtered, score_filtered=0,
-                            threshold=RECALL_MIN_HYBRID,
-                            evidence_gate=_gate_on, score_histogram={})
-        return []
-
-    # 3. Rerank 重排序
+    v20 P0-4：rerank_applied 此前是丢在地上的局部变量，响应里永远看不到
+    重排序到底生效没有。回写进线程本地遥测，由 /search 带回响应。
+    """
     t_rr_start = time.time()
     rerank_applied = False
     try:
         from ducky.mem0_runtime import rerank as do_rerank
-        docs = [str(it.get("memory") or it.get("content") or it.get("fact_value") or "") for it in scored]
+        docs = [_candidate_content_text(it) for it in scored]
         rr = do_rerank(query, docs, top_n=min(len(docs), limit * 2))
         if rr:
             for r in rr:
@@ -460,8 +518,6 @@ def score_and_rank_candidates(
         feature_failed("rerank", e)
         logger.debug("Rerank 降级: %s", e)
 
-    # v20 P0-4：rerank_applied 此前是丢在地上的局部变量，响应里永远看不到
-    # 重排序到底生效没有。回写进线程本地遥测，由 /search 带回响应。
     try:
         from ducky.mem0_runtime import last_rerank_telemetry
         _telem = last_rerank_telemetry()
@@ -472,45 +528,133 @@ def score_and_rank_candidates(
         # 修复等于没做，而响应里长期显示不出重排是否生效 —— 症状与修复前一致。
         # 遥测不该把主查询带崩，所以照旧不抛，但必须留一笔。
         logger.debug("rerank 遥测回写失败，响应里看不到 applied: %s", exc)
+    return rerank_applied
 
-    # 4. 排序、总分门槛、截断
-    scored.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
 
-    # 分数直方图：**这是下一版给 RECALL_MIN_HYBRID 定值的原料**。
-    # 没有它，阈值只能继续拍脑袋 —— 而本仓已经为「拍脑袋常数」付过两次学费
-    # （WAL 告警阈值 1MB、核心记忆 30 天）。先量，再卡。
+def _score_histogram(scored: List[dict]) -> Dict[str, int]:
+    """分数直方图：**这是下一版给 RECALL_MIN_HYBRID 定值的原料**。
+
+    没有它，阈值只能继续拍脑袋 —— 而本仓已经为「拍脑袋常数」付过两次学费
+    （WAL 告警阈值 1MB、核心记忆 30 天）。先量，再卡。
+    """
     _hist: Dict[str, int] = {}
     for it in scored:
         _hist[_score_bucket(it.get("_hybrid_score", 0) or 0)] = \
             _hist.get(_score_bucket(it.get("_hybrid_score", 0) or 0), 0) + 1
+    return _hist
 
-    _score_filtered = 0
+
+def _apply_score_floor(scored: List[dict]) -> tuple:
+    """总分门槛过滤；返回 ``(保留列表, 被拦条数)``。门槛为 0 时原样放行。
+
+    门槛必须卡在 **rerank 融合之后** —— `old*(1-W) + rr*W` 才是终态分，
+    卡在融合前等于对一个中间量设限。
+
+    **ignited 条目豁免**：`recall_funnel.py` 在打分出口返回**之后**才乘
+    `IGNITION_BOOST = 1.5`，门槛在这里看到的是 boost 前的分。一条 boost 后
+    能到 0.33 的 ignited 条目，会在 0.22 时被这道门槛杀掉 —— 那是把
+    「显式的相关性信号」当成弱命中处理，方向正好反了。
+    """
     if RECALL_MIN_HYBRID > 0:
-        # 门槛必须卡在 **rerank 融合之后** —— `old*(1-W) + rr*W` 才是终态分，
-        # 卡在融合前等于对一个中间量设限。
-        #
-        # **ignited 条目豁免**：`recall_funnel.py:194` 在本函数返回**之后**才乘
-        # `IGNITION_BOOST = 1.5`，门槛在这里看到的是 boost 前的分。一条 boost 后
-        # 能到 0.33 的 ignited 条目，会在 0.22 时被这道门槛杀掉 —— 那是把
-        # 「显式的相关性信号」当成弱命中处理，方向正好反了。
         kept = [it for it in scored
                 if it.get("_ignited")
                 or (it.get("_hybrid_score", 0) or 0) >= RECALL_MIN_HYBRID]
-        _score_filtered = len(scored) - len(kept)
-        scored = kept
+        return kept, len(scored) - len(kept)
+    return scored, 0
 
-    # 拦了多少必须让调用方看得见（与 rerank 遥测同款纪律：回写自身失败
-    # 只记 debug，绝不把主查询带崩）。
+
+def _report_gate_telemetry(
+    evidence_filtered: int, score_filtered: int, gate_on: bool, hist: Dict[str, int]
+) -> None:
+    """拦了多少必须让调用方看得见（与 rerank 遥测同款纪律：回写自身失败
+    只记 debug，绝不把主查询带崩）。"""
     try:
         _set_gate_telemetry(
-            evidence_filtered=_evidence_filtered,
-            score_filtered=_score_filtered,
+            evidence_filtered=evidence_filtered,
+            score_filtered=score_filtered,
             threshold=RECALL_MIN_HYBRID,
-            evidence_gate=_gate_on,
-            score_histogram=_hist,
+            evidence_gate=gate_on,
+            score_histogram=hist,
         )
     except Exception as exc:
         logger.debug("召回闸门遥测回写失败，响应里看不到过滤条数: %s", exc)
+
+
+def score_and_rank_candidates(
+    query: str,
+    candidates: List[dict],
+    *,
+    user_id: str = "default",
+    # v20.2.4（外审 F-15）：**此前连这个参数都没有**，于是类型账本查询用默认
+    # scope，命名 bank 下一条都查不到 —— 六型加权与差异化衰减在那些部署上
+    # 整体失效（实测偏好类记忆的时效分 1.0000 → 0.0111，被当 FACTS 打折 90 倍），
+    # 而检索照常返回、没有任何告警。
+    bank_id: str = "default",
+    limit: int = 10,
+    weights: Optional[Dict[str, float]] = None,
+    memory_type_filter: Optional[str] = None,
+) -> List[dict]:
+    """统一候选记忆打分与排序入口。
+
+    1. 批量查询 Salience，消除 N+1 数据库往返；
+    2. 计算多维加权总分并应用六型优先加权；
+    3. 调用 Reranker 重排序并输出透明探针日志。
+
+    v20.4.1a（外审 B2）：本函数只保留编排 —— 各打分因子、闸门、rerank、
+    直方图与遥测回写拆成上方「打分因子」一节的纯函数；判据、字段、
+    取字段顺序、异常语义逐行未动。
+    """
+    if not candidates:
+        return []
+
+    w = weights or DEFAULT_WEIGHTS
+    now_ts = time.time()
+    is_fact_query = is_fact_seeking_query(query)
+
+    # v20.2.4：开关在循环外读一次（每条候选读 env 是白烧）
+    _type_decay_on = type_decay_enabled()
+
+    # 1. 批量查询 Salience 记录（0 N+1）
+    salience_map = get_batch_salience_records(_candidate_memory_ids(candidates))
+
+    # 2. 批量查询 Memory Types（单次 SQL 批量加载，彻底消除 N+1 数据库往返）
+    type_map = _load_type_map(candidates, user_id, bank_id)
+
+    scored: List[dict] = []
+    _gate_on = _evidence_gate_on()
+    _evidence_filtered = 0
+    for item in candidates:
+        _kept, _filtered_by_gate = _score_one_candidate(
+            query, item,
+            w=w, now_ts=now_ts, is_fact_query=is_fact_query,
+            type_decay_on=_type_decay_on, salience_map=salience_map,
+            type_map=type_map, memory_type_filter=memory_type_filter,
+            gate_on=_gate_on,
+        )
+        if _filtered_by_gate:
+            _evidence_filtered += 1
+        if _kept is not None:
+            scored.append(_kept)
+
+    if not scored:
+        # 全被闸门滤光也要如实回报 —— 否则「候选里一条有证据的都没有」
+        # 与「压根没有候选」在响应里长得一模一样，正是本仓反复修过的
+        # 「一个空列表说两件事」。
+        _set_gate_telemetry(evidence_filtered=_evidence_filtered, score_filtered=0,
+                            threshold=RECALL_MIN_HYBRID,
+                            evidence_gate=_gate_on, score_histogram={})
+        return []
+
+    # 3. Rerank 重排序（原地改 scored，探针回写在 _apply_rerank 内）
+    _apply_rerank(query, scored, limit)
+
+    # 4. 排序、总分门槛、截断
+    scored.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
+
+    _hist = _score_histogram(scored)
+    scored, _score_filtered = _apply_score_floor(scored)
+
+    _report_gate_telemetry(_evidence_filtered, _score_filtered, _gate_on, _hist)
 
     final = scored[:limit]
 

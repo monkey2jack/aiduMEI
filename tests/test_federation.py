@@ -13,7 +13,6 @@ import os
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timezone
 
 import pytest
 

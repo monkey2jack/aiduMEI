@@ -21,8 +21,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from ducky.api_models import (
-    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
-    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+    ID_FIELD_MAX_CHARS, SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
 )
 
 logger = logging.getLogger("aiduMEM.routes_persona")
@@ -57,7 +56,7 @@ class PersonaRollbackRequest(BaseModel):
 
 
 def register_persona_routes(app: FastAPI) -> None:
-    from ducky.persona_memory import PERSONA_ENABLED, VALID_LEVELS
+    from ducky.persona_memory import PERSONA_ENABLED
 
     if not PERSONA_ENABLED:
         logger.info("👤 人格记忆基座路由已禁用（AIDUMEM_PERSONA_ENABLED=false）")

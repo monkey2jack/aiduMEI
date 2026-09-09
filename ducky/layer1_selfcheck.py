@@ -261,7 +261,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
         # Lethe v9.2.0: 写入前进行演化追踪，将可能被新记忆取代的旧记忆置为 superseded
         import hashlib
         try:
-            new_id_placeholder = hashlib.md5(text.encode()).hexdigest()
+            new_id_placeholder = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
             track_knowledge_evolution(memory, user_id, text, new_id_placeholder, bank_id=bank_id)
         except Exception as e:
             logger.warning(f"写入前演化追踪失败: {e}")

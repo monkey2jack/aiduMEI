@@ -494,42 +494,16 @@ def cascade_delete_memory(
         #     （实机：verbatim=0、原文照旧可检索），成为「可检索但删不掉的孤儿」。
         #     因此直接按 id 精确删除原文层并留 tombstone，然后结束。
         if str(memory_id).lower().startswith("verbatim:"):
-            try:
-                from ducky.tombstone import snapshot_before_delete
-                res["tombstone_id"] = snapshot_before_delete(
-                    memory_id,
-                    user_id=user_id,
-                    bank_id=bank_id,
-                    reason="cascade_delete_verbatim",
-                    actor="wal_engine",
-                )
-            except Exception as te:
-                logger.debug("tombstone 快照跳过: %s", te)
-            try:
-                from ducky.verbatim_vault import delete_verbatim_by_id
-                res["verbatim"] = delete_verbatim_by_id(user_id, memory_id, bank_id=bank_id)
-            except Exception as ve:
-                logger.warning("原文层按 id 删除失败: %s", ve)
-                _layer_failed("verbatim", ve)
-            # v20.2.5-b：这条早退分支同样不许硬写 ok —— 两个出口一个改一个不改，
-            # 就是本版反复记过的「链路的另一端断掉」。
-            res["matched"] = int(res.get("verbatim") or 0) > 0
-            if _failed_layers:
-                _outcome = ("failed" if {f["layer"] for f in _failed_layers}
-                            & _CRITICAL_LAYERS else "partial")
-                if _outcome == "failed":
-                    wal.mark_status(wal_id, "failed", error="verbatim")
-            else:
-                _outcome = "committed" if res["matched"] else "not_found"
-                wal.mark_status(wal_id, "committed")
-            logger.info("🧹 原文条目删除完成 %s: %s", memory_id, res)
-            return {"status": _outcome, "details": res,
-                    "failed_layers": _failed_layers,
-                    "not_cleared": delete_chain_exemptions()}
+            return _cascade_single_verbatim_handle(
+                memory_id, user_id, bank_id, res, wal, wal_id,
+                _layer_failed, _failed_layers)
 
         # 0a. 🔴P0-4：先把这条记忆的正文抓出来（用于定位原文层对应行）。
         #     必须在物理删除之前做 —— 一旦 facts/FTS 行被删，就再也无从
         #     反查该记忆的内容，原文层将永久成为孤儿。
+        #     （本块留在编排层：守卫 test_p04_cascade_delete_memory_wires_verbatim_step
+        #     钉着 `_content_for_verbatim = ""` 必须先于 `mem.delete(memory_id)`
+        #     出现在源码里 —— 「先取正文、再物理删」的文本级证据。）
         _content_for_verbatim = ""
         try:
             from ducky.tombstone import _capture_facts_row, _capture_fts_content
@@ -541,22 +515,15 @@ def cascade_delete_memory(
 
         # 0. 🪦 tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
         #    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。
-        try:
-            from ducky.tombstone import snapshot_before_delete
-            res["tombstone_id"] = snapshot_before_delete(
-                memory_id,
-                user_id=user_id,
-                bank_id=bank_id,
-                reason="cascade_delete",
-                actor="wal_engine",
-            )
-        except Exception as te:
-            logger.debug("tombstone 快照跳过: %s", te)
+        _snapshot_before_cascade_delete(memory_id, user_id, bank_id, res)
 
-        # 1. mem0 向量删除。mem0.delete(memory_id) 本身没有 user/bank
-        # 参数，直接调用会让拿到另一域 id 的请求越过 v20 作用域。因此先
-        # 在同一作用域枚举并确认 id，再执行单条删除；枚举失败时宁可留
-        # 向量孤儿，绝不把一个未验证的 id 交给全局删除原语。
+        # 1. mem0 向量删除（实现在 _cascade_single_vector）。**获取后端**这道
+        #    边界例外地留在编排层：守卫
+        #    test_delete_chains_skip_mem0_only_for_the_typed_absence 用 AST 钉死
+        #    「get_memory 所在 try + 处理器顺序」必须在本函数体内唯一。
+        #    mem0.delete(memory_id) 本身没有 user/bank 参数，直接调用会让拿到
+        #    另一域 id 的请求越过 v20 作用域 —— 所以枚举/删除那半步也不许退回
+        #    无作用域原语（纪律原文随实现搬进 _cascade_single_vector）。
         mem = None
         try:
             from ducky.mem0_runtime import Mem0NotConfiguredError, get_memory
@@ -573,281 +540,29 @@ def cascade_delete_memory(
             mem = None
 
         if mem is not None:
-            try:
-                _items, enumeration_ok = _scoped_vector_items(mem, scope)
-                scoped_ids = [
-                    _vector_item_id(it) for it in _items
-                    if isinstance(it, dict) and vector_item_in_bank(it, bank_id)
-                ]
-                scoped_ids = [i for i in scoped_ids if i]
-                if enumeration_ok and str(memory_id) in scoped_ids:
-                    mem.delete(memory_id)
-                    res["mem0_vector"] = True
-                elif enumeration_ok and _raw_hash:
-                    # 🔴v20.2.5-b（实机冒烟 D1）：`raw-…` 句柄在 mem0 里**不是 id**
-                    # —— `/add/raw` 走 `mem.add(infer=False)`，mem0 自己铸 UUID，
-                    # 两者唯一的连接是 metadata.content_hash。此前这里只比 id，
-                    # 于是这一层永远命不中，而删除照旧回 ok、原文继续可召回。
-                    # 反查仍在**同一作用域的枚举结果内**做，一个未验证的 id 都不会
-                    # 交给全局 delete 原语 —— 这条纪律不因为多了一种句柄而放宽。
-                    _hits = _vector_ids_by_content_hash(_items, bank_id, _raw_hash)
-                    for _vid in _hits:
-                        mem.delete(_vid)
-                    res["mem0_vector"] = bool(_hits)
-                    res["raw_handle_resolved_ids"] = _hits
-                    if not _hits:
-                        logger.info(
-                            "raw 句柄在本域向量里没有对应点 user=%s bank=%s handle=%s",
-                            user_id, bank_id, memory_id,
-                        )
-                elif enumeration_ok:
-                    logger.info(
-                        "向量 id 不属于请求作用域，跳过删除 user=%s bank=%s id=%s",
-                        user_id, bank_id, memory_id,
-                    )
-                else:
-                    logger.warning(
-                        "向量归属无法确认，跳过删除 user=%s bank=%s id=%s",
-                        user_id, bank_id, memory_id,
-                    )
-                    # 枚举失败不是「没有这条」——它是「问不出来」。留孤儿可重试，
-                    # 报成功不可挽回，所以这里必须进失败账本（F-02 原病）。
-                    _layer_failed("mem0_vector", RuntimeError(
-                        "向量作用域枚举失败，归属无法确认，未执行删除"))
-            except Exception as e:
-                # 拿到后端之后的失败：一律算关键层失败，不做任何降级（F-02 纪律）。
-                logger.warning("mem0.delete 失败: %s", e)
-                _layer_failed("mem0_vector", e)
+            _cascade_single_vector(mem, scope, memory_id, _raw_hash, res, _layer_failed)
 
         # 2. FTS5 索引剔除（带 user_id 作用域）
-        try:
-            from ducky.text_fts import get_text_conn
-            tconn = get_text_conn()
-            storage_id = scoped_storage_key(memory_id, scope)
-            _fc = tconn.execute(
-                "DELETE FROM memories WHERE id IN (?, ?) AND user_id=? AND bank_id=?",
-                (storage_id, f"fact:{storage_id}", user_id, bank_id),
-            ).rowcount
-            tconn.commit()
-            tconn.close()
-            res["fts"] = True
-            # v20.2.5-b：`fts` 一直是「这条 SQL 跑过了」的布尔，不是「删掉了几行」。
-            # 判「什么都没命中」需要真行数，所以另起一个字段而不改它的类型
-            # （已发布字段被测试和调用方钉着）。
-            res["fts_rows"] = _fc if _fc and _fc > 0 else 0
-        except Exception as e:
-            logger.warning("FTS unindex 失败: %s", e)
-            _layer_failed("fts", e)
+        _cascade_single_fts(scope, memory_id, res, _layer_failed)
 
         # 3. facts.db 清理（🔴P0-1 严格归属校验 + 🔴P0-2 精确匹配，彻底消除 LIKE 误删）
-        try:
-            conn = get_facts_conn()
-            # v20.2.5-b：第四个键是 `raw:<content_hash>` —— `/add/raw` 落的就是
-            # 这个形状（raw_drawer.py 里 `fact_key = f"raw:{content_hash}"`），
-            # 而前三个键拿的是完整句柄，于是拼出 `raw:raw-<hash>-<rand>`，
-            # 与库里的键永远差一截。实机冒烟里 `"facts": 0` 就是它。
-            exact_keys = (memory_id, f"fact:{memory_id}", f"raw:{memory_id}")
-            _raw_fact_key = f"raw:{_raw_hash}" if _raw_hash else None
-            # 本地自算，**不复用第 2 步里的同名变量**：那一个定义在 FTS 的
-            # try 内部，一旦 get_text_conn() 抛错就根本没被赋值，这里再引用
-            # 就是 NameError —— 而它会被本块的 except 吞掉，表现为
-            # 「facts 清理整段被跳过」，且日志只有一行 debug。
-            storage_id = scoped_storage_key(memory_id, scope)
-            # 🔴v20：作用域必须进入删除条件本身。
-            #
-            # 旧写法分两支，两支都漏了 bank_id，且 default 支**一个作用域
-            # 条件都没有**：
-            #
-            #     if user_id == "default":
-            #         DELETE FROM facts WHERE id=? OR fact_key=? ...   # 全库
-            #     else:
-            #         ... AND (source=? OR agent_id=?)                 # 无 bank
-            #
-            # 后果分两级。默认用户删 id=X，会把**所有租户、所有域**里叫 X
-            # 的行一起删掉；具名租户删 X，会把自己 work 域和 home 域的 X
-            # 一起删掉 —— 域隔离恰恰是 v20 的立身之本，却在唯一不可逆的
-            # 那条路径上失效。而 `res["facts"] = c1` 只回报一个 rowcount，
-            # 多删了照样是个好看的数字，不抛错、不告警：静默数据丢失。
-            #
-            # 删除路径的取舍与读取相反：少删可以重试，多删无法挽回。
-            # 因此这里一律走**严格作用域**，渠道标记只对「确实没有正规主人」
-            # 的老行在默认域内回落，且回落绝不越过已有归属。
-            # 🔴v20.0：作用域谓词只许有一处实现。
-            #
-            # 这里曾把 legacy_fact_scope_predicate 的 SQL 连注释一起**手抄
-            # 一遍**，于是同一份契约有了两个副本。本文件第 24 行明明已经
-            # import 了那个函数、cascade_delete_all 也在调它，唯独这条单条
-            # 删除路径走的是复制品。后果是可以预料的：占位符口径在共享函数
-            # 里放宽之后，手抄件没跟上，单条删除继续对存量行失明 ——
-            # 删除返回 ok、rowcount=0，又是一次静默失败。
-            #
-            # 契约抄两遍，就一定会改一遍漏一遍。改成调用，副本消失。
-            scope_sql, own_params = legacy_fact_scope_predicate(scope)
-            c1 = conn.execute(
-                f"""DELETE FROM facts
-                   WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=? OR
-                          (? IS NOT NULL AND fact_key=?))
-                     AND (1=1{scope_sql})""",
-                (memory_id, exact_keys[0], exact_keys[1], exact_keys[2],
-                 _raw_fact_key, _raw_fact_key, *own_params),
-            ).rowcount
-            try:
-                # memory_types.memory_ref 存的是**带作用域的**键（见
-                # memory_types._storage_ref），memory_ref_raw 才是对外裸 id。
-                # 旧写法拿裸 id 去比 memory_ref，在具名域里永远比不中 ——
-                # 类型行会变成删不掉的孤儿；而它又没有作用域条件，
-                # 在默认域里反而跨租户误删。两头都错，方向还相反。
-                conn.execute(
-                    "DELETE FROM memory_types "
-                    "WHERE (memory_ref IN (?, ?) OR memory_ref_raw IN (?, ?) "
-                    "OR (ref_alt IS NOT NULL AND ref_alt IN (?, ?))) "
-                    "AND user_id=? AND bank_id=?",
-                    (
-                        storage_id, f"fact:{storage_id}",
-                        memory_id, f"fact:{memory_id}",
-                        storage_id, memory_id,
-                        user_id, bank_id,
-                    ),
-                )
-            except Exception as e:
-                logger.debug(f"cascade_delete_memory: suppressed exception: {e}")
-            # 📒 事件账本（v19.4.0 Mímir 借鉴 B5）：与删除同事务留痕，同生共死
-            try:
-                from ducky.event_ledger import record_event
-                record_event(conn, actor=user_id or "system", action="delete",
-                             target_id=memory_id, reason="cascade_delete_memory",
-                             user_id=user_id, bank_id=bank_id)
-            except Exception as le:
-                logger.debug("ledger 记录跳过: %s", le)
-            conn.commit()
-            conn.close()
-            res["facts"] = c1
-        except Exception as e:
-            logger.warning("facts.db 清理失败: %s", e)
-            _layer_failed("facts", e)
+        _cascade_single_facts(scope, memory_id, _raw_hash, res, _layer_failed)
 
-        # 4. salience.db 清理（v19.4.1 修复：此前同样从未真正执行）
-        #
-        #    原实现 `DELETE FROM memory_salience WHERE memory_id=? AND user_id=?`
-        #    有两个错误：真实表名是 `salience`（不是 memory_salience），
-        #    且该表**没有 user_id 列**（显著性是记忆级信号，不按租户分区）。
-        #    两个错误都被 except 吞成 debug，res["salience"] 恒为 0。
-        #
-        #    实测后果远不止「留了脏数据」：生产 salience 1099 条里有 252 条
-        #    是向量库中早已不存在的幽灵 id。幽灵被 decay_all 当正常记忆持续衰减，
-        #    最终进入 evicted 列表，consolidator 再逐个调 /delete 去删
-        #    「早就不存在的东西」——日志报「删除成功 25/25」，实际全是空转。
-        try:
-            from ducky.salience import delete_salience
-            res["salience"] = delete_salience([memory_id])
-        except Exception as e:
-            logger.warning("salience.db 清理失败: %s", e)
-            _layer_failed("salience", e)
+        # 4. salience.db / 5. evolve_mem.db：两表无租户列，按 memory_id 精确清理
+        #    （两层的「为什么历史上从未执行」随实现搬进对应函数）。
+        _cascade_single_salience(memory_id, res, _layer_failed)
+        _cascade_single_evolve(memory_id, res, _layer_failed)
 
-        # 5. evolve_mem.db 清理（v19.4.1 修复：此前这一步从未真正执行过）
-        #
-        #    原实现 `from ducky.evolve_mem import get_evolve_conn` +
-        #    `DELETE FROM evolve_snapshots` 有两个错误：该模块只有私有的
-        #    `_get_evolve_conn`，且**不存在** evolve_snapshots 表
-        #    （真实表是 evolve_queries / evolve_feedback / evolve_adjustments）。
-        #    两个错误都被 except 吞成 debug 日志，res["evolve"] 一直如实报 0，
-        #    于是删掉的记忆在检索自进化库里留下永久的反馈与调权孤儿。
-        try:
-            from ducky.evolve_mem import delete_evolve_by_memory_ids
-            res["evolve"] = delete_evolve_by_memory_ids([memory_id])
-        except Exception as e:
-            logger.warning("evolve_mem.db 清理失败: %s", e)
-            _layer_failed("evolve", e)
+        # 6. 📼 原文保真层 / 7. Workspace 单条驱逐 / 8+8b. 本地向量与 verbatim 本地点
+        _cascade_single_verbatim(user_id, bank_id, memory_id, _content_for_verbatim,
+                                 res, _layer_failed)
+        _cascade_single_workspace(user_id, bank_id, memory_id, res, _layer_failed)
+        _cascade_single_local_vector(memory_id, res)
+        _cascade_single_verbatim_local(user_id, bank_id, _content_for_verbatim, res)
 
-        # 6. 📼 原文保真层清理（🔴P0-4 v19.4.1）：删除权必须兑现到逐字原文。
-        #    以 content_hash 精确匹配（延续 v19.2.0 精确匹配铁律，杜绝 LIKE 误伤）。
-        try:
-            if _content_for_verbatim:
-                from ducky.verbatim_vault import delete_verbatim_by_content
-                res["verbatim"] = delete_verbatim_by_content(
-                    user_id, _content_for_verbatim, bank_id=bank_id
-                )
-            else:
-                logger.debug("原文层清理跳过：未能定位该记忆正文 (%s)", memory_id)
-        except Exception as ve:
-            logger.debug("原文层清理跳过: %s", ve)
-            _layer_failed("verbatim", ve)
-
-        # 7. Workspace 单条驱逐（v20.1 整改轮 R-01 · 外审 z P1-01）。
-        #    只清全域不清单条的话，/delete 之后同一条还能从缓存里搜出来。
-        try:
-            from ducky.memory_workspace import ws_evict
-            res["workspace_evicted"] = bool(ws_evict(user_id, memory_id, bank_id=bank_id))
-        except Exception as we:
-            logger.warning("workspace 单条驱逐失败: %s", we)
-            _layer_failed("workspace", we)
-
-        # 8. 本地向量单删（v20.2 自动挡 WP-F）。双索引同源 id ——
-        #    云侧删了本地不删，降挡时已删内容会从备胎索引复活。
-        try:
-            from ducky.dual_index import delete_local
-            res["local_vector_deleted"] = delete_local([memory_id]) > 0
-        except Exception as e:
-            logger.debug("本地向量单删跳过: %s", e)
-
-        # 8b. verbatim 本地点（v20.2.1 外审 R3）：这类点的 id 由 (原文, 域)
-        #     派生、不与 memory_id 同源，§8 的钥匙够不着 —— 搭车 §0a 抓到
-        #     的正文重演派生（dual_index.verbatim_local_pid 同一公式），
-        #     精确删除。覆盖精度与 §6 原文层同级：正文与写入原文逐字一致
-        #     才命中（保真写入/确定性通路全中）；蒸馏改写场景两条腿同受限，
-        #     属 P0-4 已审计语义，delete_all 的按域谓词删仍是全量兜底。
-        try:
-            if _content_for_verbatim:
-                from ducky.dual_index import delete_local as _dl, verbatim_local_pid
-                _vpid = verbatim_local_pid(user_id, bank_id, _content_for_verbatim)
-                res["verbatim_local_vector_deleted"] = _dl([_vpid]) > 0
-        except Exception as e:
-            logger.debug("verbatim 本地点单删跳过: %s", e)
-
-        # ── 三态判决（v20.2.5-b：与 cascade_delete_all 同一套判据） ──
-        #
-        # 这一行原先是 `return {"status": "ok", ...}` —— 任何层失败都被抹平成
-        # ok，且 WAL 无条件标 committed。外审 F-02 修的是全量删除那条链路，
-        # 单条删除（**调用方最常走的那条**）原样留着。
-        _names = {f["layer"] for f in _failed_layers}
-        if not _failed_layers:
-            outcome = "committed"
-            wal.mark_status(wal_id, "committed")
-        elif _names & _CRITICAL_LAYERS:
-            outcome = "failed"
-            wal.mark_status(wal_id, "failed",
-                            error="; ".join(sorted(_names)) or "unknown")
-        else:
-            # **刻意不 mark**：留在 pending，让重放还有机会（与全量删除一致）。
-            outcome = "partial"
-
-        # 「一层都没命中」要说出来 —— 这正是 D1 藏身的地方。
-        #
-        # 判据用**真的删掉了几个**，不用「SQL 跑过了」：`res["fts"]` 是布尔
-        # 「执行过」，拿它判命中会把「跑了但 0 行」算成命中，等于把守卫做成
-        # 白护栏。所以只看计数字段与向量布尔。
-        _removed = (
-            bool(res.get("mem0_vector"))
-            or int(res.get("fts_rows") or 0) > 0
-            or int(res.get("facts") or 0) > 0
-            or int(res.get("salience") or 0) > 0
-            or int(res.get("evolve") or 0) > 0
-            or int(res.get("verbatim") or 0) > 0
-            or bool(res.get("workspace_evicted"))
-            or bool(res.get("local_vector_deleted"))
-        )
-        res["matched"] = _removed
-        if outcome == "committed" and not _removed:
-            # HTTP 仍走 200：DELETE 按 REST 惯例是幂等的，删一个已经不在的东西
-            # 不该是错误（consolidator 就在批量删「早就不存在的东西」）。
-            # 变的是**状态字段不再说谎** —— 「我一层都没命中」必须是可读出来的
-            # 事实，而不是一句 ok。D1 当初就是被这句 ok 盖住的。
-            outcome = "not_found"
-            logger.info(
-                "删除未命中任何层 user=%s bank=%s id=%s（句柄形态不被识别？）",
-                user_id, bank_id, memory_id,
-            )
-
+        # ── 三态判决 + 命中判定（v20.2.5-b：与 cascade_delete_all 同一套判据）──
+        outcome = _single_delete_verdict(wal, wal_id, res, _failed_layers,
+                                         user_id, bank_id, memory_id)
         return {"status": outcome, "details": res,
                 "failed_layers": _failed_layers,
                 "not_cleared": delete_chain_exemptions()}
@@ -981,13 +696,15 @@ def cascade_delete_all(
         # anything.  Never use a user-only query for this set: the same
         # memory id is valid in two banks.
         _tenant_memory_ids: set[str] = set()
-        _fact_ids: set[str] = set()
-        _fact_keys: set[str] = set()
 
-        # 1. mem0 / Qdrant.  There is no bank-aware delete_all in mem0; the
+        # 1. mem0 / Qdrant。There is no bank-aware delete_all in mem0; the
         # only safe operation is scoped enumeration followed by single-id
         # deletes.  In particular, do not reintroduce ``mem.delete_all`` here
         # as a convenience fallback.
+        # （**获取后端**这道边界例外地留在编排层：守卫
+        # test_delete_chains_skip_mem0_only_for_the_typed_absence 用 AST 钉死
+        # 「get_memory 所在 try + 处理器顺序」必须在本函数体内唯一；
+        # 枚举/删除那半步在 _cascade_all_vectors。）
         # Rev.2：**获取对象**与**执行删除**分成两个 try，且降级只认初始化
         # 边界主动抛出的 Mem0NotConfiguredError。普通 HTTP 503、配置损坏、
         # 凭据/网络/Qdrant/SDK 故障都进入真实失败分支；对象取得后的枚举或
@@ -1008,139 +725,12 @@ def cascade_delete_all(
             res["vector_enumeration_complete"] = False
 
         if mem is not None:
-            try:
-                vector_deleted, vector_ok, vector_ids = _delete_scoped_vectors(mem, scope)
-                _tenant_memory_ids.update(vector_ids)
-                res["mem0_deleted"] = bool(vector_ok)
-                res["mem0_vector_count"] = vector_deleted
-                res["vector_enumeration_complete"] = bool(vector_ok)
-                if not vector_ok:
-                    # 枚举不完整 = 可能有点没删到，同样不许算成功
-                    _layer_failed("mem0_vectors",
-                                  RuntimeError("scoped vector enumeration incomplete"))
-            except Exception as e:
-                logger.warning("mem0 作用域清理失败（未调用无作用域 delete_all）: %s", e)
-                _layer_failed("mem0_vectors", e)
-                res["vector_enumeration_complete"] = False
+            _cascade_all_vectors(mem, scope, res, _layer_failed, _tenant_memory_ids)
 
-        # 2. FTS5.  Both collection and DELETE repeat the full canonical
-        # (user_id, bank_id) predicate.  The collection contains the internal
-        # storage id (named banks are prefixed); vector ids collected above are
-        # additionally retained for the unscoped auxiliary ledgers.
-        try:
-            from ducky.text_fts import get_text_conn
-
-            tconn = get_text_conn()
-            try:
-                rows = tconn.execute(
-                    "SELECT id FROM memories WHERE user_id=? AND bank_id=?",
-                    (scope.user_id, scope.bank_id),
-                ).fetchall()
-                _tenant_memory_ids.update(str(r[0]) for r in rows if r[0])
-                c_fts = tconn.execute(
-                    "DELETE FROM memories WHERE user_id=? AND bank_id=?",
-                    (scope.user_id, scope.bank_id),
-                ).rowcount or 0
-                tconn.commit()
-                res["fts_cleared"] = c_fts
-            finally:
-                tconn.close()
-        except Exception as e:
-            logger.warning("FTS 作用域清理失败: %s", e)
-            _layer_failed("fts", e)
-
-        # 3. facts.db.  The default bank uses the additive-transition
-        # predicate: a row with canonical user_id=default may still be an old
-        # row whose source/agent marker identifies a named tenant.  That
-        # fallback is constrained to rows with no real canonical owner and
-        # never applies to a named bank.  Crucially, source/agent_id are not
-        # used as a free-standing OR against already-owned rows.
-        try:
-            fconn = get_facts_conn()
-            try:
-                from ducky.bank_contract import ensure_memory_banks_schema
-                ensure_memory_banks_schema(fconn)
-                fact_scope_sql, fact_scope_params = legacy_fact_scope_predicate(scope)
-                fact_rows = fconn.execute(
-                    "SELECT id, fact_key FROM facts WHERE 1=1" + fact_scope_sql,
-                    fact_scope_params,
-                ).fetchall()
-                for row in fact_rows:
-                    if row[0] is not None:
-                        _fact_ids.add(str(row[0]))
-                    if row[1]:
-                        _fact_keys.add(str(row[1]))
-
-                # Build memory_types references from the exact fact ids.  A
-                # fact id is globally unique; fact_key is not, so key-only
-                # references are handled with the canonical scope below.
-                fact_ref_values: set[str] = set()
-                for fid in _fact_ids:
-                    fact_ref_values.update({fid, f"fact:{fid}", f"raw:{fid}"})
-
-                if fact_ref_values:
-                    try:
-                        from ducky.memory_types import ensure_memory_types_schema
-                        ensure_memory_types_schema()
-                        ref_ph = ",".join("?" for _ in fact_ref_values)
-                        # A legacy named tenant in the default bank has its
-                        # type row in the compatibility default scope.  It is
-                        # safe to include that scope here because the
-                        # reference is a globally unique fact id.
-                        allowed = (
-                            "((user_id=? AND bank_id=?) OR "
-                            "(user_id=? AND bank_id=?))"
-                        )
-                        type_params = [
-                            *fact_ref_values,
-                            scope.user_id, scope.bank_id,
-                            DEFAULT_USER_ID, DEFAULT_BANK_ID,
-                        ]
-                        fconn.execute(
-                            "DELETE FROM memory_types WHERE "
-                            f"(memory_ref IN ({ref_ph}) OR memory_ref_raw IN ({ref_ph}) "
-                            f"OR (ref_alt IS NOT NULL AND ref_alt IN ({ref_ph}))) "
-                            "AND " + allowed,
-                            type_params,
-                        )
-                    except Exception as type_exc:
-                        logger.debug("memory_types facts refs 清理跳过: %s", type_exc)
-
-                c_facts = fconn.execute(
-                    "DELETE FROM facts WHERE 1=1" + fact_scope_sql,
-                    fact_scope_params,
-                ).rowcount or 0
-                fconn.commit()
-                res["facts_deleted"] = c_facts
-            finally:
-                fconn.close()
-        except Exception as e:
-            logger.warning("facts 作用域清理失败: %s", e)
-            _layer_failed("facts", e)
-
-        # 3b. memory_types 也可以由 infer=False 直接写入，未必有对应 facts
-        # 行（生产冒烟实测：/add 成功、向量已删，类型账本却留下孤儿行）。
-        # 不能只靠上面的 fact_ref_values 清理；按同一份可见租户契约精确删除，
-        # 默认身份改名时允许 legacy placeholder，但绝不碰具名租户。
-        try:
-            from ducky.bank_contract import visible_user_clause
-            from ducky.memory_types import ensure_memory_types_schema
-
-            ensure_memory_types_schema()
-            tconn = get_facts_conn()
-            try:
-                owner_sql, owner_params = visible_user_clause(scope.user_id)
-                cur = tconn.execute(
-                    "DELETE FROM memory_types WHERE " + owner_sql + " AND bank_id=?",
-                    (*owner_params, scope.bank_id),
-                )
-                tconn.commit()
-                res["memory_types_deleted"] = int(cur.rowcount or 0)
-            finally:
-                tconn.close()
-        except Exception as type_scope_exc:
-            logger.warning("memory_types 作用域清理失败: %s", type_scope_exc)
-            _layer_failed("memory_types", type_scope_exc)
+        # 2. FTS5 / 3. facts.db / 3b. memory_types（各层的「为什么」随实现搬走）
+        _cascade_all_fts(scope, res, _layer_failed, _tenant_memory_ids)
+        _fact_ids = _cascade_all_facts(scope, res, _layer_failed)
+        _cascade_all_memory_types(scope, res, _layer_failed)
 
         # Fact keys are useful to old auxiliary records, but are not allowed
         # to widen a delete.  Only pass exact ids and scoped FTS/vector ids to
@@ -1149,204 +739,31 @@ def cascade_delete_all(
         _tenant_memory_ids.update(_fact_ids)
         _tenant_memory_ids.update(f"fact:{fid}" for fid in _fact_ids)
 
-        # 4. salience.db（v19.4.1 修复：同上，表名与列名双错，从未执行）
-        #    salience 表无 user_id 列，故按「本租户已删除的 memory_id 集合」清理。
-        try:
-            from ducky.salience import delete_salience
-            res["salience_deleted"] = delete_salience(_tenant_memory_ids)
-        except Exception as e:
-            logger.warning("salience delete_all 失败: %s", e)
-            _layer_failed("salience", e)
+        # 4. salience.db / 5. evolve_mem.db：按「本租户已删除的 memory_id 集合」
+        _cascade_all_salience(_tenant_memory_ids, res, _layer_failed)
+        _cascade_all_evolve(_tenant_memory_ids, res, _layer_failed)
 
-        # 5. evolve_mem.db（v19.4.1 修复：同上，此前从未真正执行）
-        #    evolve 各表没有 user_id 列 —— 它记录的是检索质量信号而非租户数据。
-        #    因此按「本租户已删除的 memory_id 集合」来清，而不是按 user_id 过滤。
-        #    memory_id 集合取自本次清空前的 FTS 索引（已按租户收窄）。
-        try:
-            from ducky.evolve_mem import delete_evolve_by_memory_ids
-            res["evolve_deleted"] = delete_evolve_by_memory_ids(_tenant_memory_ids)
-        except Exception as e:
-            logger.warning("evolve delete_all 失败: %s", e)
-            _layer_failed("evolve", e)
+        # 6. Verbatim Vault / 7. Workspace / 8. CoreMemory 正本
+        _cascade_all_verbatim(user_id, bank_id, res, _layer_failed)
+        _cascade_all_workspace(scope, res, _layer_failed)
+        _cascade_all_core_memory(scope, res, _layer_failed)
 
-        # 6. Verbatim Vault 原文保真层（v19.4.0 明镜工程 Phase 1）
-        try:
-            from ducky.verbatim_vault import cascade_delete_verbatim
-            res["verbatim_deleted"] = cascade_delete_verbatim(user_id, bank_id=bank_id)
-        except Exception as e:
-            logger.debug("verbatim delete_all 跳过: %s", e)
-            _layer_failed("verbatim", e)
+        # 9. refined_memories / 10. 墓碑 / 11. 治理候选队列
+        _cascade_all_refined(scope, res, _layer_failed)
+        _cascade_all_tombstones(scope, res, _layer_failed)
+        _cascade_all_candidates(scope, res, _layer_failed)
 
-        # 7. Workspace 工作区缓存（v20.1 整改轮 R-01 · 外审 z P1-01）。
-        #    工作区存记忆正文副本且被 /search **优先**命中 —— 不清它，
-        #    已删内容会带着 found/workspace_hit 判语复活，重启后照样在
-        #    （SQLite 落盘 + 启动重载）。内存与库由 ws_clear 一并清。
-        try:
-            from ducky.memory_workspace import ws_clear
-            res["workspace_cleared"] = int(ws_clear(scope.user_id, bank_id=scope.bank_id) or 0)
-        except Exception as e:
-            logger.warning("workspace delete_all 清理失败: %s", e)
-            _layer_failed("workspace", e)
+        # 12. 观察库 / 13. 场景库
+        _cascade_all_observations(scope, res, _layer_failed)
+        _cascade_all_scenes(scope, res, _layer_failed)
 
-        # 8. CoreMemory 正本（v20.1 整改轮 R-01 · 外审 w P0 / 自报 4.1）。
-        #    此前三副本里只有索引（FTS/向量）在删除链射程内，正本表残留，
-        #    inject_context 从正本直读 ——「清空全部记忆」后画像仍持续进
-        #    每一次对话上下文。谓词用与 memory_types §3b 相同的可见租户
-        #    契约：改名默认身份连它搁浅在 'default' 上的存量行一并清掉，
-        #    否则读侧放宽会让残留行继续被注入（w 的注入复活链①）。
-        try:
-            from ducky.bank_contract import visible_user_clause as _vuc
-            cconn = get_facts_conn()
-            try:
-                owner_sql, owner_params = _vuc(scope.user_id)
-                cur = cconn.execute(
-                    "DELETE FROM core_memory WHERE " + owner_sql + " AND bank_id=?",
-                    (*owner_params, scope.bank_id),
-                )
-                cconn.commit()
-                res["core_memory_deleted"] = int(cur.rowcount or 0)
-            finally:
-                cconn.close()
-        except Exception as e:
-            logger.warning("core_memory delete_all 清理失败: %s", e)
-            _layer_failed("core_memory", e)
-
-        # 9. refined_memories 整合账本（v20.1 整改轮 R-01 · 外审 w P0）。
-        #    表无 bank 列（v20 登记限制 9c），按 user 轴清理：清任一 bank
-        #    会清掉该租户全部整合账本 —— 宁可域内多删不留隐私残留，
-        #    该取舍已写入 DELETE_CHAIN_MATRIX 与文档。facts 表里的
-        #    refined:N 摘要行由 §3 的 facts 作用域删除覆盖。
-        try:
-            from ducky.bank_contract import visible_user_clause as _vuc
-            rconn = get_facts_conn()
-            try:
-                owner_sql, owner_params = _vuc(scope.user_id)
-                cur = rconn.execute(
-                    "DELETE FROM refined_memories WHERE " + owner_sql,
-                    owner_params,
-                )
-                rconn.commit()
-                res["refined_deleted"] = int(cur.rowcount or 0)
-            finally:
-                rconn.close()
-        except Exception as e:
-            logger.warning("refined_memories delete_all 清理失败: %s", e)
-            _layer_failed("refined_memories", e)
-
-        # 10. 墓碑（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。墓碑行带
-        #     content_snapshot **全文快照** —— 不清它，被删内容以「可恢复
-        #     备份」的名义永久留存，擦除承诺落空。代价说在明面上：全量
-        #     清空后该域不可再 tombstone/restore，这正是「清空一切」的语义。
-        try:
-            tbconn = get_facts_conn()
-            try:
-                cur = tbconn.execute(
-                    "DELETE FROM tombstones WHERE user_id=? AND bank_id=?",
-                    (scope.user_id, scope.bank_id),
-                )
-                tbconn.commit()
-                res["tombstones_deleted"] = int(cur.rowcount or 0)
-            finally:
-                tbconn.close()
-        except Exception as e:
-            logger.warning("tombstones delete_all 清理失败: %s", e)
-            _layer_failed("tombstones", e)
-
-        # 11. 治理候选队列（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。候选行含
-        #     被拒/待审的**全文**，按 v20 治理域戳精确清理。
-        try:
-            gconn = get_facts_conn()
-            try:
-                cur = gconn.execute(
-                    "DELETE FROM candidate_facts WHERE scope_user_id=? AND bank_id=?",
-                    (scope.user_id, scope.bank_id),
-                )
-                gconn.commit()
-                res["governance_candidates_deleted"] = int(cur.rowcount or 0)
-            finally:
-                gconn.close()
-        except Exception as e:
-            logger.warning("candidate_facts delete_all 清理失败: %s", e)
-            _layer_failed("candidate_facts", e)
-
-        # 12. 观察库（v20.1.1 R-18 · 两轮外审共同挂账）。聚合观察含租户
-        #     内容全文。表只有 user 轴（无 bank 列——老账本），user 轴就是
-        #     它拥有的全部作用域表达力；v7 存量空 user_id 行不属于任何
-        #     租户，不动。表未建过 = 该库从未启用，跳过不告警。
-        try:
-            oconn = get_facts_conn()
-            try:
-                if oconn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='observations'"
-                ).fetchone():
-                    ocols = {r[1] for r in oconn.execute("PRAGMA table_info(observations)")}
-                    if "user_id" in ocols:
-                        cur = oconn.execute(
-                            "DELETE FROM observations WHERE user_id=?", (scope.user_id,))
-                        oconn.commit()
-                        res["observations_deleted"] = int(cur.rowcount or 0)
-            finally:
-                oconn.close()
-        except Exception as e:
-            logger.warning("observations delete_all 清理失败: %s", e)
-            _layer_failed("observations", e)
-
-        # 13. 场景库（v20.1.1 R-18）。v20 起自带全轴列，谓词直删。
-        try:
-            sconn = get_facts_conn()
-            try:
-                if sconn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scenes'"
-                ).fetchone():
-                    cur = sconn.execute(
-                        "DELETE FROM scenes WHERE user_id=? AND bank_id=?",
-                        (scope.user_id, scope.bank_id))
-                    sconn.commit()
-                    res["scenes_deleted"] = int(cur.rowcount or 0)
-            finally:
-                sconn.close()
-        except Exception as e:
-            logger.warning("scenes delete_all 清理失败: %s", e)
-            _layer_failed("scenes", e)
-
-        # 14. 本地向量库（v20.2 自动挡 WP-F）。lite 挡语料与蒸馏本地副本
-        #     都住这里，域谓词删除——已删内容绝不许从备胎索引复活。
-        try:
-            from ducky.dual_index import delete_local_by_scope
-            res["local_vectors_deleted"] = delete_local_by_scope(
-                scope.user_id, bank_id=scope.bank_id)
-        except Exception as e:
-            logger.warning("本地向量 delete_all 清理失败: %s", e)
-            _layer_failed("local_vectors", e)
-
-        # 15. 欠账账本（v20.2 自动挡 WP-F）。lite 挡期间的原始请求载荷
-        #     在这里排队等重放——不清它，已删租户的原文会在升挡重放时
-        #     以「补蒸馏」的名义复活（与 w 的回填复活链同形）。
-        try:
-            from ducky.dual_index import delete_pending_by_scope
-            res["pending_embeddings_deleted"] = delete_pending_by_scope(
-                scope.user_id, bank_id=scope.bank_id)
-        except Exception as e:
-            logger.warning("欠账账本 delete_all 清理失败: %s", e)
-            _layer_failed("pending_embeddings", e)
+        # 14. 本地向量库 / 15. 欠账账本
+        _cascade_all_local_vectors(scope, res, _layer_failed)
+        _cascade_all_pending(scope, res, _layer_failed)
 
         # 核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。
         # 辅助层残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
-        _CRITICAL = {"mem0_vectors", "fts", "facts", "verbatim",
-                     "local_vectors", "core_memory"}
-        _names = {f["layer"] for f in _failed_layers}
-        if not _failed_layers:
-            outcome = "committed"
-            wal.mark_status(wal_id, "committed")
-        elif _names & _CRITICAL:
-            outcome = "failed"
-            wal.mark_status(wal_id, "failed",
-                            error="critical layers failed: " + ",".join(sorted(_names & _CRITICAL)))
-        else:
-            outcome = "partial"
-            # **刻意不 mark**：留在 pending 让重放还有机会。删除幂等，重放安全。
-            logger.warning("删除链部分失败，WAL 保持 pending 待重放: %s", sorted(_names))
-        logger.info("🧹 多仓级联清空 user=%s outcome=%s: %s", user_id, outcome, res)
+        outcome = _cascade_all_verdict(wal, wal_id, res, _failed_layers, user_id)
         # v20.2.4（外审 F-23）：**如实告知没清什么**。
         #
         # DELETE_CHAIN_MATRIX 里的 exempt 项各有各的理由（审计履历不许销毁、
@@ -1364,6 +781,869 @@ def cascade_delete_all(
         wal.mark_status(wal_id, "failed", error=str(exc))
         logger.error("级联清空全部记忆失败: %s", exc)
         raise
+
+
+# ── 级联删除的分层实现（v20.4.1a · 外审整改 B2）────────────────────
+#
+# cascade_delete_memory / cascade_delete_all 曾是圈复杂度 66/53（radon F 级）
+# 的巨函数：一个函数里叠着 8~15 层的 try、判据与返回拼装，改一层要读懂全部。
+# 这里只做**换骨架**：每层一个独立函数（下划线私有），编排函数只负责顺序、
+# 作用域收口与出口；判据、响应字段、日志文案、SQL、异常类型逐行未动。
+# 唯一的编排层例外是 mem0 **获取**边界 —— 守卫
+# test_delete_chains_skip_mem0_only_for_the_typed_absence 用 AST 把它钉在
+# 编排函数体内，下沉即红。
+
+
+def _cascade_single_verbatim_handle(
+    memory_id: str,
+    user_id: str,
+    bank_id: str,
+    res: Dict[str, Any],
+    wal: "WALEngine",
+    wal_id: str,
+    layer_failed: Any,
+    failed_layers: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """``verbatim:<n>`` 句柄的早退分支：只清原文层并留墓碑，然后直接返回。"""
+    try:
+        from ducky.tombstone import snapshot_before_delete
+        res["tombstone_id"] = snapshot_before_delete(
+            memory_id,
+            user_id=user_id,
+            bank_id=bank_id,
+            reason="cascade_delete_verbatim",
+            actor="wal_engine",
+        )
+    except Exception as te:
+        logger.debug("tombstone 快照跳过: %s", te)
+    try:
+        from ducky.verbatim_vault import delete_verbatim_by_id
+        res["verbatim"] = delete_verbatim_by_id(user_id, memory_id, bank_id=bank_id)
+    except Exception as ve:
+        logger.warning("原文层按 id 删除失败: %s", ve)
+        layer_failed("verbatim", ve)
+    # v20.2.5-b：这条早退分支同样不许硬写 ok —— 两个出口一个改一个不改，
+    # 就是本版反复记过的「链路的另一端断掉」。
+    res["matched"] = int(res.get("verbatim") or 0) > 0
+    if failed_layers:
+        _outcome = ("failed" if {f["layer"] for f in failed_layers}
+                    & _CRITICAL_LAYERS else "partial")
+        if _outcome == "failed":
+            wal.mark_status(wal_id, "failed", error="verbatim")
+    else:
+        _outcome = "committed" if res["matched"] else "not_found"
+        wal.mark_status(wal_id, "committed")
+    logger.info("🧹 原文条目删除完成 %s: %s", memory_id, res)
+    return {"status": _outcome, "details": res,
+            "failed_layers": failed_layers,
+            "not_cleared": delete_chain_exemptions()}
+
+
+def _snapshot_before_cascade_delete(
+    memory_id: str, user_id: str, bank_id: str, res: Dict[str, Any]
+) -> None:
+    """tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
+    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。"""
+    try:
+        from ducky.tombstone import snapshot_before_delete
+        res["tombstone_id"] = snapshot_before_delete(
+            memory_id,
+            user_id=user_id,
+            bank_id=bank_id,
+            reason="cascade_delete",
+            actor="wal_engine",
+        )
+    except Exception as te:
+        logger.debug("tombstone 快照跳过: %s", te)
+
+
+def _cascade_single_vector(
+    mem: Any,
+    scope: Any,
+    memory_id: str,
+    raw_hash: str,
+    res: Dict[str, Any],
+    layer_failed: Any,
+) -> None:
+    """§1 mem0 向量单删：先同域枚举确认归属，再执行单条删除。
+
+    mem0.delete(memory_id) 本身没有 user/bank 参数，直接调用会让拿到另一域
+    id 的请求越过 v20 作用域。因此先在同一作用域枚举并确认 id，再执行单条
+    删除；枚举失败时宁可留向量孤儿，绝不把一个未验证的 id 交给全局删除原语。
+    """
+    try:
+        _items, enumeration_ok = _scoped_vector_items(mem, scope)
+        scoped_ids = [
+            _vector_item_id(it) for it in _items
+            if isinstance(it, dict) and vector_item_in_bank(it, scope.bank_id)
+        ]
+        scoped_ids = [i for i in scoped_ids if i]
+        if enumeration_ok and str(memory_id) in scoped_ids:
+            mem.delete(memory_id)
+            res["mem0_vector"] = True
+        elif enumeration_ok and raw_hash:
+            _cascade_single_vector_by_raw_hash(mem, _items, scope, memory_id,
+                                               raw_hash, res)
+        elif enumeration_ok:
+            logger.info(
+                "向量 id 不属于请求作用域，跳过删除 user=%s bank=%s id=%s",
+                scope.user_id, scope.bank_id, memory_id,
+            )
+        else:
+            logger.warning(
+                "向量归属无法确认，跳过删除 user=%s bank=%s id=%s",
+                scope.user_id, scope.bank_id, memory_id,
+            )
+            # 枚举失败不是「没有这条」——它是「问不出来」。留孤儿可重试，
+            # 报成功不可挽回，所以这里必须进失败账本（F-02 原病）。
+            layer_failed("mem0_vector", RuntimeError(
+                "向量作用域枚举失败，归属无法确认，未执行删除"))
+    except Exception as e:
+        # 拿到后端之后的失败：一律算关键层失败，不做任何降级（F-02 纪律）。
+        logger.warning("mem0.delete 失败: %s", e)
+        layer_failed("mem0_vector", e)
+
+
+def _cascade_single_vector_by_raw_hash(
+    mem: Any,
+    items: list,
+    scope: Any,
+    memory_id: str,
+    raw_hash: str,
+    res: Dict[str, Any],
+) -> None:
+    """``raw-…`` 句柄在同域枚举结果内按 content_hash 反查删除（§1 的 D1 分支）。
+
+    🔴v20.2.5-b（实机冒烟 D1）：`raw-…` 句柄在 mem0 里**不是 id** ——
+    `/add/raw` 走 `mem.add(infer=False)`，mem0 自己铸 UUID，两者唯一的连接
+    是 metadata.content_hash。此前只比 id，于是这一层永远命不中，而删除照旧
+    回 ok、原文继续可召回。反查仍在**同一作用域的枚举结果内**做，一个未验证
+    的 id 都不会交给全局 delete 原语 —— 这条纪律不因为多了一种句柄而放宽。
+    """
+    _hits = _vector_ids_by_content_hash(items, scope.bank_id, raw_hash)
+    for _vid in _hits:
+        mem.delete(_vid)
+    res["mem0_vector"] = bool(_hits)
+    res["raw_handle_resolved_ids"] = _hits
+    if not _hits:
+        logger.info(
+            "raw 句柄在本域向量里没有对应点 user=%s bank=%s handle=%s",
+            scope.user_id, scope.bank_id, memory_id,
+        )
+
+
+def _cascade_single_fts(
+    scope: Any, memory_id: str, res: Dict[str, Any], layer_failed: Any
+) -> None:
+    """§2 FTS5 索引剔除（带 user_id 作用域）。"""
+    try:
+        from ducky.text_fts import get_text_conn
+        tconn = get_text_conn()
+        storage_id = scoped_storage_key(memory_id, scope)
+        _fc = tconn.execute(
+            "DELETE FROM memories WHERE id IN (?, ?) AND user_id=? AND bank_id=?",
+            (storage_id, f"fact:{storage_id}", scope.user_id, scope.bank_id),
+        ).rowcount
+        tconn.commit()
+        tconn.close()
+        res["fts"] = True
+        # v20.2.5-b：`fts` 一直是「这条 SQL 跑过了」的布尔，不是「删掉了几行」。
+        # 判「什么都没命中」需要真行数，所以另起一个字段而不改它的类型
+        # （已发布字段被测试和调用方钉着）。
+        res["fts_rows"] = _fc if _fc and _fc > 0 else 0
+    except Exception as e:
+        logger.warning("FTS unindex 失败: %s", e)
+        layer_failed("fts", e)
+
+
+def _cascade_single_facts(
+    scope: Any,
+    memory_id: str,
+    raw_hash: str,
+    res: Dict[str, Any],
+    layer_failed: Any,
+) -> None:
+    """§3 facts.db 清理（🔴P0-1 严格归属校验 + 🔴P0-2 精确匹配，彻底消除 LIKE 误删）。"""
+    user_id = scope.user_id
+    bank_id = scope.bank_id
+    try:
+        conn = get_facts_conn()
+        # v20.2.5-b：第四个键是 `raw:<content_hash>` —— `/add/raw` 落的就是
+        # 这个形状（raw_drawer.py 里 `fact_key = f"raw:{content_hash}"`），
+        # 而前三个键拿的是完整句柄，于是拼出 `raw:raw-<hash>-<rand>`，
+        # 与库里的键永远差一截。实机冒烟里 `"facts": 0` 就是它。
+        exact_keys = (memory_id, f"fact:{memory_id}", f"raw:{memory_id}")
+        _raw_fact_key = f"raw:{raw_hash}" if raw_hash else None
+        # 本地自算 storage_id，**不与 FTS 层共用变量**：那一个定义在 FTS 的
+        # try 内部，一旦 get_text_conn() 抛错就根本没被赋值，这里再引用
+        # 就是 NameError —— 而它会被本块的 except 吞掉，表现为
+        # 「facts 清理整段被跳过」，且日志只有一行 debug。
+        storage_id = scoped_storage_key(memory_id, scope)
+        # 🔴v20：作用域必须进入删除条件本身。
+        #
+        # 旧写法分两支，两支都漏了 bank_id，且 default 支**一个作用域
+        # 条件都没有**：
+        #
+        #     if user_id == "default":
+        #         DELETE FROM facts WHERE id=? OR fact_key=? ...   # 全库
+        #     else:
+        #         ... AND (source=? OR agent_id=?)                 # 无 bank
+        #
+        # 后果分两级。默认用户删 id=X，会把**所有租户、所有域**里叫 X
+        # 的行一起删掉；具名租户删 X，会把自己 work 域和 home 域的 X
+        # 一起删掉 —— 域隔离恰恰是 v20 的立身之本，却在唯一不可逆的
+        # 那条路径上失效。而 `res["facts"] = c1` 只回报一个 rowcount，
+        # 多删了照样是个好看的数字，不抛错、不告警：静默数据丢失。
+        #
+        # 删除路径的取舍与读取相反：少删可以重试，多删无法挽回。
+        # 因此这里一律走**严格作用域**，渠道标记只对「确实没有正规主人」
+        # 的老行在默认域内回落，且回落绝不越过已有归属。
+        # 🔴v20.0：作用域谓词只许有一处实现。
+        #
+        # 这里曾把 legacy_fact_scope_predicate 的 SQL 连注释一起**手抄
+        # 一遍**，于是同一份契约有了两个副本。本文件顶部明明已经 import 了
+        # 那个函数、cascade_delete_all 也在调它，唯独这条单条删除路径走的
+        # 是复制品。后果是可以预料的：占位符口径在共享函数里放宽之后，
+        # 手抄件没跟上，单条删除继续对存量行失明 —— 删除返回 ok、
+        # rowcount=0，又是一次静默失败。
+        #
+        # 契约抄两遍，就一定会改一遍漏一遍。改成调用，副本消失。
+        scope_sql, own_params = legacy_fact_scope_predicate(scope)
+        c1 = conn.execute(
+            f"""DELETE FROM facts
+               WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=? OR
+                      (? IS NOT NULL AND fact_key=?))
+                 AND (1=1{scope_sql})""",
+            (memory_id, exact_keys[0], exact_keys[1], exact_keys[2],
+             _raw_fact_key, _raw_fact_key, *own_params),
+        ).rowcount
+        try:
+            # memory_types.memory_ref 存的是**带作用域的**键（见
+            # memory_types._storage_ref），memory_ref_raw 才是对外裸 id。
+            # 旧写法拿裸 id 去比 memory_ref，在具名域里永远比不中 ——
+            # 类型行会变成删不掉的孤儿；而它又没有作用域条件，
+            # 在默认域里反而跨租户误删。两头都错，方向还相反。
+            conn.execute(
+                "DELETE FROM memory_types "
+                "WHERE (memory_ref IN (?, ?) OR memory_ref_raw IN (?, ?) "
+                "OR (ref_alt IS NOT NULL AND ref_alt IN (?, ?))) "
+                "AND user_id=? AND bank_id=?",
+                (
+                    storage_id, f"fact:{storage_id}",
+                    memory_id, f"fact:{memory_id}",
+                    storage_id, memory_id,
+                    user_id, bank_id,
+                ),
+            )
+        except Exception as e:
+            logger.debug(f"cascade_delete_memory: suppressed exception: {e}")
+        # 📒 事件账本（v19.4.0 Mímir 借鉴 B5）：与删除同事务留痕，同生共死
+        try:
+            from ducky.event_ledger import record_event
+            record_event(conn, actor=user_id or "system", action="delete",
+                         target_id=memory_id, reason="cascade_delete_memory",
+                         user_id=user_id, bank_id=bank_id)
+        except Exception as le:
+            logger.debug("ledger 记录跳过: %s", le)
+        conn.commit()
+        conn.close()
+        res["facts"] = c1
+    except Exception as e:
+        logger.warning("facts.db 清理失败: %s", e)
+        layer_failed("facts", e)
+
+
+def _cascade_single_salience(
+    memory_id: str, res: Dict[str, Any], layer_failed: Any
+) -> None:
+    """§4 salience.db 清理（v19.4.1 修复：此前同样从未真正执行）。"""
+    # 原实现 `DELETE FROM memory_salience WHERE memory_id=? AND user_id=?`
+    # 有两个错误：真实表名是 `salience`（不是 memory_salience），且该表
+    # **没有 user_id 列**（显著性是记忆级信号，不按租户分区）。两个错误都被
+    # except 吞成 debug，res["salience"] 恒为 0。
+    #
+    # 实测后果远不止「留了脏数据」：生产 salience 1099 条里有 252 条是向量库
+    # 中早已不存在的幽灵 id。幽灵被 decay_all 当正常记忆持续衰减，最终进入
+    # evicted 列表，consolidator 再逐个调 /delete 去删「早就不存在的东西」
+    # —— 日志报「删除成功 25/25」，实际全是空转。
+    try:
+        from ducky.salience import delete_salience
+        res["salience"] = delete_salience([memory_id])
+    except Exception as e:
+        logger.warning("salience.db 清理失败: %s", e)
+        layer_failed("salience", e)
+
+
+def _cascade_single_evolve(
+    memory_id: str, res: Dict[str, Any], layer_failed: Any
+) -> None:
+    """§5 evolve_mem.db 清理（v19.4.1 修复：此前这一步从未真正执行过）。"""
+    # 原实现 `from ducky.evolve_mem import get_evolve_conn` +
+    # `DELETE FROM evolve_snapshots` 有两个错误：该模块只有私有的
+    # `_get_evolve_conn`，且**不存在** evolve_snapshots 表
+    # （真实表是 evolve_queries / evolve_feedback / evolve_adjustments）。
+    # 两个错误都被 except 吞成 debug 日志，res["evolve"] 一直如实报 0，
+    # 于是删掉的记忆在检索自进化库里留下永久的反馈与调权孤儿。
+    try:
+        from ducky.evolve_mem import delete_evolve_by_memory_ids
+        res["evolve"] = delete_evolve_by_memory_ids([memory_id])
+    except Exception as e:
+        logger.warning("evolve_mem.db 清理失败: %s", e)
+        layer_failed("evolve", e)
+
+
+def _cascade_single_verbatim(
+    user_id: str,
+    bank_id: str,
+    memory_id: str,
+    content: str,
+    res: Dict[str, Any],
+    layer_failed: Any,
+) -> None:
+    """§6 📼 原文保真层清理（🔴P0-4 v19.4.1）：删除权必须兑现到逐字原文。
+
+    以 content_hash 精确匹配（延续 v19.2.0 精确匹配铁律，杜绝 LIKE 误伤）。
+    """
+    try:
+        if content:
+            from ducky.verbatim_vault import delete_verbatim_by_content
+            res["verbatim"] = delete_verbatim_by_content(
+                user_id, content, bank_id=bank_id
+            )
+        else:
+            logger.debug("原文层清理跳过：未能定位该记忆正文 (%s)", memory_id)
+    except Exception as ve:
+        logger.debug("原文层清理跳过: %s", ve)
+        layer_failed("verbatim", ve)
+
+
+def _cascade_single_workspace(
+    user_id: str,
+    bank_id: str,
+    memory_id: str,
+    res: Dict[str, Any],
+    layer_failed: Any,
+) -> None:
+    """§7 Workspace 单条驱逐（v20.1 整改轮 R-01 · 外审 z P1-01）。
+
+    只清全域不清单条的话，/delete 之后同一条还能从缓存里搜出来。
+    """
+    try:
+        from ducky.memory_workspace import ws_evict
+        res["workspace_evicted"] = bool(ws_evict(user_id, memory_id, bank_id=bank_id))
+    except Exception as we:
+        logger.warning("workspace 单条驱逐失败: %s", we)
+        layer_failed("workspace", we)
+
+
+def _cascade_single_local_vector(memory_id: str, res: Dict[str, Any]) -> None:
+    """§8 本地向量单删（v20.2 自动挡 WP-F）。双索引同源 id ——
+    云侧删了本地不删，降挡时已删内容会从备胎索引复活。
+
+    本层失败**不进**失败账本（原实现即如此）：本地索引是备胎，
+    delete_all 的 §14 按域谓词删仍是全量兜底。
+    """
+    try:
+        from ducky.dual_index import delete_local
+        res["local_vector_deleted"] = delete_local([memory_id]) > 0
+    except Exception as e:
+        logger.debug("本地向量单删跳过: %s", e)
+
+
+def _cascade_single_verbatim_local(
+    user_id: str, bank_id: str, content: str, res: Dict[str, Any]
+) -> None:
+    """§8b verbatim 本地点（v20.2.1 外审 R3）：这类点的 id 由 (原文, 域)
+    派生、不与 memory_id 同源，§8 的钥匙够不着 —— 搭车 §0a 抓到的正文
+    重演派生（dual_index.verbatim_local_pid 同一公式），精确删除。"""
+    # 覆盖精度与 §6 原文层同级：正文与写入原文逐字一致才命中（保真写入/
+    # 确定性通路全中）；蒸馏改写场景两条腿同受限，属 P0-4 已审计语义，
+    # delete_all 的按域谓词删仍是全量兜底。
+    try:
+        if content:
+            from ducky.dual_index import delete_local as _dl, verbatim_local_pid
+            _vpid = verbatim_local_pid(user_id, bank_id, content)
+            res["verbatim_local_vector_deleted"] = _dl([_vpid]) > 0
+    except Exception as e:
+        logger.debug("verbatim 本地点单删跳过: %s", e)
+
+
+def _single_delete_matched(res: Dict[str, Any]) -> bool:
+    """「一层都没命中」判定 —— 这正是 D1 藏身的地方。
+
+    判据用**真的删掉了几个**，不用「SQL 跑过了」：`res["fts"]` 是布尔
+    「执行过」，拿它判命中会把「跑了但 0 行」算成命中，等于把守卫做成
+    白护栏。所以只看计数字段与向量布尔。
+    """
+    return (
+        bool(res.get("mem0_vector"))
+        or int(res.get("fts_rows") or 0) > 0
+        or int(res.get("facts") or 0) > 0
+        or int(res.get("salience") or 0) > 0
+        or int(res.get("evolve") or 0) > 0
+        or int(res.get("verbatim") or 0) > 0
+        or bool(res.get("workspace_evicted"))
+        or bool(res.get("local_vector_deleted"))
+    )
+
+
+def _single_delete_verdict(
+    wal: "WALEngine",
+    wal_id: str,
+    res: Dict[str, Any],
+    failed_layers: List[Dict[str, Any]],
+    user_id: str,
+    bank_id: str,
+    memory_id: str,
+) -> str:
+    """单条删除的三态判决（v20.2.5-b：与 cascade_delete_all 同一套判据）。
+
+    这里原先是 `return {"status": "ok", ...}` —— 任何层失败都被抹平成
+    ok，且 WAL 无条件标 committed。外审 F-02 修的是全量删除那条链路，
+    单条删除（**调用方最常走的那条**）原样留着。
+    """
+    _names = {f["layer"] for f in failed_layers}
+    if not failed_layers:
+        outcome = "committed"
+        wal.mark_status(wal_id, "committed")
+    elif _names & _CRITICAL_LAYERS:
+        outcome = "failed"
+        wal.mark_status(wal_id, "failed",
+                        error="; ".join(sorted(_names)) or "unknown")
+    else:
+        # **刻意不 mark**：留在 pending，让重放还有机会（与全量删除一致）。
+        outcome = "partial"
+
+    res["matched"] = _single_delete_matched(res)
+    if outcome == "committed" and not res["matched"]:
+        # HTTP 仍走 200：DELETE 按 REST 惯例是幂等的，删一个已经不在的东西
+        # 不该是错误（consolidator 就在批量删「早就不存在的东西」）。
+        # 变的是**状态字段不再说谎** —— 「我一层都没命中」必须是可读出来的
+        # 事实，而不是一句 ok。D1 当初就是被这句 ok 盖住的。
+        outcome = "not_found"
+        logger.info(
+            "删除未命中任何层 user=%s bank=%s id=%s（句柄形态不被识别？）",
+            user_id, bank_id, memory_id,
+        )
+    return outcome
+
+
+# ── 全量删除（cascade_delete_all）的分层实现 ─────────────────────────
+
+
+def _cascade_all_vectors(
+    mem: Any,
+    scope: Any,
+    res: Dict[str, Any],
+    layer_failed: Any,
+    tenant_ids: set,
+) -> None:
+    """§1 mem0 / Qdrant 作用域清空：枚举 + 逐条删，结果并入租户 id 集合。
+
+    mem0 没有 bank 感知的 delete_all；作用域枚举后逐条删是唯一安全操作。
+    特别地，绝不许把 ``mem.delete_all`` 当便捷兜底重新引进来（v20 修掉的
+    跨域批删路径，tests 里有焊死它的替身）。
+    """
+    try:
+        vector_deleted, vector_ok, vector_ids = _delete_scoped_vectors(mem, scope)
+        tenant_ids.update(vector_ids)
+        res["mem0_deleted"] = bool(vector_ok)
+        res["mem0_vector_count"] = vector_deleted
+        res["vector_enumeration_complete"] = bool(vector_ok)
+        if not vector_ok:
+            # 枚举不完整 = 可能有点没删到，同样不许算成功
+            layer_failed("mem0_vectors",
+                         RuntimeError("scoped vector enumeration incomplete"))
+    except Exception as e:
+        logger.warning("mem0 作用域清理失败（未调用无作用域 delete_all）: %s", e)
+        layer_failed("mem0_vectors", e)
+        res["vector_enumeration_complete"] = False
+
+
+def _cascade_all_fts(
+    scope: Any, res: Dict[str, Any], layer_failed: Any, tenant_ids: set
+) -> None:
+    """§2 FTS5.  Both collection and DELETE repeat the full canonical
+    (user_id, bank_id) predicate.  The collection contains the internal
+    storage id (named banks are prefixed); vector ids collected above are
+    additionally retained for the unscoped auxiliary ledgers."""
+    try:
+        from ducky.text_fts import get_text_conn
+
+        tconn = get_text_conn()
+        try:
+            rows = tconn.execute(
+                "SELECT id FROM memories WHERE user_id=? AND bank_id=?",
+                (scope.user_id, scope.bank_id),
+            ).fetchall()
+            tenant_ids.update(str(r[0]) for r in rows if r[0])
+            c_fts = tconn.execute(
+                "DELETE FROM memories WHERE user_id=? AND bank_id=?",
+                (scope.user_id, scope.bank_id),
+            ).rowcount or 0
+            tconn.commit()
+            res["fts_cleared"] = c_fts
+        finally:
+            tconn.close()
+    except Exception as e:
+        logger.warning("FTS 作用域清理失败: %s", e)
+        layer_failed("fts", e)
+
+
+def _cascade_all_facts(scope: Any, res: Dict[str, Any], layer_failed: Any) -> set:
+    """§3 facts.db 作用域清空；返回本域 facts 的精确 id 集合（供无租户列的
+    辅助账本按 id 清理）。
+
+    The default bank uses the additive-transition predicate: a row with
+    canonical user_id=default may still be an old row whose source/agent
+    marker identifies a named tenant.  That fallback is constrained to rows
+    with no real canonical owner and never applies to a named bank.
+    Crucially, source/agent_id are not used as a free-standing OR against
+    already-owned rows.
+    """
+    fact_ids: set = set()
+    # Fact keys are retained for diagnostics and future scoped migrations —
+    # they are not ownership proof and must never widen a delete.
+    fact_keys: set = set()
+    try:
+        fconn = get_facts_conn()
+        try:
+            from ducky.bank_contract import ensure_memory_banks_schema
+            ensure_memory_banks_schema(fconn)
+            fact_scope_sql, fact_scope_params = legacy_fact_scope_predicate(scope)
+            fact_rows = fconn.execute(
+                "SELECT id, fact_key FROM facts WHERE 1=1" + fact_scope_sql,
+                fact_scope_params,
+            ).fetchall()
+            for row in fact_rows:
+                if row[0] is not None:
+                    fact_ids.add(str(row[0]))
+                if row[1]:
+                    fact_keys.add(str(row[1]))
+
+            # Build memory_types references from the exact fact ids.  A
+            # fact id is globally unique; fact_key is not, so key-only
+            # references are handled with the canonical scope below.
+            fact_ref_values: set[str] = set()
+            for fid in fact_ids:
+                fact_ref_values.update({fid, f"fact:{fid}", f"raw:{fid}"})
+
+            if fact_ref_values:
+                try:
+                    from ducky.memory_types import ensure_memory_types_schema
+                    ensure_memory_types_schema()
+                    ref_ph = ",".join("?" for _ in fact_ref_values)
+                    # A legacy named tenant in the default bank has its
+                    # type row in the compatibility default scope.  It is
+                    # safe to include that scope here because the
+                    # reference is a globally unique fact id.
+                    allowed = (
+                        "((user_id=? AND bank_id=?) OR "
+                        "(user_id=? AND bank_id=?))"
+                    )
+                    type_params = [
+                        *fact_ref_values,
+                        scope.user_id, scope.bank_id,
+                        DEFAULT_USER_ID, DEFAULT_BANK_ID,
+                    ]
+                    fconn.execute(
+                        "DELETE FROM memory_types WHERE "
+                        f"(memory_ref IN ({ref_ph}) OR memory_ref_raw IN ({ref_ph}) "
+                        f"OR (ref_alt IS NOT NULL AND ref_alt IN ({ref_ph}))) "
+                        "AND " + allowed,
+                        type_params,
+                    )
+                except Exception as type_exc:
+                    logger.debug("memory_types facts refs 清理跳过: %s", type_exc)
+
+            c_facts = fconn.execute(
+                "DELETE FROM facts WHERE 1=1" + fact_scope_sql,
+                fact_scope_params,
+            ).rowcount or 0
+            fconn.commit()
+            res["facts_deleted"] = c_facts
+        finally:
+            fconn.close()
+    except Exception as e:
+        logger.warning("facts 作用域清理失败: %s", e)
+        layer_failed("facts", e)
+    return fact_ids
+
+
+def _cascade_all_memory_types(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§3b memory_types 作用域清理。
+
+    memory_types 也可以由 infer=False 直接写入，未必有对应 facts 行（生产
+    冒烟实测：/add 成功、向量已删，类型账本却留下孤儿行）。不能只靠 §3 的
+    fact_ref_values 清理；按同一份可见租户契约精确删除，默认身份改名时允许
+    legacy placeholder，但绝不碰具名租户。
+    """
+    try:
+        from ducky.bank_contract import visible_user_clause
+        from ducky.memory_types import ensure_memory_types_schema
+
+        ensure_memory_types_schema()
+        tconn = get_facts_conn()
+        try:
+            owner_sql, owner_params = visible_user_clause(scope.user_id)
+            cur = tconn.execute(
+                "DELETE FROM memory_types WHERE " + owner_sql + " AND bank_id=?",
+                (*owner_params, scope.bank_id),
+            )
+            tconn.commit()
+            res["memory_types_deleted"] = int(cur.rowcount or 0)
+        finally:
+            tconn.close()
+    except Exception as type_scope_exc:
+        logger.warning("memory_types 作用域清理失败: %s", type_scope_exc)
+        layer_failed("memory_types", type_scope_exc)
+
+
+def _cascade_all_salience(tenant_ids: set, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§4 salience.db（v19.4.1 修复：表名与列名双错，从未执行）。
+    salience 表无 user_id 列，故按「本租户已删除的 memory_id 集合」清理。"""
+    try:
+        from ducky.salience import delete_salience
+        res["salience_deleted"] = delete_salience(tenant_ids)
+    except Exception as e:
+        logger.warning("salience delete_all 失败: %s", e)
+        layer_failed("salience", e)
+
+
+def _cascade_all_evolve(tenant_ids: set, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§5 evolve_mem.db（v19.4.1 修复：此前从未真正执行）。
+
+    evolve 各表没有 user_id 列 —— 它记录的是检索质量信号而非租户数据。
+    因此按「本租户已删除的 memory_id 集合」来清，而不是按 user_id 过滤。
+    memory_id 集合取自本次清空前的 FTS 索引（已按租户收窄）。
+    """
+    try:
+        from ducky.evolve_mem import delete_evolve_by_memory_ids
+        res["evolve_deleted"] = delete_evolve_by_memory_ids(tenant_ids)
+    except Exception as e:
+        logger.warning("evolve delete_all 失败: %s", e)
+        layer_failed("evolve", e)
+
+
+def _cascade_all_verbatim(
+    user_id: str, bank_id: str, res: Dict[str, Any], layer_failed: Any
+) -> None:
+    """§6 Verbatim Vault 原文保真层（v19.4.0 明镜工程 Phase 1）。"""
+    try:
+        from ducky.verbatim_vault import cascade_delete_verbatim
+        res["verbatim_deleted"] = cascade_delete_verbatim(user_id, bank_id=bank_id)
+    except Exception as e:
+        logger.debug("verbatim delete_all 跳过: %s", e)
+        layer_failed("verbatim", e)
+
+
+def _cascade_all_workspace(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§7 Workspace 工作区缓存（v20.1 整改轮 R-01 · 外审 z P1-01）。
+
+    工作区存记忆正文副本且被 /search **优先**命中 —— 不清它，已删内容会
+    带着 found/workspace_hit 判语复活，重启后照样在（SQLite 落盘 + 启动
+    重载）。内存与库由 ws_clear 一并清。
+    """
+    try:
+        from ducky.memory_workspace import ws_clear
+        res["workspace_cleared"] = int(ws_clear(scope.user_id, bank_id=scope.bank_id) or 0)
+    except Exception as e:
+        logger.warning("workspace delete_all 清理失败: %s", e)
+        layer_failed("workspace", e)
+
+
+def _cascade_all_core_memory(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§8 CoreMemory 正本（v20.1 整改轮 R-01 · 外审 w P0 / 自报 4.1）。
+
+    此前三副本里只有索引（FTS/向量）在删除链射程内，正本表残留，
+    inject_context 从正本直读 ——「清空全部记忆」后画像仍持续进每一次
+    对话上下文。谓词用与 memory_types §3b 相同的可见租户契约：改名默认
+    身份连它搁浅在 'default' 上的存量行一并清掉，否则读侧放宽会让残留
+    行继续被注入（w 的注入复活链①）。
+    """
+    try:
+        from ducky.bank_contract import visible_user_clause as _vuc
+        cconn = get_facts_conn()
+        try:
+            owner_sql, owner_params = _vuc(scope.user_id)
+            cur = cconn.execute(
+                "DELETE FROM core_memory WHERE " + owner_sql + " AND bank_id=?",
+                (*owner_params, scope.bank_id),
+            )
+            cconn.commit()
+            res["core_memory_deleted"] = int(cur.rowcount or 0)
+        finally:
+            cconn.close()
+    except Exception as e:
+        logger.warning("core_memory delete_all 清理失败: %s", e)
+        layer_failed("core_memory", e)
+
+
+def _cascade_all_refined(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§9 refined_memories 整合账本（v20.1 整改轮 R-01 · 外审 w P0）。
+
+    表无 bank 列（v20 登记限制 9c），按 user 轴清理：清任一 bank 会清掉
+    该租户全部整合账本 —— 宁可域内多删不留隐私残留，该取舍已写入
+    DELETE_CHAIN_MATRIX 与文档。facts 表里的 refined:N 摘要行由 §3 的
+    facts 作用域删除覆盖。
+    """
+    try:
+        from ducky.bank_contract import visible_user_clause as _vuc
+        rconn = get_facts_conn()
+        try:
+            owner_sql, owner_params = _vuc(scope.user_id)
+            cur = rconn.execute(
+                "DELETE FROM refined_memories WHERE " + owner_sql,
+                owner_params,
+            )
+            rconn.commit()
+            res["refined_deleted"] = int(cur.rowcount or 0)
+        finally:
+            rconn.close()
+    except Exception as e:
+        logger.warning("refined_memories delete_all 清理失败: %s", e)
+        layer_failed("refined_memories", e)
+
+
+def _cascade_all_tombstones(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§10 墓碑（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。墓碑行带
+    content_snapshot **全文快照** —— 不清它，被删内容以「可恢复备份」的
+    名义永久留存，擦除承诺落空。代价说在明面上：全量清空后该域不可再
+    tombstone/restore，这正是「清空一切」的语义。"""
+    try:
+        tbconn = get_facts_conn()
+        try:
+            cur = tbconn.execute(
+                "DELETE FROM tombstones WHERE user_id=? AND bank_id=?",
+                (scope.user_id, scope.bank_id),
+            )
+            tbconn.commit()
+            res["tombstones_deleted"] = int(cur.rowcount or 0)
+        finally:
+            tbconn.close()
+    except Exception as e:
+        logger.warning("tombstones delete_all 清理失败: %s", e)
+        layer_failed("tombstones", e)
+
+
+def _cascade_all_candidates(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§11 治理候选队列（v20.1 整改轮 R-01 · 覆盖矩阵裁决）。候选行含
+    被拒/待审的**全文**，按 v20 治理域戳精确清理。"""
+    try:
+        gconn = get_facts_conn()
+        try:
+            cur = gconn.execute(
+                "DELETE FROM candidate_facts WHERE scope_user_id=? AND bank_id=?",
+                (scope.user_id, scope.bank_id),
+            )
+            gconn.commit()
+            res["governance_candidates_deleted"] = int(cur.rowcount or 0)
+        finally:
+            gconn.close()
+    except Exception as e:
+        logger.warning("candidate_facts delete_all 清理失败: %s", e)
+        layer_failed("candidate_facts", e)
+
+
+def _cascade_all_observations(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§12 观察库（v20.1.1 R-18 · 两轮外审共同挂账）。聚合观察含租户内容
+    全文。表只有 user 轴（无 bank 列——老账本），user 轴就是它拥有的全部
+    作用域表达力；v7 存量空 user_id 行不属于任何租户，不动。表未建过 =
+    该库从未启用，跳过不告警。"""
+    try:
+        oconn = get_facts_conn()
+        try:
+            if oconn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='observations'"
+            ).fetchone():
+                ocols = {r[1] for r in oconn.execute("PRAGMA table_info(observations)")}
+                if "user_id" in ocols:
+                    cur = oconn.execute(
+                        "DELETE FROM observations WHERE user_id=?", (scope.user_id,))
+                    oconn.commit()
+                    res["observations_deleted"] = int(cur.rowcount or 0)
+        finally:
+            oconn.close()
+    except Exception as e:
+        logger.warning("observations delete_all 清理失败: %s", e)
+        layer_failed("observations", e)
+
+
+def _cascade_all_scenes(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§13 场景库（v20.1.1 R-18）。v20 起自带全轴列，谓词直删。"""
+    try:
+        sconn = get_facts_conn()
+        try:
+            if sconn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scenes'"
+            ).fetchone():
+                cur = sconn.execute(
+                    "DELETE FROM scenes WHERE user_id=? AND bank_id=?",
+                    (scope.user_id, scope.bank_id))
+                sconn.commit()
+                res["scenes_deleted"] = int(cur.rowcount or 0)
+        finally:
+            sconn.close()
+    except Exception as e:
+        logger.warning("scenes delete_all 清理失败: %s", e)
+        layer_failed("scenes", e)
+
+
+def _cascade_all_local_vectors(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§14 本地向量库（v20.2 自动挡 WP-F）。lite 挡语料与蒸馏本地副本都住
+    这里，域谓词删除——已删内容绝不许从备胎索引复活。"""
+    try:
+        from ducky.dual_index import delete_local_by_scope
+        res["local_vectors_deleted"] = delete_local_by_scope(
+            scope.user_id, bank_id=scope.bank_id)
+    except Exception as e:
+        logger.warning("本地向量 delete_all 清理失败: %s", e)
+        layer_failed("local_vectors", e)
+
+
+def _cascade_all_pending(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§15 欠账账本（v20.2 自动挡 WP-F）。lite 挡期间的原始请求载荷在这里
+    排队等重放——不清它，已删租户的原文会在升挡重放时以「补蒸馏」的名义
+    复活（与 w 的回填复活链同形）。"""
+    try:
+        from ducky.dual_index import delete_pending_by_scope
+        res["pending_embeddings_deleted"] = delete_pending_by_scope(
+            scope.user_id, bank_id=scope.bank_id)
+    except Exception as e:
+        logger.warning("欠账账本 delete_all 清理失败: %s", e)
+        layer_failed("pending_embeddings", e)
+
+
+def _cascade_all_verdict(
+    wal: "WALEngine",
+    wal_id: str,
+    res: Dict[str, Any],
+    failed_layers: list,
+    user_id: str,
+) -> str:
+    """全量删除的三态判决（v20.2.5 · 外审 F-02）。
+
+    核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。辅助层
+    残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
+    注意本集合**刻意窄于**模块级 _CRITICAL_LAYERS（后者兼容单条删除的
+    单数拼写）；这里只列全量链真实会登记的层名。
+    """
+    _CRITICAL = {"mem0_vectors", "fts", "facts", "verbatim",
+                 "local_vectors", "core_memory"}
+    _names = {f["layer"] for f in failed_layers}
+    if not failed_layers:
+        outcome = "committed"
+        wal.mark_status(wal_id, "committed")
+    elif _names & _CRITICAL:
+        outcome = "failed"
+        wal.mark_status(wal_id, "failed",
+                        error="critical layers failed: " + ",".join(sorted(_names & _CRITICAL)))
+    else:
+        outcome = "partial"
+        # **刻意不 mark**：留在 pending 让重放还有机会。删除幂等，重放安全。
+        logger.warning("删除链部分失败，WAL 保持 pending 待重放: %s", sorted(_names))
+    logger.info("🧹 多仓级联清空 user=%s outcome=%s: %s", user_id, outcome, res)
+    return outcome
 
 
 def reconcile_startup() -> Dict[str, Any]:

@@ -58,9 +58,7 @@ from ducky.wal_engine import (
     cascade_delete_all,
 )
 from ducky.memory_types import (
-    classify_and_record,
     get_batch_memory_types,
-    get_memory_type,
     ensure_memory_types_schema,
 )
 from ducky.scoring import (

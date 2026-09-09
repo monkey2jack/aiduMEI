@@ -523,7 +523,6 @@ class TestNonFiniteEnvValues:
     def test_real_scoring_params_are_finite_under_attack(self):
         """端到端：打分参数是本雷下游杀伤最大的地方（融合分整体 NaN →
         排序彻底失效而全系统报健康）。子进程验，因为常量在 import 期求值。"""
-        import math
         for env, attr, default in (
             ("AIDUMEM_RERANK_WEIGHT", "RERANK_WEIGHT", 0.4),
             ("AIDUMEM_RECENCY_LAMBDA", "RECENCY_LAMBDA", 0.05),

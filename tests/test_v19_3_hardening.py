@@ -14,15 +14,12 @@
 import concurrent.futures
 import pytest
 import os
-import time
 
 from ducky.version import SERVICE_VERSION, CODENAME
 from ducky.engine import _parse_time_boundary, get_recall_engine
 from ducky.hot.search import _filter_results_by_time
-from ducky.scoring import normalize_score, score_and_rank_candidates, compute_time_decay, SIGMOIDAL_TEMPERATURE
-from ducky.security.injection_guard import validate_and_sanitize_memory_content
-from ducky.hot.legacy import _extract_entities, _get_facts_conn
-from ducky.hot.legacy_helpers import _get_obs_conn
+from ducky.scoring import normalize_score
+from ducky.hot.legacy import _extract_entities
 from ducky.hot.legacy_routes import register_legacy_routes
 from ducky.mem0_runtime import lazy_import_funnel, lazy_import_hybrid, lazy_import_layer1
 

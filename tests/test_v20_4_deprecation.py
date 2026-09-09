@@ -26,7 +26,6 @@ import ast
 import pathlib
 import re
 
-import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _LEDGER = _REPO_ROOT / "docs" / "DEPRECATION.md"

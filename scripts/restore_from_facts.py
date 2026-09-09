@@ -1,6 +1,6 @@
 """从facts.db恢复所有活跃记忆到Qdrant（on_disk模式）"""
 import os
-import sys, json, requests, time
+import sys, json, requests
 
 
 _REPO = os.environ.get("AIDUMEM_HOME") or os.path.dirname(

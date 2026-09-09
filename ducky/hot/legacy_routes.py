@@ -1,23 +1,14 @@
 """ducky.hot.legacy_routes — SQLite Legacy 路由注册"""
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
-import sqlite3
-import time
 import datetime as _dt
-from typing import Optional
 from collections import defaultdict
-from fastapi import FastAPI, HTTPException, Form, Query
+from fastapi import Form
 
 from ducky.utils import (
     DEFAULT_USER_ID,
-    DATA_DIR,
-    FACTS_DB,
-    OBS_DB,
-    SCENES_DB,
 )
 from ducky.api_models import ID_FIELD_MAX_CHARS
 from ducky.bank_contract import BankScopeError, DEFAULT_BANK_ID, normalize_bank_id, normalize_user_id
@@ -26,13 +17,9 @@ from ducky.hot.legacy_helpers import (
     _get_facts_conn,
     _get_obs_conn,
     _get_scenes_conn,
-    _extract_entities,
-    _extract_key_facts,
     _auto_extract_and_link,
     _cluster_scenes_impl,
     _extract_validity,
-    TAGS_FILE,
-    SKILL_PATTERNS_FILE,
     _pantheon_tier,
     _PANTHEON_DEFAULT_AGENT,
     _PANTHEON_DEFAULT_PROFILE,
@@ -643,4 +630,4 @@ def register_legacy_routes(app):
             if steps: discovered.append({"key":r["fact_key"],"repeat":r["cnt"],"steps":steps})
         return {"status":"ok (dry-run)" if dry_run else "ok","discovered":len(discovered),"patterns":discovered}
 
-    logger.info(f"✅ 22 legacy 端点已注册到 FastAPI app")
+    logger.info("✅ 22 legacy 端点已注册到 FastAPI app")

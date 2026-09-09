@@ -10,14 +10,11 @@ v8 重构 (2026-07-13):
   - 导出 helper 函数供 api_server §11-§14 引用
 """
 
-import json, logging, os, sqlite3, time, re
+import json, logging, os, sqlite3, re
 from ducky.shutdown import sleep as _shutdown_sleep
-import datetime as _dt
-from typing import Optional
 from datetime import datetime, timezone
-from collections import defaultdict
 
-from fastapi import HTTPException, Form, Query
+from fastapi import HTTPException
 
 from ducky.utils import (
     DEFAULT_USER_ID,
@@ -38,10 +35,10 @@ from ducky.bank_contract import is_legacy_schema_error
 
 # Pantheon v13：旧 /facts/add 端点也走统一分层，享受铁律零衰减。
 # 只读工具函数 + 常量，无循环导入风险（federation.tier/schema 不反向依赖 hot.legacy）。
-from ducky.federation import tier as _pantheon_tier
+from ducky.federation import tier as _pantheon_tier  # noqa: F401 —— 兼容 re-export：legacy_routes 从本模块取
 from ducky.federation.schema import (
-    DEFAULT_AGENT as _PANTHEON_DEFAULT_AGENT,
-    DEFAULT_PROFILE as _PANTHEON_DEFAULT_PROFILE,
+    DEFAULT_AGENT as _PANTHEON_DEFAULT_AGENT,  # noqa: F401 —— 兼容 re-export：legacy_routes 从本模块取
+    DEFAULT_PROFILE as _PANTHEON_DEFAULT_PROFILE,  # noqa: F401 —— 兼容 re-export：legacy_routes 从本模块取
 )
 
 logger = logging.getLogger("aiduMEM.legacy")
@@ -343,12 +340,12 @@ def _save_patterns(patterns: dict):
 #     v15.1: 归一到 ducky.text_fts（D 档真源），此处只做 re-export 兼容。
 # ═══════════════════════════════════════════════
 from ducky.text_fts import (
-    _init_text_fts,
-    _index_memory,
-    _unindex_memory,
-    _bm25_keyword_search,
-    _like_search,
-    _hybrid_search,
+    _init_text_fts,  # noqa: F401 —— 兼容 re-export（旧路径 ducky.hot.legacy_helpers._init_text_fts）
+    _index_memory,  # noqa: F401 —— 兼容 re-export
+    _unindex_memory,  # noqa: F401 —— 兼容 re-export
+    _bm25_keyword_search,  # noqa: F401 —— 兼容 re-export
+    _like_search,  # noqa: F401 —— 兼容 re-export
+    _hybrid_search,  # noqa: F401 —— 兼容 re-export
 )
 from ducky.api_errors import api_error_detail
 

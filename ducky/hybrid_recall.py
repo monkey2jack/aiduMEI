@@ -8,12 +8,9 @@ Aion Memory 设计哲学：
 - 任一信号不可用时自动降级
 """
 
-import time, math, logging
+import logging
 from typing import Optional
 
-from .memory_ignition import ignition_filter
-from .utils import normalize_score, parse_iso_timestamp
-from .scoring import RECENCY_LAMBDA
 
 logger = logging.getLogger("aiduMEM.hybrid")
 

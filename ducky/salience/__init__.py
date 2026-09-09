@@ -49,7 +49,11 @@ __all__ = [
     "ensure_db",
     "SALIENCE_FLOOR",
     "DECAY_HALF_LIFE_DAYS",
+    "DECAY_RATE",
     "LANE_DECAY_MULTIPLIER",
     "DEFAULT_LANE",
+    "ACCESS_BOOST",
+    "IDLE_EVICT_DAYS",
+    "LANE_KEYWORDS",
     "verify_lessons_closed",
 ]

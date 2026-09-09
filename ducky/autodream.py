@@ -7,7 +7,6 @@ import json
 import logging
 import sqlite3
 import threading
-import time
 from ducky.shutdown import sleep as _shutdown_sleep
 import os
 from datetime import datetime, timedelta

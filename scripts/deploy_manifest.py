@@ -106,7 +106,7 @@ def diff(left: dict, right: dict, left_name: str, right_name: str) -> int:
 
     print(f"左 {left_name}: {left['count']} 个文件")
     print(f"右 {right_name}: {right['count']} 个文件")
-    print(f"—— 判据是集合差集，不是计数（铁律 11）——")
+    print("—— 判据是集合差集，不是计数（铁律 11）——")
     print(f"只在左侧 : {len(only_left)}")
     for k in only_left[:40]:
         print(f"    - {k}")

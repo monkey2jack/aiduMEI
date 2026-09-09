@@ -20,7 +20,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 _REPO_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 _TOOL = _REPO_ROOT / "scripts" / "deploy_manifest.py"

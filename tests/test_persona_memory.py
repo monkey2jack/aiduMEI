@@ -12,7 +12,6 @@ tests/test_persona_memory.py — v19.0 人格记忆基座（Persona Memory Layer
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -23,7 +22,6 @@ _tmp_dir = tempfile.mkdtemp(prefix="aidumem_persona_test_")
 
 import pytest  # noqa: E402
 
-import ducky.utils as utils  # noqa: E402
 import ducky.persona_memory as pm  # noqa: E402
 
 # 把 persona 独立库指到临时目录，避免污染真实 data/
