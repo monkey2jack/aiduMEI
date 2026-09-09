@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import time
 
 from ducky.salience.config import SALIENCE_FLOOR

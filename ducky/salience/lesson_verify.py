@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import os
 import time
 from ducky.utils import get_salience_conn

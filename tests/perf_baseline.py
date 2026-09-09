@@ -114,7 +114,7 @@ for q in QUERIES:
         search_results[level] += d.get('count', 0)
 
 print()
-print(f"  Level    P50(ms)   P95(ms)   总命中   平均命中/query")
+print("  Level    P50(ms)   P95(ms)   总命中   平均命中/query")
 for level in ("L0", "L1", "L2"):
     lat = search_latency[level]
     p50 = percentile(lat, 50)
@@ -139,7 +139,7 @@ total_l0 = sum(inject_tokens['L0'])
 total_l1 = sum(inject_tokens['L1'])
 total_l2 = sum(inject_tokens['L2'])
 print()
-print(f"  Level    总 tokens    相对 L2 节省")
+print("  Level    总 tokens    相对 L2 节省")
 print(f"  L0       {total_l0:8}    {(1 - total_l0/max(total_l2,1))*100:5.1f}%")
 print(f"  L1       {total_l1:8}    {(1 - total_l1/max(total_l2,1))*100:5.1f}%")
 print(f"  L2       {total_l2:8}    —  baseline")

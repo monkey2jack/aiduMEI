@@ -813,7 +813,7 @@ def _vector_index_core_block(block_key: str, content: str,
         # 域复筛，reliability 供打分器，memory_class/core_block_key 供溯源。
         payload = {
             "data": content,
-            "hash": hashlib.md5(content.encode("utf-8")).hexdigest(),
+            "hash": hashlib.md5(content.encode("utf-8"), usedforsecurity=False).hexdigest(),
             "created_at": now,
             "updated_at": now,
             "user_id": user_id,

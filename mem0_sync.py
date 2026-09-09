@@ -20,7 +20,6 @@ MEMORY.md 的每一次写入，实时同步到 aiduMEM 向量数据库。
 
 import hashlib, json, os, sys, time, logging, argparse
 from pathlib import Path
-from typing import Optional
 
 # systemd / cron 的 cwd 未必是仓库根，先把仓库根补进 sys.path 再 import ducky
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))

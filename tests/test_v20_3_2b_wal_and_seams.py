@@ -124,7 +124,6 @@ def test_no_mcp_tool_sends_query_params_in_the_body():
     """
     import ast
     import pathlib
-    import re
 
     from fastapi.routing import APIRoute
 
