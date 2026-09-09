@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS entities (
     name        TEXT NOT NULL,
     entity_type TEXT DEFAULT 'unknown',
     aliases     TEXT DEFAULT '',
+    user_id     TEXT NOT NULL DEFAULT 'default',
+    bank_id     TEXT NOT NULL DEFAULT 'default',
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -124,7 +126,7 @@ _INDEXES = (
 _lock = threading.Lock()
 _done = False
 
-CURRENT_SCHEMA_VERSION = 2  # v18.3: 添加 media_url, vision_caption
+CURRENT_SCHEMA_VERSION = 3  # v20.4.0(P1-6): entities 补租户轴 user_id/bank_id；此前 v18.3 media_url/vision_caption
 
 
 def apply_migrations(conn) -> None:
@@ -160,7 +162,24 @@ def apply_migrations(conn) -> None:
             logger.info("数据库秒级增量升级 v2 成功 ✅")
             user_version = 2
 
-        # 未来的版本升级可以直接在下面追加: if user_version < 3: ...
+        # 版本迁移流：Version 2 -> Version 3
+        # v20.4.0（三方审计 P1-6 · Codex P2-05）：entities 补租户轴。
+        # 此前实体按全局 name 去重 —— 不同域的同名页面共享一个节点，
+        # 跨域串味。存量行按 default/default 认领（甲9 口径），写侧
+        # 从本版起分域去重；列表面的租户可见性由 facts join 保证不变。
+        if user_version < 3:
+            logger.info("执行数据库增量升级：v2 -> v3 (entities 补租户轴)")
+            for col in ("user_id", "bank_id"):
+                try:
+                    conn.execute(f"ALTER TABLE entities ADD COLUMN {col} TEXT NOT NULL DEFAULT 'default';")
+                except Exception as e:
+                    logger.debug(f"字段 entities.{col} 已存在或跳过: {e}")
+            conn.execute("PRAGMA user_version = 3")
+            conn.commit()
+            logger.info("数据库秒级增量升级 v3 成功 ✅")
+            user_version = 3
+
+        # 未来的版本升级可以直接在下面追加: if user_version < 4: ...
 
     except Exception as exc:
         logger.error("数据库增量补丁执行异常 (服务继续启动): %s", exc)

@@ -83,17 +83,58 @@ class TestNoInlineStyleInFrontend:
     """P2-11（外审 Qwen #3）：CSP `style-src` 去掉 'unsafe-inline' 的前提 ——
     frontend/*.html 不得再出现 `style=` 内容属性（JS 的 el.style.x CSSOM
     写操作不受 CSP 管辖，不在此列）。新增 inline style 必须先收进
-    frontend/css/，否则本守卫红给你看。"""
+    frontend/css/，否则本守卫红给你看。
+
+    v20.4.0（三方审计 P0-2 · 动态审计 🔴-2）：射程扩到 frontend/**/*.js ——
+    上一轮收紧 CSP 的同一轮，守卫只扫 html 不扫 js，而 panels.js 有 66 处
+    经 innerHTML 注入的内联 style 属性（CSP 对 style 内容属性的管辖不看
+    来源，innerHTML 注入的照样拒），六面板布局塌掉、1788 条绿灯里一条
+    都没红。「守卫射程病」第四次发作，这次把射程钉死在守卫里。"""
+
+    _STYLE_ATTR = None  # 编译一次
+
+    @classmethod
+    def _pattern(cls):
+        import re
+        if cls._STYLE_ATTR is None:
+            # HTML 内容属性形态：style= / style ＝，前面是空白（标签内属性位）。
+            # JS 里的 el.style.x=、.style["x"]= 是 CSSOM 写操作，不匹配此形态。
+            cls._STYLE_ATTR = re.compile(r"\sstyle\s*=")
+        return cls._STYLE_ATTR
+
+    def _scan(self, paths):
+        offenders = []
+        for path in paths:
+            rel = os.path.relpath(path, _ROOT)
+            with open(path, encoding="utf-8") as f:
+                for lineno, line in enumerate(f, 1):
+                    for _m in self._pattern().finditer(line):
+                        offenders.append(f"{rel}:{lineno}: {line.strip()[:80]}")
+        return offenders
 
     def test_html_has_no_style_attributes(self):
         import glob
-        import re
-        offenders = []
-        for path in sorted(glob.glob(os.path.join(_ROOT, "frontend", "*.html"))):
-            with open(path, encoding="utf-8") as f:
-                for lineno, line in enumerate(f, 1):
-                    for m in re.finditer(r"\sstyle\s*=", line):
-                        offenders.append(f"{os.path.basename(path)}:{lineno + 0}: {line.strip()[:80]}")
+        offenders = self._scan(sorted(glob.glob(os.path.join(_ROOT, "frontend", "*.html"))))
         assert not offenders, (
             "frontend 出现 inline style 内容属性（P2-11 已清零，CSP 已不再容纳）：\n  "
+            + "\n  ".join(offenders[:10]))
+
+    def test_js_has_no_style_attributes_in_injected_markup(self):
+        """P0-2：innerHTML/insertAdjacentHTML 模板串里的内联样式属性与 HTML
+        里的同罪 —— style-src 'self'（无 unsafe-inline）一律拒绝渲染。
+
+        豁免且只豁免 vendor/（第三方压缩库，逐文件点名不给目录级永久盲区）：
+        echarts.min.js 的命中是压缩后的 CSSOM 赋值语句形态，不是本仓
+        手写的注入模板，也改不了；它在真实浏览器下的 CSP 行为由
+        实机验收（六面板零 violation）兜底，不归本静态守卫管。"""
+        import glob
+        paths = [p for p in sorted(glob.glob(
+            os.path.join(_ROOT, "frontend", "**", "*.js"), recursive=True))
+            if os.path.basename(p) != "echarts.min.js"]
+        assert any(p.endswith("panels.js") for p in paths), "射程丢了 panels.js"
+        offenders = self._scan(paths)
+        assert not offenders, (
+            f"frontend JS 注入的标记里有 {len(offenders)} 处内联 style 属性 —— "
+            "CSP style-src 'self' 下浏览器直接拒绝，面板布局塌掉（动态审计 🔴-2）。"
+            "动态量走 CSSOM（el.style.x = …），静态样式收进 frontend/css/：\n  "
             + "\n  ".join(offenders[:10]))

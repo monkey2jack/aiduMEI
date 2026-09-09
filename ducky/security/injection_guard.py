@@ -183,6 +183,37 @@ def rejection_stats() -> dict:
     }
 
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_control_chars(text: str) -> str:
+    """控制字符清洗（保留换行、回车、制表符）——单一实现。
+
+    v20.4.0（三方审计 P1-9 · Kimi P2-1）：/add 曾只用本模块的布尔判定、
+    丢弃清洗输出，原文（含 \\x00-\\x1f）原样进 mem0 / FTS5 / 向量库；
+    /add/raw 落库的却是清洗后文本 —— 同一内容走两条门，库里存的不是
+    同一份字节。清洗逻辑收敛到这一个函数，两条写入口共用。
+    """
+    if not isinstance(text, str):
+        return text
+    return _CONTROL_CHARS_RE.sub("", text)
+
+
+def sanitize_messages_struct(messages):
+    """对 /add 的结构化 messages 保结构清洗：str 直洗；dict 洗 content；
+    list 逐项处理。非字符串负载（数值等）原样返回。"""
+    if isinstance(messages, str):
+        return sanitize_control_chars(messages)
+    if isinstance(messages, dict):
+        out = dict(messages)
+        if isinstance(out.get("content"), str):
+            out["content"] = sanitize_control_chars(out["content"])
+        return out
+    if isinstance(messages, list):
+        return [sanitize_messages_struct(m) for m in messages]
+    return messages
+
+
 def validate_and_sanitize_memory_content(content: str) -> Tuple[bool, str, Optional[str]]:
     """验证并清理待入库记忆内容。
 
@@ -200,27 +231,29 @@ def validate_and_sanitize_memory_content(content: str) -> Tuple[bool, str, Optio
         )
         content = content[:MAX_CONTENT_LENGTH]
 
-    # 控制字符清洗（保留换行、回车、制表符）
-    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", content)
+    # 控制字符清洗（保留换行、回车、制表符）—— 与 sanitize_control_chars 同一实现
+    cleaned = sanitize_control_chars(content)
 
     # 注入检测
     is_injected, reason = check_prompt_injection(cleaned)
     if is_injected:
         if GUARD_MODE == "enforce":
             _record_rejection()
+            # v20.4.0（三方审计 P2-6 · Codex P2-04）：正文片段可能含 token/
+            # 密码/隐私 —— 日志只记不可逆指纹 + 长度，正文永不落日志。
             logger.warning(
-                "🛡️ [InjectionGuard] REJECTED prompt injection (len=%d): %s | preview: %s",
+                "🛡️ [InjectionGuard] REJECTED prompt injection (len=%d): %s | sha256_16=%s",
                 len(cleaned),
                 reason,
-                cleaned[:60].replace("\n", " "),
+                __import__("hashlib").sha256(cleaned.encode()).hexdigest()[:16],
             )
             return False, cleaned, f"Prompt injection detected: {reason}"
         else:
             logger.warning(
-                "🛡️ [InjectionGuard] [LOG_ONLY] Detected injection (len=%d): %s | preview: %s",
+                "🛡️ [InjectionGuard] [LOG_ONLY] Detected injection (len=%d): %s | sha256_16=%s",
                 len(cleaned),
                 reason,
-                cleaned[:60].replace("\n", " "),
+                __import__("hashlib").sha256(cleaned.encode()).hexdigest()[:16],
             )
 
     return True, cleaned, None
