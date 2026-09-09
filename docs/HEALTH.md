@@ -13,6 +13,24 @@ The health endpoint is a diagnostic surface, not a guarantee that memory works. 
 
 The mem0 singleton is deliberately **not** a `/readyz` check: it initializes lazily, so a cold-started instance would flap 503 until its first request. Its state is the `mem0_singleton` probe in `/diagnostics`.
 
+## Why `runtime_paths.data_dir_writable` is visible to anonymous callers (v20.4.1b 裁决)
+
+Anonymous `/health` responses redact all probe details (`probes._redacted`) except
+`runtime_paths`. This is deliberate, not an oversight:
+
+- Only **booleans** are exposed — never the path itself. `data_dir_writable: true`
+  tells an attacker nothing they can act on.
+- It is the only self-service signal for the most common first-run failure:
+  "deployed, but data is being written somewhere I didn't intend" (wrong
+  `DATA_DIR`, read-only bind mount). Without it, a new operator has no way to
+  distinguish misconfiguration from a bug before they hold credentials.
+- Everything sensitive (counts, versions of components, degradation detail)
+  requires the token.
+
+If your threat model forbids even this boolean, put the service behind your
+reverse proxy's ACL — but the default loopback-only binding already covers
+the common case.
+
 ## `/health` fields
 
 | Field | Meaning | Healthy value | Failure direction |
