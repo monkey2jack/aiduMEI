@@ -46,11 +46,11 @@ def test_session_unpin_logic():
 
     started = mp.session_start("u-unpin")
     sid = started["session_id"]
-    mp.session_pin(sid, "mem-1")
+    mp.session_pin(sid, "mem-1", user_id="u-unpin")
     # 不存在的 session 应报 error，不 AttributeError
-    assert mp.session_unpin("no-such", "mem-1")["status"] == "error"
+    assert mp.session_unpin("no-such", "mem-1", user_id="u-unpin")["status"] == "error"
     # 存在的 session：unpin 真正移除
-    r = mp.session_unpin(sid, "mem-1")
+    r = mp.session_unpin(sid, "mem-1", user_id="u-unpin")
     assert r["status"] == "ok"
     # 直接查内部状态确认已移除
     assert "mem-1" not in mp._sessions[sid]["pinned_ids"]
@@ -67,7 +67,7 @@ def test_context_used_not_always_true():
     started = mp.session_start("u-ctx")
     sid = started["session_id"]
     # 首次搜索：历史为空，不该因为 query 和自己比中而恒真
-    res = mp.session_search(_FakeMem(), sid, "第一条全新查询", use_context=True)
+    res = mp.session_search(_FakeMem(), sid, "第一条全新查询", use_context=True, user_id="u-ctx")
     assert res["context_used"] is False, "首查历史为空，context_used 不该为真"
 
 

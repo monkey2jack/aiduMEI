@@ -436,14 +436,31 @@ def list_refinements(user_id: str = "default", state: str = "proposed", limit: i
         conn.close()
 
 
-def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") -> dict:
-    """（v20.2.4 · 外审 F-10）**action 请求不许只凭自增 ID 执行**。
+def _half_scope_error(user_id: str, bank_id: str) -> dict | None:
+    """v20.4.0（三方审计 P1-2 · Codex P1-07）：半个作用域不是作用域。
 
-    声明了 scope 就按 (user_id, bank_id) 严格匹配；不声明保持既有管理员语义。
-    半个作用域不是作用域 —— 与治理审批（F-08）同一口径。
+    原实现「只在两轴齐全时才加条件」——只传一轴等于没传，条件静默消失，
+    调用方以为在自己域里操作、实际拿到管理员语义。与 F-08 同口径：
+    要么两轴齐全，要么一轴不传（显式管理员维护语义），一半直接拒绝。
     """
-    """应用一次精炼：把 source_ids 对应的 facts 软归档，并同步剔除 FTS 和 Qdrant 索引。"""
+    if bool(user_id) != bool(bank_id):
+        return {"status": "error",
+                "detail": "scope 必须两轴齐全（user_id + bank_id）或全不传；"
+                          "只传一轴按拒绝处理，不降级成全库操作"}
+    return None
+
+
+def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") -> dict:
+    """应用一次精炼：把 source_ids 对应的 facts 软归档，并同步剔除 FTS 和 Qdrant 索引。
+
+    （v20.2.4 · 外审 F-10）action 请求不许只凭自增 ID 执行：声明了 scope 就按
+    (user_id, bank_id) 严格匹配。v20.4.0（Codex P1-07）起，逐条 facts 操作也
+    携带**账本行自己的** canonical scope —— 即使账本被错误构造，也扩不到别的域。
+    """
     ensure_refine_schema()
+    half = _half_scope_error(user_id, bank_id)
+    if half:
+        return half
     conn = get_facts_conn()
     try:
         row = conn.execute(
@@ -454,8 +471,23 @@ def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") ->
         if not row:
             return {"status": "error", "detail": f"refine_id={refine_id} 不存在或已应用"}
         ids = json.loads(row["source_ids"] or "[]")
+        # canonical scope 从账本行取（不是从请求取）：具名租户精炼出来的
+        # 归档/恢复只许落在它自己的域里。老库没有这两列时退回裸 id（v19 兼容）。
+        _row_scope = dict(row)
+        _owner = str(_row_scope.get("user_id") or DEFAULT_USER_ID)
+        _owner_bank = str(_row_scope.get("bank_id") or DEFAULT_BANK_ID)
+        _fact_cols = table_columns(conn, "facts")
+        _facts_scoped = "user_id" in _fact_cols and "bank_id" in _fact_cols
+        _scope_sql = " AND user_id=? AND bank_id=?" if _facts_scoped else ""
+        _scope_args = [_owner, _owner_bank] if _facts_scoped else []
         for fid in ids:
-            conn.execute("UPDATE facts SET archived=1, archived_at=CURRENT_TIMESTAMP WHERE id=?", (fid,))
+            cur = conn.execute(
+                "UPDATE facts SET archived=1, archived_at=CURRENT_TIMESTAMP WHERE id=?" + _scope_sql,
+                (fid, *_scope_args))
+            if cur.rowcount == 0:
+                logger.warning("refine apply: fact id=%s 不在账本行域 (%s/%s) 内，跳过归档",
+                               fid, _owner, _owner_bank)
+                continue
             # 📒 事件账本（v19.4.0 🟡-D）：精炼归档留痕，同事务
             try:
                 from ducky.event_ledger import record_event
@@ -521,9 +553,12 @@ def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") ->
         conn.commit()
 
         # 索引新的精炼摘要到 FTS
+        # v20.4.0（Codex 六-1）：FTS 侧也带 scope —— facts 行落对了域、
+        # 索引行落在 default 域，关键词召回就只在错误的域里能命中。
         try:
             from ducky.text_fts import _index_memory
-            _index_memory(f"refined:{refine_id}", summary_val, category=cat)
+            _index_memory(f"refined:{refine_id}", summary_val, category=cat,
+                          user_id=owner, bank_id=owner_bank)
         except Exception as fe:
             feature_failed("index_memory", fe)
             logger.debug("FTS index for refined summary skip: %s", fe)
@@ -539,35 +574,63 @@ def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") ->
 
 
 def rollback_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") -> dict:
-    """（v20.2.4 · 外审 F-10）**action 请求不许只凭自增 ID 执行**。
+    """回滚一次精炼：把 archived facts 恢复为有效并重新索引。
 
-    声明了 scope 就按 (user_id, bank_id) 严格匹配；不声明保持既有管理员语义。
-    半个作用域不是作用域 —— 与治理审批（F-08）同一口径。
+    v20.4.0（三方审计 P1-2 · Codex P1-07 实锤）：上一版 docstring 声称
+    「声明了 scope 就严格匹配」，正文查询却一个作用域参数都没用 ——
+    文档与代码撒谎级背离：枚举 refine_id 就能跨 bank 恢复/删除事实。
+    现在：行选择按请求 scope 匹配（F-08 口径），逐条 facts 恢复、摘要
+    删除、FTS 增删全部携带**账本行自己的** canonical scope。
     """
-    """回滚一次精炼：把 archived facts 恢复为有效并重新索引。"""
     ensure_refine_schema()
+    half = _half_scope_error(user_id, bank_id)
+    if half:
+        return half
     conn = get_facts_conn()
     try:
         row = conn.execute(
-            "SELECT * FROM refined_memories WHERE refine_id=? AND state='applied'", (refine_id,)
+            "SELECT * FROM refined_memories WHERE refine_id=? AND state='applied'"
+            + (" AND user_id=? AND bank_id=?" if (user_id and bank_id) else ""),
+            ([refine_id] + ([user_id, bank_id] if (user_id and bank_id) else [])),
         ).fetchone()
         if not row:
             return {"status": "error", "detail": f"refine_id={refine_id} 不存在或未应用"}
         ids = json.loads(row["source_ids"] or "[]")
+        _row_scope = dict(row)
+        _owner = str(_row_scope.get("user_id") or DEFAULT_USER_ID)
+        _owner_bank = str(_row_scope.get("bank_id") or DEFAULT_BANK_ID)
+        _fact_cols = table_columns(conn, "facts")
+        _facts_scoped = "user_id" in _fact_cols and "bank_id" in _fact_cols
+        _scope_sql = " AND user_id=? AND bank_id=?" if _facts_scoped else ""
+        _scope_args = [_owner, _owner_bank] if _facts_scoped else []
+        restored = 0
         for fid in ids:
-            conn.execute("UPDATE facts SET archived=0, archived_at=NULL WHERE id=?", (fid,))
-            # 重新索引回 FTS
-            frow = conn.execute("SELECT id, fact_key, fact_value, category FROM facts WHERE id=?", (fid,)).fetchone()
+            cur = conn.execute(
+                "UPDATE facts SET archived=0, archived_at=NULL WHERE id=?" + _scope_sql,
+                (fid, *_scope_args))
+            if cur.rowcount == 0:
+                logger.warning("refine rollback: fact id=%s 不在账本行域 (%s/%s) 内，跳过恢复",
+                               fid, _owner, _owner_bank)
+                continue
+            restored += 1
+            # 重新索引回 FTS（带域，与 apply 的 unindex 对称）
+            frow = conn.execute(
+                "SELECT id, fact_key, fact_value, category FROM facts WHERE id=?" + _scope_sql,
+                (fid, *_scope_args)).fetchone()
             if frow:
                 try:
                     from ducky.text_fts import _index_memory
-                    _index_memory(f"fact:{fid}", f"{frow['fact_key']}: {frow['fact_value']}", category=frow["category"])
+                    _index_memory(f"fact:{fid}", f"{frow['fact_key']}: {frow['fact_value']}",
+                                  category=frow["category"],
+                                  user_id=_owner, bank_id=_owner_bank)
                 except Exception as fe:
                     feature_failed("index_memory", fe)
                     logger.debug("FTS re-index skip: %s", fe)
 
-        # 移除或软归档对应的 refined 摘要
-        conn.execute("DELETE FROM facts WHERE fact_key=?", (f"refined:{refine_id}",))
+        # 移除对应的 refined 摘要 —— 只删账本行自己域里的那条
+        conn.execute(
+            "DELETE FROM facts WHERE fact_key=?" + _scope_sql,
+            (f"refined:{refine_id}", *_scope_args))
         try:
             from ducky.text_fts import _unindex_memory
             _unindex_memory(f"refined:{refine_id}")
@@ -577,7 +640,7 @@ def rollback_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "")
 
         conn.execute("UPDATE refined_memories SET state='rolled_back' WHERE refine_id=?", (refine_id,))
         conn.commit()
-        return {"status": "ok", "refine_id": refine_id, "restored": len(ids)}
+        return {"status": "ok", "refine_id": refine_id, "restored": restored}
     except Exception as e:
         feature_failed("index_memory", e)
         feature_failed("unindex_memory", e)

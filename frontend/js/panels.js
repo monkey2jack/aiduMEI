@@ -10,6 +10,45 @@
    - SETTINGS:model config read/edit/test + modules + federation + params
    ============================================================================= */
 
+/* ---------------------------------------------------------------------------
+   v20.4.0（三方审计 P0-2 · 动态审计 🔴-2）：CSP `style-src 'self'`（无
+   'unsafe-inline'）下，浏览器对 innerHTML 注入的内联 style **内容属性**一律
+   拒绝渲染 —— 图表刻度、进度条宽度、flex 排布全部失效。静态样式收进
+   frontend/css/style.css 的工具类；动态量（宽度百分比、系列颜色）写成
+   data-w / data-bg / data-bc，由下面的观察器在节点入树时经 CSSOM 设值
+   （el.style.x 是脚本设值，不受 style-src 内容属性限制）。
+   新增动态样式必须走这三个 data 钩子之一，禁止在模板串里写内联样式属性
+   （守卫 test_v20_4_misc_guards 的射程已覆盖 frontend 全部 JS，写了就红；
+   本注释也不许出现那个模式串 —— 守卫是文本扫描，分不清代码和注释）。
+   --------------------------------------------------------------------------- */
+function hydrateDynamicStyles(root) {
+  if (!root) return;
+  var els = [];
+  if (root.matches && root.matches('[data-w],[data-bg],[data-bc]')) els.push(root);
+  if (root.querySelectorAll) {
+    root.querySelectorAll('[data-w],[data-bg],[data-bc]').forEach(function (e) { els.push(e); });
+  }
+  els.forEach(function (el) {
+    if (el.dataset.w !== undefined) el.style.width = el.dataset.w + '%';
+    if (el.dataset.bg !== undefined) el.style.background = el.dataset.bg;
+    if (el.dataset.bc !== undefined) el.style.borderTopColor = el.dataset.bc;
+  });
+}
+(function armDynamicStyleObserver() {
+  if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return;
+  var mo = new MutationObserver(function (muts) {
+    muts.forEach(function (m) {
+      m.addedNodes.forEach(function (n) { if (n.nodeType === 1) hydrateDynamicStyles(n); });
+    });
+  });
+  var arm = function () {
+    mo.observe(document.body, { childList: true, subtree: true });
+    hydrateDynamicStyles(document.body);
+  };
+  if (document.body) arm();
+  else document.addEventListener('DOMContentLoaded', arm);
+})();
+
 const PANELS = {
   pulse:    { cn: '心动', en: 'PULSE',    hex: 'hexPulse',  say: '它现在还好吗',      render: renderPulse },
   vault:    { cn: '忆思', en: 'VAULT',    hex: 'hexVault',  say: '它记住了什么',      render: renderVault },
@@ -168,14 +207,14 @@ function barChart(rows, series) {
 
   // ── 图例 ──
   var leftLegend = barSeries.map(function (s) {
-    return '<span title="' + esc(s.name) + ' (左轴 calls)"><i style="background:' + esc(s.color) + ';width:8px;height:8px;border-radius:2px;display:inline-block"></i> ' + esc(s.name) + '</span>';
+    return '<span title="' + esc(s.name) + ' (左轴 calls)"><i class="lg-swatch" data-bg="' + esc(s.color) + '"></i> ' + esc(s.name) + '</span>';
   }).join('');
   var rightLegend = lineSeries.map(function (s) {
-    return '<span title="' + esc(s.name) + ' (右轴 tokens)"><i style="display:inline-block;width:12px;height:0;border-top:2px dashed ' + esc(s.color) + ';vertical-align:middle"></i> ' + esc(s.name) + '</span>';
+    return '<span title="' + esc(s.name) + ' (右轴 tokens)"><i class="lg-line" data-bc="' + esc(s.color) + '"></i> ' + esc(s.name) + '</span>';
   }).join('');
 
   return '<div class="chart">' +
-    '<div class="chart-hint" style="display:flex;justify-content:space-between;font-size:10px;color:#7c8ba0;margin-bottom:4px">' +
+    '<div class="chart-hint">' +
       '<span>← 左轴：调用次数 calls</span>' +
       '<span>右轴：tokens →</span>' +
     '</div>' +
@@ -183,9 +222,9 @@ function barChart(rows, series) {
     yAxisLeft + yAxisRight +
     bars + lines + dots + labels +
     '</svg>' +
-    '<div class="chart-legend" style="display:flex;flex-wrap:wrap;gap:4px 14px;justify-content:space-between;align-items:center">' +
+    '<div class="chart-legend">' +
       '<span>' + leftLegend + rightLegend + '</span>' +
-      '<span style="font-size:10px;color:#7c8ba0">峰值 peak: ' + fmtCompact(barPeak) + ' calls / ' + fmtCompact(linePeak) + ' tokens</span>' +
+      '<span class="chart-peak">峰值 peak: ' + fmtCompact(barPeak) + ' calls / ' + fmtCompact(linePeak) + ' tokens</span>' +
     '</div></div>';
 }
 
@@ -194,7 +233,7 @@ function layerRow(cn, en, n, peak, tone, note) {
   const pct = peak > 0 ? Math.max(n > 0 ? 0.7 : 0, (n / peak) * 100) : 0;
   return '<div class="layer"' + (tone ? ' data-tone="' + tone + '"' : '') + '>' +
     '<div class="lname">' + esc(cn) + (en ? '<span>' + esc(en) + '</span>' : '') + '</div>' +
-    '<div class="lbar"><div class="lfill" style="width:' + pct.toFixed(2) + '%"></div></div>' +
+    '<div class="lbar"><div class="lfill" data-w="' + pct.toFixed(2) + '"></div></div>' +
     '<div class="lnum">' + fmtInt(n) + (note ? '<small>' + esc(note) + '</small>' : '') + '</div>' +
     '</div>';
 }
@@ -247,7 +286,7 @@ async function renderPulse(body) {
         '<div class="tile"><div class="k">健康 Health</div><div class="v">' +
           (health.health_status === 'ok' ? '正常 OK' : esc(health.health_status || '—')) +
           '</div><div class="u">' + (degraded ? degraded + ' 项降级 / degraded' : '没有降级项 / no degradation') + '</div></div>' +
-        '<div class="tile"><div class="k">版本 Version</div><div class="v" style="font-size:19px">' +
+        '<div class="tile"><div class="k">版本 Version</div><div class="v v-sm">' +
           esc(health.version || '—') + '</div><div class="u">' +
           // v20 起当前运行时不再设神话代号。此处刻意**不**回落成「代号 —」：
           // 那会把「本版没有代号」渲染成「代号取不到」，是两件不同的事。
@@ -273,7 +312,7 @@ async function renderPulse(body) {
     '</div>' +
 
     '<div class="sec">' + secHead('最近 14 天用量', 'USAGE · 14 DAYS', busy + ' 天有活动') +
-      '<div class="tiles" style="margin-bottom:12px">' +
+      '<div class="tiles mb12">' +
         '<div class="tile"><div class="k">今日 LLM</div><div class="v">' + fmtCompact(today.llmTokens) +
           '<small>tokens</small></div><div class="u">' + fmtInt(today.llmCalls) + ' 次调用 / calls</div></div>' +
         '<div class="tile"><div class="k">今日向量化 Embedding</div><div class="v">' + fmtCompact(today.embTokens) +
@@ -425,7 +464,7 @@ async function loadTombstones(sec) {
 
 function tombRow(t) {
   const bits = [];
-  if (t.target_id) bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(t.target_id) + '</span>');
+  if (t.target_id) bits.push('<span class="src hexcn">' + esc(t.target_id) + '</span>');
   if (t.reason) bits.push('理由 ' + esc(t.reason));
   if (t.actor) bits.push('操作者 ' + esc(t.actor));
   if (t.tombstoned_at) bits.push(fmtWhen(t.tombstoned_at));
@@ -433,9 +472,9 @@ function tombRow(t) {
   const acts = restored
     ? '<span class="hint">已恢复 ' + fmtWhen(t.restored_at) + '</span>'
     : '<button class="ract restore" data-tid="' + esc(t.tombstone_id) + '">恢复 Restore</button>';
-  return '<div class="rec" style="' + (restored ? 'opacity:.55' : '') + '"><div class="rtext">' +
+  return '<div class="rec' + (restored ? ' dim55' : '') + '"><div class="rtext">' +
     esc(clip(stripMd(t.content_snapshot || ''), 260)) + '</div>' +
-    '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div>' +
+    '<div class="rmeta">' + bits.join('<span class="dot-sep">·</span>') + '</div>' +
     '<div class="racts">' + acts + '</div></div>';
 }
 
@@ -538,40 +577,40 @@ async function deleteMemory(id, card) {
 function recordRow(r) {
   const bits = [];
   if (r.category) bits.push('<span class="cat">' + esc(r.category) + '</span>');
-  if (r.source) bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(r.source) + '</span>');
+  if (r.source) bits.push('<span class="src hexcn">' + esc(r.source) + '</span>');
   if (r.rerank != null) bits.push('重排 ' + r.rerank.toFixed(3));
   else if (r.score != null) bits.push('相似 ' + r.score.toFixed(3));
   if (r.createdAt) bits.push(fmtWhen(r.createdAt));
   if (r.factId != null) bits.push('#' + r.factId);
-  if (r.mediaUrl) bits.push('<span class="vsn" style="color:var(--hex-cn)">[多模态图]</span>');
+  if (r.mediaUrl) bits.push('<span class="vsn hexcn">[多模态图]</span>');
 
   let imgHtml = '';
   if (r.mediaUrl && (r.mediaUrl.startsWith('http') || r.mediaUrl.startsWith('data:image'))) {
-    imgHtml = '<div style="margin-top:8px"><img src="' + esc(r.mediaUrl) + '" style="max-height:80px; border-radius:4px; border:1px solid rgba(255,255,255,0.1)"></div>';
+    imgHtml = '<div class="rec-img-wrap"><img class="rec-img" src="' + esc(r.mediaUrl) + '"></div>';
   }
 
   return '<div class="rec" data-id="' + esc(r.id || '') + '"><div class="rtext">' +
     esc(clip(stripMd(r.text), 260)) + imgHtml + '</div>' +
-    '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div></div>';
+    '<div class="rmeta">' + bits.join('<span class="dot-sep">·</span>') + '</div></div>';
 }
 
 function factRow(f) {
   const bits = [];
   if (f.category) bits.push('<span class="cat">' + esc(f.category) + '</span>');
-  if (f.source) bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(f.source) + '</span>');
+  if (f.source) bits.push('<span class="src hexcn">' + esc(f.source) + '</span>');
   if (f.trust != null) bits.push('信任 ' + f.trust.toFixed(2));
   if (f.retrieved) bits.push('被想起 ' + f.retrieved + ' 次');
   if (f.helpful || f.unhelpful) bits.push('有用 ' + f.helpful + ' / 没用 ' + f.unhelpful);
   if (f.createdAt) bits.push(fmtWhen(f.createdAt));
-  if (f.mediaUrl) bits.push('<span class="vsn" style="color:var(--hex-cn)">[多模态图]</span>');
+  if (f.mediaUrl) bits.push('<span class="vsn hexcn">[多模态图]</span>');
 
   let imgHtml = '';
   if (f.mediaUrl && (f.mediaUrl.startsWith('http') || f.mediaUrl.startsWith('data:image'))) {
-    imgHtml = '<div style="margin-top:8px"><img src="' + esc(f.mediaUrl) + '" style="max-height:80px; border-radius:4px; border:1px solid rgba(255,255,255,0.1)"></div>';
+    imgHtml = '<div class="rec-img-wrap"><img class="rec-img" src="' + esc(f.mediaUrl) + '"></div>';
   }
 
   return '<div class="rec"><div class="rtext">' + esc(clip(stripMd(f.summary || f.value), 260)) + imgHtml + '</div>' +
-    '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div></div>';
+    '<div class="rmeta">' + bits.join('<span class="dot-sep">·</span>') + '</div></div>';
 }
 
 /* ===========================================================================
@@ -604,7 +643,7 @@ async function renderMap(body) {
   body.innerHTML =
     '<div class="sec">' + secHead('知识域星图', 'STAR MAP', k.domains + ' 个域 / ' + fmtInt(k.totalFacts) + ' 条事实') +
       '<div id="starMapChart" class="starmap-echarts"></div>' +
-      '<div class="hint" style="padding-top:6px">滚轮缩放 / 拖拽节点 / 悬停查看详情<br>' +
+      '<div class="hint pt6">滚轮缩放 / 拖拽节点 / 悬停查看详情<br>' +
         '<span class="en-label">Scroll to zoom · Drag nodes · Hover for details</span></div>' +
     '</div>' +
     '<div class="sec">' + secHead('域详情', 'DOMAIN DETAILS', '') +
@@ -794,10 +833,10 @@ function drawDomainList(container, domains, obsidianPayload) {
   // Obsidian 双链节点一览
   var obsEnts = (obsidianPayload && obsidianPayload.entities) || [];
   if (obsEnts.length) {
-    html += '<div class="sec" style="margin-top:16px">' +
+    html += '<div class="sec mt16">' +
       secHead('Obsidian 双链节点', 'OBSIDIAN NODES', obsEnts.length + ' 个节点') +
       '<div class="chips">' + obsEnts.slice(0, 18).map(function (e) {
-        return '<span class="chip" style="border-color:#5cb85c">' + esc(e.name || e.entity) + '<b>' + fmtInt(e.fact_count || e.count || 0) + '</b></span>';
+        return '<span class="chip chip-obsidian">' + esc(e.name || e.entity) + '<b>' + fmtInt(e.fact_count || e.count || 0) + '</b></span>';
       }).join('') + '</div></div>';
   }
 
@@ -814,7 +853,7 @@ async function renderRecall(body) {
         '<input class="sinput" id="rcQ" type="search" placeholder="比如 / e.g.：用户的生日礼物" autocomplete="off" />' +
         '<button class="sbtn" id="rcGo">追踪 Trace</button>' +
       '</div>' +
-      '<div class="hint" style="padding-top:10px">这一屏是 aiduMEI 最想做好的地方：' +
+      '<div class="hint pt10">这一屏是 aiduMEI 最想做好的地方：' +
         '别家的记忆面板只给你"存了什么"，这里给你"它凭什么想起这条"。<br>' +
         '<span class="en-label">This panel shows WHY each memory was recalled, not just WHAT was stored.</span></div>' +
       '<div id="rcOut"></div>' +
@@ -824,7 +863,7 @@ async function renderRecall(body) {
         '<input class="sinput" id="rcHid" type="search" placeholder="目标 ID / target_id，如 fact:coffee" autocomplete="off" />' +
         '<button class="sbtn" id="rcHgo">查变更史 History</button>' +
       '</div>' +
-      '<div class="hint" style="padding-top:10px">事件溯源账本：任意记忆的 add / update / delete / 遗忘 / 恢复 / 治理裁决全程留痕。' +
+      '<div class="hint pt10">事件溯源账本：任意记忆的 add / update / delete / 遗忘 / 恢复 / 治理裁决全程留痕。' +
         '<span class="en-label">Event-sourced ledger — every mutation traced.</span></div>' +
       '<div id="rcHist"></div>' +
     '</div>';
@@ -905,7 +944,7 @@ function renderTrace(payload) {
 
     return '<div class="fstage">' +
       '<div class="fname">' + esc(meta.cn) + '<span>' + esc(s.name) + '</span></div>' +
-      '<div class="ftrack"><div class="fbar" style="width:' + pct.toFixed(1) + '%"></div></div>' +
+      '<div class="ftrack"><div class="fbar" data-w="' + pct.toFixed(1) + '"></div></div>' +
       '<div class="fnum">' + flow + '<small>' + (s.ms ? s.ms + ' ms' : '&lt;1 ms') + '</small></div>' +
       '<div class="fnote">' + esc(notes.join(' · ')) + '</div>' +
       '</div>';
@@ -917,14 +956,14 @@ function renderTrace(payload) {
     if (extra._ignition_score != null) bits.push('点火分 ' + Number(extra._ignition_score).toFixed(3));
     if (extra._ignited) bits.push('已点火');
     return recordRow(r).replace('</div></div>',
-      (bits.length ? '<span style="opacity:.4">·</span>' + esc(bits.join(' · ')) : '') + '</div></div>');
+      (bits.length ? '<span class="dot-sep">·</span>' + esc(bits.join(' · ')) : '') + '</div></div>');
   }).join('');
 
   return '<div class="sec">' +
       secHead('召回漏斗', 'RECALL FUNNEL', '总耗时 ' + (trace.total_ms || 0) + ' ms / 最终 ' + (trace.final_count || recs.length) + ' 条') +
       '<div class="funnel">' + rows + '</div>' +
       (trace.has_ignition === false
-        ? '<div class="hint" style="padding-bottom:0">这次没有"点火"命中 / No ignition this time.</div>' : '') +
+        ? '<div class="hint pb0">这次没有"点火"命中 / No ignition this time.</div>' : '') +
     '</div>' +
     '<div class="sec">' + secHead('它最后选了这几条', 'FINAL RESULTS', '按最终顺序') +
       (cards ? '<div class="recs">' + cards + '</div>'
@@ -951,7 +990,7 @@ function renderHistory(events) {
     return '<div class="fstage">' +
       '<div class="fname">' + esc(LEDGER_ACTION[e.action] || e.action) +
         '<span>#' + esc(e.event_id != null ? e.event_id : '') + '</span></div>' +
-      '<div class="fnote" style="flex:1">' + bits.join('<span style="opacity:.4"> · </span>') + '</div>' +
+      '<div class="fnote flex1">' + bits.join('<span class="dot-sep"> · </span>') + '</div>' +
       '</div>';
   }).join('') + '</div>';
 }
@@ -1013,8 +1052,8 @@ async function renderEvolve(body) {
         const pct = ((c.avg_trust || 0) * 100).toFixed(1);
         return '<div class="layer">' +
           '<div class="lname">' + esc(c.category) + '<span>' + fmtInt(c.cnt) + ' 条</span></div>' +
-          '<div class="lbar"><div class="lfill" style="width:' + pct + '%"></div></div>' +
-          '<div class="lnum" style="font-size:13px">' + (c.avg_trust || 0).toFixed(2) +
+          '<div class="lbar"><div class="lfill" data-w="' + pct + '"></div></div>' +
+          '<div class="lnum lnum-sm">' + (c.avg_trust || 0).toFixed(2) +
             '<small>' + (c.helpful || 0) + '↑ ' + (c.unhelpful || 0) + '↓</small></div>' +
           '</div>';
       }).join('') + '</div>' +
@@ -1066,15 +1105,15 @@ async function loadGovernance(sec) {
 function candRow(c) {
   const bits = [];
   if (c.category) bits.push('<span class="cat">' + esc(c.category) + '</span>');
-  bits.push('<span class="src" style="color:var(--hex-cn)">' + esc(c.fact_key || '') + '</span>');
+  bits.push('<span class="src hexcn">' + esc(c.fact_key || '') + '</span>');
   if (c.rule_verdict) bits.push('规则 ' + esc(c.rule_verdict));
   if (c.eval_verdict) bits.push('评估 ' + esc(c.eval_verdict) + (c.eval_confidence ? ' ' + Number(c.eval_confidence).toFixed(2) : ''));
   bits.push('状态 ' + esc(c.status || ''));
   if (c.user_id) bits.push(esc(c.user_id));
-  const note = c.eval_reason ? '<div class="rmeta" style="opacity:.8">评估理由：' + esc(clip(c.eval_reason, 120)) + '</div>' : '';
+  const note = c.eval_reason ? '<div class="rmeta dim80">评估理由：' + esc(clip(c.eval_reason, 120)) + '</div>' : '';
   return '<div class="rec" data-cid="' + esc(c.candidate_id) + '"><div class="rtext">' +
     esc(clip(stripMd(c.fact_value || ''), 220)) + '</div>' +
-    '<div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div>' + note +
+    '<div class="rmeta">' + bits.join('<span class="dot-sep">·</span>') + '</div>' + note +
     '<div class="racts">' +
       '<button class="ract approve useful" data-cid="' + esc(c.candidate_id) + '">批准 Approve</button>' +
       '<button class="ract reject del" data-cid="' + esc(c.candidate_id) + '">驳回 Reject</button>' +
@@ -1146,25 +1185,25 @@ function renderOpinions(fid, rows, agg) {
     ? '<div class="recs">' + rows.map(function (o) {
         const bits = [
           '<span class="cat">' + esc(STANCE_LABEL[o.stance] || o.stance) + '</span>',
-          '<span class="src" style="color:var(--hex-cn)">' + esc(o.source || '') + '</span>',
+          '<span class="src hexcn">' + esc(o.source || '') + '</span>',
           '把握 ' + Number(o.confidence || 0).toFixed(2),
         ];
         if (o.owner) bits.push(esc(o.owner));
         if (o.updated_at) bits.push(fmtWhen(o.updated_at));
-        return '<div class="rec"><div class="rmeta">' + bits.join('<span style="opacity:.4">·</span>') + '</div></div>';
+        return '<div class="rec"><div class="rmeta">' + bits.join('<span class="dot-sep">·</span>') + '</div></div>';
       }).join('') + '</div>'
     : '<div class="hint">这条事实还没有任何信念 / No opinions yet.</div>';
 
-  return '<div class="probes" style="margin-bottom:12px">' + aggHtml + '</div>' + listHtml +
-    '<div class="editor" style="margin-top:12px">' +
-      '<div class="searchrow" style="margin:0">' +
-        '<select class="sinput" id="opStance" style="flex:0 0 130px">' +
+  return '<div class="probes mb12">' + aggHtml + '</div>' + listHtml +
+    '<div class="editor mt12">' +
+      '<div class="searchrow m0">' +
+        '<select class="sinput w130" id="opStance">' +
           '<option value="support">支持 Support</option>' +
           '<option value="oppose">反对 Oppose</option>' +
           '<option value="neutral">中立 Neutral</option>' +
         '</select>' +
         '<input class="sinput" id="opSrc" placeholder="证据来源 source（必填）" autocomplete="off" />' +
-        '<input class="sinput" id="opConf" type="number" min="0" max="1" step="0.05" value="0.7" style="flex:0 0 90px" />' +
+        '<input class="sinput w90" id="opConf" type="number" min="0" max="1" step="0.05" value="0.7" />' +
         '<button class="sbtn" id="opSet">表态 Set</button>' +
       '</div>' +
     '</div>';
@@ -1250,9 +1289,9 @@ async function renderSettings(body) {
               (a.description ? ' — ' + esc(a.description) : '') + '</div>' +
               '<div class="rmeta">' +
                 '<span class="cat">' + (on ? '在线 Online' : '静默 Idle') + '</span>' +
-                '<span style="opacity:.4">·</span>' + fmtInt(a.fact_count || 0) + ' 条事实 / facts' +
-                '<span style="opacity:.4">·</span>心跳 ' + fmtWhen(a.last_seen_at) +
-                '<span style="opacity:.4">·</span>profile ' + esc(a.profile || '—') +
+                '<span class="dot-sep">·</span>' + fmtInt(a.fact_count || 0) + ' 条事实 / facts' +
+                '<span class="dot-sep">·</span>心跳 ' + fmtWhen(a.last_seen_at) +
+                '<span class="dot-sep">·</span>profile ' + esc(a.profile || '—') +
               '</div></div>';
           }).join('') + '</div>'
         : '<div class="hint">读不到联邦成员 / No federation agents.</div>') +
@@ -1289,16 +1328,16 @@ async function renderSettings(body) {
    --------------------------------------------------------------------------- */
 
 function renderPasswordForm() {
-  return '<div class="editor" style="margin-top:10px">' +
+  return '<div class="editor mt10">' +
     '<div class="mc-row"><span class="mc-k">当前密码</span><input class="sinput mc-input" id="pwdCurrent" type="password" placeholder="Current password"></div>' +
     '<div class="mc-row"><span class="mc-k">新密码</span><input class="sinput mc-input" id="pwdNew" type="password" placeholder="New password (min 4 chars)"></div>' +
     '<div class="mc-row"><span class="mc-k">确认新密码</span><input class="sinput mc-input" id="pwdConfirm" type="password" placeholder="Confirm new password"></div>' +
     '<div class="ebar">' +
       '<button class="ebtn save" id="pwdSave">保存密码 Save Password</button>' +
     '</div>' +
-    '<div class="hint" style="padding-top:8px">修改后需重启服务生效。新密码将写入 <code>.env</code> 文件，下次启动自动加载。<br>' +
+    '<div class="hint pt8">修改后需重启服务生效。新密码将写入 <code>.env</code> 文件，下次启动自动加载。<br>' +
       '<span class="en-label">Password saved to .env file. Restart service to take effect.</span></div>' +
-    '<div class="hint" id="pwdMsg" style="min-height:18px"></div>' +
+    '<div class="hint mh18" id="pwdMsg"></div>' +
   '</div>';
 }
 
@@ -1310,20 +1349,20 @@ async function changePassword(body) {
   var saveBtn = body.querySelector('#pwdSave');
 
   if (!current || !newPwd || !confirm) {
-    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">请填写完整 / Please fill all fields</span>';
+    if (msgEl) msgEl.innerHTML = '<span class="c-bad">请填写完整 / Please fill all fields</span>';
     return;
   }
   if (newPwd.length < 4) {
-    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">新密码至少 4 位 / Too short</span>';
+    if (msgEl) msgEl.innerHTML = '<span class="c-bad">新密码至少 4 位 / Too short</span>';
     return;
   }
   if (newPwd !== confirm) {
-    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">两次输入不一致 / Mismatch</span>';
+    if (msgEl) msgEl.innerHTML = '<span class="c-bad">两次输入不一致 / Mismatch</span>';
     return;
   }
 
   if (saveBtn) saveBtn.disabled = true;
-  if (msgEl) msgEl.innerHTML = '<span style="color:var(--gray-faint)">保存中… / Saving…</span>';
+  if (msgEl) msgEl.innerHTML = '<span class="c-faint">保存中… / Saving…</span>';
 
   try {
     var r = await fetch('/api/config/password', {
@@ -1338,16 +1377,16 @@ async function changePassword(body) {
     var d = await r.json();
 
     if (r.ok && d && d.status === 'ok') {
-      if (msgEl) msgEl.innerHTML = '<span style="color:var(--ok)">✓ ' + esc(d.detail || '密码已更新') + '</span>';
+      if (msgEl) msgEl.innerHTML = '<span class="c-ok">✓ ' + esc(d.detail || '密码已更新') + '</span>';
       // 清空输入
       if (body.querySelector('#pwdCurrent')) body.querySelector('#pwdCurrent').value = '';
       if (body.querySelector('#pwdNew')) body.querySelector('#pwdNew').value = '';
       if (body.querySelector('#pwdConfirm')) body.querySelector('#pwdConfirm').value = '';
     } else {
-      if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">✗ ' + esc((d && d.detail) || '保存失败') + '</span>';
+      if (msgEl) msgEl.innerHTML = '<span class="c-bad">✗ ' + esc((d && d.detail) || '保存失败') + '</span>';
     }
   } catch (e) {
-    if (msgEl) msgEl.innerHTML = '<span style="color:var(--bad)">✗ 网络错误 / Network error</span>';
+    if (msgEl) msgEl.innerHTML = '<span class="c-bad">✗ 网络错误 / Network error</span>';
   } finally {
     if (saveBtn) saveBtn.disabled = false;
   }
@@ -1360,31 +1399,31 @@ function editModelConfig(body, cfg) {
   var rer = cfg.rerank || {};
   var vis = cfg.vision || {};
 
-  var form = '<div class="editor" style="margin-top:10px">' +
-    '<div class="sec" style="margin:0 0 10px 0"><h4 style="margin:0;color:var(--blue);">语言模型 LLM</h4></div>' +
+  var form = '<div class="editor mt10">' +
+    '<div class="sec sec-tight"><h4 class="h4-blue">语言模型 LLM</h4></div>' +
     '<div class="mc-row"><span class="mc-k">LLM Model</span><input class="sinput mc-input" id="edLlmModel" value="' + esc((llm.config && llm.config.model) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">LLM Base URL</span><input class="sinput mc-input" id="edLlmUrl" value="' + esc((llm.config && llm.config.openai_base_url) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">LLM API Key</span><input class="sinput mc-input" id="edLlmKey" type="password" placeholder="留空不修改 / blank=no change"></div>' +
-    '<div class="sec" style="margin:12px 0 10px 0"><h4 style="margin:0;color:#007a5e;">多模态解析 VISION</h4></div>' +
+    '<div class="sec sec-gap"><h4 class="h4-green">多模态解析 VISION</h4></div>' +
     '<div class="mc-row"><span class="mc-k">Vision Model</span><input class="sinput mc-input" id="edVisModel" value="' + esc((vis.config && vis.config.model) || (llm.config && llm.config.model) || '') + '" placeholder="与 LLM Model 共用则留空"></div>' +
     '<div class="mc-row"><span class="mc-k">Vision Base URL</span><input class="sinput mc-input" id="edVisUrl" value="' + esc((vis.config && vis.config.openai_base_url) || (llm.config && llm.config.openai_base_url) || '') + '" placeholder="与 LLM Base URL 共用则留空"></div>' +
     '<div class="mc-row"><span class="mc-k">Vision API Key</span><input class="sinput mc-input" id="edVisKey" type="password" placeholder="与 LLM API Key 共用则留空"></div>' +
-    '<div class="hint" style="padding:6px 0">Vision 模型默认复用 LLM 的连接信息；如需独立模型可在此填写。<br><span class="en-label">Vision model shares LLM credentials by default. Override here if needed.</span></div>' +
-    '<div class="sec" style="margin:12px 0 10px 0"><h4 style="margin:0;color:var(--blue);">向量模型 EMBEDDING</h4></div>' +
+    '<div class="hint py6">Vision 模型默认复用 LLM 的连接信息；如需独立模型可在此填写。<br><span class="en-label">Vision model shares LLM credentials by default. Override here if needed.</span></div>' +
+    '<div class="sec sec-gap"><h4 class="h4-blue">向量模型 EMBEDDING</h4></div>' +
     '<div class="mc-row"><span class="mc-k">Embed Model</span><input class="sinput mc-input" id="edEmbModel" value="' + esc((emb.config && emb.config.model) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">Embed Base URL</span><input class="sinput mc-input" id="edEmbUrl" value="' + esc((emb.config && emb.config.openai_base_url) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">Embed API Key</span><input class="sinput mc-input" id="edEmbKey" type="password" placeholder="留空不修改"></div>' +
-    '<div class="sec" style="margin:12px 0 10px 0"><h4 style="margin:0;color:#7030a0;">重排模型 RERANKER</h4></div>' +
+    '<div class="sec sec-gap"><h4 class="h4-purple">重排模型 RERANKER</h4></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Model</span><input class="sinput mc-input" id="edRerModel" value="' + esc((rer.config && rer.config.model) || '') + '" placeholder="可选 optional"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Base URL</span><input class="sinput mc-input" id="edRerUrl" value="' + esc((rer.config && rer.config.openai_base_url) || '') + '" placeholder="可选 optional"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank API Key</span><input class="sinput mc-input" id="edRerKey" type="password" placeholder="可选，留空不修改"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Enabled</span><input type="checkbox" id="edRerEnabled" ' + ((rer && rer.enabled) ? 'checked' : '') + '></div>' +
-    '<div class="hint" style="padding:6px 0">Reranker 为可选项，留空或取消勾选即不启用。<br><span class="en-label">Reranker is optional. Leave blank or uncheck to disable.</span></div>' +
+    '<div class="hint py6">Reranker 为可选项，留空或取消勾选即不启用。<br><span class="en-label">Reranker is optional. Leave blank or uncheck to disable.</span></div>' +
     '<div class="ebar">' +
       '<button class="ebtn save" id="edSave">保存 Save</button>' +
       '<button class="ebtn cancel" id="edCancel">取消 Cancel</button>' +
     '</div>' +
-    '<div class="hint" style="padding-top:6px">保存后会调用 <code>PUT /config/{section}</code>，再 <code>POST /reload</code>。<br>' +
+    '<div class="hint pt6">保存后会调用 <code>PUT /config/{section}</code>，再 <code>POST /reload</code>。<br>' +
       '<span class="en-label">Saves via PUT /config/{section} then POST /reload.</span></div>' +
   '</div>';
 
@@ -1546,13 +1585,13 @@ function renderModelConfig(cfg) {
       '</div>';
   };
 
-  return '<div class="tiles" style="grid-template-columns:1fr">' +
+  return '<div class="tiles tiles-1col">' +
     card('语言模型', 'LLM', llm) +
     card('多模态解析', 'VISION', vis) +
     card('向量模型', 'EMBEDDING', emb) +
     card('重排模型', 'RERANKER', rer) +
   '</div>' +
-  '<div class="hint" style="padding-top:8px">多模态模型默认复用 LLM 的连接信息（在 LLM 栏配置），也可独立配置。点击"编辑配置"即可修改。<br>' +
+  '<div class="hint pt8">多模态模型默认复用 LLM 的连接信息（在 LLM 栏配置），也可独立配置。点击"编辑配置"即可修改。<br>' +
     '<span class="en-label">Vision model shares LLM credentials by default, or can be set independently. Click Edit Config to modify.</span></div>';
 }
 
@@ -1564,10 +1603,10 @@ function renderReasoning(cfg) {
     '<div class="param-row">' +
       '<span class="param-k">深度思考 Deep Thinking ' +
         '<span class="en-label">is_reasoning_model</span></span>' +
-      '<span class="pill bad" style="border-color:var(--bad);color:var(--bad)">已关闭 OFF</span>' +
+      '<span class="pill bad pill-bad-strong">已关闭 OFF</span>' +
     '</div>' +
-    '<div class="hint" style="padding:6px 0">' + esc(note || 'LLM关闭思考模式用于记忆提取 / reasoning disabled for memory extraction') + '</div>' +
-    '<div class="hint" style="padding-bottom:0">思考模式在配置文件中写死为关闭。LLM 用于记忆提取时需要快速直答，不需要深度推理。<br>' +
+    '<div class="hint py6">' + esc(note || 'LLM关闭思考模式用于记忆提取 / reasoning disabled for memory extraction') + '</div>' +
+    '<div class="hint pb0">思考模式在配置文件中写死为关闭。LLM 用于记忆提取时需要快速直答，不需要深度推理。<br>' +
       '<span class="en-label">Reasoning is hardcoded OFF in config. Memory extraction needs fast direct answers, not deep reasoning.</span></div>' +
   '</div>';
 }
