@@ -525,6 +525,17 @@ def _enforce_public_binding_policy() -> None:
     判据用 `_auth_enabled()`（token 或 UI 口令任一）而不是原来的 `_api_token()`：
     只配了 UI 口令的部署，middleware 其实会鉴权，原判据会误报。
     """
+    # v20.4.0（三方审计 P1-10 · 动态审计 🟡-2）：TRUST_PROXY=1 且无凭据时，
+    # 三道防线（反代痕迹 503 / Host 校验 / 浏览器跨站写拒绝）被一个开关
+    # 同时旁路，而此前只有一行 INFO。动态审计实测该形态下带 XFF 的请求可打通
+    # /facts、/config、/delete_all。这里升 WARNING 并把三项让渡逐条点名 ——
+    # 部署方必须知道自己让渡的不是一项。
+    if _trust_proxy_enabled() and not _auth_enabled():
+        logger.warning(
+            "⚠️ [Security] AIDUMEI_TRUST_PROXY=1 且未配置任何凭据：以下三道防线"
+            "已全部让渡给反代 —— ① 带反代痕迹（X-Forwarded-For 等）的请求不再 503；"
+            "② Host 校验（防 DNS rebinding）关闭；③ 浏览器跨站写拒绝关闭。"
+            "反代必须自行承担鉴权与 Host 路由，强烈建议改配 AIDUMEM_API_TOKEN。")
     host = _detect_bind_host()
     if host in ("127.0.0.1", "localhost", "::1"):
         return

@@ -67,6 +67,7 @@ Every runbook follows the same pattern: symptom → probe → command → repair
 - Probe: the instance has no credential and the request carries a proxy trace (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`, …). A credential-less instance serves direct loopback only; a proxy hop is refused fail-closed even when the proxy itself runs on the same host.
 - Command: `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8767/facts?user_id=probe` (direct → 200) vs. the same request through the proxy (→ 503).
 - Repair: configure a credential (`AIDUMEM_API_TOKEN`, recommended) so the gate, not the loopback rule, protects the write surface. If you knowingly sit behind a trusted proxy, `AIDUMEI_TRUST_PROXY=1` declares it. Since v20.3.2 the service starts uvicorn with `proxy_headers=False`; if you run uvicorn by hand keep that flag, otherwise the forwarded IP overwrites the peer address and the trust switch cannot work.
+- ⚠️ `AIDUMEI_TRUST_PROXY=1` concedes **three** defenses at once, not one: ① the 503 refusal of proxy-marked requests, ② the Host allow-list (DNS-rebinding guard), ③ the browser cross-site write refusal. Your reverse proxy must own authentication, virtual-host routing, and Origin policy for all three. Running it credential-less logs a startup WARNING enumerating the concessions (v20.4.0, user-audit 🟡-2).
 
 ## 12. Requests return 421 `host_not_allowed` or 403 `cross_site_write_refused`
 

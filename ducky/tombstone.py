@@ -302,8 +302,18 @@ def restore_tombstone(
         content = row["content_snapshot"] or ""
         restored_cols = []
 
+        # v20.4.0（三方审计 P2-5 · Codex P2-03）：恢复不再有「部分成功也
+        # 盖章」的语义。此前 facts 与 FTS 分别容错，无论谁失败都写
+        # restored_at —— 一旦盖章，同一 tombstone 永远不能重试，缺的那一半
+        # 就永远缺着。现在：必需组件（有快照就必须回插成功、有正文就必须
+        # 重建索引成功）全部到位才盖章；有缺失则不盖章、返回 partial 明细，
+        # 调用方可以修复环境后原样重试。
+        required: list[str] = []
+        failed: list[str] = []
+
         # 1. 回插 facts（若有结构化快照）
         if facts_snapshot:
+            required.append("facts")
             try:
                 fr = json.loads(facts_snapshot)
                 # 剔除自增主键与快照元字段，让 facts 表重新分配 id
@@ -316,11 +326,15 @@ def restore_tombstone(
                         tuple(fr[c] for c in cols),
                     )
                     restored_cols.append("facts")
+                else:
+                    failed.append("facts(空快照列)")
             except Exception as fe:
-                logger.debug("tombstone facts 回插跳过: %s", fe)
+                failed.append("facts")
+                logger.warning("tombstone facts 回插失败（本次不盖章，可重试）: %s", fe)
 
         # 2. 重建 FTS 索引（让混合召回能再搜到）
         if content:
+            required.append("fts")
             try:
                 from ducky.text_fts import _index_memory
                 _index_memory(
@@ -331,10 +345,20 @@ def restore_tombstone(
                 )
                 restored_cols.append("fts")
             except Exception as ie:
+                failed.append("fts")
                 feature_failed("index_memory", ie)
-                logger.debug("tombstone FTS 重建跳过: %s", ie)
+                logger.warning("tombstone FTS 重建失败（本次不盖章，可重试）: %s", ie)
 
-        # 3. 标记已恢复
+        if failed:
+            conn.commit()  # 已成功的半边保留（回插幂等性由重试路径的既有快照保证）
+            result["restored"] = False
+            result["target_id"] = target_id
+            result["detail"] = (f"partial：成功 {','.join(restored_cols) or '无'}；"
+                                f"失败 {','.join(failed)} —— 未盖 restored_at，可原样重试")
+            logger.warning("🪦 tombstone #%s 恢复不完整（%s），保留可重试状态", tombstone_id, result["detail"])
+            return result
+
+        # 3. 标记已恢复（只有全部必需组件成功才走到这里）
         conn.execute(
             "UPDATE tombstones SET restored_at=? WHERE tombstone_id=?",
             (_now_iso(), tombstone_id),
