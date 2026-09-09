@@ -12,10 +12,9 @@ J-space 启发：高相似度记忆直接"点火"，跳过衰减管道直达结�
 每条记忆标注 _ignited: true/false + _ignition_score
 """
 
-import time, math, logging
-from typing import Optional
+import time, logging
 
-from ducky.utils import tokenize, jaccard_sim, normalize_score
+from ducky.utils import jaccard_sim, normalize_score
 
 logger = logging.getLogger("aiduMEM.ignition")
 

@@ -302,7 +302,6 @@ def test_wheel_package_declaration_excludes_local_dev_proxy():
 
 def test_unauthenticated_health_uses_strict_allowlist(monkeypatch):
     """Public /health is a probe, not a reconnaissance report."""
-    import os
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.hot import health as H
@@ -322,7 +321,6 @@ def test_unauthenticated_health_uses_strict_allowlist(monkeypatch):
     assert isinstance(body["probes"]["runtime_paths"]["data_dir_writable"], bool)
 
 def test_authenticated_health_returns_full_diagnostics(monkeypatch):
-    import os
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.hot import health as H

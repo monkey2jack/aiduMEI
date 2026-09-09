@@ -122,3 +122,52 @@ def test_guard_normalizes_package_name_spelling():
     assert _normalize("python_multipart") == _normalize("python-multipart")
     assert _normalize("Python-MultiPart") == _normalize("python-multipart")
     assert _normalize("pydantic_core") == _normalize("pydantic-core")
+
+
+def _exact_pins(path: str) -> dict[str, str]:
+    """文件里所有 == 精确钉: {规范化包名: 版本}。"""
+    src = open(path, encoding="utf-8").read()
+    if path.endswith(".toml"):
+        m = re.search(r"^dependencies\s*=\s*\[(.*?)^\]", src, re.M | re.S)
+        assert m, "pyproject.toml 里找不到 [project] dependencies"
+        entries = re.findall(r'"([^"]+)"', m.group(1))
+    else:
+        entries = [
+            ln.strip().split("#", 1)[0].strip()
+            for ln in src.splitlines()
+            if ln.strip() and not ln.strip().startswith(("#", "-"))
+        ]
+    pins = {}
+    for raw in entries:
+        raw = raw.split(";", 1)[0].strip()  # 去掉环境标记
+        m = re.match(r"^([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*==\s*([^\s,]+)$", raw)
+        if m:
+            pins[_normalize(m.group(1))] = m.group(2)
+    return pins
+
+
+def test_exact_pins_agree_between_pyproject_and_requirements():
+    """版本级对齐(v20.4.1a · 四方外审 Luna/Sonnet):两份清单的依赖图不许漂移。
+
+    只钉「被精确钉住的包」:同一个包在任一份清单里 == 钉了版本,另一份
+    若也钉,就必须是同一个版本 —— 否则
+        pip install -r requirements.txt  ≠  pip install .
+    两条安装路径得到两棵依赖图,「开发机绿、wheel 装完翻车」就有了温床。
+
+    范围钉(>=)不强制对齐:那是刻意的宽松面(httpx/requests 等)。
+    全量 lockfile(uv/pip-tools)迁移评估见 CHANGELOG v20.4.1 段 C4 结论。
+    """
+    pyproject_pins = _exact_pins(_PYPROJECT)
+    req_pins = _exact_pins(_REQUIREMENTS)
+    assert pyproject_pins and req_pins, "两份清单一份精确钉都没有 —— 本守卫失去着力点"
+    mismatches = []
+    for name in sorted(set(pyproject_pins) & set(req_pins)):
+        if pyproject_pins[name] != req_pins[name]:
+            mismatches.append(
+                f"{name}: pyproject=={pyproject_pins[name]} ≠ requirements=={req_pins[name]}"
+            )
+    assert not mismatches, (
+        "pyproject.toml 与 requirements.txt 的精确钉版本打架:\n  "
+        + "\n  ".join(mismatches)
+        + "\n\n两条安装路径必须看到同一个版本;要升一起升,要降一起降。"
+    )

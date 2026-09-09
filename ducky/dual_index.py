@@ -103,7 +103,7 @@ def verbatim_local_pid(user_id: str, bank_id: str, text: str) -> str:
     删除两侧，绝不许只改一边。"""
     import hashlib
     import uuid
-    digest = hashlib.md5((text or "").strip().encode("utf-8")).hexdigest()
+    digest = hashlib.md5((text or "").strip().encode("utf-8"), usedforsecurity=False).hexdigest()
     return str(uuid.uuid5(uuid.NAMESPACE_URL,
                           f"aidumei:verbatim_local::{digest}::{user_id}::{bank_id}"))
 
@@ -117,7 +117,7 @@ def upsert_local_verbatim(user_id: str, bank_id: str, text: str,
     text = (text or "").strip()
     if not text or _local_off():
         return False
-    digest = hashlib.md5(text.encode("utf-8")).hexdigest()
+    digest = hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
     pid = verbatim_local_pid(user_id, bank_id, text)
     now = datetime.now().isoformat()
     payload = {

@@ -1,5 +1,19 @@
 # aiduMEI 版本演进史
 
+## v20.4.1（a 阶段 · 开工 2026-09-09）：四方网页外审整改 · 防线接入链路 · 复杂度回吐
+
+> **防线都在，还要接进链路；功能够多，开始回减复杂度。** 四方网页版外审（GPT Luna / Sonnet 5 / Grok / Gemini 3.8 Flash）约 30 条指控逐条 `file:line` 自查：采纳 12 条，驳回 5 条（全部 Gemini 虚构/误判：GHCR 流水线、「无注入清洗」、「幂等不足」、「无异步队列」均不属实），降级 1 条（CJK BM25 系台账已登记项）。评比：Sonnet 9.5 / Luna 8.0 / Grok 7.0 / Gemini 2.0。任务书：wiki「aiduMEI v20.4.1a 整改任务书」。
+
+- **A1 CI 自动触发（P0，Sonnet+Luna 双证）**：`test.yml` 触发面从「只留手动」改为 `pull_request` 全量 + `push→main` 精简（pytest job 以 `if` 跳过，控制 Actions 邮件噪音；直推 main 由本地 push_gate 把关），`workflow_dispatch`/`workflow_call` 保留。2026-08-25 的「只留手动」策略经维护者裁决废止；`tests/test_v20_ci_pipeline.py` 触发面守卫同步改判据。
+- **A2 版本口径收口（P0，Luna 独获）**：README.md / README_EN.md 容器段残留「公开版本与 Release 保持 v20.3」（v20.4.0 收口遗漏），改为历史时态记述；新增口径守卫 `test_readme_public_version_claim_matches_service_version`——banner 与正文现在时加粗版本宣称必须等于 `SERVICE_VERSION`，负向对照已过。
+- **B1 ruff 扩门禁（Sonnet，实测精确属实）**：F401×176 + F541×12 全仓清零（兼容门面的 re-export 以 `# noqa` 显式标注），清零后 F401/F541 入 `select` 门禁与 push_gate 静态关。
+- **B2 圈复杂度收敛（Sonnet，radon 复核逐一致）**：`cascade_delete_memory`(66)、`cascade_delete_all`(53)、`score_and_rank_candidates`(61) 按层/按因子拆分，目标 CC<15；语义不变，既有分层测试矩阵把守。
+- **B3 version.py 瘦身（Sonnet）**：1693 → ≤100 行，只留版本常量、当前版本块与谱系表；逐版本叙事归 CHANGELOG 单一收录，消除双写腐化源。
+- **B4 bandit 噪音清零（Sonnet，实测 9 处）**：非安全用途的 md5/sha1 全部补 `usedforsecurity=False` 显式化。
+- **C 面**：`mcp_server.py` urllib → httpx（统一 HTTP 客户端语义）；`ARCHITECTURE.md`（v14 时代）归档 `docs/` 并更新入口指向；新增 `CONTRIBUTING.md` 与 `SECURITY.md`（漏洞私下报告渠道）；依赖治理结论（C4）：维持 pyproject+requirements 双清单，新增「精确钉跨清单版本对齐」守卫钉死重叠钉，uv/pip-tools 全量 lockfile 迁移评估排期 v20.5；可观测性结论（C5）：进程内 `http_metrics` 保持本地零依赖原则不动，Prometheus/OTel 标准遥测作为可选 extra 转入 v21+ 平台化路线图；CJK BM25 排期承诺（C6，兑现台账登记项）：v20.5 前交付可配置策略开关 + 对照跑分。
+- **不采纳**：Gemini SEC-01/R2/R3/R4/R5 全部驳回（对应机制均在：`injection_guard` nonce 边界编码、`Idempotency-Key`、`speed/coalesce` 异步合批、GitHub-only 分发无 GHCR 工作流）；Luna P0-1 单进程系明文设计决策（`api_server.py` 多 worker 守卫在），其「状态外置」建议转入 v21+ 路线图。
+- **用例总数 1835 → 1837**（`pytest --collect-only`；+2 守卫：README 版本口径、依赖钉对齐）：四环 2026-09-09 本树实测——开发机 1825+12、生产机干净 venv 1812+25、生产机独立沙箱 1826+11（沙箱环本版补齐实测，v20.4.0 时为待复测）、生产机全轴 1835+1。
+
 ## v20.4.0（2026-09-09 正式版）：三方审计 P0/P1 整改 · 断点续修四环复测收口
 
 > **防线都在，证据不够。** 六方网页版外审（Sonnet 5 / Qwen3.8-Max / GPT Luna / Grok / GLM 5.3 / Gemini 3.1 Pro）约 45 条指控逐项 `file:line` 复核：实锤/半实锤采纳 14 条，误报驳回 12 条。四环复测收口：全轴生产实测 1834/1、开发机 1823/12（沙箱/基础按轴标注）。

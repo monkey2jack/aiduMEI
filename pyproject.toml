@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "20.4.0"
+version = "20.4.1"
 description = "aiduMEI: self-hosted multi-tier AI wisdom engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
@@ -127,7 +127,10 @@ extend-exclude = ["frontend", "deploy", "benchmarks/fixtures"]
 # （冗余 open mode）清零后同步进门禁。UP 其余系列（UP006/UP045/UP035/UP031/
 # UP037/UP009/UP012 存量 261 处，2026-09-08 实测）属大规模注解现代化，
 # 登记为后续批次，暂不在门禁 —— 防回退靠「已进门禁的规则集合只增不减」。
-select = ["F821", "F811", "F841", "W", "UP015"]
+# v20.4.1：F401（未使用导入，存量 176 处）与 F541（无占位符 f-string，12 处）
+# 清零后进门禁；兼容门面的故意 re-export 以行尾 `# noqa: F401` 或 `__all__`
+# 登记保留（ducky/engine、ducky/hot/legacy_helpers、ducky/salience/__init__）。
+select = ["F821", "F811", "F841", "F401", "F541", "W", "UP015"]
 
 [tool.pytest.ini_options]
 norecursedirs = [".*", "venv*", "backups", ".upgrade-artifacts", "data", "logs", "build", "dist"]

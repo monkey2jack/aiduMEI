@@ -24,7 +24,6 @@ import pathlib
 import shlex
 import sys
 
-import pytest
 import yaml
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -146,14 +145,19 @@ def test_a_workflow_actually_runs_the_test_suite():
 
 
 def test_test_workflow_is_reusable_and_triggers_on_push_and_pr():
-    """★ 触发面必须与**当前交付策略**逐字对齐：只留手动 + 可复用两个面。
+    """★ 触发面必须与**当前交付策略**逐字对齐（v20.4.1a 起：PR 全量 + main 精简）。
 
-    v20.0.1-pre 噪音治理（2026-08-25，SOP 铁律 16）：对外分发面收缩后，
-    test.yml 经维护者授权改为「不随 main 推送自动运行」—— 只保留
-    `workflow_dispatch`（手动）与 `workflow_call`（供发布流水线复用）。
-    本守卫原先断言 push/pull_request 必须在，与已定策略相反，
-    改成双向钉死：该在的少一个红，不该在的多一个也红 ——
-    有人悄悄把自动触发加回来，失败邮件就会重新开始骚扰维护者。
+    策略沿革：
+    - v20.0.1-pre（2026-08-25，SOP 铁律 16）：对外分发面收缩后改为「只留
+      手动 + 可复用」，避免 Actions 邮件噪音。
+    - v20.4.1a（2026-09-09，四方网页外审 Sonnet P0 / GPT Luna P1 双证）：
+      「测试体系很强」≠「每次提交必经测试」——只留手动触发意味着
+      pytest / pip-audit / gitleaks 全都不在提交链路上，是全仓唯一的
+      元问题。经维护者裁决恢复自动触发，但保留噪音控制：
+        · pull_request：全量（含 pytest job），对外贡献的强制门禁；
+        · push → main：精简 —— pytest job 以 `if` 跳过（PR 已把关、
+          维护者直推有本地 push_gate 把关），辅助 job 照跑；
+        · workflow_dispatch / workflow_call：保留（手动 + 发布复用）。
 
     `workflow_call` 仍不是可选项：`needs:` 只在同一个工作流内生效，
     发布必须**依赖**测试，而依赖只能靠复用建立。
@@ -166,11 +170,23 @@ def test_test_workflow_is_reusable_and_triggers_on_push_and_pr():
     on = wf.get("on") or wf.get(True)  # YAML 会把裸 on 解析成布尔 True
     assert isinstance(on, (dict, list)), f"test.yml 的 on: 段形状不对：{on!r}"
     triggers = set(on) if isinstance(on, dict) else set(on)
-    assert triggers == {"workflow_dispatch", "workflow_call"}, (
-        f"test.yml 触发面与噪音治理策略不符：现有 {sorted(triggers)}，"
-        "应恰为 {workflow_dispatch, workflow_call}。"
-        "多出 push/pull_request = 自动触发复活（Actions 邮件噪音回归）；"
+    assert triggers == {"pull_request", "push", "workflow_dispatch", "workflow_call"}, (
+        f"test.yml 触发面与 v20.4.1a 策略不符：现有 {sorted(triggers)}，"
+        "应恰为 {pull_request, push, workflow_dispatch, workflow_call}。"
+        "缺 pull_request = 外审点名的元问题复活；缺 push = main 失去精简集；"
         "缺 workflow_call = 发布流水线无法依赖测试；缺 workflow_dispatch = 手动跑不了"
+    )
+    # push 必须只钉 main 分支：别的分支直推不产生 Actions 运行（噪音控制）。
+    push = on.get("push") if isinstance(on, dict) else None
+    assert isinstance(push, dict) and push.get("branches") == ["main"], (
+        f"push 触发必须限定 branches: [main]，现有：{push!r}"
+    )
+    # pytest job 在 push 事件上必须跳过（PR 已全量把关；直推 main 走本地
+    # push_gate）。删掉这个 if 等于 main 精简集策略名存实亡。
+    pytest_job = (wf.get("jobs") or {}).get("pytest") or {}
+    assert "github.event_name != 'push'" in str(pytest_job.get("if") or ""), (
+        "pytest job 缺少 `if: github.event_name != 'push'` —— "
+        "push→main 精简集策略被破坏（Actions 邮件噪音回归）"
     )
 
 

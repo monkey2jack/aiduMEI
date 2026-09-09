@@ -24,7 +24,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Optional
+from typing import Optional
 
 from ducky.utils import get_facts_conn
 
@@ -182,10 +182,10 @@ def grow_skill_from_trajectory(
     # 坍缩成 '-' 而相互覆盖（ON CONFLICT(skill_name) 会静默吞掉草稿）。
     ascii_part = "".join(ch for ch in raw_name if ch.isascii() and (ch.isalnum() or ch == "-"))
     if re.search(r"[一-鿿]", raw_name) and not ascii_part.strip("-"):
-        ascii_part = "skill-" + hashlib.md5(raw_name.encode()).hexdigest()[:8]
+        ascii_part = "skill-" + hashlib.md5(raw_name.encode(), usedforsecurity=False).hexdigest()[:8]
     skill_name = re.sub(r"[^a-z0-9-]+", "-", (ascii_part or raw_name).lower())[:48]
     if not re.search(r"[a-z0-9]", skill_name):
-        skill_name = f"skill-{hashlib.md5(str(skill.get('skill_name') or 'task').encode()).hexdigest()[:8]}"
+        skill_name = f"skill-{hashlib.md5(str(skill.get('skill_name') or 'task').encode(), usedforsecurity=False).hexdigest()[:8]}"
     skill_md = _format_skill_md({**skill, "skill_name": skill_name})
     confidence = 0.5
     try:

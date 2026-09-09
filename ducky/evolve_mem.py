@@ -26,7 +26,6 @@ ducky.evolve_mem — EvolveMem 检索自进化引擎 (v18.1 Zeus-Beta)
 from __future__ import annotations
 
 import logging
-import math
 import sqlite3
 import time
 from ducky.shutdown import sleep as _shutdown_sleep
@@ -533,7 +532,6 @@ def get_evolve_report() -> dict:
 
 def evolve_background_loop() -> None:
     """后台线程：每 EVOLUTION_INTERVAL_HOURS 小时自动执行一次进化循环。"""
-    import threading
     logger.info(f"⚡ EvolveMem 后台进化线程启动（间隔 {EVOLUTION_INTERVAL_HOURS}h）")
     while True:
         try:
