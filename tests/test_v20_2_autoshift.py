@@ -474,7 +474,6 @@ class TestSelfAuditAdditions:
     def test_core_audit_covers_local_leg(self, rig, monkeypatch):
         """验收门槛 2 补齐：核心块对账必须看得见本地腿缺失。"""
         import ducky.core_memory as cm
-        import ducky.utils as utils
         client, fake, _, di = rig
         monkeypatch.setattr(cm, "_initialized", False)
         cm._initialized_scopes.clear()

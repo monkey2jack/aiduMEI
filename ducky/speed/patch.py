@@ -27,7 +27,6 @@ def patch_llm_for_speed(mem_instance) -> None:
     if getattr(mem_instance, "_aidumem_speed_patched", False):
         return
     try:
-        from openai import OpenAI
 
         # mem0 OpenAI LLM client 通常在 mem_instance.llm.client
         llm = getattr(mem_instance, "llm", None)

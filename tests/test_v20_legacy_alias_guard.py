@@ -32,7 +32,6 @@ import ast
 import pathlib
 import warnings
 
-import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 

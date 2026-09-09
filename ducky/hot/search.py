@@ -7,14 +7,14 @@ import os
 from fastapi import FastAPI, HTTPException
 
 from ducky.api_models import SearchRequest, SearchResponse
-from ducky.api_errors import api_error_detail, error_envelope
+from ducky.api_errors import error_envelope
 
 
 def _query_fingerprint(q: str) -> str:
     """P2-18（v20.3.2 正式版）：INFO 日志不落用户查询原文 —— 日志是第八个泄露面。
     只留 sha1 前 10 位，够在同一份日志里把「同一查询多次召回」串起来。"""
     import hashlib
-    return hashlib.sha1((q or "").encode("utf-8", "ignore")).hexdigest()[:10]
+    return hashlib.sha1((q or "").encode("utf-8", "ignore"), usedforsecurity=False).hexdigest()[:10]
 from ducky.mem0_runtime import (
     _normalize_user_id,
     boost_salience_for_results,

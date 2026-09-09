@@ -255,7 +255,6 @@ def test_self_edit_parse_decision_invalid():
 
 
 def test_self_edit_log_and_list_and_rollback(monkeypatch):
-    from ducky import self_edit
     from ducky.self_edit import ensure_self_edit_schema, _log_edit, list_edits, rollback_edit
 
     ensure_self_edit_schema()

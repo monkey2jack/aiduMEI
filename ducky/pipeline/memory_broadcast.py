@@ -14,10 +14,8 @@ J-space 启发：概念写入全局广播区后，被所有子电路读取→形
 """
 
 import time, logging
-from typing import Optional
 
 from ducky.bank_contract import DEFAULT_BANK_ID, vector_item_in_bank, vector_scope_filters
-from ducky.utils import quick_sim
 
 logger = logging.getLogger("aiduMEM.broadcast")
 

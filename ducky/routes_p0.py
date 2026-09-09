@@ -13,8 +13,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from ducky.api_models import (
-    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
-    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+    ID_FIELD_MAX_CHARS, SHORT_TEXT_MAX_CHARS,
 )
 
 from ducky.utils import DEFAULT_USER_ID

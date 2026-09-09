@@ -51,7 +51,7 @@ class TestVersioningDoc:
 
 class TestArchitectureBanner:
     def test_banner_at_top(self):
-        with open(os.path.join(_ROOT, "ARCHITECTURE.md"), encoding="utf-8") as f:
+        with open(os.path.join(_ROOT, "docs/ARCHITECTURE.md"), encoding="utf-8") as f:
             head = f.read(600)
         assert "v14 时代" in head and "设计史" in head, \
             "ARCHITECTURE.md 文首缺「v14 时代 · 设计史」横幅（P2-18）"
@@ -73,10 +73,17 @@ class TestCiSecretScanIsNotFakeGreen:
             text = f.read()
         assert "pip-audit" in text and "gitleaks" in text, \
             "test.yml 缺 dependency-audit / secret-scan job（P1-4）"
-        # 触发方式维持 2026-08-27 的手动裁决：只许 workflow_dispatch / workflow_call
+        # 触发面策略（v20.4.1a 起，替代 2026-08-27 手动裁决）：四方外审
+        # （Sonnet P0 / GPT Luna P1）指出「只留手动」让本 job 不在提交链路上。
+        # 新策略：pull_request 全量 + push→main 精简（pytest job 以 if 跳过），
+        # 保留 workflow_dispatch / workflow_call。判据与
+        # tests/test_v20_ci_pipeline.py 的触发面守卫同源，两处须同步改。
         on_block = text.split("on:", 1)[1].split("jobs:", 1)[0]
-        assert "push" not in on_block and "pull_request" not in on_block, \
-            "触发器被改动 —— 手动触发是既定裁决，不许顺手改回自动"
+        assert "pull_request" in on_block and "push" in on_block, (
+            "test.yml 缺 pull_request/push 触发 —— v20.4.1a 起 CI 必须在提交链路上"
+        )
+        assert "workflow_dispatch" in on_block and "workflow_call" in on_block, \
+            "手动/复用触发面被拆了"
 
 
 class TestNoInlineStyleInFrontend:

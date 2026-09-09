@@ -236,7 +236,7 @@ def relevance_check(query: str) -> dict:
     if now > 0 and (now - _LAST_GATE_DECISION["time"]) < _GATE_CACHE_TTL:
         # 如果上一轮开启了记忆，且当前是追问（短句），热激活沿用
         if _LAST_GATE_DECISION["needs_memory"] and len(q) < 12:
-            logger.debug(f"闸门命中热缓存: 沿用 needs_memory=True")
+            logger.debug("闸门命中热缓存: 沿用 needs_memory=True")
             return {"needs_memory": True, "reason": "session_followup_hot", "scope": "episode"}
 
     # 3. 自我/身份指代 & 实体命中 → Identity scope

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """aiduMEM 全功能健康检查 — Layer 1/2/3/4 状态 + API + LLM + Embedding"""
-import json, base64, os, sys, time
+import json, os, sys, time
 
 import requests
 

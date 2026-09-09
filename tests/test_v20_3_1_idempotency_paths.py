@@ -10,8 +10,6 @@ pending 而非 replay，幂等保护恰在 local 档（用户最可能首跑的�
 不重复落库）。四路全测，一路不落。
 """
 
-import json
-import os
 import pathlib
 import sqlite3
 

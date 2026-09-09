@@ -29,22 +29,21 @@ import sys
 import argparse
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
+
+import httpx
 from pathlib import Path
 from typing import Any
 
 # ── 路径 bootstrap（先于 ducky import）──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ducky.utils import BASE_DIR, DATA_DIR, DEFAULT_USER_ID, LOG_DIR, api_auth_headers
+from ducky.utils import DATA_DIR, DEFAULT_USER_ID, LOG_DIR, api_auth_headers
 # 🔴v20.3.2 正式版（外审 Gemini P0-3）：MCP 9 个记忆/事实工具原先 **0 个**收 bank_id ——
 # v20 最核心的 (user_id, bank_id) 多域隔离，在 Claude Desktop / Cursor / Hermes 全走的
 # MCP 生态里根本传不进去，所有 Agent 被锁死在 default 域。REST 契约有它，MCP 契约没有。
 from ducky.bank_contract import DEFAULT_BANK_ID
-from ducky.tool_envelope import success, error, format_response
 # 🟡12：版本号统一从真相源导入，杜绝 mcp_server 自报 18.0.0 与 version.py 打架。
-from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
+from ducky.version import SERVICE_VERSION
 
 # ── 常量 ──
 STATE_DB = os.environ.get("AIDUMEM_HOST_STATE_DB", "")
@@ -147,18 +146,15 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool):
 
 def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
     """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
-    url = f"{API_BASE}{path}"
-    if params:
-        qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
-        url = f"{url}?{qs}"
+    # v20.4.1a(C 面整改):urllib → httpx,与全仓 HTTP 客户端统一
+    # (连接池/超时语义一致,少一套排障分支)。query 编码交给 httpx。
     try:
-        req = urllib.request.Request(url, headers=_api_headers())
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace")
-        return {"error": f"HTTP {e.code}", "detail": body[:500]}
-    except Exception as e:
+        resp = httpx.get(f"{API_BASE}{path}", params=params,
+                         headers=_api_headers(), timeout=timeout)
+        if resp.status_code >= 400:
+            return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
+        return resp.json()
+    except Exception as e:  # 传输错误与 JSON 解析失败同态:error dict
         return {"error": str(e)}
 
 
@@ -171,23 +167,19 @@ def _api_post(path: str, body: dict | None = None, timeout: int = 30,
     是**静默无效**的 —— 请求 200、参数全丢。哪个端点该用哪种，由
     tests/test_v20_2_4_mcp_contract.py 逐工具对表钉住。
     """
-    url = f"{API_BASE}{path}"
-    if params:
-        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(
-            {k: v for k, v in params.items() if v is not None and v != ""})
-    data = json.dumps(body or {}).encode()
+    clean_params = (
+        {k: v for k, v in params.items() if v is not None and v != ""}
+        if params else None
+    )
     try:
-        req = urllib.request.Request(
-            url, data=data,
-            headers=_api_headers({"Content-Type": "application/json"}),
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        body_text = e.read().decode(errors="replace")
-        return {"error": f"HTTP {e.code}", "detail": body_text[:500]}
-    except Exception as e:
+        resp = httpx.post(f"{API_BASE}{path}", params=clean_params,
+                          json=body or {},
+                          headers=_api_headers({"Content-Type": "application/json"}),
+                          timeout=timeout)
+        if resp.status_code >= 400:
+            return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
+        return resp.json()
+    except Exception as e:  # 同上:传输错误与 JSON 解析失败同态
         return {"error": str(e)}
 
 

@@ -4,7 +4,6 @@ ducky.pipeline.memory_vision — 多模态记忆提取模块 (Phase 2)
 """
 import logging
 import json
-import base64
 import os
 import requests
 from ducky.failure_ledger import feature_failed

@@ -15,8 +15,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ducky.api_models import (
-    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
-    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
+    ID_FIELD_MAX_CHARS, SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
 )
 
 from ducky.conflict_resolver import resolve_fact_conflict, scan_and_resolve_text_conflicts
