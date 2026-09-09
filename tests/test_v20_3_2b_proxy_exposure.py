@@ -18,7 +18,6 @@
 声明 AIDUMEI_TRUST_PROXY。不采信 XFF 的**值**，只采信它的**存在**——
 存在即证明「这个请求经过了一跳」，而无凭据实例不该服务任何经过跳转的请求。
 """
-import os
 
 import pytest
 from fastapi.testclient import TestClient

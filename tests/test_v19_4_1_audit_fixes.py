@@ -1372,19 +1372,20 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 模型文件×1 = 5，git 轴 1 条跑过了。推导式保留给「无 .git 白名单拷贝」
     # 形态兜底，但文档一旦带着「实测」标注，就按 MEASURED_SANDBOX 断言 ——
     # 实测值不可被推导式覆盖（这正是本守卫哲学：测不到就明说测不到）。
-    MEASURED_SANDBOX = (1803, 9)  # 2026-09-08 v20.4.0-alpha 候选树实测：部署树同款解释器、隔离 HOME、含 .git、无 .env，
-    # 公开数据集只读复用机器上那一份；退出 0。跳过 5→9：ruff×3 + mcp×5 + fastembed_local×1（隔离 HOME 使模型缓存目录为空）。
-    # 上一基线 (1738, 5) 是 2026-09-07 的 v20.3.4 树，换树即失效，不做并列。
+    MEASURED_SANDBOX = (1826, 11)  # 2026-09-09 v20.4.1a 本树·生产机独立沙箱实测：宿主源码在场、隔离 HOME、含 .git、无 .env，
+    # 独立沙箱 venv（requirements* 装齐，无 ruff/mcp/fastembed）；退出 0。
+    # 跳过 11 = ruff×3 + mcp×7 + 备胎模型缓存×1（隔离 HOME 使模型缓存目录为空）。
+    # 上一基线 (1803, 9) 是 2026-09-08 的 v20.4.0-alpha 候选树，换树即失效，不做并列。
     # 2026-09-07 v20.3.4 生产机独立全轴 venv 实测；工具/extras/宿主/模型缓存/公开 LoCoMo 数据集齐备。
     # 这一格从前是「待复测 + 推导值」，推导值恰好等于实测值 —— 但推导对了不等于
     # 测过了；换树必须重测后改这里。
-    MEASURED_ALL_AXES = (1834, 1)   # 2026-09-09 v20.4.0 本树·生产机独立全轴 venv 实测（工具/extras/宿主/
+    MEASURED_ALL_AXES = (1835, 1)   # 2026-09-09 v20.4.1a 本树·生产机独立全轴 venv 实测（工具/extras/宿主/
     # 模型缓存/公开 LoCoMo 数据集齐备），data 目录钉在沙箱内，退出 0，峰值 RSS 530 MB。上一基线 (1743, 0) 属 v20.3.4 树。
     # v20.3.2（第 10 轮审计 P0-3）：**基础路径数字进射程**。
     # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，
     # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
     # 现在两套环境各配各的命令、各报各的数，且必须同屏。
-    MEASURED_BASIC = (1810, 25)   # 2026-09-09 v20.4.0 本树干净 venv 实测（Python 3.12，只装 requirements*，pip.conf 内网源；退出 0）。mcp_extra 轴 5→7（+2 条 SSE importorskip 用例）。
+    MEASURED_BASIC = (1812, 25)   # 2026-09-09 v20.4.1a 本树·生产机干净 venv 实测（Python 3.12，只装 requirements*，pip.conf 内网源）。较 v20.4.0 的 (1810,25)：+2 条新守卫（版本口径/依赖钉对齐）。
 
     def _read(name):
         return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")
@@ -1541,3 +1542,43 @@ def test_doc_numbers_are_consistent_across_both_readmes():
             f"{_fname} 未给出在**已装宿主的机器上**强制跳过的办法 —— "
             "「无宿主」那条复现命令在这类机器上跑出来是假的"
         )
+
+
+def test_readme_public_version_claim_matches_service_version():
+    """README 的「当前公开正式版」宣称必须与 version.py 单源一致（v20.4.1a 外审 A2）。
+
+    由来：v20.4.0 收口时 banner 升到 v20.4，但 README.md 容器段仍写
+    「公开版本与 Release 保持 v20.3」（README_EN 同）——同一文件两种口径，
+    被四方外审（GPT Luna）抓个正着。历史事件可以记述历史版本，
+    但「保持/remain + 加粗版本号」的**现在时口径**只允许等于当前版本。
+    """
+    import re
+
+    from ducky.version import SERVICE_VERSION
+
+    current = re.match(r"(\d+\.\d+)", SERVICE_VERSION).group(1)
+
+    zh = open(os.path.join(_REPO_ROOT, "README.md"), encoding="utf-8").read()
+    en = open(os.path.join(_REPO_ROOT, "README_EN.md"), encoding="utf-8").read()
+
+    m = re.search(r"当前公开正式版\s*v(\d+\.\d+)", zh)
+    assert m, "README.md 缺少「当前公开正式版 vX.Y」宣称"
+    assert m.group(1) == current, (
+        f"README.md 宣称当前公开正式版 v{m.group(1)}，version.py 是 v{current}"
+    )
+    m = re.search(r"current public release is\s*\*\*v(\d+\.\d+)\*\*", en)
+    assert m, "README_EN.md 缺少「current public release is vX.Y」宣称"
+    assert m.group(1) == current, (
+        f"README_EN.md 宣称 current public release v{m.group(1)}，version.py 是 v{current}"
+    )
+
+    # 现在时「保持/remain **vX.Y**」若出现，必须等于当前版本（历史记述不得用加粗现在时）。
+    for name, text, pat in (
+        ("README.md", zh, r"保持\s*\*\*v(\d+\.\d+)\*\*"),
+        ("README_EN.md", en, r"remain(?:ing|s)?\s*\*\*v(\d+\.\d+)\*\*"),
+    ):
+        for hit in re.findall(pat, text):
+            assert hit == current, (
+                f"{name} 用现在时宣称「保持/remain v{hit}」，当前版本是 v{current} —— "
+                "历史事件请用过去时态或不加粗写法"
+            )

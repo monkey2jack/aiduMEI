@@ -48,7 +48,6 @@ import subprocess
 import sys
 import tokenize
 
-import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 _TESTS_DIR = _REPO_ROOT / "tests"

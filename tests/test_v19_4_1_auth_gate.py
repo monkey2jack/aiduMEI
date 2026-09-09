@@ -404,7 +404,6 @@ def test_all_http_callers_carry_credentials():
     守卫射程小于缺陷分布 = 假绿灯：v19.4.1 就是带着全绿测试发布了
     「hook 每次 401、同步停摆 8 天」的版本。射程必须覆盖全部入口点。
     """
-    import pathlib
     import re
 
     offenders = []
@@ -681,7 +680,6 @@ def test_scripts_share_single_credential_source():
     各脚本自行 os.environ.get 会导致「有的带 .env 兜底、有的没有」，
     门禁开启后表现为部分任务莫名 401 —— 排查成本极高。
     """
-    import pathlib
     import re
 
     offenders = []

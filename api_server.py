@@ -73,7 +73,6 @@ from ducky.autodream import autodream_background_loop
 from ducky.evolve_mem import evolve_background_loop
 from ducky.core_memory import init_core_memory
 from ducky.extended import _auto_expire_loop, auto_memory_background_loop
-from ducky.extended.routes import register_extended_routes
 from ducky.hot.health import set_version_info
 from ducky.hot.legacy import (
     _background_consolidation_loop,

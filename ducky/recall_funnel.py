@@ -9,13 +9,10 @@ Aletheia Memory 设计哲学：
 """
 
 import time
-from ducky.scoring import score_and_rank_candidates, math, logging
+from ducky.scoring import score_and_rank_candidates, logging
 
-from .utils import parse_iso_timestamp, get_salience_conn, get_facts_conn
-from .salience.config import LANE_DECAY_MULTIPLIER
-from .salience.core import _detect_lane
+from .utils import get_facts_conn
 from .evolve_mem import log_search_quality as _evolve_log_search
-from .scoring import RECENCY_LAMBDA
 
 logger = logging.getLogger("aiduMEM.funnel")
 

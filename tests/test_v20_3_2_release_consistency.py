@@ -3,7 +3,6 @@
 这批是结构性的：外审 Gemini 3.8 与 Codex 各挖出一半。共同点是**在串行、正常、
 凭据齐全的路上全绿；换到并发 / 异常 / 中文 / 浏览器 / 长期运行，边界不成立。**
 """
-import json
 import socket
 import sqlite3
 import threading
@@ -199,7 +198,12 @@ def test_write_functions_without_rollback_only_decrease():
             writes = any(k in src for k in ("INSERT", "UPDATE ", "DELETE FROM", "ALTER TABLE", "CREATE "))
             if writes and ".execute(" in src and any(isinstance(x, ast.Try) for x in ast.walk(fn)) and "rollback" not in src:
                 n += 1
-    BASELINE = 93   # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；只降不升
+    BASELINE = 102  # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；
+    # 2026-09-09 v20.4.1a：wal_engine cascade_delete_memory(66)/cascade_delete_all(53)
+    # 圈复杂度按层拆分（四方外审 Sonnet B2），同一段写 SQL 从 2 个巨型函数分散进
+    # 按层辅助函数，本守卫按函数计数故 93 → 102 —— **写入路径与事务归属未变**
+    # （rollback 仍在编排函数，辅助函数共享其事务），except 计数 47→47 佐证。
+    # 只降不升纪律不变：此后再涨必须真的新增了无 rollback 覆盖的写路径。
     assert n <= BASELINE, f"无 rollback 的写函数从 {BASELINE} 涨到 {n} —— 新代码请用 with conn: 或显式 rollback"
 
 

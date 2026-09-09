@@ -234,7 +234,7 @@ _CRITICAL_ENV_READS = [
 # 用户会打开来读或编辑的纯文档 / 样例文件。这些文件里出现的 AIDUMEM_* 是大写键名，
 # 与大小写敏感的 aiduMEM 不冲突，所以可以要求「整份归零」。
 _CLEAN_FILES = [
-    "ARCHITECTURE.md",
+    "docs/ARCHITECTURE.md",
     ".env.example",
     "requirements.txt",
     "requirements-dev.txt",

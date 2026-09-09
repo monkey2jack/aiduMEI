@@ -5,21 +5,16 @@
 from __future__ import annotations
 
 import logging
-import math
-import os
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from ducky.scoring import (
     DEFAULT_WEIGHTS,
-    RECENCY_LAMBDA,
-    RERANK_WEIGHT,
-    calc_token_overlap_score,
-    compute_time_decay,
-    extract_timestamp,
-    normalize_score,
+    RECENCY_LAMBDA,  # noqa: F401 —— 兼容 re-export：tests/hot.search 仍从 ducky.engine 取
+    RERANK_WEIGHT,  # noqa: F401 —— 兼容 re-export：tests/test_p0_upgrades.py 按旧路径 monkeypatch engine_mod.RERANK_WEIGHT
+    extract_timestamp,  # noqa: F401 —— 兼容 re-export：tests/hot.search 按旧路径 from ducky.engine import
     score_and_rank_candidates,
 )
 
