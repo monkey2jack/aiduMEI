@@ -262,7 +262,7 @@ FastAPI / MCP contract ── relevance gate ── recall funnel
        └─ WAL + governance + evolution ledgers
 ```
 
-The host owns short-term conversation state; aiduMEI owns durable long-term memory. Cloud and local vector legs are independent, while deterministic extraction and FTS remain available without model credentials. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (v14-era historical snapshot, archived under docs/ since v20.4.1a) for module boundaries and [docs/HEALTH.md](docs/HEALTH.md) for probe semantics.
+The host owns short-term conversation state; aiduMEI owns durable long-term memory. Cloud and local vector legs are independent, while deterministic extraction and FTS remain available without model credentials. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (v14-era historical snapshot, archived under docs/ since v20.4.1) for module boundaries and [docs/HEALTH.md](docs/HEALTH.md) for probe semantics.
 
 Key capabilities include relevance-gated recall, tidal write coalescing, time-aware decay, verbatim storage, code-impact analysis, feedback-driven retrieval, persona memory, conflict resolution, skill crystallization and multi-agent federation. The release history belongs in [CHANGELOG.md](CHANGELOG.md), not in this deployment entry page.
 
@@ -379,7 +379,7 @@ Full list (host integration, federation, log directory and more) with comments: 
 
 ## Testing & quality
 
-All five rows — Total cases, Clean dev machine, Basic install path, Sandbox and All axes present — are **measured on this tree (v20.4.1a) on 2026-09-09** (the latter three on the production box). Historical validation provenance: [docs/TESTING.md](docs/TESTING.md#2026-09-07-公开维护与验证来源).
+All five rows — Total cases, Clean dev machine, Basic install path, Sandbox and All axes present — are **measured on this tree (v20.4.1) on 2026-09-09** (the latter three on the production box). Historical validation provenance: [docs/TESTING.md](docs/TESTING.md#2026-09-07-公开维护与验证来源).
 
 ```bash
 # Complete environment: no-host result measured on this tree, 2026-09-08
@@ -401,11 +401,11 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 177
 
 | Dimension | Status |
 |---|---|
-| Total cases | **1837** (measured via `pytest --collect-only`, 2026-09-09, v20.4.1a this tree) |
-| Clean dev machine | 1825 passed · **12 skipped** — **measured 2026-09-09** (v20.4.1a this tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
-| Basic install path | 1812 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.4.1a this tree) |
-| Sandbox on the production box | 1826 passed · **11 skipped** — **measured 2026-09-09** (v20.4.1a this tree, separate sandbox venv on the production box: host source present, no `.env`, without ruff/mcp/fastembed; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1) |
-| All axes present | 1835 passed · **1 skipped** — **measured 2026-09-09** (v20.4.1a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
+| Total cases | **1837** (measured via `pytest --collect-only`, 2026-09-09, v20.4.1 this tree) |
+| Clean dev machine | 1825 passed · **12 skipped** — **measured 2026-09-09** (v20.4.1 this tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Basic install path | 1812 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.4.1 this tree) |
+| Sandbox on the production box | 1826 passed · **11 skipped** — **measured 2026-09-09** (v20.4.1 this tree, separate sandbox venv on the production box: host source present, no `.env`, without ruff/mcp/fastembed; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1) |
+| All axes present | 1835 passed · **1 skipped** — **measured 2026-09-09** (v20.4.1 this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | Test layering | Mostly module-level unit tests plus source-level guard assertions, with `TestClient`-driven API tests in support |
 | Platform premise | The suite is maintained for Linux/macOS (POSIX): the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms. Windows is not a full-suite platform |
@@ -419,7 +419,7 @@ with host: 1812 passed
 forced off: 1800 passed, 12 skipped
 ```
 
-On a production host where other optional axes are absent, the bare command **actually prints 1826 passed, 11 skipped** (measured 2026-09-09 on the v20.4.1a tree in an isolated sandbox on the production box, no `.env`, isolated HOME, public dataset reused read-only; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1). A number without its environment and date is not a reproducible claim.
+On a production host where other optional axes are absent, the bare command **actually prints 1826 passed, 11 skipped** (measured 2026-09-09 on the v20.4.1 tree in an isolated sandbox on the production box, no `.env`, isolated HOME, public dataset reused read-only; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1). A number without its environment and date is not a reproducible claim.
 
 ### Skip-axis census
 
