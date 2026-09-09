@@ -112,3 +112,5 @@ flowchart LR
     K --> L[Trace + verdict + engine mode]
     L --> M[Agent context]
 ```
+
+**Coalesce window**: when `/add` returns `coalesce_buffered`, raw + FTS are searchable at once; the vector leg lands asynchronously (ranking may show `score=0.000` until it does). Watch `/health` WAL/coalesce fields for the truthful lag signal.
