@@ -288,6 +288,10 @@ Key capabilities include relevance-gated recall, tidal write coalescing, time-aw
 
 Deletion outcomes are `committed`→200, `partial`→207, `failed`→500 and `not_found`→200. `failed_layers` reports failures on this call; `not_cleared` reports declared matrix exemptions. A configured-but-unreachable vector backend is a failure. Only the typed initialization signal for a never-configured backend may skip the mem0 leg, and non-committed WAL work stays replayable.
 
+**Async-write consistency window** (explicit since v20.4.1b): when `/add` returns `coalesce_buffered`, the raw record and FTS index are searchable immediately, while the vector leg is completed by the background coalesce queue. Until it lands, the memory is reachable via keyword recall but its vector score is still 0, so ranking may show `score=0.000`. Window length is governed by the `AIDUMEI_COALESCE_*` knobs; the truthful progress signal is `/health`'s WAL and coalesce fields, not wall-clock time.
+
+**Cold-start ranking of fresh writes** (explicit since v20.4.1b): salience accrues from recall hits, so a just-written memory starts at 0 and ranks below older, proven records — an honest cold start, not a recall failure. Fresh probe terms are findable within seconds via the keyword leg (FTS substring/prefix), not via ranking score. Ruling for v20.4.1b: no scoring change ships in a patch release; the "freshness annotation on recall results" evaluation moves to the v21 track.
+
 `/search` bounds `limit` to `1..100`; an empty query returns `recall_verdict="empty_query"`. Zero-evidence candidates are dropped, while `AIDUMEI_RECALL_MIN_HYBRID=0.0` leaves the composite floor disabled unless the deployment calibrates one.
 
 Interactive API documentation is served at `/docs`. Extended endpoint groups and request shapes are documented by the live OpenAPI schema; operational scripts must judge the HTTP status and JSON body together.

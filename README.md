@@ -274,6 +274,10 @@ FastAPI REST :8767 · 控制台 /ui · MCP Server :8766 (41 tools)
 | `POST` | `/session/start` / `/session/end` | Session lifecycle |
 | `GET` | `/metrics` | JSON metrics (not Prometheus format) |
 
+**异步写入的最终一致性窗口**（v20.4.1b 起明文）：`/add` 返回 `coalesce_buffered` 时，原文与关键词索引（FTS）即时可查，向量腿由后台合并队列补跑 —— 合并完成前，该条记忆可被关键词检索命中但向量分仍为 0，召回排序分可能显示 `score=0.000`。窗口长短由 `AIDUMEI_COALESCE_*` 档位决定，进度的真实口径看 `/health` 的 WAL 与 coalesce 字段，不是看「写完多久了」。
+
+**新写入的召回排序冷启动**（v20.4.1b 起明文）：显著性（salience）分靠召回命中积累，刚写入的记忆命中分为 0，在混合排序里会排在有积累的老记录之后 —— 这是**诚实的冷启动**，不是召回失败。「刚写入的探针词」秒级可查靠的是关键词腿（FTS 子串/前缀），不是排序分。v20.4.1b 裁决：不在小版本夹带打分变更；「召回结果标注新鲜度」的可行性评估转入 v21 路线。
+
 Write and search must use the same `user_id` and `bank_id`. `/search` returns an empty query verdict instead of random memories. Delete responses distinguish failed layers from intentionally exempt layers. A configured-but-broken mem0 backend is a real failure; only the typed initialization signal for a never-configured backend may skip that layer.
 
 ## 接入 Hermes Agent
