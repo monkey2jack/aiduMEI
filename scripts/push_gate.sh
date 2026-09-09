@@ -25,6 +25,22 @@ fi
 [[ -n "${PY}" ]] || { echo "🛑 [停推] 找不到带 pytest 的解释器（设 AIDUMEM_PYTHON）"; exit 1; }
 fail() { echo "🛑 [停推] $1"; exit 1; }
 
+# v20.4.0（三方审计 P0-3 · 动态审计 🔴-3）：门禁结论必须带解释器口径 ——
+# 「四道关全过」在换一个解释器后就不成立，不写清在哪个环境过的，
+# 结论就是不可复现的。每次跑先自报家门。
+echo "  ── 门禁口径：PY=${PY} ($("$PY" -c 'import sys; print(sys.version.split()[0], "@", sys.prefix)')) ──"
+echo "     可选轴：$("$PY" - <<'EOF'
+mods = ["ruff", "mcp", "fastembed", "nltk", "regex"]
+present = []
+for m in mods:
+    try:
+        __import__(m); present.append(m)
+    except Exception:
+        pass
+print("+".join(present) if present else "无")
+EOF
+)"
+
 "$PY" -m pytest tests/ -q > /tmp/g_t.log 2>&1 || fail "测试关未过：$(tail -1 /tmp/g_t.log)"
 
 # v20.2.5：静态关。只拦**真缺陷类** —— F821 未定义名（运行时 NameError，

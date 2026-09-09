@@ -95,6 +95,56 @@ def _sse_authorization_allowed() -> bool:
     return os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
 
 
+def _build_sse_app_with_auth(mcp_obj, *, loopback: bool):
+    """v20.4.0（三方审计 P1-7 · Codex P1-03）：SSE 传输层逐请求认证。
+
+    此前非回环启动只查「服务器配置了 token」，`sse_app` 与 uvicorn 之间
+    没有任何逐请求 Authorization 校验 —— 而工具调用由服务端自动携带
+    服务端 token 打 API，于是端口一旦被反代/端口映射暴露，连上 SSE 的
+    远程方**不需要知道 token** 就继承全部 MCP 工具权限。「启动时已配置
+    token」不等于「传输层请求已认证」。
+
+    现在：非回环绑定时，外层 ASGI 中间件对每个 HTTP 请求校验
+    `Authorization: Bearer <AIDUMEM_API_TOKEN>`（与 API 门禁同一把钥匙，
+    constant-time 比较）；缺失/错误 → 401，不进 MCP 会话。回环绑定保持
+    免认证（与 api_server 的回环信任模型同一口径）。显式
+    AIDUMEM_ALLOW_INSECURE_PUBLIC=1 时按部署方声明放行（启动日志已 WARN）。
+    """
+    import hmac
+
+    inner = mcp_obj.sse_app(mount_path="/sse")
+    if loopback:
+        return inner
+
+    def _expected_token() -> str:
+        auth = api_auth_headers().get("Authorization", "")
+        return auth.removeprefix("Bearer ").strip()
+
+    insecure_ok = os.environ.get(
+        "AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
+
+    async def _auth_wrapped(scope, receive, send):
+        if scope.get("type") != "http" or insecure_ok:
+            await inner(scope, receive, send)
+            return
+        expected = _expected_token()
+        presented = ""
+        for k, v in scope.get("headers") or []:
+            if k == b"authorization":
+                presented = v.decode("latin-1").removeprefix("Bearer ").strip()
+                break
+        if not expected or not presented or not hmac.compare_digest(presented, expected):
+            body = (b'{"detail":"MCP SSE requires Authorization: Bearer <AIDUMEM_API_TOKEN>"}')
+            await send({"type": "http.response.start", "status": 401,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"www-authenticate", b"Bearer")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        await inner(scope, receive, send)
+
+    return _auth_wrapped
+
+
 def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
     """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
     url = f"{API_BASE}{path}"
@@ -904,7 +954,8 @@ if __name__ == "__main__":
                 "(or explicit AIDUMEM_ALLOW_INSECURE_PUBLIC=1)."
             )
         import uvicorn
-        app = mcp.sse_app(mount_path="/sse")
+        # v20.4.0（P1-7）：非回环绑定时逐请求认证包住 sse_app
+        app = _build_sse_app_with_auth(mcp, loopback=loopback)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     else:
         logger.info("📟 stdio 模式启动")

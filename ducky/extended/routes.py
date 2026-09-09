@@ -12,6 +12,8 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import Form, HTTPException, Query
 
+from ducky.api_models import ID_FIELD_MAX_CHARS, TEXT_FIELD_MAX_CHARS
+
 from ducky.facts_recall import tenant_clause
 
 from ducky.extended import auto_memory as am
@@ -243,7 +245,10 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
                 "merged_total":len(merged),"results":merged[:15]}
 
     @app.post("/facts/compress")
-    def facts_compress(text:str=Form(...)):
+    def facts_compress(text: str = Form(..., max_length=TEXT_FIELD_MAX_CHARS)):
+        # v20.4.0（三方审计 P1-11 · 动态审计 🟡-3）：Form 入口并入写入上限体系。
+        # 写入上限此前只盖 JSON 体，这一路 Form 裸收全文 ——「写入上限已
+        # 全覆盖」对本端点不成立。上限与 /add 同源（TEXT_FIELD_MAX_CHARS）。
         lines = text.split('\n')
         error_kw = ['error','fail','traceback','exception','❌','panic','fatal']
         kept = []

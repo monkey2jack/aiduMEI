@@ -169,6 +169,9 @@ def register_v8_routes(app: FastAPI) -> None:
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
+    # v20.4.0（三方审计 P1-4 · Codex P1-05）：session 五操作全部要求调用方
+    # 声明与建会话时一致的 (user_id, bank_id) —— session_id 是随机值不是授权。
+    # 缺省 = 默认租户/默认库，单租户调用方行为不变；不符按「不存在」响应。
     @app.post("/session/search")
     def session_search(req: SearchRequest, session_id: str = "", use_context: bool = True):
         if not session_id:
@@ -176,39 +179,44 @@ def register_v8_routes(app: FastAPI) -> None:
         try:
             mem = get_memory()
             from ducky.memory_persistence import session_search as _session_search
-            return _session_search(mem, session_id, req.query, req.limit, use_context)
+            return _session_search(mem, session_id, req.query, req.limit, use_context,
+                                   user_id=req.user_id, bank_id=req.bank_id)
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
     @app.post("/session/pin")
-    def session_pin(session_id: str, memory_id: str):
+    def session_pin(session_id: str, memory_id: str,
+                    user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         try:
             from ducky.memory_persistence import session_pin as _session_pin
-            return _session_pin(session_id, memory_id)
+            return _session_pin(session_id, memory_id, user_id=user_id, bank_id=bank_id)
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
     @app.post("/session/unpin")
-    def session_unpin(session_id: str, memory_id: str):
+    def session_unpin(session_id: str, memory_id: str,
+                      user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         try:
             from ducky.memory_persistence import session_unpin as _session_unpin
-            return _session_unpin(session_id, memory_id)
+            return _session_unpin(session_id, memory_id, user_id=user_id, bank_id=bank_id)
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
     @app.get("/session/report")
-    def session_report(session_id: str):
+    def session_report(session_id: str,
+                       user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         try:
             from ducky.memory_persistence import session_report as _session_report
-            return _session_report(session_id)
+            return _session_report(session_id, user_id=user_id, bank_id=bank_id)
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
     @app.post("/session/end")
-    def session_end(session_id: str):
+    def session_end(session_id: str,
+                    user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
         try:
             from ducky.memory_persistence import session_end as _session_end
-            result = _session_end(session_id)
+            result = _session_end(session_id, user_id=user_id, bank_id=bank_id)
             if result.get("status") == "ok":
                 # P0-3 接线：会话结束触发一次 Reflect 反思（后台线程，不阻塞响应）
                 # v20 P0-2：反思继承会话作用域，产物落回本域

@@ -36,12 +36,17 @@ logger = logging.getLogger("aiduMEM.Federation.Routes")
 
 
 def _safe(fn, *args, **kwargs) -> dict[str, Any]:
-    """统一异常包裹：任何端点崩了都返回 error dict 而不是 500。"""
+    """统一异常包裹：任何端点崩了都返回 error dict 而不是 500。
+
+    v20.4.0（三方审计 P2-6 · Codex P2-04）：原样 str(exc) 会把 SQL、路径、
+    内部状态直接放进客户端响应。改走错误信封（类名 + 可重试性 + 指引），
+    原始异常文本只进服务端日志。"""
     try:
         return fn(*args, **kwargs)
     except Exception as exc:
         logger.error("联邦端点异常 %s: %s", getattr(fn, "__name__", fn), exc)
-        return {"status": "error", "detail": str(exc)}
+        from ducky.api_errors import error_envelope
+        return {"status": "error", **error_envelope(exc)}
 
 
 def register_federation_routes(app: FastAPI) -> None:

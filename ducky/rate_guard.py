@@ -38,6 +38,17 @@ _ADD_ENV = "AIDUMEI_RATE_ADD_PER_MIN"
 _DELETE_ALL_ENV = "AIDUMEI_RATE_DELETE_ALL_PER_MIN"
 _DEFAULT_ADD_PER_MIN = 120
 _DEFAULT_DELETE_ALL_PER_MIN = 3
+# v20.4.0（三方审计 P1-8 · Kimi P2-3）：分桶键 user_id 是请求体自由字段，
+# 失控的自动化只要每次随机换一个 user_id，按租户的护栏就整体失效 ——
+# 而「拦失控循环」恰是这道护栏的存在理由，失控循环恰恰最可能带着变量化
+# 的 user_id。叠一层**进程级全局桶**兜底：默认 600/min（按租户默认的
+# 5 倍，正常多租户流量打不到；随机轮换租户的失控循环在这里被拦停）。
+_ADD_GLOBAL_ENV = "AIDUMEI_RATE_ADD_GLOBAL_PER_MIN"
+_DELETE_ALL_GLOBAL_ENV = "AIDUMEI_RATE_DELETE_ALL_GLOBAL_PER_MIN"
+_DEFAULT_ADD_GLOBAL_PER_MIN = 600
+_DEFAULT_DELETE_ALL_GLOBAL_PER_MIN = 6
+# 全局桶的保留键：make_scope 的租户字符校验不放行 "*"，永不与真实租户撞名
+_GLOBAL_BUCKET = "*"
 
 logger = logging.getLogger("aiduMEM.RateGuard")
 
@@ -72,7 +83,8 @@ def _limit_from_env(env_name: str, default: int) -> int:
 
 
 def rate_config_errors() -> dict:
-    return config_errors(_ADD_ENV, _DELETE_ALL_ENV, _LOGIN_ENV)
+    return config_errors(_ADD_ENV, _DELETE_ALL_ENV, _LOGIN_ENV,
+                         _ADD_GLOBAL_ENV, _DELETE_ALL_GLOBAL_ENV)
 
 
 def add_rate_limit() -> int:
@@ -83,28 +95,51 @@ def delete_all_rate_limit() -> int:
     return _limit_from_env(_DELETE_ALL_ENV, _DEFAULT_DELETE_ALL_PER_MIN)
 
 
+def add_global_rate_limit() -> int:
+    return _limit_from_env(_ADD_GLOBAL_ENV, _DEFAULT_ADD_GLOBAL_PER_MIN)
+
+
+def delete_all_global_rate_limit() -> int:
+    return _limit_from_env(_DELETE_ALL_GLOBAL_ENV, _DEFAULT_DELETE_ALL_GLOBAL_PER_MIN)
+
+
 def check_rate(route: str, user_id: str, *, limit: int,
+               global_limit: Optional[int] = None,
                now: Optional[float] = None) -> Optional[int]:
     """未超限：计数并返回 None。超限：返回建议 Retry-After 秒数（不计数）。
 
     limit<=0 视为关闭，恒放行。窗口是自然分钟（固定窗口）：实现最简、
     语义可测；边界突刺（窗口交界最多 2×limit）对「拦失控循环」这个
     目标无碍——失控循环是持续的，不是恰好卡在边界上的两发。
+
+    v20.4.0（P1-8）：global_limit 叠加进程级总量桶（键 (route, "*")）。
+    两桶都过才计数、都计数 —— 单锁内原子判定，不会出现「按租户桶已
+    +1、全局桶拒绝」的半计数。global_limit 为 None/<=0 时不启用。
     """
-    if limit <= 0:
+    g = int(global_limit) if global_limit else 0
+    if limit <= 0 and g <= 0:
         return None
     t = time.time() if now is None else now
     win = int(t // 60)
     key = (route, str(user_id))
+    gkey = (route, _GLOBAL_BUCKET)
     with _LOCK:
         if len(_WINDOWS) > _SWEEP_THRESHOLD:
             _sweep_stale_locked(win)
         w, c = _WINDOWS.get(key, (win, 0))
         if w != win:
             w, c = win, 0
-        if c >= limit:
-            return max(1, int((w + 1) * 60 - t))
-        _WINDOWS[key] = (w, c + 1)
+        gw, gc = _WINDOWS.get(gkey, (win, 0))
+        if gw != win:
+            gw, gc = win, 0
+        if limit > 0 and c >= limit:
+            return max(1, int((win + 1) * 60 - t))
+        if g > 0 and gc >= g:
+            return max(1, int((win + 1) * 60 - t))
+        if limit > 0:
+            _WINDOWS[key] = (win, c + 1)
+        if g > 0:
+            _WINDOWS[gkey] = (win, gc + 1)
     return None
 
 

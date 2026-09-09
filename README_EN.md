@@ -375,7 +375,7 @@ Full list (host integration, federation, log directory and more) with comments: 
 
 ## Testing & quality
 
-The Total cases, Clean dev machine and Basic install path rows below are **measured on this tree (v20.4.0-alpha candidate) on 2026-09-08**. The Sandbox and All-axes rows are **pending re-measurement** on the production box for this tree; per guard rules they list the axis-derived value alongside the previous measured baseline (2026-09-07, v20.3.4 tree). Historical validation provenance: [docs/TESTING.md](docs/TESTING.md#2026-09-07-公开维护与验证来源).
+The Total cases and Clean dev machine rows are **measured on this tree (v20.4.0) on 2026-09-09**; Basic install path stays at its 2026-09-08 alpha-tree measurement. The Sandbox and All-axes rows are **pending re-measurement** on the production box for this 1835 tree; per guard rules they list the axis-derived value alongside the previous measured baseline (2026-09-08, alpha tree). Historical validation provenance: [docs/TESTING.md](docs/TESTING.md#2026-09-07-公开维护与验证来源).
 
 ```bash
 # Complete environment: no-host result measured on this tree, 2026-09-08
@@ -384,9 +384,9 @@ The Total cases, Clean dev machine and Basic install path rows below are **measu
 pip install -r requirements.txt -r requirements-dev.txt
 pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
-pytest tests/ -q -rs | tail -1                                 # no host: 1800 passed, 12 skipped
-HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1812 passed
-HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1800 passed, 12 skipped
+pytest tests/ -q -rs | tail -1                                 # no host: 1823 passed, 12 skipped
+HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1835 passed
+HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1823 passed, 12 skipped
 
 # Basic source-install path: use a separate clean venv; measured 2026-09-08
 pip install -r requirements.txt -r requirements-dev.txt
@@ -397,17 +397,17 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 177
 
 | Dimension | Status |
 |---|---|
-| Total cases | **1812** (measured via `pytest --collect-only`, 2026-09-08, v20.4.0-alpha candidate) |
-| Clean dev machine | 1800 passed · **12 skipped** — **measured 2026-09-08** (v20.4.0-alpha candidate, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **1835** (measured via `pytest --collect-only`, 2026-09-09, v20.4.0 this tree) |
+| Clean dev machine | 1823 passed · **12 skipped** — **measured 2026-09-09** (v20.4.0 this tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1777 passed · **35 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-08**, v20.4.0-alpha candidate) |
-| Sandbox on the production box | 1803 passed · **9 skipped** — **measured 2026-09-08** (isolated sandbox on the production box: same interpreter as the deployed tree, isolated HOME, `.git` present, no `.env`, public dataset reused read-only; peak RSS 408 MB, 1m35s) |
-| All axes present | 1812 passed · **0 skipped** — **measured 2026-09-08** (separate all-axes venv on the production box: tools, extras, host source, model cache and the public LoCoMo dataset all present; peak RSS 530 MB, 1m37s) |
+| Sandbox on the production box | **pending re-measurement** (axis-derived 1827/9, previous measured baseline 1803+9 on the 2026-09-08 alpha tree; must be re-measured on the production box after the tree changed) |
+| All axes present | 1834 passed · **1 skipped** — **measured 2026-09-09** (v20.4.0 this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | Test layering | Mostly module-level unit tests plus source-level guard assertions, with `TestClient`-driven API tests in support |
 | Platform premise | The suite is maintained for Linux/macOS (POSIX): the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms. Windows is not a full-suite platform |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1800 and 1777**: the first is the 2026-09-08 measurement of the complete optional environment on this tree; the second is the same-day clean-venv measurement of the basic install path (requirements files only). With the complete environment, model cache and public LoCoMo dataset present, both host states produce:
+**Why report both 1823 and 1777**: the first is the 2026-09-09 measurement of the complete optional environment on this tree; the second is the 2026-09-08 alpha-tree clean-venv measurement of the basic install path (requirements files only). With the complete environment, model cache and public LoCoMo dataset present, both host states produce:
 
 ```text
 no host: 1800 passed, 12 skipped
