@@ -33,7 +33,6 @@ def _bind_test_db():
 
 def _fresh():
     import ducky.skill_growth as sg
-    import ducky.skill_crystallizer as sc
     conn = sqlite3.connect(_TEST_DB)
     conn.execute("DROP TABLE IF EXISTS skill_crystals")
     conn.commit()

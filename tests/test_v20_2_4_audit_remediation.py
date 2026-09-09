@@ -6,13 +6,8 @@
 import ast
 import importlib
 import inspect
-import math
-import os
 import pathlib
 import re
-import sqlite3
-import subprocess
-import sys
 
 import pytest
 
@@ -212,7 +207,6 @@ class TestLocalGearMakesNoOutboundCall:
         它守的是**将来新增的出口** —— 本轮堵了 call_llm 和 rerank，
         而下一个出口不该靠谁记得。
         """
-        import pathlib as _pl
         _EXEMPT = {
             "ducky/instinct_graduation.py": "文件里的 requests.post 只出现在注释里"
                                              "（v20 P1-5 已把实现转交 llm_client.call_llm，"
@@ -394,10 +388,15 @@ def test_dockerignore_excludes_secrets_but_keeps_examples():
 
 
 def test_ci_has_the_three_new_acceptance_jobs():
-    """三条新验收 job 必须在场，且**触发方式保持维护者裁决的只手动**。
+    """三条新验收 job 必须在场，且触发面与 v20.4.1a 裁决一致。
 
     这条守卫的由来：验收 job 最容易的失败方式不是写错，是**被删掉或改成
     只在某个分支跑** —— 而删掉之后一切照常全绿。
+
+    触发面沿革：2026-08-27 裁决「只手动」；2026-09-09（v20.4.1a，四方外审
+    Sonnet P0 / GPT Luna P1：「测试体系很强 ≠ 每次提交必经测试」）经维护者
+    重新拍板改为 pull_request 全量 + push→main 精简，dispatch/call 保留。
+    判据与 tests/test_v20_ci_pipeline.py 的触发面守卫同源，两处须同步改。
     """
     import yaml
     wf = yaml.safe_load((_ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8"))
@@ -406,9 +405,9 @@ def test_ci_has_the_three_new_acceptance_jobs():
         assert j in jobs, f"CI 缺少验收 job：{j}（现有 {sorted(jobs)}）"
     # PyYAML 会把裸 `on:` 解析成布尔 True 键
     triggers = set(wf.get(True) or wf.get("on") or {})
-    assert triggers == {"workflow_dispatch", "workflow_call"}, (
-        f"触发方式变成 {sorted(triggers)} —— 只手动触发是维护者的明确裁决"
-        "（Actions 失败邮件是实际骚扰），改它需要维护者重新拍板"
+    assert triggers == {"pull_request", "push", "workflow_dispatch", "workflow_call"}, (
+        f"触发方式变成 {sorted(triggers)} —— v20.4.1a 裁决为 "
+        "{pull_request, push, workflow_dispatch, workflow_call}，改它需要维护者重新拍板"
     )
 
 

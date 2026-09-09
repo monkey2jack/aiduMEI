@@ -6,7 +6,6 @@
   · C：「hard gate: push_gate exits 0」判据只测执行位 —— 用例名说谎，与 P2-16 同型同文件。
 再加我自己交代的「乙」：drill 5 项判据 4 项恒真。
 """
-import ast
 import importlib.util
 import json
 import pathlib

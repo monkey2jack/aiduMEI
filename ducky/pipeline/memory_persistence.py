@@ -16,8 +16,6 @@ Persistence：Session 内的搜索上下文跨请求保留
 """
 
 import time, uuid, threading, logging
-from typing import Optional
-from collections import OrderedDict
 
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,

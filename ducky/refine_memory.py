@@ -15,7 +15,6 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
@@ -376,7 +375,7 @@ def refine_group(user_id: str, category: str, *, limit: int = 20, use_llm: bool 
     confidence = 0.5
     conn = get_facts_conn()
     try:
-        sig = hashlib.md5(json.dumps(source_ids, sort_keys=True).encode()).hexdigest()
+        sig = hashlib.md5(json.dumps(source_ids, sort_keys=True).encode(), usedforsecurity=False).hexdigest()
         dup = conn.execute(
             "SELECT refine_id FROM refined_memories WHERE source_ids=? AND state='proposed'",
             (json.dumps(source_ids),),

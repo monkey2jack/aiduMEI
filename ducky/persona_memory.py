@@ -35,7 +35,6 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ducky.utils import DATA_DIR, _get_thread_conn
@@ -212,7 +211,7 @@ def _slugify(raw: str) -> str:
     ascii_part = "".join(ch for ch in text if ch.isascii() and (ch.isalnum() or ch == "-"))
     ascii_part = re.sub(r"-+", "-", ascii_part).strip("-")
     if not re.search(r"[a-z0-9]", ascii_part):
-        ascii_part = "persona-" + hashlib.md5(text.encode()).hexdigest()[:10]
+        ascii_part = "persona-" + hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()[:10]
     return ascii_part[:48] or "persona"
 
 

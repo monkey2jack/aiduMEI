@@ -49,11 +49,14 @@ EOF
 # 存量混着无害残留，一次全拦会逼人绕过整道关 —— 那个前提已不存在），
 # W/UP015 空白与冗余 open mode 卫生同批清零；四类一并进门禁，与
 # pyproject.toml [tool.ruff.lint] select 保持一致。
+# v20.4.1：F401（未使用导入，存量 176 处）与 F541（无占位符 f-string，12 处）
+# 清零后入门禁；兼容门面的故意 re-export 走 `# noqa: F401` / `__all__` 登记，
+# 不在误删射程内。
 if "$PY" -c "import ruff" >/dev/null 2>&1; then
   "$PY" -m ruff check ducky/ api_server.py mcp_server.py scripts/ conftest.py tests/ \
-      --select F821,F811,F841,W,UP015 --output-format concise > /tmp/g_ruff.log 2>&1 \
-      || fail "静态关未过（F821/F811/F841/W/UP015 全清零后入门禁）：$(head -3 /tmp/g_ruff.log | tr '\n' ' ')"
-  echo "  ✅ 静态关：F821/F811/F841/W/UP015 零命中"
+      --select F821,F811,F841,F401,F541,W,UP015 --output-format concise > /tmp/g_ruff.log 2>&1 \
+      || fail "静态关未过（F821/F811/F841/F401/F541/W/UP015 全清零后入门禁）：$(head -3 /tmp/g_ruff.log | tr '\n' ' ')"
+  echo "  ✅ 静态关：F821/F811/F841/F401/F541/W/UP015 零命中"
 else
   # 生产 venv 不装 lint 工具。**显式 SKIP 并计入**，不许静默当过（那就是假绿灯），
   # 也不许假红（那会逼人绕过整道关）。开发机推送前必须装 ruff。

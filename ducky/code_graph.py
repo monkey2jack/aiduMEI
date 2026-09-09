@@ -24,10 +24,6 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from ducky.api_models import (
-    ID_FIELD_MAX_CHARS, QUERY_FIELD_MAX_CHARS,
-    SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
-)
 
 from ducky.utils import BASE_DIR
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from ducky.shutdown import sleep as _shutdown_sleep
 from collections import defaultdict
 from datetime import datetime, timezone
