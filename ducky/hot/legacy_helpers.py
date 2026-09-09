@@ -166,17 +166,35 @@ def _extract_key_facts(category: str, limit: int = 100,
         conn.close()
     return [dict(r) for r in rows]
 
-def _auto_extract_and_link(fact_id: int, text: str, conn=None) -> list[str]:
-    """新增 fact 后自动提取实体并链接"""
+def _auto_extract_and_link(fact_id: int, text: str, conn=None, *,
+                           user_id: str = "default", bank_id: str = "default") -> list[str]:
+    """新增 fact 后自动提取实体并链接。
+
+    v20.4.0（P1-6 · Codex P2-05）：实体去重按 (user_id, bank_id, name) ——
+    全局按名去重会让不同域的同名实体共享一个节点。老库无域列时退回
+    全局形态（列存在性判断，与 facts 补列同款兼容口径）。"""
     entities = _extract_entities(text)
     if not entities: return []
     should_close = conn is None
     if should_close: conn = _get_facts_conn()
     cur = conn.cursor()
+    from ducky.bank_contract import table_columns
+    _scoped = "user_id" in table_columns(conn, "entities")
+    uid = str(user_id or "").strip() or "default"
+    bid = str(bank_id or "").strip() or "default"
     linked = []
     for ent_name in entities:
-        row = cur.execute("SELECT entity_id FROM entities WHERE name=?", (ent_name,)).fetchone()
+        if _scoped:
+            row = cur.execute(
+                "SELECT entity_id FROM entities WHERE name=? AND user_id=? AND bank_id=?",
+                (ent_name, uid, bid)).fetchone()
+        else:
+            row = cur.execute("SELECT entity_id FROM entities WHERE name=?", (ent_name,)).fetchone()
         if row: eid = row[0]
+        elif _scoped:
+            cur.execute("INSERT INTO entities (name,entity_type,user_id,bank_id) VALUES (?,'auto',?,?)",
+                        (ent_name, uid, bid))
+            eid = cur.lastrowid
         else:
             cur.execute("INSERT INTO entities (name,entity_type) VALUES (?,'auto')", (ent_name,))
             eid = cur.lastrowid

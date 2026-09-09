@@ -397,6 +397,12 @@ def test_update_endpoint_registers_bank_in_registry(monkeypatch):
             self.updates.append((memory_id, data, dict(metadata or {})))
             return {"message": "ok"}
 
+        def get(self, memory_id):
+            # v20.4.0 P1-3：/update 先读归属再写向量；替身回一条属于本租户
+            # (alice/work) 的记录，让归属先验通过，才验得到「域注册幂等」。
+            return {"id": memory_id, "user_id": "alice",
+                    "metadata": {"user_id": "alice", "bank_id": "work"}}
+
     mem = _RecordingMemory()
     monkeypatch.setattr(crud, "get_memory", lambda: mem)
 

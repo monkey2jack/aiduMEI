@@ -4,13 +4,24 @@ aiduMEM Checkpoint — 5 段会话快照
 v11 Hyperion · 每次上下文压缩时自动生成，下次会话启动时注入
 
 v11.1 Opus 升级：30天失效标注，陈旧快照注入时自动标注
+
+v20.4.0（三方审计 P1-1 · 动态审计 🟡-1 = Codex P1-04，独立撞车）：补租户轴。
+此前 checkpoints 表只有 session_id，get_latest 全库按时间取最新、/inject
+把**别的租户的会话快照**注入自己的上下文（动态审计实测 TENANT_A_SECRET 被
+租户 B 原样取回）。README 写着「多租户指单机部署内的内存所有权」——
+checkpoint 正是这个所有权模型的缺口。现在：
+  - 表加 (user_id, bank_id) 两列，存量行按 default/default 认领
+    （甲9 口径：只放宽读侧判读，不迁移数据）；
+  - latest 是「当前主体当前 bank 的 latest」；写入/读取/清理全部收窄；
+  - 清理按主体执行：每个 (user, bank) 各保留 MAX_SESSIONS 个会话。
 """
 import json
 import logging
 import threading
 from datetime import datetime, timedelta
 
-from ducky.utils import get_facts_conn
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope, table_columns
+from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 
 logger = logging.getLogger("aiduMEM.Checkpoint")
 
@@ -23,14 +34,20 @@ CP_BLOCKS = {
     "cp_open_notes":      "📝 待办",
 }
 
-MAX_SESSIONS = 5  # 只保留最近 5 个会话的快照
+MAX_SESSIONS = 5  # 每个 (user, bank) 只保留最近 5 个会话的快照
 STALENESS_DAYS = 30  # 快照超过此天数注入时标注为陈旧
 _init_lock = threading.Lock()
 _table_checked = False
 
 
+def _norm_scope(user_id: str, bank_id: str) -> tuple[str, str]:
+    """与写路径同一套规范化链；空值落默认租户/默认库。"""
+    scope = make_scope(user_id or DEFAULT_USER_ID, bank_id or DEFAULT_BANK_ID)
+    return scope.user_id or DEFAULT_USER_ID, scope.bank_id or DEFAULT_BANK_ID
+
+
 def _ensure_table():
-    """确保 checkpoints 表及索引存在"""
+    """确保 checkpoints 表、租户轴两列及索引存在"""
     global _table_checked
     if _table_checked:
         return
@@ -45,12 +62,28 @@ def _ensure_table():
                     session_id  TEXT NOT NULL,
                     block_key   TEXT NOT NULL,
                     content     TEXT NOT NULL,
+                    user_id     TEXT NOT NULL DEFAULT 'default',
+                    bank_id     TEXT NOT NULL DEFAULT 'default',
                     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # 存量库补列：ALTER 的 DEFAULT 会给老行盖 default/default ——
+            # 老快照归 default 租户认领，具名租户看不见它（读侧收窄），
+            # default 租户行为与升级前逐字一致。
+            _cols = table_columns(conn, "checkpoints")
+            if "user_id" not in _cols:
+                conn.execute("ALTER TABLE checkpoints ADD COLUMN "
+                             "user_id TEXT NOT NULL DEFAULT 'default'")
+            if "bank_id" not in _cols:
+                conn.execute("ALTER TABLE checkpoints ADD COLUMN "
+                             "bank_id TEXT NOT NULL DEFAULT 'default'")
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_checkpoints_session
                 ON checkpoints(session_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_checkpoints_scope
+                ON checkpoints(user_id, bank_id, session_id)
             """)
             conn.commit()
             _table_checked = True
@@ -61,13 +94,16 @@ def _ensure_table():
             conn.close()
 
 
-def write_checkpoint(session_id: str, blocks: dict) -> dict:
-    """写入一个会话的 5 段快照"""
+def write_checkpoint(session_id: str, blocks: dict, *,
+                     user_id: str = DEFAULT_USER_ID,
+                     bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """写入一个会话的 5 段快照（落在调用方自己的域里）"""
     _ensure_table()
     if not session_id or len(session_id.strip()) < 3:
         raise ValueError("session_id 无效，长度至少 3 字符")
 
     session_id = session_id.strip()
+    uid, bid = _norm_scope(user_id, bank_id)
     # v20.2.4（外审 F-12）：checkpoint 的内容也会被注入 Agent 上下文，
     # 此前同样零校验零中和。这里只**中和边界**、不做拒绝 —— checkpoint 是
     # 会话快照（可能包含任何对话原文），拒绝写入会把正常会话弄丢；
@@ -83,15 +119,20 @@ def write_checkpoint(session_id: str, blocks: dict) -> dict:
 
     count = 0
     try:
-        # 为防止同一个 session 重复写入，我们先删除该 session 已有的快照
-        conn.execute("DELETE FROM checkpoints WHERE session_id = ?", (session_id,))
+        # 为防止同一个 session 重复写入，先删**本域内**该 session 已有的快照。
+        # 域条件不可省：session_id 不再假设全局唯一，别的租户撞名的会话
+        # 不许被这里顺手删掉。
+        conn.execute(
+            "DELETE FROM checkpoints WHERE session_id = ? AND user_id = ? AND bank_id = ?",
+            (session_id, uid, bid))
 
         for key, label in CP_BLOCKS.items():
             content = blocks.get(key, "")
             if content and len(str(content).strip()) >= 3:
                 conn.execute(
-                    "INSERT INTO checkpoints (session_id, block_key, content, created_at) VALUES (?, ?, ?, ?)",
-                    (session_id, key, str(content).strip()[:600], now)
+                    "INSERT INTO checkpoints (session_id, block_key, content, user_id, bank_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_id, key, str(content).strip()[:600], uid, bid, now)
                 )
                 count += 1
         conn.commit()
@@ -101,32 +142,36 @@ def write_checkpoint(session_id: str, blocks: dict) -> dict:
     finally:
         conn.close()
 
-    logger.info(f"Checkpoint 写入: session={session_id}, {count}/5 段")
-    return {"session_id": session_id, "blocks_written": count, "status": "ok"}
+    logger.info(f"Checkpoint 写入: session={session_id}, scope={uid}/{bid}, {count}/5 段")
+    return {"session_id": session_id, "blocks_written": count, "status": "ok",
+            "user_id": uid, "bank_id": bid}
 
 
-def get_latest_checkpoint() -> dict | None:
-    """获取最近一次会话的完整快照"""
+def get_latest_checkpoint(user_id: str = DEFAULT_USER_ID,
+                          bank_id: str = DEFAULT_BANK_ID) -> dict | None:
+    """获取**当前主体当前 bank** 最近一次会话的完整快照"""
     _ensure_table()
+    uid, bid = _norm_scope(user_id, bank_id)
     conn = get_facts_conn()
 
     try:
-        # 找最新 session_id
         row = conn.execute("""
             SELECT session_id, MAX(created_at) as latest
             FROM checkpoints
+            WHERE user_id = ? AND bank_id = ?
             GROUP BY session_id
             ORDER BY latest DESC
             LIMIT 1
-        """).fetchone()
+        """, (uid, bid)).fetchone()
 
         if not row:
             return None
 
         session_id = row["session_id"]
         rows = conn.execute(
-            "SELECT block_key, content, created_at FROM checkpoints WHERE session_id = ? ORDER BY id",
-            (session_id,)
+            "SELECT block_key, content, created_at FROM checkpoints "
+            "WHERE session_id = ? AND user_id = ? AND bank_id = ? ORDER BY id",
+            (session_id, uid, bid)
         ).fetchall()
 
         blocks = {}
@@ -145,14 +190,18 @@ def get_latest_checkpoint() -> dict | None:
         conn.close()
 
 
-def get_checkpoint(session_id: str) -> dict | None:
-    """获取指定会话的快照"""
+def get_checkpoint(session_id: str, *,
+                   user_id: str = DEFAULT_USER_ID,
+                   bank_id: str = DEFAULT_BANK_ID) -> dict | None:
+    """获取指定会话的快照（只在调用方自己的域里找）"""
     _ensure_table()
+    uid, bid = _norm_scope(user_id, bank_id)
     conn = get_facts_conn()
     try:
         rows = conn.execute(
-            "SELECT block_key, content, created_at FROM checkpoints WHERE session_id = ? ORDER BY id",
-            (session_id,)
+            "SELECT block_key, content, created_at FROM checkpoints "
+            "WHERE session_id = ? AND user_id = ? AND bank_id = ? ORDER BY id",
+            (session_id, uid, bid)
         ).fetchall()
 
         if not rows:
@@ -174,35 +223,40 @@ def get_checkpoint(session_id: str) -> dict | None:
         conn.close()
 
 
-def cleanup_old_checkpoints() -> dict:
-    """清理超过 MAX_SESSIONS 个会话之前的旧快照"""
+def cleanup_old_checkpoints(user_id: str = DEFAULT_USER_ID,
+                            bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """清理**本域内**超过 MAX_SESSIONS 个会话之前的旧快照。
+
+    全局清理会删掉其他主体的快照（Codex P1-04 点名），改为按主体执行。
+    """
     _ensure_table()
+    uid, bid = _norm_scope(user_id, bank_id)
     conn = get_facts_conn()
     try:
-        # 找所有 session_id 按时间排序
         rows = conn.execute("""
             SELECT session_id, MAX(created_at) as latest
             FROM checkpoints
+            WHERE user_id = ? AND bank_id = ?
             GROUP BY session_id
             ORDER BY latest DESC
-        """).fetchall()
+        """, (uid, bid)).fetchall()
 
         if len(rows) <= MAX_SESSIONS:
             return {"kept": len(rows), "deleted": 0, "status": "no_cleanup_needed"}
 
-        # 保留最近 MAX_SESSIONS 个，删除更早的
+        # 保留最近 MAX_SESSIONS 个，删除本域更早的
         keep_sessions = [r["session_id"] for r in rows[:MAX_SESSIONS]]
 
-        # 构造安全占位符删除
         placeholders = ",".join("?" for _ in keep_sessions)
         cursor = conn.execute(
-            f"DELETE FROM checkpoints WHERE session_id NOT IN ({placeholders})",
-            keep_sessions
+            f"DELETE FROM checkpoints WHERE user_id = ? AND bank_id = ? "
+            f"AND session_id NOT IN ({placeholders})",
+            [uid, bid, *keep_sessions]
         )
         deleted = cursor.rowcount
         conn.commit()
 
-        logger.info(f"Checkpoint 清理: 保留 {len(keep_sessions)} 个会话, 删除 {deleted} 行记录")
+        logger.info(f"Checkpoint 清理({uid}/{bid}): 保留 {len(keep_sessions)} 个会话, 删除 {deleted} 行记录")
         return {"kept": len(keep_sessions), "deleted": deleted, "status": "cleaned"}
     except Exception as e:
         logger.error(f"Checkpoint cleanup error: {e}")
@@ -211,9 +265,10 @@ def cleanup_old_checkpoints() -> dict:
         conn.close()
 
 
-def inject_context() -> str:
-    """生成 Checkpoint 注入文本（超过 30 天自动标注陈旧）"""
-    cp = get_latest_checkpoint()
+def inject_context(user_id: str = DEFAULT_USER_ID,
+                   bank_id: str = DEFAULT_BANK_ID) -> str:
+    """生成 Checkpoint 注入文本（超过 30 天自动标注陈旧）——只注入本域快照"""
+    cp = get_latest_checkpoint(user_id, bank_id)
     if not cp or not cp.get("blocks"):
         return ""
 

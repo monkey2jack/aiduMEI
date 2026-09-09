@@ -66,22 +66,51 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         if idem_state["action"] == "pending":
             # v20.3.2 正式版（P1-10）：同键的前一个请求还在处理中。原实现对 pending
             # 不做任何事、继续往下写 —— 幂等键在并发重试下反而制造重复。
+            # v20.4.0（P0-1）：失败请求现在立即释放键，文案照实说。
             raise HTTPException(
                 409,
-                "idempotency_key is still being processed by an earlier request; "
-                "retry after it completes (or after 600s)",
+                "idempotency_key is held by an in-flight request; failed requests "
+                "release the key immediately, so retry shortly (in-flight lease "
+                "expires after 600s)",
             )
         if idem_state["action"] == "conflict":
             raise HTTPException(
                 409, "idempotency_key is already bound to a different payload")
+
+        # v20.4.0（三方审计 P0-1 · 动态审计 🔴-1）：claim 之后的失败出口（注入 400、
+        # 未预期异常）必须释放本请求自己 claim 到的键，否则死键押着合法重试
+        # 600 秒恒 409（动态审计落盘证据 inj-lock-1 同款）。
+        _idem_claimed: list = []
+        if idem_state["action"] == "new" and idem_state.get("key"):
+            _idem_claimed.append((req.idempotency_key, req.user_id, req.bank_id))
+
+        def _release_failed_claim():
+            if not _idem_claimed:
+                return
+            k, uid, bid = _idem_claimed.pop()
+            try:
+                idempotency.release(k, uid, bid)
+            except Exception as _re:
+                logger.warning("失败出口释放幂等键失败（key=%s）: %s", k, _re)
 
         def _finalize_raw(resp: dict) -> dict:
             if req.idempotency_key and idem_state["action"] != "disabled":
                 resp = {**resp, "request_id": req.idempotency_key}
                 idempotency.finalize(
                     req.idempotency_key, req.user_id, req.bank_id, resp)
+                _idem_claimed.clear()  # P0-1：已落账，失败释放不再适用
             return resp
 
+        try:
+            return _add_raw_inner(req, t0, _finalize_raw)
+        except HTTPException:
+            _release_failed_claim()
+            raise
+        except Exception:
+            _release_failed_claim()
+            raise
+
+    def _add_raw_inner(req: RawDrawerRequest, t0: float, _finalize_raw):
         is_safe, sanitized_content, rejection = validate_and_sanitize_memory_content(req.content.strip())
         if not is_safe:
             logger.warning("🛡️ /add/raw rejected injection: %s", rejection)
