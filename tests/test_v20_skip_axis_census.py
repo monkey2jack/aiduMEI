@@ -184,7 +184,7 @@ _AXES = (
         # v20.4 P1-6 的行为用例同轴（test_v20_4_mcp_auth_doc.py 三条三态用例
         # 也要真 import mcp_server；同文件的 AST 守卫读磁盘源码，不占这条轴）。
         "key": "mcp_extra",
-        "files": ["test_first_run_experience.py", "test_v20_4_mcp_auth_doc.py"],
+        "files": ["test_first_run_experience.py", "test_v20_4_mcp_auth_doc.py", "test_v20_4_p1_guards.py"],
         "scope": "callsite",
         "match": r'importorskip\("mcp_server"\)',
         "doc_zh": "`mcp` extra 已安装",

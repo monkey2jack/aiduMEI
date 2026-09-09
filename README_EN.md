@@ -375,7 +375,7 @@ Full list (host integration, federation, log directory and more) with comments: 
 
 ## Testing & quality
 
-The Total cases and Clean dev machine rows are **measured on this tree (v20.4.0) on 2026-09-09**; Basic install path stays at its 2026-09-08 alpha-tree measurement. The Sandbox and All-axes rows are **pending re-measurement** on the production box for this 1835 tree; per guard rules they list the axis-derived value alongside the previous measured baseline (2026-09-08, alpha tree). Historical validation provenance: [docs/TESTING.md](docs/TESTING.md#2026-09-07-公开维护与验证来源).
+The Total cases, Clean dev machine, Basic install path and All axes present rows are **measured on this tree (v20.4.0) on 2026-09-09**; only the Sandbox row is **pending re-measurement** on the production box for this 1835 tree, listing the axis-derived value alongside the previous measured baseline (2026-09-08, alpha tree). Historical validation provenance: [docs/TESTING.md](docs/TESTING.md#2026-09-07-公开维护与验证来源).
 
 ```bash
 # Complete environment: no-host result measured on this tree, 2026-09-08
@@ -399,15 +399,15 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 177
 |---|---|
 | Total cases | **1835** (measured via `pytest --collect-only`, 2026-09-09, v20.4.0 this tree) |
 | Clean dev machine | 1823 passed · **12 skipped** — **measured 2026-09-09** (v20.4.0 this tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
-| Basic install path | 1777 passed · **35 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-08**, v20.4.0-alpha candidate) |
-| Sandbox on the production box | **pending re-measurement** (axis-derived 1827/9, previous measured baseline 1803+9 on the 2026-09-08 alpha tree; must be re-measured on the production box after the tree changed) |
+| Basic install path | 1810 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09**, v20.4.0 this tree) |
+| Sandbox on the production box | **pending re-measurement** (axis-derived 1825/10, previous measured baseline 1803+9 on the 2026-09-08 alpha tree; must be re-measured on the production box after the tree changed) |
 | All axes present | 1834 passed · **1 skipped** — **measured 2026-09-09** (v20.4.0 this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | Test layering | Mostly module-level unit tests plus source-level guard assertions, with `TestClient`-driven API tests in support |
 | Platform premise | The suite is maintained for Linux/macOS (POSIX): the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms. Windows is not a full-suite platform |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1823 and 1777**: the first is the 2026-09-09 measurement of the complete optional environment on this tree; the second is the 2026-09-08 alpha-tree clean-venv measurement of the basic install path (requirements files only). With the complete environment, model cache and public LoCoMo dataset present, both host states produce:
+**Why report both 1823 and 1810**: the first is the 2026-09-09 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only, this tree). With the complete environment, model cache and public LoCoMo dataset present, both host states produce:
 
 ```text
 no host: 1800 passed, 12 skipped
@@ -433,7 +433,7 @@ On a production host where other optional axes are absent, the bare command **ac
 | `mem0ai` installed | 20 | real patch-layer tests |
 | `fastembed` installed | 1 | real local-model fallback test; the configured model cache must also be present |
 | `ruff` installed | 3 | real-defect static rules |
-| `mcp` extra installed | 5 | MCP import-surface guards + auth-behavior cases |
+| `mcp` extra installed | 7 | MCP import-surface guards + auth-behavior + SSE transport cases |
 
 The suite is maintained for Linux/macOS POSIX. Guards that lack their tool skip honestly instead of reporting zero findings. Every payload-, credential- or response-shape fix needs its production shape plus a discriminating negative control; named tests must be PASSED, not silently SKIPPED.
 
