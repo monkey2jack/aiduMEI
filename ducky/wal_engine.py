@@ -327,18 +327,22 @@ class WALEngine:
         """收敛账本：pending 全留；终态条目只留最近 keep_recent_seconds 内的（状态折叠进条目）。"""
         with self._write_lock:
             if not self.wal_file.exists():
-                return {"kept": 0, "dropped": 0, "unparsable_dropped": 0, "bytes_before": 0, "bytes_after": 0}
+                return {"kept": 0, "dropped": 0, "unparsable_kept": 0, "bytes_before": 0, "bytes_after": 0}
             before = self.wal_file.stat().st_size
             entries_by_id: Dict[str, WALEntry] = {}
             order: List[str] = []
             status_updates: Dict[str, tuple] = {}
             bad = 0
+            bad_lines: List[str] = []
             with open(self.wal_file, encoding="utf-8") as f:
                 for line in f:
                     entry = WALEntry.from_json(line)
                     if not entry:
                         if line.strip():
                             bad += 1
+                            # v20.4.0（Codex P2-03）：解析不动的行**原样保留**，
+                            # 不许把损坏翻译成「没有待处理」——丢弃即静默数据丢失。
+                            bad_lines.append(line.rstrip("\n"))
                         continue
                     tgt = entry.payload.get("target_wal_id")
                     if tgt:
@@ -366,6 +370,8 @@ class WALEngine:
             with open(tmp, "w", encoding="utf-8") as f:
                 for ent in kept:
                     f.write(ent.to_json() + "\n")
+                for raw in bad_lines:
+                    f.write(raw + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, self.wal_file)
@@ -373,9 +379,11 @@ class WALEngine:
             self.compactions += 1
             # 滞回：账本若全是近期条目，收敛后仍可能 > 阈值；不设滞回会每次 append 重写整个文件
             self._compact_floor = after * 2 if after > self.COMPACT_SIZE_TRIGGER else 0
+            if bad:
+                logger.warning("WAL compaction：%d 条坏行已原样保留（需人工核查格式损坏来源）", bad)
             if dropped or bad:
-                logger.info("WAL compaction：留 %d 丢 %d（坏行 %d）%d→%d 字节", len(kept), dropped, bad, before, after)
-            return {"kept": len(kept), "dropped": dropped, "unparsable_dropped": bad,
+                logger.info("WAL compaction：留 %d 丢 %d（坏行保留 %d）%d→%d 字节", len(kept), dropped, bad, before, after)
+            return {"kept": len(kept), "dropped": dropped, "unparsable_kept": bad,
                     "bytes_before": before, "bytes_after": after}
 
     def compact_if_large(self) -> Optional[Dict[str, Any]]:
@@ -406,7 +414,10 @@ class WALEngine:
                     else:
                         entries_by_id[entry.wal_id] = entry
         except Exception as e:
-            logger.warning("读取 WAL 日志失败: %s", e)
+            # v20.4.0（Codex P2-03）：读欠账失败按空返回是**静默丢失形态** ——
+            # 对账会把「读不了」当成「没欠账」。升 ERROR 让运维面看得见；
+            # 返回空的降级行为保留（启动对账不能因账本损坏拒绝启动）。
+            logger.error("读取 WAL 日志失败（对账将按空欠账处理 —— 这可能是静默丢失，需人工核查）: %s", e)
             return []
 
         pending = []

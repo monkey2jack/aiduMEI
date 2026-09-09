@@ -612,7 +612,8 @@ def test_p14_no_handler_swallows_httpexception():
                 isinstance(n, ast.Raise)
                 and isinstance(n.exc, ast.Call)
                 and getattr(n.exc.func, "id", "") == "HTTPException"
-                for n in ast.walk(node)
+                for stmt in node.body            # 只看 try 体：except 内 raise HTTPException
+                for n in ast.walk(stmt)          # 是 fail-closed 转换，不是「被自己的 except 吞」
                 if isinstance(n, ast.Raise)
             )
             if not has_raise:
@@ -1377,7 +1378,7 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 2026-09-07 v20.3.4 生产机独立全轴 venv 实测；工具/extras/宿主/模型缓存/公开 LoCoMo 数据集齐备。
     # 这一格从前是「待复测 + 推导值」，推导值恰好等于实测值 —— 但推导对了不等于
     # 测过了；换树必须重测后改这里。
-    MEASURED_ALL_AXES = (1812, 0)   # 2026-09-08 v20.4.0-alpha 候选树实测：生产机独立全轴 venv（工具/extras/宿主/
+    MEASURED_ALL_AXES = (1834, 1)   # 2026-09-09 v20.4.0 本树·生产机独立全轴 venv 实测（工具/extras/宿主/
     # 模型缓存/公开 LoCoMo 数据集齐备），data 目录钉在沙箱内，退出 0，峰值 RSS 530 MB。上一基线 (1743, 0) 属 v20.3.4 树。
     # v20.3.2（第 10 轮审计 P0-3）：**基础路径数字进射程**。
     # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，

@@ -144,6 +144,9 @@ _SQL_PHRASE_RE = re.compile(
 # 新插值出现在这张表之外 → 红。值请用 ? 参数化；表列名等结构性拼接
 # 请人工核对来源后在此登记。
 _EXPECTED_SQL_INTERPOLATIONS = {
+    # v20.4.0(P1-6)：entities 补租户轴，列名从硬编码元组 ("user_id","bank_id")
+    # 拼接，不含任何请求数据；列名无法走 ? 参数化。人工核对：ducky/schema_bootstrap.py:172。
+    ("ducky/schema_bootstrap.py", "col"),
     ("ducky/bank_contract.py", "column"), ("ducky/bank_contract.py", "ddl"),
     ("ducky/bank_contract.py", "table"),
     ("ducky/checkpoint.py", "placeholders"),
@@ -248,6 +251,12 @@ _SQL_KEYWORD_TABLES = {"ADD"}
 # 迁移逻辑留在各模块（幂等 ensure_*），这张表补的是「谁在改 schema」的
 # 全景账——新迁移点不登记即红。
 _MIGRATION_LEDGER = {
+    # v20.4.0 P1 租户轴/去重：以下均 additive（ADD COLUMN / CREATE IF NOT EXISTS / 表重建）。
+    ("ducky/checkpoint.py", "ALTER", "checkpoints"),
+    ("ducky/federation/schema.py", "CREATE", "facts_dedup_quarantine"),
+    ("ducky/schema_bootstrap.py", "ALTER", "entities"),
+    ("ducky/tree_memory.py", "ALTER", "memory_nodes_v2"),
+    ("ducky/tree_memory.py", "CREATE", "memory_nodes_v2"),
     ("ducky/autodream.py", "CREATE", "autodream_log"),
     ("ducky/bank_contract.py", "ALTER", "<dynamic>"),
     ("ducky/bank_contract.py", "CREATE", "memory_banks"),

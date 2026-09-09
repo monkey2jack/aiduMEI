@@ -132,6 +132,24 @@ def rebuild_facts_unique_index(conn: sqlite3.Connection) -> None:
         # (agent, user, bank) 域内保留每组最新一行，绝不跨 bank 删行。
         logger.warning("唯一索引升级遇冲突，尝试清理同域撞 key 脏数据后重建: %s", exc)
         try:
+            # v20.4.0（三方审计 P2-4 · Codex P2-08）：撞 key 的落选行**先搬
+            # 隔离表再删**，不再无痕自动删除 —— 即使删除限定在同一五元组内，
+            # 「自动保最新」仍可能丢掉不同来源的有价值内容。隔离行带
+            # quarantined_at，人工核查后可回插或清理；数量进日志留审计。
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS facts_dedup_quarantine AS "
+                "SELECT *, '' AS quarantined_at FROM facts WHERE 0")
+            cur_q = conn.execute(
+                f"""
+                INSERT INTO facts_dedup_quarantine
+                SELECT *, datetime('now') FROM facts
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM facts GROUP BY {FACTS_UNIQUE_COLUMNS}
+                )
+                """
+            )
+            logger.warning("唯一索引冲突清理：%d 行落选行已搬入 facts_dedup_quarantine（人工核查后处置）",
+                           cur_q.rowcount if cur_q.rowcount and cur_q.rowcount > 0 else 0)
             conn.execute(
                 f"""
                 DELETE FROM facts

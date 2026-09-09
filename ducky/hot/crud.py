@@ -197,8 +197,10 @@ def register_crud_routes(app: FastAPI) -> None:
         user_id = _normalize_user_id(scope.user_id)
         # v20.1.1（N-1）：删除路径限流（默认 3/min）——生产 14 天 delete_all
         # 共 7 次，正常操作打不到上限；循环误删在清空更多域之前被拦停。
-        from ducky.rate_guard import check_rate, delete_all_rate_limit
-        _retry = check_rate("delete_all", user_id, limit=delete_all_rate_limit())
+        from ducky.rate_guard import check_rate, delete_all_global_rate_limit, delete_all_rate_limit
+        # v20.4.0（P1-8）：删除路径同样叠全局桶 —— 轮换租户的循环删除拦在总量线
+        _retry = check_rate("delete_all", user_id, limit=delete_all_rate_limit(),
+                            global_limit=delete_all_global_rate_limit())
         if _retry is not None:
             raise HTTPException(
                 status_code=429,
@@ -470,6 +472,39 @@ def register_crud_routes(app: FastAPI) -> None:
             logger.error(f"opinions/aggregate 失败: {e}")
             raise HTTPException(500, api_error_detail(e))
 
+    def _verify_vector_ownership(mem, memory_id: str, user_id: str, bank_id: str) -> None:
+        """v20.4.0（三方审计 P1-3 · Codex P1-02 实锤）：改向量之前先证明归属。
+
+        原实现先 mem.update(memory_id, …, metadata={"bank_id": 目标域}) 再同步
+        FTS/facts —— 知道一个 memory ID 的调用者可以改写其他域的向量内容，并把
+        它的 metadata 重新标成自己的 bank（把他人记忆「搬」进自己域再改写）。
+        现在：先读原向量的归属，(user_id, bank_id) 与请求不符 → 404（不区分
+        「不存在」与「不是你的」，不泄露存在性）。读不到归属（后端异常）→ 503
+        fail-closed，绝不带着未验证的归属继续写。
+        兼容口径（与甲9 读侧放宽同款）：存量老行缺 user/bank 字段的按
+        default/default 认领 —— 只放宽判读，不迁移数据。
+        """
+        try:
+            got = mem.get(memory_id)
+        except Exception as ge:
+            raise HTTPException(503, f"无法核验记忆归属（向量后端读取失败），拒绝更新: {api_error_detail(ge)}")
+        item = None
+        if isinstance(got, dict):
+            inner = got.get("results")
+            if isinstance(inner, list) and inner and isinstance(inner[0], dict):
+                item = inner[0]
+            else:
+                item = got
+        elif isinstance(got, list) and got and isinstance(got[0], dict):
+            item = got[0]
+        if not item or not (item.get("id") or item.get("memory_id") or item.get("memory") or item.get("data")):
+            raise HTTPException(404, f"memory not found: {memory_id}")
+        meta = item.get("metadata") or {}
+        stored_user = str(item.get("user_id") or meta.get("user_id") or DEFAULT_USER_ID)
+        stored_bank = str(meta.get("bank_id") or DEFAULT_BANK_ID)
+        if stored_user != user_id or stored_bank != bank_id:
+            raise HTTPException(404, f"memory not found: {memory_id}")
+
     @app.post("/update")
     def update(req: UpdateRequest):
         # 🔴P0-4: 传递并严格校验 user_id 归属，并同步更新 FTS5、facts 与 memory_types
@@ -484,12 +519,16 @@ def register_crud_routes(app: FastAPI) -> None:
 
             scope = make_scope(req.user_id, req.bank_id)
             user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
+            # v20.4.0（P1-3）：归属先验，未验证不许动向量。
+            _verify_vector_ownership(mem, req.memory_id, user_id, scope.bank_id)
             # /update 会把 bank_id 盖进向量 metadata 并按该域重建 FTS 索引，
             # 也就是说它能把一条记忆搬进一个从没被注册过的域。写路径里只有
             # 这一处漏了注册（add / tombstone / core_memory / conflict_resolver
             # 都调了），结果是数据落在某域、memory_banks 里却查不到这个域 ——
             # 域存在与否取决于当初是从哪个端点进来的，注册表从此不可信。
             # INSERT OR IGNORE，幂等，对已注册域是 no-op。
+            # （归属先验之后，metadata 里的 bank_id 只可能等于原值 —— /update
+            # 不再具备「搬域」能力，盖写是幂等重申。）
             ensure_bank_registered(scope)
             mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id})
 

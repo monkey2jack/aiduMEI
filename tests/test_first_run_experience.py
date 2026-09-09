@@ -631,27 +631,25 @@ def test_idempotency_claim_and_replay_contract(tmp_path, monkeypatch):
     import sqlite3
     from ducky import idempotency as idem
     db = tmp_path / "idem.db"
-    conn = sqlite3.connect(db)
-    conn.row_factory = sqlite3.Row
-    original = idem.get_facts_conn
+    # v20.4.0（P0-1 顺手工程）：幂等层不再借请求线程共享连接
+    # （get_facts_conn 接缝已删），改为独立短连接 _connect。替身按生产
+    # 契约对齐新接缝：返回带 Row factory、已建表的独立连接。
     def _fresh_conn():
-        nonlocal conn
-        conn = sqlite3.connect(db, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-    monkeypatch.setattr(idem, "get_facts_conn", _fresh_conn)
-    try:
-        first = idem.claim("same-key", "u", "b", {"messages": "same"})
-        assert first["action"] == "new", f"claim unexpectedly disabled: {first}"
-        assert first == {"action": "new", "key": "same-key"}
-        idem.finalize("same-key", "u", "b", {"status": "ok", "results": [{"id": "mem-1"}]})
-        replay = idem.claim("same-key", "u", "b", {"messages": "same"})
-        assert replay["action"] == "replay"
-        assert replay["response"]["results"][0]["id"] == "mem-1"
-        conflict = idem.claim("same-key", "u", "b", {"messages": "different"})
-        assert conflict["action"] == "conflict"
-    finally:
-        idem.get_facts_conn = original
+        c = sqlite3.connect(db, check_same_thread=False)
+        c.row_factory = sqlite3.Row
+        c.execute(idem._SCHEMA)
+        c.commit()
+        return c
+    monkeypatch.setattr(idem, "_connect", _fresh_conn)
+    first = idem.claim("same-key", "u", "b", {"messages": "same"})
+    assert first["action"] == "new", f"claim unexpectedly disabled: {first}"
+    assert first == {"action": "new", "key": "same-key"}
+    idem.finalize("same-key", "u", "b", {"status": "ok", "results": [{"id": "mem-1"}]})
+    replay = idem.claim("same-key", "u", "b", {"messages": "same"})
+    assert replay["action"] == "replay"
+    assert replay["response"]["results"][0]["id"] == "mem-1"
+    conflict = idem.claim("same-key", "u", "b", {"messages": "different"})
+    assert conflict["action"] == "conflict"
 
 
 def test_service_units_have_memory_limits_and_consistent_runtime_paths():
