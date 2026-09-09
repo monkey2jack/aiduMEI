@@ -2,9 +2,7 @@
 """Verify dependency declarations in both directions."""
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 import tomllib
 from pathlib import Path
 

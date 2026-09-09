@@ -25,7 +25,6 @@ delete_all，在配额烧穿或数据清空之前被 429 拦停。
 """
 from __future__ import annotations
 
-import os
 import threading
 import logging
 import time

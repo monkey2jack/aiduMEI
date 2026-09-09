@@ -12,7 +12,6 @@ import sys
 import threading
 import time
 
-import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
