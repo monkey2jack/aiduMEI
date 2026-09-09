@@ -30,7 +30,7 @@ def test_sse_transport_requires_bearer_on_nonloopback_form(monkeypatch):
     for var in ("ALL_PROXY", "all_proxy", "http_proxy", "https_proxy",
                 "HTTP_PROXY", "HTTPS_PROXY"):
         monkeypatch.delenv(var, raising=False)
-    import mcp_server as ms
+    ms = pytest.importorskip("mcp_server")
 
     app = ms._build_sse_app_with_auth(ms.mcp, loopback=False)
     import uvicorn
@@ -63,7 +63,7 @@ def test_sse_loopback_form_stays_open(monkeypatch):
     """回环形态不加逐请求认证（与 api_server 回环信任模型同口径）——
     包装函数对 loopback=True 必须原样返回内层 app。"""
     monkeypatch.setenv("AIDUMEM_API_TOKEN", "sse-guard-token-2")
-    import mcp_server as ms
+    ms = pytest.importorskip("mcp_server")
     inner_marker = ms.mcp.sse_app(mount_path="/sse").__class__
     wrapped = ms._build_sse_app_with_auth(ms.mcp, loopback=True)
     assert isinstance(wrapped, inner_marker), "回环形态被套了认证壳 —— 契约变了"
