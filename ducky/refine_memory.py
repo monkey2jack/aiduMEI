@@ -627,9 +627,22 @@ def rollback_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "")
                     logger.debug("FTS re-index skip: %s", fe)
 
         # 移除对应的 refined 摘要 —— 只删账本行自己域里的那条
+        _refined_rows = conn.execute(
+            "SELECT id FROM facts WHERE fact_key=?" + _scope_sql,
+            (f"refined:{refine_id}", *_scope_args)).fetchall()
         conn.execute(
             "DELETE FROM facts WHERE fact_key=?" + _scope_sql,
             (f"refined:{refine_id}", *_scope_args))
+        try:
+            from ducky.memory_lineage import record_terminal_lineage
+            for _rr in _refined_rows:
+                record_terminal_lineage(
+                    conn, memory_id=f"fact:{_rr[0]}", action="DELETE",
+                    actor=_owner or "system", source="refine_rollback",
+                    diff_summary="refine rollback: derived summary removed",
+                )
+        except Exception as le:
+            logger.debug("refine 回滚终链记录跳过: %s", le)
         try:
             from ducky.text_fts import _unindex_memory
             _unindex_memory(f"refined:{refine_id}")
