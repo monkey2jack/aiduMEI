@@ -1,6 +1,6 @@
 # aiduMEI 版本演进史
 
-## v20.5.0（2026-09-10 Preview 预览版）：可信联邦授权与记忆密码学谱系基础
+## v20.5（2026-09-10 Preview 预览版）：可信联邦授权与记忆密码学谱系基础
 
 > **公开身份 = 20.5 Preview**（tag / Release 均为 `v20.5-preview`）。本版面向外部用户与专家开放使用与审计，收集反馈后再升格为不带后缀的正式版本号。
 
@@ -23,7 +23,7 @@
 - **🔴-2 `INSERT OR REPLACE` 撤销复活**（grants.py）：已撤销/已存在的 grant_id 可被覆盖——revoked_at 重置 NULL，撤销原地复活、他人授权可被劫持。改显式冲突检查：**已存在 grant_id 一律拒绝**，撤销是终态，重授权必须用新 ID（审计链不断）。
 - **🟡-1 crud `/update` 谱系织入**（hot/crud.py）：按用户审计裁决——/update 改的是 fact_value 正文（与 federation writer 同字段），此前「元数据」归类不成立。补 hash/version/previous_version_hash 推进 + memory_lineage 同事务记录，与 writer UPDATE 路径对齐。
 - **UI 修复（登录页样式塌陷）**：CSP `style-src 'self'`（无 unsafe-inline）拒绝渲染 `<style>` 元素——v20.4.0 P2-11 只搬了 style= 内容属性，login.html 124 行与 index.html 45 行内联 `<style>` 块被打死，登录页变无样式白板（生产实锤）。两页样式整体收编 css/style.css（1029→1162 行），缓存戳 v=6/v=10。**「守卫射程病」第五次发作**：TestNoInlineStyleInFrontend 新增 `<style>` 元素形态断言（剥 HTML 注释后扫描，防字面误伤）。
-- **回归**：新增 5 条用户整改用例（scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/crud-update 谱系推进/style 元素守卫）；except 棘轮 626→627（+1 crud /update lineage 降级钩子）；🟢-2（grantor 权限校验）按用户审计裁决不阻塞，转 v20.5.0 正式版前评估。
+- **回归**：新增 5 条用户整改用例（scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/crud-update 谱系推进/style 元素守卫）；except 棘轮 626→627（+1 crud /update lineage 降级钩子）；🟢-2（grantor 权限校验）按用户审计裁决不阻塞，转 v20.5 正式版前评估。
 
 ---
 
