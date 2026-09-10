@@ -44,6 +44,53 @@ def _summary_of(value: str) -> str:
     return f"{value[:60]}{'...' if len(value) > 60 else ''}"
 
 
+def _upsert_fact_row(conn, *, category, fact_key, fact_value, source, agent_id,
+                     profile, resolved_tier, recorded_at, decay_at, tags, shared,
+                     valid_from, valid_to, scope, initial_hash,
+                     summary) -> tuple[int, int]:
+    """写入/改写 facts 行并返回真实 (row_id, version)。
+
+    v20.5.0 正式版（用户审计 🔴-1）：从 `write_fact` 中抽出——原实现直接用
+    `cur.lastrowid`，冲突命中时那不是被更新行的 id，谱系因此串链并产生幽灵链。
+    改走 `upsert_returning_id`（RETURNING id / 唯一键回查），绝不信任 lastrowid。
+
+    抽成独立函数的第二个理由：`write_fact` 已是 CC 47 的 F 级函数，任务书
+    明令「T1 修复时不得再加重该函数职责」——本次修复把这段整体移出，
+    使 `write_fact` 的圈复杂度不升反降。
+    """
+    from ducky.utils import upsert_returning_id
+    # ON CONFLICT 目标必须与 idx_facts_unique 列集完全一致
+    # （见 federation/schema.py FACTS_UNIQUE_COLUMNS），否则报
+    # "no such conflict target"。
+    return upsert_returning_id(
+        conn,
+        """INSERT INTO facts
+             (category, fact_key, fact_value, source, summary, overview,
+              agent_id, profile, memory_tier, recorded_at, decay_at, tags, shared,
+              valid_from, valid_to, user_id, bank_id, content_hash, version, previous_version_hash, last_actor)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(agent_id, user_id, bank_id, category, fact_key) DO UPDATE SET
+               fact_value=excluded.fact_value,
+               summary=excluded.summary,
+               overview=excluded.overview,
+               memory_tier=excluded.memory_tier,
+               recorded_at=excluded.recorded_at,
+               decay_at=excluded.decay_at,
+               source=excluded.source,
+               content_hash=excluded.content_hash,
+               version=facts.version + 1,
+               previous_version_hash=facts.content_hash,
+               last_actor=excluded.last_actor,
+               updated_at=CURRENT_TIMESTAMP""",
+        (category, fact_key, fact_value, source, summary, fact_value,
+         agent_id, profile, resolved_tier, recorded_at, decay_at, tags,
+         1 if shared else 0, valid_from or None, valid_to or None,
+         scope.user_id, scope.bank_id, initial_hash, 1, "", source or agent_id),
+        "SELECT id, version FROM facts WHERE agent_id=? AND user_id=? AND bank_id=? AND category=? AND fact_key=?",
+        (agent_id, scope.user_id, scope.bank_id, category, fact_key),
+    )
+
+
 def write_fact(
     category: str,
     fact_key: str,
@@ -182,41 +229,17 @@ def write_fact(
             }
 
         # ── 新增 ──
-        # ON CONFLICT 目标必须与 idx_facts_unique 列集完全一致
-        # （见 federation/schema.py FACTS_UNIQUE_COLUMNS），否则报
-        # "no such conflict target"。
         from ducky.memory_lineage import compute_content_hash, record_lineage
-        from ducky.utils import upsert_returning_id
         initial_hash = compute_content_hash(fact_value)
         # v20.5.0 正式版（用户审计 🔴-1）：upsert 冲突命中时 lastrowid 不是
         # 被更新行的 id——谱系曾因此串链并产生幽灵链。改走 RETURNING/唯一键
-        # 回查拿真实行 id，version<=1 为首写、>1 为冲突改写。
-        fact_id, row_ver = upsert_returning_id(
-            conn,
-            """INSERT INTO facts
-                 (category, fact_key, fact_value, source, summary, overview,
-                  agent_id, profile, memory_tier, recorded_at, decay_at, tags, shared,
-                  valid_from, valid_to, user_id, bank_id, content_hash, version, previous_version_hash, last_actor)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(agent_id, user_id, bank_id, category, fact_key) DO UPDATE SET
-                   fact_value=excluded.fact_value,
-                   summary=excluded.summary,
-                   overview=excluded.overview,
-                   memory_tier=excluded.memory_tier,
-                   recorded_at=excluded.recorded_at,
-                   decay_at=excluded.decay_at,
-                   source=excluded.source,
-                   content_hash=excluded.content_hash,
-                   version=facts.version + 1,
-                   previous_version_hash=facts.content_hash,
-                   last_actor=excluded.last_actor,
-                   updated_at=CURRENT_TIMESTAMP""",
-            (category, fact_key, fact_value, source, _summary_of(fact_value), fact_value,
-             agent_id, profile, resolved_tier, recorded_at, decay_at, tags,
-             1 if shared else 0, valid_from or None, valid_to or None,
-             scope.user_id, scope.bank_id, initial_hash, 1, "", source or agent_id),
-            "SELECT id, version FROM facts WHERE agent_id=? AND user_id=? AND bank_id=? AND category=? AND fact_key=?",
-            (agent_id, scope.user_id, scope.bank_id, category, fact_key),
+        # 回查拿真实行 id（实现见 _upsert_fact_row），version<=1 为首写、>1 为冲突改写。
+        fact_id, row_ver = _upsert_fact_row(
+            conn, category=category, fact_key=fact_key, fact_value=fact_value,
+            source=source, agent_id=agent_id, profile=profile,
+            resolved_tier=resolved_tier, recorded_at=recorded_at, decay_at=decay_at,
+            tags=tags, shared=shared, valid_from=valid_from, valid_to=valid_to,
+            scope=scope, initial_hash=initial_hash, summary=_summary_of(fact_value),
         )
         upsert_action = "CREATE" if row_ver <= 1 else "UPDATE"
 
