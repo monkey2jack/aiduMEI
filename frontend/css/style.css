@@ -21,12 +21,18 @@
   --warn: #b8860b;
   --bad: #a33a3a;
 
-  /* hexagon geometry — pointy-top */
-  --hex-w: 240px;
-  --hex-h: 277.13px;
-  --hex-row: 207.85px; /* hex-h * 0.75 */
+  /* hexagon geometry — pointy-top
+     v20.5.0 继承修复：金字塔高度 = --hex-w * 2.8867。叠加 orbital slogan 后
+     必须随视口高度与宽度双向收缩，否则顶部砖块压住标语、底部砖块压住 footer。
+     --h-reserve = header + orbital + footer + 呼吸（各断点单独调） */
+  --hex-max: 240px;
+  --h-reserve: 252px;
+  --hex-w: max(96px, min(var(--hex-max), calc((100vw - 24px) / 3), calc((100vh - var(--h-reserve)) / 2.887)));
+  --hex-h: calc(var(--hex-w) * 1.1547);
+  --hex-row: calc(var(--hex-w) * 0.866);
 
-  --shell: 720px;               /* 3 * hex-w = pyramid width */
+  --shell: calc(var(--hex-w) * 3);   /* 金字塔宽度：header 跟随 */
+  --panel-w: 720px;                  /* 弹窗独立宽度，不随金字塔缩放 */
   --radius: 14px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 
@@ -372,7 +378,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .panel {
   position: relative;
-  width: var(--shell);
+  width: var(--panel-w);
   max-width: 100vw;
   height: 100%;
   background: var(--paper);
@@ -605,10 +611,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
    ============================================================================= */
 @media (max-width: 800px) {
   :root {
-    --hex-w: 180px;
-    --hex-h: 207.85px;
-    --hex-row: 155.89px;
-    --shell: 540px;
+    --hex-max: 180px;
+    --h-reserve: 220px;
+    --panel-w: 540px;
   }
   .hex-icon-png { width: 50px; height: 50px; margin-bottom: 9px; }
   .hex-en { font-size: 12px; }
@@ -624,10 +629,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
    ============================================================================= */
 @media (max-width: 520px) {
   :root {
-    --hex-w: 100px;
-    --hex-h: 115.47px;
-    --hex-row: 86.6px;
-    --shell: 300px;
+    --hex-max: 120px;
+    --h-reserve: 200px;
+    --panel-w: 100vw;
   }
   .hex-icon-png { width: 26px; height: 26px; margin-bottom: 4px; }
   .hex-en { font-size: 7px; letter-spacing: 0.02em; }
@@ -1196,11 +1200,17 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   display: block;
   width: 100%;
   max-width: 480px;
-  height: clamp(80px, 11vh, 100px);
-  margin: 0 auto 16px;
+  height: clamp(76px, 10vh, 96px);
+  margin: 0 auto;
+  /* overflow 必须 visible：轨道字符飞行半径 60~140px，裁切会切掉入场轨迹 */
   overflow: visible;
   user-select: none;
   pointer-events: none;
+}
+
+/* 登录页：slogan 与授权卡片之间留出呼吸间距 */
+.login-wrap .hero-slogan-orbital {
+  margin-bottom: 16px;
 }
 
 .orbital-slogan-stage {
