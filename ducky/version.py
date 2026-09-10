@@ -34,7 +34,7 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
-v20.5.0 (alpha 内部验证版 · 可信联邦授权与记忆谱系基础 · 2026-09-09)
+v20.5.0 (preview 预发布版 · 可信联邦授权与记忆谱系 + 用户审计整改 · 2026-09-10)
     主题：**从「认知与混合检索引擎」向具备「可信授权治理与密码学级谱系溯源」的可信记忆控制平面跨越。**
     1. 吸收 Walrus 调研精髓，彻底告别仅 shared: bool 的粗粒度标记。
     2. 新增 federation_grants 表与 ducky/federation/grants.py 细粒度授权引擎：
@@ -52,16 +52,33 @@ v20.5.0 (alpha 内部验证版 · 可信联邦授权与记忆谱系基础 · 202
     7. 配套登记与守卫对齐：DELETE_CHAIN_MATRIX 豁免登记、_MIGRATION_LEDGER
        迁移点登记、write_endpoint_budgets 路由台账、logger 契约处数、
        except 棘轮基线（609→626，谱系/授权降级钩子）、mkdtemp 位点数基线。
-    8. 用例总数 1837 → 1852（--collect-only），新增 15 个针对性用例（grants 判定+
-       端点 403 拦截/撤销/过期/动作隔离/单机回环+lineage 链+merge/facts-add 谱系推进）。
-    9. 生产数掘（待实测）：在生产机独立沙箱完成验证后填数归档，停点等待拍板。
+    8. 用例总数 1837 → 1857（--collect-only），新增 20 个针对性用例（grants 判定+
+       端点 403 拦截/撤销/过期/动作隔离/单机回环+lineage 链+merge/facts-add 谱系推进+
+       b 阶段用户审计整改回归 5 条：scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/
+       crud-update 谱系推进/内联 style 元素守卫）。
+    9. b 阶段用户审计整改 🔴-1（grants.py _match_scope）：scope 限定维度
+       （category/tier/tag/user）调用方未提供时旧逻辑跳过 → 限定被当通配。
+       改 fail-closed 白名单：缺维度一律拒绝，端点面同步堵死。
+    10. b 阶段用户审计整改 🔴-2（grants.py create_grant）：INSERT OR REPLACE
+       允许已撤销/已存在 grant_id 覆盖复活。改显式冲突检查——撤销是终态，
+       重授权必须新 ID，审计链不断。
+    11. b 阶段用户审计整改 🟡-1（hot/crud.py /update）：按用户审计裁决 fact_value
+       正文变更与 federation writer 同字段，补 hash/version 推进 + lineage
+       同事务记录。
+    12. UI 修复（登录页样式塌陷）：CSP style-src 'self' 打死 login/index 内联
+       <style> 元素（登录页无样式白板，生产实锤）——样式收编 css/style.css
+       （1029→1162 行），缓存戳 v=6/v=10。
+    13. 守卫补射程（第五次发作）：TestNoInlineStyleInFrontend 新增 <style>
+       元素形态断言（剥 HTML 注释扫描防字面误伤）；except 棘轮 626→627
+       （+1 crud /update lineage 降级钩子）；🟢-2 grantor 校验转正式版前评估。
+    14. 生产数掘（待实测）：在生产机独立沙箱完成验证后填数归档，停点等待拍板。
 
 v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收口 · 2026-09-09)
     详录见 CHANGELOG.md「## v20.4.0」段。
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.5.0"  # alpha 身份记在 LINEAGE/CHANGELOG（格式守卫钉死纯数字，v20.4.0-alpha 同惯例）
+SERVICE_VERSION = "20.5.0"  # preview 身份记在 LINEAGE/CHANGELOG（格式守卫钉死纯数字，v20.3.0 preview 同惯例）
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -75,7 +92,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("20.5.0", "", "v20.5.0a", "alpha 内部验证版 · 可信联邦授权与记忆谱系基础 · Grants+Lineage+哈希链 · 2026-09-09"),
+    ("20.5.0", "", "v20.5.0-preview", "preview 预发布版 · Grants+Lineage+用户审计整改+UI修复 · 2026-09-10"),
     ("20.4.1", "", "v20.4.1", "正式版 · 四方网页外审+用户审计整改 · CI接入链路/复杂度回吐/版本源单源化 · 2026-09-09"),
     ("20.4.0", "", "v20.4.0-alpha", "alpha 阶段快照 · 六方外审整改 · 对外声称与外界对账 · 开工 2026-09-08"),
     ("20.3", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
