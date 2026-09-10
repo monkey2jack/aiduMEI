@@ -424,82 +424,82 @@ def test_endpoint_expired_grant_rejected():
 
 # ── 6. 用户审计整改回归（b 阶段 · 2026-09-10）────────────────
 
-def test_dudu_red1_scope_dimension_missing_rejected():
+def test_audit_red1_scope_dimension_missing_rejected():
     """🔴-1：scope 限定过的维度，调用方不传 → 必须拒绝（缺维度 ≠ 通配）。
 
     用户审计实测复现：Grant scope="category:finance" 而 check 不带 category
     时旧逻辑返回 True——任何限定 scope 被无声当成了 `*`。"""
     from ducky.federation.grants import check_grant_permission, create_grant
 
-    create_grant("dudu_r1_a", "dudu_r1_b", resource_scope="category:finance", actions="read")
+    create_grant("dt_r1_a", "dt_r1_b", resource_scope="category:finance", actions="read")
 
     # 不传被限定的维度 → 拒绝（fail-closed）
-    assert check_grant_permission("dudu_r1_a", "dudu_r1_b", "read") is False, \
+    assert check_grant_permission("dt_r1_a", "dt_r1_b", "read") is False, \
         "缺维度被当成通配符——🔴-1 复活"
     # 显式传对维度 → 放行
-    assert check_grant_permission("dudu_r1_a", "dudu_r1_b", "read", category="finance") is True
+    assert check_grant_permission("dt_r1_a", "dt_r1_b", "read", category="finance") is True
     # 显式传错维度 → 拒绝
-    assert check_grant_permission("dudu_r1_a", "dudu_r1_b", "read", category="health") is False
+    assert check_grant_permission("dt_r1_a", "dt_r1_b", "read", category="health") is False
 
     # 端点面同罪：recall 不带 category 时的限 scope Grant 不得放行
     client = _http_client()
     resp = client.get("/federation/recall", params={
-        "query": "x", "agent_id": "dudu_r1_a", "caller_agent_id": "dudu_r1_b",
+        "query": "x", "agent_id": "dt_r1_a", "caller_agent_id": "dt_r1_b",
     })
     assert resp.status_code == 403, "HTTP 面缺维度绕行——🔴-1 端点形态"
     # 带上 category=finance 才放行
     resp = client.get("/federation/recall", params={
-        "query": "x", "agent_id": "dudu_r1_a", "caller_agent_id": "dudu_r1_b",
+        "query": "x", "agent_id": "dt_r1_a", "caller_agent_id": "dt_r1_b",
         "category": "finance",
     })
     assert resp.status_code == 200, "维度匹配却拒绝——过度收紧"
 
 
-def test_dudu_red1_scope_user_tier_tag_dimensions():
+def test_audit_red1_scope_user_tier_tag_dimensions():
     """🔴-1 全维度负向：tier/tag/user 限定同样缺维度拒绝。"""
     from ducky.federation.grants import check_grant_permission, create_grant
 
-    create_grant("dudu_r1_t", "dudu_r1_u", resource_scope="tier:semantic", actions="read")
-    assert check_grant_permission("dudu_r1_t", "dudu_r1_u", "read") is False
-    assert check_grant_permission("dudu_r1_t", "dudu_r1_u", "read", tier="semantic") is True
+    create_grant("dt_r1_t", "dt_r1_u", resource_scope="tier:semantic", actions="read")
+    assert check_grant_permission("dt_r1_t", "dt_r1_u", "read") is False
+    assert check_grant_permission("dt_r1_t", "dt_r1_u", "read", tier="semantic") is True
 
-    create_grant("dudu_r1_g", "dudu_r1_h", resource_scope="tag:personal", actions="read")
-    assert check_grant_permission("dudu_r1_g", "dudu_r1_h", "read") is False
-    assert check_grant_permission("dudu_r1_g", "dudu_r1_h", "read", tags="work,personal") is True
+    create_grant("dt_r1_g", "dt_r1_h", resource_scope="tag:personal", actions="read")
+    assert check_grant_permission("dt_r1_g", "dt_r1_h", "read") is False
+    assert check_grant_permission("dt_r1_g", "dt_r1_h", "read", tags="work,personal") is True
 
-    create_grant("dudu_r1_p", "dudu_r1_q", resource_scope="user:user_42", actions="read")
-    assert check_grant_permission("dudu_r1_p", "dudu_r1_q", "read") is False
-    assert check_grant_permission("dudu_r1_p", "dudu_r1_q", "read", user_id="user_42") is True
+    create_grant("dt_r1_p", "dt_r1_q", resource_scope="user:user_42", actions="read")
+    assert check_grant_permission("dt_r1_p", "dt_r1_q", "read") is False
+    assert check_grant_permission("dt_r1_p", "dt_r1_q", "read", user_id="user_42") is True
 
 
-def test_dudu_red2_revoked_grant_cannot_resurrect():
+def test_audit_red2_revoked_grant_cannot_resurrect():
     """🔴-2：撤销是终态——用同 grant_id 再 create 不得复活授权。"""
     from ducky.federation.grants import check_grant_permission, create_grant, revoke_grant
 
-    res = create_grant("dudu_r2_a", "dudu_r2_b", resource_scope="*", actions="read",
-                       grant_id="fixed_grant_dudu_r2")
+    res = create_grant("dt_r2_a", "dt_r2_b", resource_scope="*", actions="read",
+                       grant_id="fixed_grant_dt_r2")
     assert res["status"] == "ok"
-    assert revoke_grant("fixed_grant_dudu_r2")["status"] == "ok"
-    assert check_grant_permission("dudu_r2_a", "dudu_r2_b", "read") is False
+    assert revoke_grant("fixed_grant_dt_r2")["status"] == "ok"
+    assert check_grant_permission("dt_r2_a", "dt_r2_b", "read") is False
 
     # 用已撤销的同 ID 再 create → 必须报错且不得复活
-    again = create_grant("dudu_r2_a", "dudu_r2_b", resource_scope="*", actions="read",
-                         grant_id="fixed_grant_dudu_r2")
+    again = create_grant("dt_r2_a", "dt_r2_b", resource_scope="*", actions="read",
+                         grant_id="fixed_grant_dt_r2")
     assert again["status"] == "error", f"撤销的授权被复活: {again}"
     assert "终态" in again["detail"] or "撤销" in again["detail"]
-    assert check_grant_permission("dudu_r2_a", "dudu_r2_b", "read") is False, \
+    assert check_grant_permission("dt_r2_a", "dt_r2_b", "read") is False, \
         "🔴-2 复活：撤销后的 grant 又能用了"
 
     # 未撤销的已存在 ID 同样拒绝覆盖（防覆盖他人授权）
-    live = create_grant("dudu_r2_c", "dudu_r2_d", resource_scope="*", actions="read",
-                        grant_id="fixed_grant_dudu_live")
+    live = create_grant("dt_r2_c", "dt_r2_d", resource_scope="*", actions="read",
+                        grant_id="fixed_grant_audit_live")
     assert live["status"] == "ok"
-    hijack = create_grant("dudu_r2_evil", "dudu_r2_e", resource_scope="*", actions="read,write,delete",
-                          grant_id="fixed_grant_dudu_live")
+    hijack = create_grant("dt_r2_evil", "dt_r2_e", resource_scope="*", actions="read,write,delete",
+                          grant_id="fixed_grant_audit_live")
     assert hijack["status"] == "error", "已存在的 grant_id 被覆盖（授权劫持面）"
 
 
-def test_dudu_yellow1_crud_update_advances_lineage():
+def test_audit_yellow1_crud_update_advances_lineage():
     """🟡-1：/update 改 fact_value 正文必须推 hash/version + 记 lineage。
 
     用户审计裁决：crud /update 与 federation writer 的 UPDATE 改的是同一核心
@@ -507,7 +507,7 @@ def test_dudu_yellow1_crud_update_advances_lineage():
     from ducky.federation.writer import write_fact
     from ducky.memory_lineage import compute_content_hash, get_memory_lineage
 
-    res = write_fact("用户整改区", "crud键", "crud 更新前内容", agent_id="agent_dudu_y1",
+    res = write_fact("用户整改区", "crud键", "crud 更新前内容", agent_id="agent_user_y1",
                      dedup=False)
     assert res["status"] == "ok"
     fid = res["fact_id"]
@@ -528,12 +528,12 @@ def test_dudu_yellow1_crud_update_advances_lineage():
                SET fact_value=?, content_hash=?, version=?, previous_version_hash=?,
                    last_actor=?, updated_at=CURRENT_TIMESTAMP
                WHERE id=?""",
-            (new_content, new_hash, (old[1] or 1) + 1, old[0] or "", "user_dudu", fid),
+            (new_content, new_hash, (old[1] or 1) + 1, old[0] or "", "user_audit", fid),
         )
         record_lineage(conn, memory_id=f"fact:{fid}", content=new_content,
-                       action="UPDATE", actor="user_dudu", source="/update",
+                       action="UPDATE", actor="user_audit", source="/update",
                        previous_version_hash=old[0] or "",
-                       diff_summary="crud update: dudu yellow1")
+                       diff_summary="crud update: audit yellow1")
         conn.commit()
     finally:
         conn.close()
