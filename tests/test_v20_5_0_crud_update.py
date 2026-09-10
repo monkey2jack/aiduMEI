@@ -21,8 +21,16 @@ _tmp_dir = tempfile.mkdtemp(prefix="aidumem_v20_5_0_crud_")
 _TEST_DB = os.path.join(_tmp_dir, "facts.db")
 
 import ducky.utils as utils  # noqa: E402
+from ducky.utils import DEFAULT_USER_ID as _DEF_USER  # noqa: E402
 
 utils.FACTS_DB = _TEST_DB
+
+# 本文件原先把租户硬编码成 "default"，而 write_fact 走的是环境里的
+# DEFAULT_USER_ID —— 生产机上两者同名所以看不出问题，但任何设了
+# AIDUMEM_DEFAULT_USER_ID 的环境（如独立沙箱）里，写入的租户与请求的租户
+# 不同名，端点正确地判为「不属于你」→ 命中 0 行 → 用例假红。
+# 租户名一律取真源，用例才与环境无关（SOP 铁律：判据取值须来自真实环境）。
+_DEF_BANK = "default"
 
 
 class _StubMem:
@@ -30,7 +38,7 @@ class _StubMem:
 
     def get(self, mid):
         return {"id": mid, "memory": "旧内容",
-                "metadata": {"user_id": "default", "bank_id": "default"}}
+                "metadata": {"user_id": _DEF_USER, "bank_id": _DEF_BANK}}
 
     def update(self, mid, data=None, metadata=None):
         return {"id": mid, "memory": data}
@@ -75,7 +83,7 @@ def test_update_endpoint_drives_facts_leg_by_id():
 
     resp = _client().post("/update", json={
         "memory_id": str(fid), "content": "新爱好",
-        "user_id": "default", "bank_id": "default",
+        "user_id": _DEF_USER, "bank_id": _DEF_BANK,
     })
     assert resp.status_code == 200, resp.text
     assert resp.json()["facts_sync"] == "advanced:1", resp.json()
@@ -106,7 +114,7 @@ def test_update_endpoint_drives_facts_leg_by_fact_key():
     r = write_fact("profile", "city", "甲城", agent_id="dudu", dedup=False)
     resp = _client().post("/update", json={
         "memory_id": "city", "content": "乙城",
-        "user_id": "default", "bank_id": "default",
+        "user_id": _DEF_USER, "bank_id": _DEF_BANK,
     })
     assert resp.status_code == 200, resp.text
     assert resp.json()["facts_sync"] == "advanced:1", resp.json()
@@ -126,7 +134,7 @@ def test_update_endpoint_uuid_form_reports_not_a_fact():
     r = write_fact("profile", "untouched", "别动我", agent_id="dudu", dedup=False)
     resp = _client().post("/update", json={
         "memory_id": "3495b0e0-dae9-4cc8-9abc-def012345678",
-        "content": "向量记忆新内容", "user_id": "default", "bank_id": "default",
+        "content": "向量记忆新内容", "user_id": _DEF_USER, "bank_id": _DEF_BANK,
     })
     assert resp.status_code == 200, resp.text
     assert resp.json()["facts_sync"] == "not_a_fact", resp.json()
@@ -146,7 +154,7 @@ def test_update_endpoint_fact_ref_zero_hit_warns(caplog):
     with caplog.at_level(logging.WARNING):
         resp = _client().post("/update", json={
             "memory_id": "987654", "content": "x",
-            "user_id": "default", "bank_id": "default",
+            "user_id": _DEF_USER, "bank_id": _DEF_BANK,
         })
     assert resp.status_code == 200, resp.text
     assert resp.json()["facts_sync"] == "no_match"
