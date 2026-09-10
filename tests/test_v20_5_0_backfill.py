@@ -28,9 +28,12 @@ utils.FACTS_DB = _TEST_DB
 
 @pytest.fixture(autouse=True)
 def setup_test_db():
-    utils.FACTS_DB = _TEST_DB
-    if os.path.exists(_TEST_DB):
-        os.remove(_TEST_DB)
+    # 每条用例一个**全新**库文件：线程本地连接池按路径缓存，复用同一路径
+    # 会让打开中的连接撞上「文件被删后重建」的 inode 错位（disk I/O error），
+    # 全新路径则根本不会命中旧缓存项
+    fd, db_path = tempfile.mkstemp(prefix="facts_", suffix=".db", dir=_tmp_dir)
+    os.close(fd)
+    utils.FACTS_DB = db_path
     from ducky.schema_bootstrap import ensure_core_schema
     from ducky.federation.schema import ensure_federation_schema
     ensure_core_schema(force=True)
@@ -38,8 +41,6 @@ def setup_test_db():
     # 模拟存量 v4 老库：有行、content_hash 为空、无谱系链、user_version=4
     conn = utils.get_facts_conn()
     try:
-        conn.execute("DELETE FROM facts")
-        conn.execute("DELETE FROM memory_lineage")
         conn.execute(
             "INSERT INTO facts (category, fact_key, fact_value, agent_id, content_hash, version) "
             "VALUES ('old', 'legacy_key', '原始老内容', 'dudu', '', 1)")
@@ -48,8 +49,6 @@ def setup_test_db():
     finally:
         conn.close()
     yield
-    if os.path.exists(_TEST_DB):
-        os.remove(_TEST_DB)
 
 
 def test_v5_migration_backfills_hash_and_baseline_chain():
