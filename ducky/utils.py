@@ -455,7 +455,13 @@ def upsert_returning_id(conn, insert_sql, insert_params, id_select_sql, id_selec
     """
     try:
         cur = conn.execute(insert_sql + " RETURNING id, version", insert_params)
-        row = cur.fetchone()
+        try:
+            row = cur.fetchone()
+        finally:
+            # WAL 模式下未 finalize 的 RETURNING 语句会把写事务一直挂在该连接上，
+            # 其他连接（如治理异步评估线程）随即 「database is locked」——
+            # 取完行必须显式关闭游标（生产沙箱实测发作，本地快机器上不发作）。
+            cur.close()
         if row and row[0]:
             return int(row[0]), int(row[1] or 1)
     except sqlite3.OperationalError:
