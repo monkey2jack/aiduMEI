@@ -131,7 +131,7 @@ _INDEXES = (
 _lock = threading.Lock()
 _done = False
 
-CURRENT_SCHEMA_VERSION = 4  # v20.5.0a(P0): facts 补密码学谱系字段 + grants/lineage 表；此前 v20.4 entities 补租户轴
+CURRENT_SCHEMA_VERSION = 5  # v20.5.0 正式版(P1): 存量行 content_hash 回填 + BACKFILL 谱系基线；v20.5.0a(P0): facts 谱系字段 + grants/lineage 表
 
 
 def apply_migrations(conn) -> None:
@@ -215,6 +215,52 @@ def apply_migrations(conn) -> None:
             conn.commit()
             logger.info("数据库秒级增量升级 v4 成功 ✅")
             user_version = 4
+
+        # 版本迁移流：Version 4 -> Version 5
+        # v20.5.0 正式版（用户审计 🟡-2）：v4 只补列不回填，存量行 content_hash
+        # 全空，首次修改会产生「假创世块」（v1 哈希是新内容而非历史内容）。
+        # 本步为存量行回填内容哈希，并为每条行补 BACKFILL 基线谱系——
+        # 如实声明「基线记录的是当前内容，历史内容不可追溯」。
+        if user_version < 5:
+            logger.info("执行数据库增量升级：v4 -> v5 (存量行谱系基线回填)")
+            try:
+                from ducky.memory_lineage import compute_content_hash, ensure_lineage_schema
+                ensure_lineage_schema(conn)
+                rows = conn.execute(
+                    "SELECT id, fact_value FROM facts WHERE content_hash IS NULL OR content_hash=''"
+                ).fetchall()
+                backfilled = 0
+                chained = 0
+                for rid, fval in rows:
+                    h = compute_content_hash(fval)
+                    conn.execute(
+                        "UPDATE facts SET content_hash=? WHERE id=?", (h, rid))
+                    backfilled += 1
+                    # 已有链的行不补基线（链就是它的历史），只补无链存量行
+                    has_chain = conn.execute(
+                        "SELECT 1 FROM memory_lineage WHERE memory_id=? LIMIT 1",
+                        (f"fact:{rid}",)).fetchone()
+                    if not has_chain:
+                        conn.execute(
+                            """INSERT INTO memory_lineage
+                               (memory_id, version, content_hash, previous_version_hash,
+                                action, actor, source, diff_summary)
+                               VALUES (?, 1, ?, '', 'BACKFILL', 'system', 'schema_v5',
+                               '存量行基线：记录的是迁移时点内容，历史内容不可追溯')""",
+                            (f"fact:{rid}", h),
+                        )
+                        chained += 1
+                conn.commit()
+                logger.info("数据库秒级增量升级 v5 成功 ✅（回填 %d 行，补基线链 %d 条）",
+                            backfilled, chained)
+            except Exception as e:
+                # 回填失败不阻塞启动：旧行为（哈希为空）依旧可用，
+                # verify_lineage_integrity 会如实报出未回填行
+                conn.rollback()
+                logger.warning("v5 谱系基线回填未完成（服务继续启动）: %s", e)
+            conn.execute("PRAGMA user_version = 5")
+            conn.commit()
+            user_version = 5
 
     except Exception as exc:
         logger.error("数据库增量补丁执行异常 (服务继续启动): %s", exc)

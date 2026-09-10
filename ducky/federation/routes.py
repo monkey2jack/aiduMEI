@@ -49,6 +49,50 @@ def _safe(fn, *args, **kwargs) -> dict[str, Any]:
         return {"status": "error", **error_envelope(exc)}
 
 
+def _implicit_caller_allowed() -> bool:
+    """逃生门：AIDUMEI_ALLOW_IMPLICIT_CALLER=1 时兼容「不传 caller 的旧单机请求」。
+
+    v20.5.0 正式版（用户审计 🔴-2）：默认**关**。零信任模型不认「我没说我
+    是谁」——那正是要拒绝的形态。存量单机部署升级时若客户端暂时无法传
+    caller_agent_id，可显式开启本开关过渡，但请在客户端补传后尽快关闭。
+    """
+    import os
+    return os.environ.get("AIDUMEI_ALLOW_IMPLICIT_CALLER", "").strip() == "1"
+
+
+def _federation_admins() -> frozenset[str]:
+    """联邦管理面 admin 名单：AIDUMEI_FEDERATION_ADMINS（逗号分隔）。"""
+    import os
+    raw = os.environ.get("AIDUMEI_FEDERATION_ADMINS", "")
+    return frozenset(a.strip() for a in raw.split(",") if a.strip())
+
+
+def _is_admin_caller(caller: str) -> bool:
+    return bool(caller) and caller in _federation_admins()
+
+
+def _require_caller(caller_agent_id: str, *, operation: str) -> str:
+    """管理/查询面身份门槛：caller_agent_id 必填（逃生门开启时放行空 caller）。
+
+    返回规范化后的 caller（逃生门放行时为空串，调用方按单机兼容语义处理）。
+    """
+    caller = (caller_agent_id or "").strip()
+    if not caller:
+        if _implicit_caller_allowed():
+            return ""
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "caller_agent_id_required",
+                "operation": operation,
+                "hint": "联邦管理/查询操作必须声明调用者身份（caller_agent_id）；"
+                        "存量单机部署可显式设 AIDUMEI_ALLOW_IMPLICIT_CALLER=1 过渡",
+            },
+        )
+    return caller
+
+
 def _enforce_grant(
     owner_agent: str,
     caller_agent_id: str,
@@ -69,7 +113,24 @@ def _enforce_grant(
     只在 HTTP 边界拦（routes 层 PEP），不动 recall/broadcast 内部
     梯子——梯子是库内检索逻辑，策略归边界。"""
     caller = (caller_agent_id or "").strip()
-    if not caller or caller == owner_agent:
+    if not caller:
+        # v20.5.0 正式版（用户审计 🔴-2）：空 caller 不再默认放行——
+        # 「不传 caller + 传 victim 的 agent_id」就是冒充本人。默认拒绝，
+        # 仅显式逃生门 AIDUMEI_ALLOW_IMPLICIT_CALLER=1 兼容旧单机请求。
+        if _implicit_caller_allowed():
+            return
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "caller_agent_id_required",
+                "owner_agent": owner_agent,
+                "action": action,
+                "hint": "跨/本 Agent 访问均须声明 caller_agent_id；"
+                        "存量单机部署可显式设 AIDUMEI_ALLOW_IMPLICIT_CALLER=1 过渡",
+            },
+        )
+    if caller == owner_agent:
         return
     from ducky.federation.grants import check_grant_permission
     if not check_grant_permission(owner_agent, caller, action, category=category):
@@ -84,6 +145,38 @@ def _enforce_grant(
                 "hint": "POST /federation/grants 先取得授权，或撤销后重授",
             },
         )
+
+
+def _enforce_lineage_read(memory_id: str, caller: str) -> None:
+    """谱系读取的归属校验（🟡-6）：memory_id → facts 行 → owner，再套 Grant 语义。
+
+    caller 为空（逃生门开启的旧单机请求）放行；facts 行不存在（已删除/幽灵）
+    或非 fact 形态的 memory_id 无法确立归属 → 仅 admin 可读。
+    """
+    if not caller or _is_admin_caller(caller):
+        return
+    from fastapi import HTTPException
+    owner = ""
+    mid = (memory_id or "").strip()
+    if mid.startswith("fact:") and mid.split(":", 1)[1].isdigit():
+        conn = get_facts_conn()
+        try:
+            row = conn.execute(
+                "SELECT agent_id FROM facts WHERE id=?", (int(mid.split(":", 1)[1]),)
+            ).fetchone()
+            owner = (row[0] or "") if row else ""
+        finally:
+            conn.close()
+    if not owner:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "lineage_owner_unresolvable",
+                "memory_id": memory_id,
+                "hint": "该谱系无法确立事实归属（行已删除或形态非法），仅 admin 可读",
+            },
+        )
+    _enforce_grant(owner, caller, "read")
 
 
 def register_federation_routes(app: FastAPI) -> None:
@@ -254,6 +347,9 @@ def register_federation_routes(app: FastAPI) -> None:
         return _safe(ensure_federation_schema, force)
 
     # ── 授权管理 (Grants & Revocation · v20.5.0a) ──
+    # v20.5.0 正式版（用户审计 🔴-2）：管理面三端点接入调用者校验——
+    # 创建/撤销必须是「授权方本人或 admin」，created_by/revoked_by 从
+    # caller 派生（不再吃请求参数，审计身份不可自报）。
     @app.post("/federation/grants")
     def federation_create_grant(
         grantor_agent: str,
@@ -262,7 +358,20 @@ def register_federation_routes(app: FastAPI) -> None:
         actions: str = "read",
         expires_at: str | None = None,
         grant_id: str | None = None,
+        caller_agent_id: str = "",
     ):
+        from fastapi import HTTPException
+        caller = _require_caller(caller_agent_id, operation="create_grant")
+        if caller and caller != grantor_agent and not _is_admin_caller(caller):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "grantor_identity_mismatch",
+                    "grantor_agent": grantor_agent,
+                    "caller_agent_id": caller,
+                    "hint": "只有授权方本人或联邦 admin 能为其签发授权（自签授权已禁止）",
+                },
+            )
         from ducky.federation.grants import create_grant
         return _safe(
             create_grant,
@@ -272,6 +381,7 @@ def register_federation_routes(app: FastAPI) -> None:
             actions=actions,
             expires_at=expires_at,
             grant_id=grant_id,
+            created_by=caller or grantor_agent,
         )
 
     @app.get("/federation/grants")
@@ -279,7 +389,23 @@ def register_federation_routes(app: FastAPI) -> None:
         grantor_agent: str | None = None,
         grantee_agent: str | None = None,
         include_revoked: bool = False,
+        caller_agent_id: str = "",
     ):
+        from fastapi import HTTPException
+        caller = _require_caller(caller_agent_id, operation="list_grants")
+        # 非 admin 只能看自己签出的授权；显式查别人 → 403（🟡-6 同源收窄）
+        if caller and not _is_admin_caller(caller):
+            if grantor_agent and grantor_agent != caller:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "grantor_identity_mismatch",
+                        "grantor_agent": grantor_agent,
+                        "caller_agent_id": caller,
+                        "hint": "只能查询自己签出的授权；admin 可查全部",
+                    },
+                )
+            grantor_agent = caller
         from ducky.federation.grants import list_grants
         return _safe(
             list_grants,
@@ -289,18 +415,54 @@ def register_federation_routes(app: FastAPI) -> None:
         )
 
     @app.post("/federation/grants/revoke")
-    def federation_revoke_grant(grant_id: str, revoked_by: str = "system"):
-        from ducky.federation.grants import revoke_grant
-        return _safe(revoke_grant, grant_id, revoked_by=revoked_by)
+    def federation_revoke_grant(grant_id: str, caller_agent_id: str = ""):
+        from fastapi import HTTPException
+        caller = _require_caller(caller_agent_id, operation="revoke_grant")
+        from ducky.federation.grants import get_grant, revoke_grant
+        if caller:
+            grant = get_grant(grant_id)
+            if grant is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"error": "grant_not_found", "grant_id": grant_id},
+                )
+            if grant["grantor_agent"] != caller and not _is_admin_caller(caller):
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "grantor_identity_mismatch",
+                        "grantor_agent": grant["grantor_agent"],
+                        "caller_agent_id": caller,
+                        "hint": "只有授权方本人或联邦 admin 能撤销该授权",
+                    },
+                )
+        return _safe(revoke_grant, grant_id, revoked_by=caller or "system")
 
     # ── 谱系查询与验证 (Memory Lineage · v20.5.0a) ──
+    # v20.5.0 正式版（用户审计 🟡-6）：谱系元数据（actor/source/diff_summary/
+    # 时间戳）本身即泄漏面，查询端点同样要做归属校验。
     @app.get("/federation/lineage")
-    def federation_get_lineage(memory_id: str):
+    def federation_get_lineage(memory_id: str, caller_agent_id: str = ""):
+        caller = _require_caller(caller_agent_id, operation="get_lineage")
+        _enforce_lineage_read(memory_id, caller)
         from ducky.memory_lineage import get_memory_lineage
         return _safe(get_memory_lineage, memory_id)
 
     @app.get("/federation/lineage/verify")
-    def federation_verify_lineage(memory_id: str | None = None):
+    def federation_verify_lineage(memory_id: str | None = None, caller_agent_id: str = ""):
+        caller = _require_caller(caller_agent_id, operation="verify_lineage")
+        if memory_id:
+            _enforce_lineage_read(memory_id, caller)
+        elif caller and not _is_admin_caller(caller):
+            # 全库对账可能枚举他人链状态：非 admin 须逐链指定 memory_id
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "admin_required",
+                    "hint": "全库谱系对账仅 admin 可用；请指定 memory_id 校验自己的链",
+                },
+            )
         from ducky.memory_lineage import verify_lineage_integrity
         return _safe(verify_lineage_integrity, memory_id=memory_id)
 

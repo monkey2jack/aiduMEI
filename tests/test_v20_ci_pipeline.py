@@ -158,6 +158,8 @@ def test_test_workflow_is_reusable_and_triggers_on_push_and_pr():
         · push → main：精简 —— pytest job 以 `if` 跳过（PR 已把关、
           维护者直推有本地 push_gate 把关），辅助 job 照跑；
         · workflow_dispatch / workflow_call：保留（手动 + 发布复用）。
+        · schedule：v20.5.0 正式版新增（Sonnet 5 外审 P0-3，维护者拍板）——
+          每周 cron 全量 + 依赖扫描定时化，两次提交间新披露的 CVE 不再靠手动。
 
     `workflow_call` 仍不是可选项：`needs:` 只在同一个工作流内生效，
     发布必须**依赖**测试，而依赖只能靠复用建立。
@@ -170,11 +172,12 @@ def test_test_workflow_is_reusable_and_triggers_on_push_and_pr():
     on = wf.get("on") or wf.get(True)  # YAML 会把裸 on 解析成布尔 True
     assert isinstance(on, (dict, list)), f"test.yml 的 on: 段形状不对：{on!r}"
     triggers = set(on) if isinstance(on, dict) else set(on)
-    assert triggers == {"pull_request", "push", "workflow_dispatch", "workflow_call"}, (
-        f"test.yml 触发面与 v20.4.1a 策略不符：现有 {sorted(triggers)}，"
-        "应恰为 {pull_request, push, workflow_dispatch, workflow_call}。"
+    assert triggers == {"pull_request", "push", "schedule", "workflow_dispatch", "workflow_call"}, (
+        f"test.yml 触发面与 v20.5.0 策略不符：现有 {sorted(triggers)}，"
+        "应恰为 {pull_request, push, schedule, workflow_dispatch, workflow_call}。"
         "缺 pull_request = 外审点名的元问题复活；缺 push = main 失去精简集；"
-        "缺 workflow_call = 发布流水线无法依赖测试；缺 workflow_dispatch = 手动跑不了"
+        "缺 workflow_call = 发布流水线无法依赖测试；缺 workflow_dispatch = 手动跑不了；"
+        "缺 schedule = 依赖扫描退回手动触发"
     )
     # push 必须只钉 main 分支：别的分支直推不产生 Actions 运行（噪音控制）。
     push = on.get("push") if isinstance(on, dict) else None
