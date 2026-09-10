@@ -598,6 +598,8 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "candidate_facts":  ("clean",  "治理候选队列含被拒/待审全文（§11，v20.1 整改轮补齐），按 scope_user_id/bank_id 精确清理"),
     "refine_wal":       ("exempt", "refine 操作 WAL（若存在）：操作流水，随 WAL 引擎自身生命周期管理"),
     "wal_entries":      ("exempt", "WAL 引擎自身账本：删除操作的执行凭证，清掉等于销毁「删过」的证据"),
+    "federation_grants": ("exempt", "联邦授权凭据表（grantor/grantee/scope，无记忆正文）：跨 Agent 授权与撤销契约，随授权生命周期管理（v20.5.0a）"),
+    "memory_lineage":   ("exempt", "记忆密码学谱系账本（memory_id/version/hash/action，无记忆正文）：审计与历史版本链不可篡改凭据（v20.5.0a）"),
     # ── facts.db 之外的存储 ──
     "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
     "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),
