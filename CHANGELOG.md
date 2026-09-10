@@ -1,5 +1,35 @@
 # aiduMEI 版本演进史
 
+## v20.5.0（2026-09-10 正式版）：三方评审整改收口 —— 说出口的承诺，必须实测成立
+
+> **公开身份 = 20.5.0 正式版**（小仓 tag/Release `v20.5.0`；大仓按两段式惯例 `v20.5`）。Preview 期收集的三方评审（用户视角端点复现 + Sonnet 5 / Luna 代码审计）全部闭环：两条 🔴 承诺级缺陷连根修，六条 🟡 全收口，两条 🟢 文档坐标归真。
+
+### 两条 🔴（承诺级，Preview 卖点实测不成立）
+
+- **🔴-1 谱系串链（lastrowid 误用）**：upsert 冲突命中时 SQLite `lastrowid` 不是被更新行的 id——谱系曾把 A 事实的版本记到 B 的链上，生产库实证两条幽灵链（`fact:4351/4352`）而验证端点全绿。**修复**：`writer.py` 与 `legacy_routes.py` 两条写入路径改 `RETURNING id`（SQLite<3.35 回退唯一键回查，绝不信任 lastrowid）；`verify_lineage_integrity` 补**事实行存在性 + 链尾内容对账**（幽灵链/绕行改写必报 broken）；`memory_lineage` 加 `UNIQUE(memory_id, version)` 兜底；全部删除路径（wal 单条/整域、refine 回滚）补 `DELETE` 终链；`diff_summary` 去除 fact_key 明文（删除权行使后谱系不留用户原话）。
+- **🔴-2 授权闭环（自签授权 + 身份自报）**：`POST /federation/grants` 原无调用者校验（任何人可以受害者名义自签全套权限），`_enforce_grant` 空 caller 即放行（不传 caller + 传 victim 的 agent_id = 冒充本人，实测明文读到他人私密记忆）。**修复**：grants 三端点强制 `caller_agent_id`（缺失 403），签发/撤销要求 caller==grantor 或 admin（`AIDUMEI_FEDERATION_ADMINS`）；`created_by`/`revoked_by` 从 caller 派生，审计身份不可自报；`_enforce_grant` 空 caller 默认 403，存量单机经显式逃生门 `AIDUMEI_ALLOW_IMPLICIT_CALLER=1` 过渡；谱系/授权三个查询端点补租户归属校验。**残留边界如实写明**：caller 身份仍为自报参数、未与凭据密码学绑定——本版闭环防的是同一可信宿主边界内 Agent 的越权与误操作；token→身份绑定属 v21 路线图。
+
+### 🟡 全收口
+
+- **存量行谱系基线（schema v4→v5）**：v4 只补列不回填（存量行哈希全空、首次修改产假创世块）。v5 迁移为存量行回填 `content_hash` 并补 `BACKFILL` 基线 v1（**如实声明：基线记录的是迁移时点内容，历史内容不可追溯**）——v20.5 Preview 段「存量行启动时平滑补齐零阻塞」的表述不成立，在此更正。
+- **crud `/update` 谱系腿**：命中网放宽到与删除路径同构（裸 id / `fact:<id>` / fact_key），「形似 facts 引用却 0 命中」记 WARNING，纯向量 UUID 如实报 `facts_sync=not_a_fact`；端到端用例真正驱动 `POST /update`（旧用例只复刻 SQL 形状——「守卫射程 ≠ 缺陷分布」第六次，同一个病）。
+- **`expires_at` 非法值**：创建即拒绝；存量非法值按已过期处理并 WARNING（安全特性的降级方向必须朝更严）。
+- **`_match_scope` 未知维度**：fail-closed（拼错的/未来的维度名一律拒绝），创建 Grant 时即校验 scope 语法。
+
+### 工程面（Sonnet 5 外审）
+
+- `dependency-audit` 改**每周一定时**（cron），两次提交间新披露的 CVE 不再靠手动触发才发现（CI 触发面守卫同步更新，维护者拍板在案）。
+- Dockerfile 补 `HEALTHCHECK`（打 `/livez`，O(1) 探针），编排系统可原生探活。
+- 新增 `scripts/lineage_ghost_cleanup.py`：供 v20.5.0a 升级者清理幽灵链（默认 dry-run；`--apply` 先自动备份 facts.db 再清理再对账）。
+- 措辞归真：「不可篡改的版本链」全仓改「**可检测篡改（tamper-evident）的密码学谱系**」——拿到 SQLite 写权限者理论上可重算整条链；强不可抵赖（签名/外部锚定/WORM）入 v21 路线图。
+- `docs/SECURITY-AUDIT-LEDGER.md` 新增第四轮条目（含「验证端点绿灯制造虚假信心」元教训）。
+
+### 守卫与用例
+
+- **用例总数 1857 → 1888**（`pytest --collect-only`；新增 31 条守卫，全部**红→绿对照**：先写复现缺陷的测试，再修到绿——谱系身份 10 条、授权闭环 14 条、存量回填 3 条、crud 端到端 4 条）。
+- 棘轮/台账同步：except 棘轮 627→632（+5 均为降级钩子/迁移容错，逐条注释在案）；无 rollback 写函数基线 102→103（record_terminal_lineage，与 record_lineage 同一事务纪律）；mkdtemp 位点 47→51；迁移总账补登 federation_grants ALTER；CI 触发面两处守卫同步。
+- **四环实测**：① 独立开发机 **1876 通过 · 12 跳过**（2026-09-10 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）；②③④ 生产机三环在部署验收时实测回填（见下）。
+
 ## v20.5（2026-09-10 Preview 预览版）：可信联邦授权与记忆密码学谱系基础
 
 > **公开身份 = 20.5 Preview**（tag / Release 均为 `v20.5-preview`）。本版面向外部用户与专家开放使用与审计，收集反馈后再升格为不带后缀的正式版本号。
