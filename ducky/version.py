@@ -34,6 +34,31 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
+v20.5.0 (正式版 · 三方评审整改收口 · 2026-09-10)
+    主题：**说出口的承诺，必须实测成立。**
+    三方评审（用户视角端点复现 + Sonnet 5 / Luna 代码审计）各推翻半个核心卖点，
+    逐条 file:line 核验全部成立，本轮闭环：
+    1. 🔴 谱系串链根修：upsert 改 RETURNING id / 唯一键回查（绝不信任
+       lastrowid）；verify 端点补事实行存在性 + 链尾内容对账（幽灵链不再
+       报绿灯）；UNIQUE(memory_id,version) 兜底；删除路径补 DELETE 终链；
+       diff_summary 去除 fact_key 明文；存量行经 schema v5 回填哈希并补
+       BACKFILL 基线（如实声明历史不可追）。
+    2. 🔴 授权闭环：grants 三端点强制 caller 校验（本人或 admin），
+       created_by/revoked_by 从 caller 派生；空 caller 默认 403，逃生门
+       AIDUMEI_ALLOW_IMPLICIT_CALLER=1 显式过渡；谱系/授权查询端点补租户
+       归属校验；expires_at 非法值创建即拒、存量按过期处理；未知 scope
+       维度 fail-closed。
+    3. 措辞归真：「不可篡改」改「可检测篡改（tamper-evident）」——强不可抵赖
+       （签名/外部锚定）入 v21 路线图，不在本版承诺。
+    4. 工程面：dependency-audit 周 cron 定时化；Dockerfile 补 HEALTHCHECK
+       （打 /livez）；新增 scripts/lineage_ghost_cleanup.py 供 v20.5.0a 升级者
+       清理幽灵链（默认 dry-run，--apply 先备份再清理再对账）。
+    5. 用例总数 1857 → 1888（--collect-only），新增 31 条守卫全部红→绿对照
+       （先写复现缺陷的测试，再修到绿）。
+    6. 残留边界如实写明：caller 身份仍为自报参数，未与凭据密码学绑定——
+       本版闭环防的是同一可信宿主边界内 Agent 的越权与误操作；token→身份
+       绑定属 v21。
+
 v20.5 (Preview 预览版 · 可信联邦授权与记忆谱系 + 用户审计整改 · 2026-09-10)
     公开身份 = 20.5 Preview（tag/Release 均为 v20.5-preview），面向外部用户与
     专家开放使用与审计，收集反馈后再升格为不带后缀的正式版本号。
@@ -83,7 +108,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.5"  # 两段式合大仓 X.Y 惯例；Preview 身份由 tag/Release 承载（格式守卫钉死纯数字）
+SERVICE_VERSION = "20.5.0"  # 正式版三段式（维护者拍板：小仓 v20.5.0 / 大仓 v20.5）；格式守卫接受两段或三段
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -97,6 +122,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.5.0", "", "v20.5.0", "正式版 · 三方评审整改收口（授权闭环/谱系身份/存量基线）· 2026-09-10"),
     ("20.5", "", "v20.5-preview", "Preview 预览版 · Grants+Lineage+用户审计整改+UI修复 · 2026-09-10"),
     ("20.4.1", "", "v20.4.1", "正式版 · 四方网页外审+用户审计整改 · CI接入链路/复杂度回吐/版本源单源化 · 2026-09-09"),
     ("20.4.0", "", "v20.4.0-alpha", "alpha 阶段快照 · 六方外审整改 · 对外声称与外界对账 · 开工 2026-09-08"),

@@ -36,7 +36,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **当前公开版本 v20.5 Preview —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 市面独一份。**（本版为 **Preview 预览版**，面向外部用户与专家开放使用与审计；收集反馈后再升格为不带后缀的正式版本号。）
+> **当前公开版本 v20.5.0 正式版 —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 市面独一份。**（Preview 期三方评审整改全部收口：两条承诺级缺陷连根修，六条黄灯全清零——详见 CHANGELOG v20.5.0 段。）
 
 <!-- distribution-policy: github-source-only -->
 > **分发说明（GitHub-only）**：aiduMEI 不再通过 PyPI 或 GHCR 发布和维护安装包。请从本仓库的
