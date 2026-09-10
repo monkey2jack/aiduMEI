@@ -1,5 +1,22 @@
 # aiduMEI 版本演进史
 
+## v20.5.0（2026-09-09 alpha 内部验证版）：可信联邦授权与记忆密码学谱系基础
+
+> **从「认知与混合检索引擎」向具备「可信授权治理与密码学级谱系溯源」的可信记忆控制平面跨越。**
+> 吸收 Walrus 调研精髓，彻底告别仅靠 `shared: bool` 的粗粒度联邦标记，在保持本地优先、轻量低摩擦的前提下，扎实铸造两大核心工程骨架。
+
+- **联邦授权模型（Federation Grants）**：新增 `federation_grants` 表与 `ducky/federation/grants.py` 细粒度授权引擎。支持 grantor/grantee 主体、`resource_scope`（category/tier/tag/user 隔离）、动作谓词（read/write/export/delete）、有效期（expires_at）与即时撤销（revoked_at）机制。跨 Agent 访问默认拒绝（403）。
+- **授权策略实施点（PEP）织入（P0-2 收口）**：`federation/routes.py` 新增 `_enforce_grant` 边界守卫，`/federation/recall`、`/federation/facts/add`、`/federation/broadcast`、`/federation/awareness` 四端点接受可选 `caller_agent_id`——显式跨 Agent 调用必须持有效 Grant，否则 403；不传或同 Agent 的单机回环请求零破坏放行（向下兼容过渡条款）。
+- **记忆密码学谱系（Memory Lineage）**：新增 `memory_lineage` 表与 `ducky/memory_lineage.py` 链式账本。每次事实新增、冲突消解覆盖与演化，均生成带 SHA-256 哈希的不可篡改版本链。
+- **facts 表幂等扩充**：`content_hash`、`version`、`previous_version_hash`、`last_actor` 四谱系字段增量迁移（schema v3→v4），存量行启动时平滑补齐零阻塞。
+- **谱系射程补全（P0-3 收口）**：`federation/dedup.py` 的 `apply_merge`（self-edit 语义判重的 SQL 兜底）与 `hot/legacy_routes.py` 的 `/facts/add` 端点补齐 hash/version 推进与 lineage 同事务记录——两条次路径此前绕过谱系，会让 facts 行哈希与账本失同步。
+- **已知谱系射程限制（登记待下版）**：`hot/crud.py` 记忆更新、`refine_memory.py` 精炼摘要插入、`governance.py` 归档/trust 调整、`raw_drawer.py` verbatim 登记仍无版本链（属事实元数据或派生摘要变更，不在 P0 点名射程内）；`tombstone.py` 快照恢复按快照原样回灌。
+- **配套守卫与台账对齐**：`DELETE_CHAIN_MATRIX` 补充 `federation_grants` / `memory_lineage` 豁免登记；`_MIGRATION_LEDGER` 登记迁移点；`write_endpoint_budgets` 补登记 `/federation/grants` 与 `/federation/grants/revoke`；`_LOGGER_SITES` 95→97；except 棘轮基线 609→626（+17 均谱系/授权降级钩子，ledger/governance 同型惯例）；`mkdtemp` 位点数基线 46→47。
+- **用例总数 1837 → 1852**（`pytest --collect-only`；新增 15 个针对 grants 授权判定、端点 403 拦截/撤销/过期/动作隔离/单机回环、lineage 谱系链与 merge/facts-add 谱系推进的用例）。
+- **生产与沙箱实测（待填）**：待生产机独立沙箱验证通过后补齐四环实测数字。
+
+---
+
 ## v20.4.1（2026-09-09 正式版）：四方网页外审整改 + 用户审计收口 · 防线接入链路 · 复杂度回吐
 
 > **防线都在，还要接进链路；功能够多，开始回减复杂度。** 四方网页版外审（GPT Luna / Sonnet 5 / Grok / Gemini 3.8 Flash）约 30 条指控逐条 `file:line` 自查：采纳 12 条，驳回 5 条（全部 Gemini 虚构/误判：GHCR 流水线、「无注入清洗」、「幂等不足」、「无异步队列」均不属实），降级 1 条（CJK BM25 系台账已登记项）。评比：Sonnet 9.5 / Luna 8.0 / Grok 7.0 / Gemini 2.0。任务书：wiki「aiduMEI v20.4.1a 整改任务书」。
