@@ -72,7 +72,12 @@ CREATE TABLE IF NOT EXISTS facts (
     sensitivity      TEXT DEFAULT 'internal',
     -- aiduMEI v18.3 多模态与 Obsidian 双链支持
     media_url        TEXT,
-    vision_caption   TEXT
+    vision_caption   TEXT,
+    -- aiduMEI v20.5.0a 密码学谱系字段
+    content_hash          TEXT DEFAULT '',
+    version               INTEGER DEFAULT 1,
+    previous_version_hash TEXT DEFAULT '',
+    last_actor            TEXT DEFAULT ''
 )
 """
 
@@ -126,7 +131,7 @@ _INDEXES = (
 _lock = threading.Lock()
 _done = False
 
-CURRENT_SCHEMA_VERSION = 3  # v20.4.0(P1-6): entities 补租户轴 user_id/bank_id；此前 v18.3 media_url/vision_caption
+CURRENT_SCHEMA_VERSION = 4  # v20.5.0a(P0): facts 补密码学谱系字段 + grants/lineage 表；此前 v20.4 entities 补租户轴
 
 
 def apply_migrations(conn) -> None:
@@ -179,7 +184,37 @@ def apply_migrations(conn) -> None:
             logger.info("数据库秒级增量升级 v3 成功 ✅")
             user_version = 3
 
-        # 未来的版本升级可以直接在下面追加: if user_version < 4: ...
+        # 版本迁移流：Version 3 -> Version 4
+        # v20.5.0a (P0-1): facts 增量补齐密码学谱系字段并初始化 memory_lineage 与 federation_grants
+        if user_version < 4:
+            logger.info("执行数据库增量升级：v3 -> v4 (facts 补齐密码学谱系字段与联邦授权表)")
+            for col, ddl in (
+                ("content_hash", "TEXT DEFAULT ''"),
+                ("version", "INTEGER DEFAULT 1"),
+                ("previous_version_hash", "TEXT DEFAULT ''"),
+                ("last_actor", "TEXT DEFAULT ''"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE facts ADD COLUMN {col} {ddl};")
+                except Exception as e:
+                    logger.debug(f"字段 facts.{col} 已存在或跳过: {e}")
+
+            try:
+                from ducky.federation.grants import ensure_grants_schema
+                ensure_grants_schema(conn)
+            except Exception as e:
+                logger.debug(f"grants schema 初始化跳过: {e}")
+
+            try:
+                from ducky.memory_lineage import ensure_lineage_schema
+                ensure_lineage_schema(conn)
+            except Exception as e:
+                logger.debug(f"lineage schema 初始化跳过: {e}")
+
+            conn.execute("PRAGMA user_version = 4")
+            conn.commit()
+            logger.info("数据库秒级增量升级 v4 成功 ✅")
+            user_version = 4
 
     except Exception as exc:
         logger.error("数据库增量补丁执行异常 (服务继续启动): %s", exc)

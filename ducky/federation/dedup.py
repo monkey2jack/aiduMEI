@@ -146,13 +146,39 @@ def apply_merge(fact_id: int, new_value: str, new_tags: str = "", *, conn=None) 
 
         kept = row["fact_value"] if len(row["fact_value"] or "") >= len(new_value or "") else new_value
         merged_tags = _merge_tags(row["tags"], new_tags)
+        # 🧬 密码学谱系 (v20.5.0a P0-3)：merge 是事实正文的真实变更路径
+        # （self-edit 语义判重的 SQL 兜底），content_hash/version 必须与
+        # writer 的 update 同步推进，否则这条腿的事实哈希与账本失同步——
+        # verify_lineage_integrity 对账时 facts 行的 hash 是旧的。
+        from ducky.memory_lineage import compute_content_hash, record_lineage
+        old_hash_row = conn.execute(
+            "SELECT content_hash, version FROM facts WHERE id=?", (fact_id,)
+        ).fetchone()
+        prev_hash = (old_hash_row[0] if old_hash_row else "") or ""
+        old_ver = (old_hash_row[1] if old_hash_row else 1) or 1
+        new_hash = compute_content_hash(kept)
         conn.execute(
             """UPDATE facts
                SET fact_value=?, overview=?, summary=?, tags=?,
+                   content_hash=?, version=?, previous_version_hash=?,
                    updated_at=CURRENT_TIMESTAMP
                WHERE id=?""",
-            (kept, kept, kept[:60], merged_tags, fact_id),
+            (kept, kept, kept[:60], merged_tags,
+             new_hash, old_ver + 1, prev_hash, fact_id),
         )
+        try:
+            record_lineage(
+                conn,
+                memory_id=f"fact:{fact_id}",
+                content=kept,
+                action="MERGE",
+                actor="self_edit",
+                previous_version_hash=prev_hash,
+                source="dedup",
+                diff_summary="dedup merge: kept longer value, tags union",
+            )
+        except Exception as le:
+            logger.debug("merge lineage 记录跳过: %s", le)
         conn.commit()
     finally:
         if own_conn:
