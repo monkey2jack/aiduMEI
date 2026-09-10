@@ -15,7 +15,7 @@
 - **用例总数 1837 → 1857**（`pytest --collect-only`；新增 20 个用例：grants 授权判定、端点 403 拦截/撤销/过期/动作隔离/单机回环、lineage 谱系链、merge/facts-add 谱系推进，b 阶段用户审计整改回归 5 条——scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/crud-update 谱系推进/内联 style 元素守卫）。
 - **生产与沙箱实测（待填）**：待生产机独立沙箱验证通过后补齐四环实测数字。
 
-### b 阶段 · 用户用户审计整改（2026-09-10 · 条件通过 2🔴+1🟡）
+### b 阶段 · 用户审计整改（2026-09-10 · 条件通过 2🔴+1🟡）
 
 - **🔴-1 `_match_scope` 缺维度绕行**（grants.py）：scope 限定过的维度（category/tier/tag/user）调用方未提供时旧逻辑跳过 → 限定 scope 被当成 `*`。改白名单思维：**缺维度一律拒绝**（fail-closed），裸词形态同样收紧。端点面（recall 不传 category）同步堵死。
 - **🔴-2 `INSERT OR REPLACE` 撤销复活**（grants.py）：已撤销/已存在的 grant_id 可被覆盖——revoked_at 重置 NULL，撤销原地复活、他人授权可被劫持。改显式冲突检查：**已存在 grant_id 一律拒绝**，撤销是终态，重授权必须用新 ID（审计链不断）。
