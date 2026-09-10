@@ -22,7 +22,7 @@
     python3 scripts/deploy_manifest.py emit > /tmp/repo.json
 
     # 在部署树生成清单
-    python3 scripts/deploy_manifest.py emit --root /root/dudu-mem0 > /tmp/prod.json
+    python3 scripts/deploy_manifest.py emit --root <部署树绝对路径> > /tmp/prod.json
 
     # 比对（差集非空 → 退出码 1 并逐条点名）
     python3 scripts/deploy_manifest.py diff /tmp/repo.json /tmp/prod.json

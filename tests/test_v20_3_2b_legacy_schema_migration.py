@@ -1,6 +1,6 @@
 """v20.3.2-beta P0-2：存量库上 `memory_types` 迁移顺序错，租户隔离静默失效。
 
-外审 P1-A（Qwen 独家发现，小猴实测复现，输出与其报告逐字吻合）。
+外审 P1-A（Qwen 独家发现，本方实测复现，输出与其报告逐字吻合）。
 
 `ensure_memory_types_schema()` 里，v20.2.4 外审 F-16 的**三列唯一约束**
 （`user_id, bank_id, memory_ref_raw`）被建在**补这三列的 ALTER 循环之前**：

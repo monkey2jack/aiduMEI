@@ -238,7 +238,7 @@ def test_bare_environment_is_really_bare(sweep_result):
         "扫描会拿到一片 401，而 401 不是缺陷，判据就此失真")
     assert world["backend"] == [False, "config_file_missing"], (
         f"子进程不是「未配置」形态：{world['backend']}（BASE_DIR={world['base_dir']}）")
-    assert "site-packages" not in world["data_dir"] and "/dudu-mem0/" not in world["data_dir"], (
+    assert "site-packages" not in world["data_dir"] and "<部署树名>/" not in world["data_dir"], (
         f"DATA_DIR 落在真实部署/包目录里：{world['data_dir']} —— 扫描会写活数据")
 def test_no_route_returns_500_when_backend_is_not_configured(sweep_result):
     """零凭据首跑：任何路由都不许回 500。

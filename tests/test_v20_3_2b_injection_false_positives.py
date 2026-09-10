@@ -1,6 +1,6 @@
 """v20.3.2-beta P1-4：注入防御在默认 enforce 下误拒真实记忆载荷。
 
-外审 P1-B（Qwen 报 6/14，小猴本机复现 **7/12**，比其更宽）。
+外审 P1-B（Qwen 报 6/14，我本机复现 **7/12**，比其更宽）。
 
 三个盲区，恰好都是 agent 最常存的内容：
   · Layer 1 方括号模式 `\\[system\\s*(prompt|message|instruction)?\\]` 的 `?`
