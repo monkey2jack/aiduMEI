@@ -8,52 +8,8 @@
 <meta name="author" content="monkey²" />
 <meta name="theme-color" content="#1f4e79" />
 <link rel="icon" href="logo.png" />
-<link rel="stylesheet" href="css/style.css?v=9" />
-<style>
-  /* ---------- slogan (aidu / I do / AI do + 爱嘟 / 唯吾 / 智助) ---------- */
-  .slogan-en, .slogan-cn {
-    position: absolute;
-    top: calc(var(--shell-pad, 24px) + 56px); /* header height + margin */
-    z-index: 5;
-    display: flex;
-    flex-direction: column;
-    font-size: clamp(1rem, min(3vw, 3.2vh), 2rem);
-    font-weight: 900;
-    line-height: 1.5;
-    pointer-events: none;
-    user-select: none;
-  }
-  .slogan-en {
-    right: max(24px, calc((100vw - var(--shell)) / 2));
-    align-items: flex-end;
-    text-align: right;
-  }
-  .slogan-cn {
-    left: max(24px, calc((100vw - var(--shell)) / 2));
-    align-items: flex-start;
-    text-align: left;
-  }
-  .slogan-en .row, .slogan-cn .row {
-    display: block;
-    white-space: nowrap;
-    text-decoration: underline;
-    text-underline-offset: 0.1em;
-    text-decoration-thickness: 0.055em;
-  }
-  .slogan-en .row--1, .slogan-cn .row--1 { color: var(--ink); }
-  .slogan-en .row--2, .slogan-cn .row--2 { color: var(--gray); }
-  .slogan-en .row--3, .slogan-cn .row--3 { color: var(--blue); }
-
-  @media (max-width: 720px) {
-    .slogan-en, .slogan-cn {
-      top: auto;
-      bottom: 120px;
-      font-size: clamp(0.9rem, 4vw, 1.2rem);
-    }
-    .slogan-en { right: 20px; }
-    .slogan-cn { left: 20px; }
-  }
-</style>
+<link rel="stylesheet" href="css/style.css?v=10" />
+<!-- v20.5.0 preview：slogan 内联样式已收编 css/style.css（CSP style-src 'self' 拒绝渲染 <style> 元素） -->
 <!-- P2-3（v19.4.1）：echarts 改为本地随包分发。
      此前从 cdn.jsdelivr.net 外链且无 SRI —— 内网/离线/断网部署下控制台
      图表直接白屏，且第三方 CDN 一旦被投毒即等于在控制台里执行任意 JS。

@@ -541,19 +541,45 @@ def register_crud_routes(app: FastAPI) -> None:
                 logger.debug(f"FTS index on update 跳过: {fe}")
 
             # 同步更新 facts.db 事实内容与更新时间
+            # 🟡-1（用户审计 · v20.5.0a b 阶段整改）：/update 改的是 fact_value
+            # 正文——与 federation writer 的 UPDATE 同字段，属核心内容变更而非
+            # 元数据，此前不推 hash/version 会让 facts 行哈希与谱系账本失同步
+            # （verify_lineage_integrity 对账时链完整但数据陈旧）。按用户审计裁决
+            # 与 writer UPDATE 路径对齐：hash/version/previous_version_hash 推进
+            # + memory_lineage 同事务记录。
             try:
+                from ducky.memory_lineage import compute_content_hash, record_lineage
                 from ducky.utils import get_facts_conn
                 fconn = get_facts_conn()
-                if user_id == DEFAULT_USER_ID:
+                _new_hash = compute_content_hash(content)
+                # 命中的行可能不止一条（id=? OR fact_key=?），逐行读旧 hash/version
+                # 再逐行推进，保证每条的链都从自己的父版本续上
+                _rows = fconn.execute(
+                    "SELECT id, content_hash, version FROM facts WHERE (id=? OR fact_key=?) AND user_id=? AND bank_id=?",
+                    (req.memory_id, req.memory_id, user_id, scope.bank_id),
+                ).fetchall()
+                for _fid, _old_hash, _old_ver in _rows:
                     fconn.execute(
-                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE (id=? OR fact_key=?) AND user_id=? AND bank_id=?",
-                        (content, req.memory_id, req.memory_id, user_id, scope.bank_id),
+                        """UPDATE facts
+                           SET fact_value=?, content_hash=?, version=?, previous_version_hash=?,
+                               last_actor=?, updated_at=CURRENT_TIMESTAMP
+                           WHERE id=?""",
+                        (content, _new_hash, (_old_ver or 1) + 1, _old_hash or "",
+                         user_id, _fid),
                     )
-                else:
-                    fconn.execute(
-                        "UPDATE facts SET fact_value=?, updated_at=CURRENT_TIMESTAMP WHERE (id=? OR fact_key=?) AND user_id=? AND bank_id=?",
-                        (content, req.memory_id, req.memory_id, user_id, scope.bank_id),
-                    )
+                    try:
+                        record_lineage(
+                            fconn,
+                            memory_id=f"fact:{_fid}",
+                            content=content,
+                            action="UPDATE",
+                            actor=user_id,
+                            source="/update",
+                            previous_version_hash=_old_hash or "",
+                            diff_summary=f"crud update: fact:{_fid}",
+                        )
+                    except Exception as le:
+                        logger.debug(f"lineage on update 跳过: {le}")
                 fconn.commit()
                 fconn.close()
             except Exception as fte:

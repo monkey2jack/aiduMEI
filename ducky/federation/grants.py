@@ -99,8 +99,22 @@ def create_grant(
     ensure_grants_schema()
     conn = get_facts_conn()
     try:
+        # 🔴-2（用户审计 · v20.5.0a b 阶段整改）：原 INSERT OR REPLACE 允许
+        # 用已存在的 grant_id 覆盖整行——revoked_at 被重置 NULL，已撤销的
+        # 授权原地「复活」。改为显式冲突检查：已存在的 grant_id 一律拒绝，
+        # 撤销是终态（要再授权就发新 grant_id，审计链不断）。
+        existing = conn.execute(
+            "SELECT revoked_at FROM federation_grants WHERE grant_id=?", (gid,)
+        ).fetchone()
+        if existing:
+            conn.rollback()
+            if existing[0]:
+                return {"status": "error",
+                        "detail": f"grant_id={gid} 已被撤销，撤销是终态——请用新 grant_id 重新授权（防复活）"}
+            return {"status": "error",
+                    "detail": f"grant_id={gid} 已存在，不得覆盖（防撤销复活/防覆盖他人授权）"}
         conn.execute(
-            """INSERT OR REPLACE INTO federation_grants
+            """INSERT INTO federation_grants
                (grant_id, grantor_agent, grantee_agent, resource_scope, actions, expires_at, revoked_at, revoked_by)
                VALUES (?, ?, ?, ?, ?, ?, NULL, '')""",
             (gid, grantor_agent, grantee_agent, resource_scope, act_str, expires_at or None),
@@ -266,7 +280,12 @@ def _match_scope(
     tier: str = "",
     user_id: str = "",
 ) -> bool:
-    """判断给定资源特征是否命中 resource_scope 规则。"""
+    """判断给定资源特征是否命中 resource_scope 规则。
+
+    用户审计 🔴-1（v20.5.0a b 阶段整改）：scope 声明了某维度而调用方未提供
+    该维度时，旧逻辑直接跳过 → 任何限定 scope 被不传参数的调用方当成 `*`。
+    改为白名单思维：**scope 限定过的维度必须被调用方显式提供且匹配**，
+    缺维度一律拒绝（fail-closed），缺维度 ≠ 通配。"""
     scope = (scope or "*").strip()
     if scope == "*":
         return True
@@ -278,18 +297,30 @@ def _match_scope(
             k, v = rule.split(":", 1)
             k = k.strip().lower()
             v = v.strip()
-            if k in ("category", "cat") and category and category.lower() != v.lower():
-                return False
-            if k in ("tier", "memory_tier") and tier and tier.lower() != v.lower():
-                return False
-            if k in ("tag", "tags") and tags:
+            if k in ("category", "cat"):
+                if not category:
+                    return False  # 🔴-1：scope 限定了 category 而调用方没给 → 拒绝
+                if category.lower() != v.lower():
+                    return False
+            if k in ("tier", "memory_tier"):
+                if not tier:
+                    return False  # 🔴-1：同上，缺维度拒绝
+                if tier.lower() != v.lower():
+                    return False
+            if k in ("tag", "tags"):
+                if not tags:
+                    return False  # 🔴-1：同上
                 tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
                 if v.lower() not in tag_list:
                     return False
-            if k in ("user", "user_id") and user_id and user_id.lower() != v.lower():
-                return False
+            if k in ("user", "user_id"):
+                if not user_id:
+                    return False  # 🔴-1：同上
+                if user_id.lower() != v.lower():
+                    return False
         else:
-            if category and rule.lower() != category.lower():
+            # 裸词形态默认按 category 解读：调用方必须提供且匹配
+            if not category or rule.lower() != category.lower():
                 return False
 
     return True
