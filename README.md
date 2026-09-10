@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.4" width="100%">
+  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.5" width="100%">
 </p>
 
 # aiduMEI⚕爱嘟优忆思——智能体通用智慧引擎
@@ -36,7 +36,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **当前公开正式版 v20.5 —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 市面独一份。**
+> **当前公开版本 v20.5 Preview —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 市面独一份。**（本版为 **Preview 预览版**，面向外部用户与专家开放使用与审计；收集反馈后再升格为不带后缀的正式版本号。）
 
 <!-- distribution-policy: github-source-only -->
 > **分发说明（GitHub-only）**：aiduMEI 不再通过 PyPI 或 GHCR 发布和维护安装包。请从本仓库的
@@ -142,7 +142,7 @@ python scripts/e2e_smoke.py --json
 
 ### 容器与 Dockhold
 
-2026-09-07 的 `main` 维护更新补齐容器托管支持（该次维护时公开版本与 Release 保持 v20.3；现行公开正式版为 **v20.4**）。端口按 `AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767` 取值；使用平台注入的 `PORT` 时，前两项留空。镜像为运行用户提供可写 HOME，并支持托管平台分配的 UID（组 0）。
+2026-09-07 的 `main` 维护更新补齐容器托管支持（该次维护时公开版本与 Release 保持 v20.3）。端口按 `AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767` 取值；使用平台注入的 `PORT` 时，前两项留空。镜像为运行用户提供可写 HOME，并支持托管平台分配的 UID（组 0）。
 
 部署前为数据、模型配置、Qdrant 向量和历史数据库设置持久路径；只设置 `AIDUMEM_DATA_DIR` 不会迁移后两者。按 [Dockhold 部署指南](docs/DEPLOY_DOCKHOLD.md) 配置凭据和存储，再验证容器替换后的召回。感谢 [Maziar110](https://github.com/Maziar110) 提交 [容器修复 #10](https://github.com/monkey2jack/aiduMEI/pull/10) 和 [部署指南 #11](https://github.com/monkey2jack/aiduMEI/pull/11)。
 

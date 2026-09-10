@@ -1545,12 +1545,20 @@ def test_doc_numbers_are_consistent_across_both_readmes():
 
 
 def test_readme_public_version_claim_matches_service_version():
-    """README 的「当前公开正式版」宣称必须与 version.py 单源一致（v20.4.1a 外审 A2）。
+    """README 的当前公开版本宣称必须与 version.py 单源一致（v20.4.1a 外审 A2）。
 
     由来：v20.4.0 收口时 banner 升到 v20.4，但 README.md 容器段仍写
     「公开版本与 Release 保持 v20.3」（README_EN 同）——同一文件两种口径，
     被四方外审（GPT Luna）抓个正着。历史事件可以记述历史版本，
-    但「保持/remain + 加粗版本号」的**现在时口径**只允许等于当前版本。
+    但**现在时口径**只允许等于当前版本。
+
+    v20.5 preview（第二次发作 · 修的是守卫本身的射程）：上一版守卫只钉住
+    「保持/remain **vX.Y**」一种措辞，于是容器段那句「现行公开正式版为
+    **v20.4**」/「the current public release is **v20.4**」**从它眼皮底下走过去
+    且全绿**——同一页页首已写 v20.5，两种口径并存，与 v20.4.1 被 Luna 抓的
+    是同一个病。教训：判据钉的是措辞，缺陷却会换措辞，所以这里改为钉
+    **形态**——凡「公开/正式版 + 现在时 + 加粗版本号」一律入网，
+    不再枚举句式。本函数末尾自带负向对照（两个方向都断言）。
     """
     import re
 
@@ -1561,24 +1569,62 @@ def test_readme_public_version_claim_matches_service_version():
     zh = open(os.path.join(_REPO_ROOT, "README.md"), encoding="utf-8").read()
     en = open(os.path.join(_REPO_ROOT, "README_EN.md"), encoding="utf-8").read()
 
-    m = re.search(r"当前公开正式版\s*v(\d+\.\d+)", zh)
-    assert m, "README.md 缺少「当前公开正式版 vX.Y」宣称"
+    m = re.search(r"当前公开版本\s*v(\d+\.\d+)", zh)
+    assert m, "README.md 缺少「当前公开版本 vX.Y」宣称"
     assert m.group(1) == current, (
-        f"README.md 宣称当前公开正式版 v{m.group(1)}，version.py 是 v{current}"
+        f"README.md 宣称当前公开版本 v{m.group(1)}，version.py 是 v{current}"
     )
-    m = re.search(r"current public release is\s*\*\*v(\d+\.\d+)\*\*", en)
+    m = re.search(r"current public release is\s*\*\*v(\d+\.\d+)", en)
     assert m, "README_EN.md 缺少「current public release is vX.Y」宣称"
     assert m.group(1) == current, (
         f"README_EN.md 宣称 current public release v{m.group(1)}，version.py 是 v{current}"
     )
 
-    # 现在时「保持/remain **vX.Y**」若出现，必须等于当前版本（历史记述不得用加粗现在时）。
-    for name, text, pat in (
+    # 形态网（v20.5 preview）：**加粗版本号** 只要紧跟在这些「现在时版本宣称」语汇
+    # 之后，就必须等于当前版本。措辞可以换，形态换不掉。
+    # 历史记述请用过去时或去掉加粗，即可自然绕开本网 —— 这是有意为之：
+    # 本守卫拦的是「现在时宣称」，不是「提到旧版本号」。
+    _NOW_ZH = r"(?:当前|现行|现在|目前)[^。\n]{0,12}?(?:公开|正式)[^。\n]{0,6}?版(?:本)?(?:为|是)?\s*\*\*v(\d+\.\d+)"
+    _NOW_EN = r"(?:current|latest)\s+public\s+(?:release|version)\s+(?:is\s+)?\*\*v(\d+\.\d+)"
+    # 旧措辞（历史沿革，保留网眼，防回退）
+    _LEGACY = (
         ("README.md", zh, r"保持\s*\*\*v(\d+\.\d+)\*\*"),
         ("README_EN.md", en, r"remain(?:ing|s)?\s*\*\*v(\d+\.\d+)\*\*"),
+    )
+    for name, text, pat in (
+        ("README.md", zh, _NOW_ZH),
+        ("README_EN.md", en, _NOW_EN),
+        *_LEGACY,
     ):
         for hit in re.findall(pat, text):
             assert hit == current, (
-                f"{name} 用现在时宣称「保持/remain v{hit}」，当前版本是 v{current} —— "
+                f"{name} 用现在时宣称「公开版本为 v{hit}」，当前版本是 v{current} —— "
                 "历史事件请用过去时态或不加粗写法"
             )
+
+    # ── 负向对照（v20.5 preview 补）：判据必须**双向可证伪** ──────────────
+    # 由来：上一版守卫只枚举「保持/remain **vX.Y**」一种措辞，于是放跑了一句
+    # 写在同一页、同样加粗、同样现在时的「现行公开正式版为 **v20.4**」，且全绿。
+    # **一个只会说「过」的守卫，和一个真干净的仓库，报出来一模一样。**
+    # 所以这里用上面的网眼跑两组合成样本：错的形态必须报得出来，
+    # 对的形态必须肯放过（误伤会逼人绕过整道关，比漏报更危险）。
+    # 样本不取自 README 当前内容 —— 否则 README 一改负向对照就跟着失效，
+    # 那它守的就不是判据，而是恰好那一版文本。
+    _dirty = (
+        (_NOW_ZH, "（该次维护时公开版本与 Release 保持 v20.3；现行公开正式版为 **v20.4**）。"),
+        (_NOW_EN,
+         "(that update kept the public version and Release at v20.3; the current public release is **v20.4**)."),
+    )
+    for _pat, _sample in _dirty:
+        _m = re.search(_pat, _sample)
+        assert _m, f"守卫放过了它本该拦住的现在时宣称，样本：{_sample!r}"
+        assert _m.group(1) == "20.4", f"网眼抓到了，但取值不对：{_m.group(1)!r}"
+
+    _clean = (
+        (_NOW_ZH, "（该次维护时公开版本与 Release 保持 v20.3）。"),
+        (_NOW_EN, "(that update kept the public version and Release at v20.3)."),
+    )
+    for _pat, _sample in _clean:
+        assert not re.search(_pat, _sample), (
+            f"守卫把历史记述误判成现在时宣称，样本：{_sample!r}"
+        )
