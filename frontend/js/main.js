@@ -3,11 +3,15 @@
    ============================================================================= */
 
 /* ---------------------------------------------------------------------------
-   random hexagon backdrop
+   aiduPARK lattice-bg backdrop
    --------------------------------------------------------------------------- */
 function createHexBackground(selector, count, colors, opacity) {
   const container = document.querySelector(selector);
   if (!container) return;
+  if (window.LatticeBG) {
+    window.LatticeBG.mount(container);
+    return;
+  }
   container.innerHTML = '';
 
   const palette = [];
