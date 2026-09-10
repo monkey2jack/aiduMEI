@@ -36,7 +36,7 @@
   --radius: 14px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 
-  /* Site typeface: Apple System Font stack matching aiduPARK */
+  /* Site typeface: Apple System Font stack */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -65,7 +65,7 @@ body {
 a { color: inherit; text-decoration: none; }
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
 
-/* ---------- hexagon backdrop & lattice-bg (aiduPARK style) ---------- */
+/* ---------- hexagon backdrop & lattice-bg ---------- */
 .hex-bg {
   position: fixed;
   inset: 0;
@@ -1194,7 +1194,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   text-align: center;
 }
 
-/* ---------- aiduPARK Slogan 动效样式 ---------- */
+/* ---------- Slogan 动效样式 ---------- */
 .hero-slogan-orbital {
   position: relative;
   display: block;
