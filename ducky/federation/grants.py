@@ -100,6 +100,32 @@ def ensure_grants_schema(conn: sqlite3.Connection | None = None) -> None:
             conn.close()
 
 
+def _validate_grant_inputs(grantor_agent, grantee_agent, resource_scope,
+                           expires_at) -> dict[str, Any]:
+    """Grant 入参校验与归一（v20.5.0 正式版 T6/T7 抽出）。
+
+    从 `create_grant` 抽出，使该函数圈复杂度不因新增校验而上涨
+    （与 writer.py 的 `_upsert_fact_row` 同一纪律：修复不得加重 F/D 级函数）。
+
+    返回 `{"status": "error", ...}` 表示拒绝；成功时返回归一后的 scope，
+    调用方以 `validated["resource_scope"]` 取用。
+    """
+    if not grantor_agent or not grantee_agent:
+        return {"status": "error", "detail": "grantor_agent 与 grantee_agent 不能为空"}
+
+    scope_err = validate_resource_scope(resource_scope)
+    if scope_err:
+        return {"status": "error", "detail": scope_err}
+
+    if expires_at is not None and str(expires_at).strip():
+        exp_ts = parse_iso_timestamp(str(expires_at).strip())
+        if not exp_ts:
+            return {"status": "error",
+                    "detail": f"expires_at 格式非法: {expires_at!r}（需 ISO 8601，如 2030-01-01T00:00:00+00:00）"}
+
+    return {"status": "ok", "resource_scope": (resource_scope or "*").strip()}
+
+
 def create_grant(
     grantor_agent: str,
     grantee_agent: str,
@@ -118,18 +144,10 @@ def create_grant(
       · expires_at 非法值直接拒绝创建（🟡-3：安全特性静默降级必须朝更严）；
       · resource_scope 未知维度名直接拒绝创建（🟡-4：拼错的维度不得入库）。
     """
-    if not grantor_agent or not grantee_agent:
-        return {"status": "error", "detail": "grantor_agent 与 grantee_agent 不能为空"}
-
-    scope_err = validate_resource_scope(resource_scope)
-    if scope_err:
-        return {"status": "error", "detail": scope_err}
-
-    if expires_at is not None and str(expires_at).strip():
-        exp_ts = parse_iso_timestamp(str(expires_at).strip())
-        if not exp_ts:
-            return {"status": "error",
-                    "detail": f"expires_at 格式非法: {expires_at!r}（需 ISO 8601，如 2030-01-01T00:00:00+00:00）"}
+    validated = _validate_grant_inputs(grantor_agent, grantee_agent, resource_scope, expires_at)
+    if validated.get("status") == "error":
+        return validated
+    resource_scope = validated["resource_scope"]
 
     gid = grant_id or f"grant_{uuid.uuid4().hex[:16]}"
     if isinstance(actions, (list, set, tuple)):
@@ -138,8 +156,6 @@ def create_grant(
         act_str = ",".join(sorted(str(a).strip().lower() for a in str(actions).split(",") if a.strip()))
     if not act_str:
         act_str = "read"
-
-    resource_scope = (resource_scope or "*").strip()
 
     ensure_grants_schema()
     conn = get_facts_conn()

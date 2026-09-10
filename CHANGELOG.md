@@ -20,8 +20,8 @@
 
 - **联邦授权模型（Federation Grants）**：新增 `federation_grants` 表与 `ducky/federation/grants.py` 细粒度授权引擎。支持 grantor/grantee 主体、`resource_scope`（category/tier/tag/user 隔离）、动作谓词（read/write/export/delete）、有效期（expires_at）与即时撤销（revoked_at）机制。跨 Agent 访问默认拒绝（403）。
 - **授权策略实施点（PEP）织入（P0-2 收口）**：`federation/routes.py` 新增 `_enforce_grant` 边界守卫，`/federation/recall`、`/federation/facts/add`、`/federation/broadcast`、`/federation/awareness` 四端点接受可选 `caller_agent_id`——显式跨 Agent 调用必须持有效 Grant，否则 403；不传或同 Agent 的单机回环请求零破坏放行（向下兼容过渡条款）。
-- **记忆密码学谱系（Memory Lineage）**：新增 `memory_lineage` 表与 `ducky/memory_lineage.py` 链式账本。每次事实新增、冲突消解覆盖与演化，均生成带 SHA-256 哈希的不可篡改版本链。
-- **facts 表幂等扩充**：`content_hash`、`version`、`previous_version_hash`、`last_actor` 四谱系字段增量迁移（schema v3→v4），存量行启动时平滑补齐零阻塞。
+- **记忆密码学谱系（Memory Lineage）**：新增 `memory_lineage` 表与 `ducky/memory_lineage.py` 链式账本。每次事实新增、冲突消解覆盖与演化，均生成带 SHA-256 哈希的**可检测篡改**（tamper-evident）版本链。
+- **facts 表幂等扩充**：`content_hash`、`version`、`previous_version_hash`、`last_actor` 四谱系字段增量迁移（schema v3→v4）。**【v20.5.0 更正】原表述「存量行启动时平滑补齐零阻塞」不成立——本段当时只 ADD COLUMN 未回填，存量行 `content_hash` 全为空串；正式版已补 schema v5 回填 + BACKFILL 基线，详见上方 v20.5.0 段。**
 - **谱系射程补全（P0-3 收口）**：`federation/dedup.py` 的 `apply_merge`（self-edit 语义判重的 SQL 兜底）与 `hot/legacy_routes.py` 的 `/facts/add` 端点补齐 hash/version 推进与 lineage 同事务记录——两条次路径此前绕过谱系，会让 facts 行哈希与账本失同步。
 - **已知谱系射程限制（登记待下版）**：`hot/crud.py` 记忆更新、`refine_memory.py` 精炼摘要插入、`governance.py` 归档/trust 调整、`raw_drawer.py` verbatim 登记仍无版本链（属事实元数据或派生摘要变更，不在 P0 点名射程内）；`tombstone.py` 快照恢复按快照原样回灌。
 - **配套守卫与台账对齐**：`DELETE_CHAIN_MATRIX` 补充 `federation_grants` / `memory_lineage` 豁免登记；`_MIGRATION_LEDGER` 登记迁移点；`write_endpoint_budgets` 补登记 `/federation/grants` 与 `/federation/grants/revoke`；`_LOGGER_SITES` 95→97；except 棘轮基线 609→626（+17 均谱系/授权降级钩子，ledger/governance 同型惯例）；`mkdtemp` 位点数基线 46→47。
