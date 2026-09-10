@@ -8,7 +8,7 @@
 <meta name="author" content="monkey²" />
 <meta name="theme-color" content="#1f4e79" />
 <link rel="icon" href="logo.png" />
-<link rel="stylesheet" href="css/style.css?v=10" />
+<link rel="stylesheet" href="css/style.css?v=11" />
 <!-- v20.5.0 preview：slogan 样式已收编 css/style.css（CSP style-src self 拒渲染内联样式元素） -->
 <!-- P2-3（v19.4.1）：echarts 改为本地随包分发。
      此前从 cdn.jsdelivr.net 外链且无 SRI —— 内网/离线/断网部署下控制台
@@ -38,19 +38,8 @@
     </div>
   </header>
 
-  <!-- slogan: aidu / I do / AI do -->
-  <div class="slogan-en" aria-hidden="true">
-    <span class="row row--1">aidu</span>
-    <span class="row row--2">I do</span>
-    <span class="row row--3">AI do</span>
-  </div>
-
-  <!-- slogan 中文：爱嘟 / 唯吾 / 智助 -->
-  <div class="slogan-cn" aria-hidden="true">
-    <span class="row row--1">爱嘟</span>
-    <span class="row row--2">唯吾</span>
-    <span class="row row--3">智助</span>
-  </div>
+  <!-- slogan: aiduPARK orbital dynamic slogan (same as login page) -->
+  <div class="hero-slogan-orbital" id="heroSloganOrbital"></div>
 
   <div class="stage">
     <!-- 1 + 2 + 3 hexagon pyramid -->
@@ -132,9 +121,7 @@
   <footer class="site-foot">
     <div class="site-foot-brand">
       <img class="brand-logo" src="logo.png" alt="aiduMEI" />
-      <!-- 品牌字标是标签拆分写法（aidu + <b>MEI</b>），全局 sed 扫不到，
-           v19.4.1 的改名就是从这里漏出去的。改名时必须手工核对这一行。 -->
-      <span class="wordmark"><span class="lbl">aidu<b>MEI</b></span><i class="sep">⚕</i><span class="lbl">爱嘟</span>优忆思</span>
+      <span class="wordmark"><span class="lbl"><span class="brand-gray">aidu<b>MEI</b></span></span><i class="sep brand-blue">⚕</i><span class="lbl"><span class="brand-gray">智慧</span><b class="brand-blue">引擎</b></span></span>
     </div>
   </footer>
 
@@ -160,8 +147,10 @@
   </div>
 </div>
 
+<script src="js/lattice-bg.js?v=2"></script>
+<script src="js/orbital-slogan.js?v=2"></script>
 <script src="js/api.js?v=9"></script>
 <script src="js/panels.js?v=9"></script>
-<script src="js/main.js?v=9"></script>
+<script src="js/main.js?v=11"></script>
 </body>
 </html>

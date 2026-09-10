@@ -3,11 +3,15 @@
    ============================================================================= */
 
 /* ---------------------------------------------------------------------------
-   random hexagon backdrop
+   aiduPARK lattice-bg backdrop
    --------------------------------------------------------------------------- */
 function createHexBackground(selector, count, colors, opacity) {
   const container = document.querySelector(selector);
   if (!container) return;
+  if (window.LatticeBG) {
+    window.LatticeBG.mount(container);
+    return;
+  }
   container.innerHTML = '';
 
   const palette = [];
@@ -229,6 +233,16 @@ document.addEventListener('keydown', function (e) {
     if (y + th > window.innerHeight - 10) y = e.clientY - th - 8;
     tip.style.left = x + 'px';
     tip.style.top = y + 'px';
+  }
+})();
+
+/* ---------------------------------------------------------------------------
+   aiduPARK orbital slogan（与登录页同一动效，v20.5.0 继承修复）
+   --------------------------------------------------------------------------- */
+(function () {
+  var host = document.getElementById('heroSloganOrbital');
+  if (host && window.OrbitalSlogan) {
+    window.OrbitalSlogan.attach(host, { centered: true });
   }
 })();
 
