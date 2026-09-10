@@ -44,7 +44,11 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 609  # 2026-09-09 v20.4.0：+8 均 P1 fail-closed 兜底（幂等键释放/归属预检503/迁移跳已存在列/租户轴容错），不可收窄；alpha 开工态 601
+_BASELINE = 626  # 2026-09-09 v20.4.0：+8 均 P1 fail-closed 兜底（幂等键释放/归属预检503/迁移跳已存在列/租户轴容错），不可收窄；alpha 开工态 601
+# 2026-09-10 v20.5.0a：+17 均「谱系/授权钩子失败不得拖垮主路径」降级包裹
+#（ledger/governance 钩子同型惯例：record_lineage/ensure_*_schema/grants 读写
+# 失败仅 logger.debug 跳过，事实写入照常 commit）——grants.py×5、memory_lineage.py×2、
+# writer/dedup/legacy_routes/conflict_resolver/schema_bootstrap 织入点×10。
 
 
 def test_except_exception_density_ratchet():

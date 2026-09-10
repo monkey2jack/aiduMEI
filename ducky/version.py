@@ -34,12 +34,34 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
+v20.5.0 (alpha 内部验证版 · 可信联邦授权与记忆谱系基础 · 2026-09-09)
+    主题：**从「认知与混合检索引擎」向具备「可信授权治理与密码学级谱系溯源」的可信记忆控制平面跨越。**
+    1. 吸收 Walrus 调研精髓，彻底告别仅 shared: bool 的粗粒度标记。
+    2. 新增 federation_grants 表与 ducky/federation/grants.py 细粒度授权引擎：
+       基于 grantor/grantee/scope/actions/expiry 的零信任访问控制，跨 Agent 越权
+       访问默认拒绝（403），支持授权即时撤销（revoke_grant）与自动过期失效。
+    3. 新增 memory_lineage 表与 ducky/memory_lineage.py 密码学谱系账本：
+       每次事实新增/冲突消解/自演化覆盖，计算 SHA-256 内容散列并链接父哈希，
+       形成不可篡改的链式演化历史（version + previous_version_hash）。
+    4. facts 表幂等扩充 content_hash/version/previous_version_hash/last_actor。
+    5. PEP 织入（federation/routes.py _enforce_grant）：recall/facts-add/
+       broadcast/awareness 四端点接受 caller_agent_id，跨 Agent 读写无有效
+       Grant 一律 403；单机/本 Agent 回环零破坏放行。
+    6. 谱系射程补全：dedup.apply_merge 与 /facts/add 端点补 hash/version
+       推进与 lineage 同事务记录（次路径不再绕过版本链）。
+    7. 配套登记与守卫对齐：DELETE_CHAIN_MATRIX 豁免登记、_MIGRATION_LEDGER
+       迁移点登记、write_endpoint_budgets 路由台账、logger 契约处数、
+       except 棘轮基线（609→626，谱系/授权降级钩子）、mkdtemp 位点数基线。
+    8. 用例总数 1837 → 1852（--collect-only），新增 15 个针对性用例（grants 判定+
+       端点 403 拦截/撤销/过期/动作隔离/单机回环+lineage 链+merge/facts-add 谱系推进）。
+    9. 生产数掘（待实测）：在生产机独立沙箱完成验证后填数归档，停点等待拍板。
+
 v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收口 · 2026-09-09)
     详录见 CHANGELOG.md「## v20.4.0」段。
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.4.1"
+SERVICE_VERSION = "20.5.0"  # alpha 身份记在 LINEAGE/CHANGELOG（格式守卫钉死纯数字，v20.4.0-alpha 同惯例）
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -53,6 +75,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.5.0", "", "v20.5.0a", "alpha 内部验证版 · 可信联邦授权与记忆谱系基础 · Grants+Lineage+哈希链 · 2026-09-09"),
     ("20.4.1", "", "v20.4.1", "正式版 · 四方网页外审+用户审计整改 · CI接入链路/复杂度回吐/版本源单源化 · 2026-09-09"),
     ("20.4.0", "", "v20.4.0-alpha", "alpha 阶段快照 · 六方外审整改 · 对外声称与外界对账 · 开工 2026-09-08"),
     ("20.3", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
