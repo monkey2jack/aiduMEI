@@ -34,7 +34,7 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
-v20.5.0 (Preview 预览版 · 可信联邦授权与记忆谱系 + 用户审计整改 · 2026-09-10)
+v20.5 (Preview 预览版 · 可信联邦授权与记忆谱系 + 用户审计整改 · 2026-09-10)
     公开身份 = 20.5 Preview（tag/Release 均为 v20.5-preview），面向外部用户与
     专家开放使用与审计，收集反馈后再升格为不带后缀的正式版本号。
     主题：**从「认知与混合检索引擎」向具备「可信授权治理与密码学级谱系溯源」的可信记忆控制平面跨越。**
@@ -75,14 +75,14 @@ v20.5.0 (Preview 预览版 · 可信联邦授权与记忆谱系 + 用户审计�
        （+1 crud /update lineage 降级钩子）；🟢-2 grantor 校验转正式版前评估。
     14. 生产实测已归档（2026-09-10）：独立开发机 1845+12 / 基础路径 1821+25 /
         生产机沙箱 1846+11 / 全轴齐备 1844+1，总数 1857（--collect-only）。
-        详录见 CHANGELOG.md「## v20.5.0」段。
+        详录见 CHANGELOG.md「## v20.5」段。
 
 v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收口 · 2026-09-09)
     详录见 CHANGELOG.md「## v20.4.0」段。
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.5.0"  # preview 身份记在 LINEAGE/CHANGELOG（格式守卫钉死纯数字，v20.3.0 preview 同惯例）
+SERVICE_VERSION = "20.5"  # 两段式合大仓 X.Y 惯例；Preview 身份由 tag/Release 承载（格式守卫钉死纯数字）
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -96,7 +96,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("20.5.0", "", "v20.5-preview", "Preview 预览版 · Grants+Lineage+用户审计整改+UI修复 · 2026-09-10"),
+    ("20.5", "", "v20.5-preview", "Preview 预览版 · Grants+Lineage+用户审计整改+UI修复 · 2026-09-10"),
     ("20.4.1", "", "v20.4.1", "正式版 · 四方网页外审+用户审计整改 · CI接入链路/复杂度回吐/版本源单源化 · 2026-09-09"),
     ("20.4.0", "", "v20.4.0-alpha", "alpha 阶段快照 · 六方外审整改 · 对外声称与外界对账 · 开工 2026-09-08"),
     ("20.3", "", "v20.3.2", "正式版 · 五方外审整改 · 一致性与底层 · 2026-09-03（pre 09-01 · beta 09-02）"),
