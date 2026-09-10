@@ -46,6 +46,11 @@ _FACTS_COLUMNS: dict[str, str] = {
     "tags":        "TEXT DEFAULT ''",
     "decay_at":    "TEXT",
     "shared":      "INTEGER DEFAULT 1",
+    # ── v20.5.0a 密码学谱系字段 ──
+    "content_hash": "TEXT DEFAULT ''",
+    "version":      "INTEGER DEFAULT 1",
+    "previous_version_hash": "TEXT DEFAULT ''",
+    "last_actor":   "TEXT DEFAULT ''",
 }
 
 _INDEXES = (
@@ -267,6 +272,20 @@ def ensure_federation_schema(force: bool = False) -> dict:
                 "UPDATE agents SET description=? WHERE description=?",
                 (_SEED_DESCRIPTION, _SEED_DESCRIPTION_LEGACY),
             )
+
+            # ── v20.5.0a 联邦授权与谱系表初始化 ──
+            try:
+                from ducky.federation.grants import ensure_grants_schema
+                ensure_grants_schema(conn)
+            except Exception as ge:
+                logger.debug("grants schema 迁移跳过: %s", ge)
+
+            try:
+                from ducky.memory_lineage import ensure_lineage_schema
+                ensure_lineage_schema(conn)
+            except Exception as le:
+                logger.debug("lineage schema 迁移跳过: %s", le)
+
             conn.commit()
             _migrated = True
         except Exception as exc:

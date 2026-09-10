@@ -107,6 +107,8 @@ WRITE_ROUTES_SCALAR = {
     "/federation/agents/heartbeat",
     "/federation/agents/register",
     "/federation/facts/add",
+    "/federation/grants",
+    "/federation/grants/revoke",
     "/federation/migrate",
     "/graduate",
     "/login",

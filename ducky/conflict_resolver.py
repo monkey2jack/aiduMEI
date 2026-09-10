@@ -277,6 +277,21 @@ def resolve_fact_conflict(
                 user_id=scope.user_id,
                 bank_id=scope.bank_id,
             )
+            # 🧬 memory_lineage 链式账本记录 (v20.5.0a)
+            try:
+                from ducky.memory_lineage import record_lineage
+                for fid in invalidated_ids:
+                    record_lineage(
+                        conn,
+                        memory_id=f"fact:{fid}",
+                        content=new_value,
+                        action="CONFLICT_RESOLVE",
+                        actor=scope.user_id or "conflict_resolver",
+                        source="conflict_resolver",
+                        diff_summary=f"conflict override: {category}/{fact_key} -> valid_to set",
+                    )
+            except Exception as le:
+                logger.debug("conflict lineage 记录跳过: %s", le)
 
         conn.commit()
     except Exception as e:

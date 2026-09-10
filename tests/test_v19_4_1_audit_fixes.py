@@ -1372,20 +1372,20 @@ def test_doc_numbers_are_consistent_across_both_readmes():
     # 模型文件×1 = 5，git 轴 1 条跑过了。推导式保留给「无 .git 白名单拷贝」
     # 形态兜底，但文档一旦带着「实测」标注，就按 MEASURED_SANDBOX 断言 ——
     # 实测值不可被推导式覆盖（这正是本守卫哲学：测不到就明说测不到）。
-    MEASURED_SANDBOX = (1826, 11)  # 2026-09-09 v20.4.1a 本树·生产机独立沙箱实测：宿主源码在场、隔离 HOME、含 .git、无 .env，
+    MEASURED_SANDBOX = (1835, 11)  # 2026-09-09 v20.5.0a 本树·生产机独立沙箱实测：宿主源码在场、隔离 HOME、含 .git、无 .env，
     # 独立沙箱 venv（requirements* 装齐，无 ruff/mcp/fastembed）；退出 0。
     # 跳过 11 = ruff×3 + mcp×7 + 备胎模型缓存×1（隔离 HOME 使模型缓存目录为空）。
-    # 上一基线 (1803, 9) 是 2026-09-08 的 v20.4.0-alpha 候选树，换树即失效，不做并列。
+    # 上一基线 (1826, 11) 是 2026-09-09 的 v20.4.1 正式树，换树即失效，不做并列。
     # 2026-09-07 v20.3.4 生产机独立全轴 venv 实测；工具/extras/宿主/模型缓存/公开 LoCoMo 数据集齐备。
     # 这一格从前是「待复测 + 推导值」，推导值恰好等于实测值 —— 但推导对了不等于
     # 测过了；换树必须重测后改这里。
-    MEASURED_ALL_AXES = (1835, 1)   # 2026-09-09 v20.4.1a 本树·生产机独立全轴 venv 实测（工具/extras/宿主/
-    # 模型缓存/公开 LoCoMo 数据集齐备），data 目录钉在沙箱内，退出 0，峰值 RSS 530 MB。上一基线 (1743, 0) 属 v20.3.4 树。
+    MEASURED_ALL_AXES = (1844, 1)   # 2026-09-09 v20.5.0a 本树·生产机独立全轴 venv 实测（工具/extras/宿主/
+    # 模型缓存/公开 LoCoMo 数据集齐备），data 目录钉在沙箱内，退出 0，峰值 RSS 530 MB。上一基线 (1835, 1) 属 v20.4.1 树。
     # v20.3.2（第 10 轮审计 P0-3）：**基础路径数字进射程**。
     # 上一版 README 把「12 跳过」配在一条只会产出 31 条跳过的命令旁边，
     # 标题还写着「自己就能验」—— 一段以可证伪为卖点的文字，自己不可证伪。
     # 现在两套环境各配各的命令、各报各的数，且必须同屏。
-    MEASURED_BASIC = (1812, 25)   # 2026-09-09 v20.4.1a 本树·生产机干净 venv 实测（Python 3.12，只装 requirements*，pip.conf 内网源）。较 v20.4.0 的 (1810,25)：+2 条新守卫（版本口径/依赖钉对齐）。
+    MEASURED_BASIC = (1821, 25)   # 2026-09-09 v20.5.0a 本树·生产机干净 venv 实测（Python 3.12，只装 requirements*，pip.conf 内网源）。较 v20.4.1 的 (1812,25)：+9 条新守卫（grants/lineage 谱系）。
 
     def _read(name):
         return pathlib.Path(_REPO_ROOT, name).read_text(encoding="utf-8")

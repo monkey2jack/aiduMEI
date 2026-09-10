@@ -49,6 +49,43 @@ def _safe(fn, *args, **kwargs) -> dict[str, Any]:
         return {"status": "error", **error_envelope(exc)}
 
 
+def _enforce_grant(
+    owner_agent: str,
+    caller_agent_id: str,
+    action: str,
+    *,
+    category: str = "",
+) -> None:
+    """🛡️ 联邦授权策略实施点（v20.5.0a P0-2 · Zero-Trust PEP）。
+
+    语义（与任务书对齐）：
+      · caller_agent_id 为空 = 旧版单机请求 → 单用户回环，零改动放行
+        （「向下兼容过渡」条款）；
+      · caller == owner = 本 Agent 访问自己的记忆 → 放行；
+      · 其余跨 Agent 访问：必须命中有效、未过期、动作匹配的
+        federation_grants 记录，否则 403 Forbidden——默认拒绝，
+        不再认 shared: bool 单方标记。
+
+    只在 HTTP 边界拦（routes 层 PEP），不动 recall/broadcast 内部
+    梯子——梯子是库内检索逻辑，策略归边界。"""
+    caller = (caller_agent_id or "").strip()
+    if not caller or caller == owner_agent:
+        return
+    from ducky.federation.grants import check_grant_permission
+    if not check_grant_permission(owner_agent, caller, action, category=category):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "federation_grant_required",
+                "owner_agent": owner_agent,
+                "caller_agent_id": caller,
+                "action": action,
+                "hint": "POST /federation/grants 先取得授权，或撤销后重授",
+            },
+        )
+
+
 def register_federation_routes(app: FastAPI) -> None:
     """注册联邦层全部端点。启动时顺带跑一次幂等迁移。"""
     ensure_federation_schema()
@@ -99,7 +136,10 @@ def register_federation_routes(app: FastAPI) -> None:
         tier: str | None = None,
         user_id: str = "",
         bank_id: str = "",
+        caller_agent_id: str = "",
     ):
+        # 🛡️ v20.5.0a P0-2：跨 Agent 检索须持有效 Grant（单机/本 Agent 回环放行）
+        _enforce_grant(agent_id, caller_agent_id, "read", category=category or "")
         # v20 P0-2：opt-in 作用域——传了就四级梯子全收窄，不传 = v19 全库。
         # 非法作用域由 _safe 包成结构化 error（联邦层约定不抛 500）。
         return _safe(
@@ -133,7 +173,10 @@ def register_federation_routes(app: FastAPI) -> None:
         dedup: bool = True,
         valid_from: str = "",
         valid_to: str = "",
+        caller_agent_id: str = "",
     ):
+        # 🛡️ v20.5.0a P0-2：跨 Agent 写入须持 write Grant（单机/本 Agent 回环放行）
+        _enforce_grant(agent_id, caller_agent_id, "write", category=category)
         return _safe(
             write_fact,
             category,
@@ -159,7 +202,11 @@ def register_federation_routes(app: FastAPI) -> None:
         limit: int = broadcast_mod.BROADCAST_LIMIT,
         same_profile_only: bool = True,
         preview: bool = False,
+        caller_agent_id: str = "",
     ):
+        # 🛡️ v20.5.0a P0-2：跨 Agent 拉取广播须持 read Grant
+        #（拉的是 peers 共享事实，owner 侧按 agent_id 判）
+        _enforce_grant(agent_id, caller_agent_id, "read")
         return _safe(
             broadcast_mod.collect_updates,
             agent_id,
@@ -169,7 +216,9 @@ def register_federation_routes(app: FastAPI) -> None:
         )
 
     @app.get("/federation/awareness")
-    def federation_awareness(agent_id: str = DEFAULT_AGENT):
+    def federation_awareness(agent_id: str = DEFAULT_AGENT, caller_agent_id: str = ""):
+        # 🛡️ v20.5.0a P0-2：跨 Agent 态势摘要同样须持 read Grant（摘要含事实计数）
+        _enforce_grant(agent_id, caller_agent_id, "read")
         return _safe(broadcast_mod.awareness_summary, agent_id)
 
     # ── 分层统计 ──────────────────────────────────
@@ -204,4 +253,55 @@ def register_federation_routes(app: FastAPI) -> None:
     def federation_migrate(force: bool = False):
         return _safe(ensure_federation_schema, force)
 
-    logger.info("✅ 联邦层路由注册完毕（10 端点）")
+    # ── 授权管理 (Grants & Revocation · v20.5.0a) ──
+    @app.post("/federation/grants")
+    def federation_create_grant(
+        grantor_agent: str,
+        grantee_agent: str,
+        resource_scope: str = "*",
+        actions: str = "read",
+        expires_at: str | None = None,
+        grant_id: str | None = None,
+    ):
+        from ducky.federation.grants import create_grant
+        return _safe(
+            create_grant,
+            grantor_agent,
+            grantee_agent,
+            resource_scope=resource_scope,
+            actions=actions,
+            expires_at=expires_at,
+            grant_id=grant_id,
+        )
+
+    @app.get("/federation/grants")
+    def federation_list_grants(
+        grantor_agent: str | None = None,
+        grantee_agent: str | None = None,
+        include_revoked: bool = False,
+    ):
+        from ducky.federation.grants import list_grants
+        return _safe(
+            list_grants,
+            grantor_agent=grantor_agent,
+            grantee_agent=grantee_agent,
+            include_revoked=include_revoked,
+        )
+
+    @app.post("/federation/grants/revoke")
+    def federation_revoke_grant(grant_id: str, revoked_by: str = "system"):
+        from ducky.federation.grants import revoke_grant
+        return _safe(revoke_grant, grant_id, revoked_by=revoked_by)
+
+    # ── 谱系查询与验证 (Memory Lineage · v20.5.0a) ──
+    @app.get("/federation/lineage")
+    def federation_get_lineage(memory_id: str):
+        from ducky.memory_lineage import get_memory_lineage
+        return _safe(get_memory_lineage, memory_id)
+
+    @app.get("/federation/lineage/verify")
+    def federation_verify_lineage(memory_id: str | None = None):
+        from ducky.memory_lineage import verify_lineage_integrity
+        return _safe(verify_lineage_integrity, memory_id=memory_id)
+
+    logger.info("✅ 联邦层路由注册完毕（15 端点，含 Grants 授权与 Lineage 谱系）")

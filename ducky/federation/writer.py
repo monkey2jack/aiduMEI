@@ -128,14 +128,40 @@ def write_fact(
         # 🟢25：不重置 recorded_at/decay_at，与 dedup.apply_merge 语义对齐，
         # 避免 0.70-0.85 相似度更新反复刷新衰减时钟让旧事实"无限续命"。
         if verdict and verdict.action == ACTION_UPDATE and verdict.fact_id:
+            # 🧬 密码学谱系 (v20.5.0a): 计算新 hash 并版本自增
+            from ducky.memory_lineage import compute_content_hash, record_lineage
+            new_hash = compute_content_hash(fact_value)
+            old_row = conn.execute(
+                "SELECT content_hash, version FROM facts WHERE id=?", (verdict.fact_id,)
+            ).fetchone()
+            prev_hash = old_row[0] if old_row else ""
+            old_ver = (old_row[1] or 1) if old_row else 1
+            next_ver = old_ver + 1
+
             conn.execute(
                 """UPDATE facts
                    SET fact_value=?, overview=?, summary=?, memory_tier=?,
-                       source=?, updated_at=CURRENT_TIMESTAMP
+                       source=?, content_hash=?, version=?, previous_version_hash=?,
+                       last_actor=?, updated_at=CURRENT_TIMESTAMP
                    WHERE id=?""",
                 (fact_value, fact_value, _summary_of(fact_value), resolved_tier,
-                 source, verdict.fact_id),
+                 source, new_hash, next_ver, prev_hash, source or agent_id, verdict.fact_id),
             )
+            # 🧬 memory_lineage 链式账本记录
+            try:
+                record_lineage(
+                    conn,
+                    memory_id=f"fact:{verdict.fact_id}",
+                    content=fact_value,
+                    action="UPDATE",
+                    actor=source or agent_id,
+                    previous_version_hash=prev_hash,
+                    source=source,
+                    diff_summary=f"federation update: {category}/{verdict.fact_key}",
+                )
+            except Exception as le:
+                logger.debug("lineage 记录跳过: %s", le)
+
             # 📒 事件账本（v19.4.0 🟡-D）：与更新同事务留痕，同生共死
             try:
                 from ducky.event_ledger import content_hash, record_event
@@ -150,6 +176,7 @@ def write_fact(
             return {
                 "status": "ok", "action": ACTION_UPDATE, "fact_id": verdict.fact_id,
                 "memory_tier": resolved_tier, "agent_id": agent_id,
+                "version": next_ver, "content_hash": new_hash,
                 "dedup": verdict.to_dict(),
                 "message": f"事实已更新: {category}/{verdict.fact_key}",
             }
@@ -158,12 +185,14 @@ def write_fact(
         # ON CONFLICT 目标必须与 idx_facts_unique 列集完全一致
         # （见 federation/schema.py FACTS_UNIQUE_COLUMNS），否则报
         # "no such conflict target"。
+        from ducky.memory_lineage import compute_content_hash, record_lineage
+        initial_hash = compute_content_hash(fact_value)
         cur = conn.execute(
             """INSERT INTO facts
                  (category, fact_key, fact_value, source, summary, overview,
                   agent_id, profile, memory_tier, recorded_at, decay_at, tags, shared,
-                  valid_from, valid_to, user_id, bank_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  valid_from, valid_to, user_id, bank_id, content_hash, version, previous_version_hash, last_actor)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(agent_id, user_id, bank_id, category, fact_key) DO UPDATE SET
                    fact_value=excluded.fact_value,
                    summary=excluded.summary,
@@ -172,13 +201,33 @@ def write_fact(
                    recorded_at=excluded.recorded_at,
                    decay_at=excluded.decay_at,
                    source=excluded.source,
+                   content_hash=excluded.content_hash,
+                   version=facts.version + 1,
+                   previous_version_hash=facts.content_hash,
+                   last_actor=excluded.last_actor,
                    updated_at=CURRENT_TIMESTAMP""",
             (category, fact_key, fact_value, source, _summary_of(fact_value), fact_value,
              agent_id, profile, resolved_tier, recorded_at, decay_at, tags,
              1 if shared else 0, valid_from or None, valid_to or None,
-             scope.user_id, scope.bank_id),
+             scope.user_id, scope.bank_id, initial_hash, 1, "", source or agent_id),
         )
         fact_id = cur.lastrowid or 0
+
+        # 🧬 memory_lineage 链式账本记录
+        try:
+            record_lineage(
+                conn,
+                memory_id=f"fact:{fact_id or fact_key}",
+                content=fact_value,
+                action="CREATE",
+                actor=source or agent_id,
+                previous_version_hash="",
+                source=source,
+                diff_summary=f"federation insert: {category}/{fact_key}",
+            )
+        except Exception as le:
+            logger.debug("lineage 记录跳过: %s", le)
+
         # 📒 事件账本（v19.4.0 🟡-D）：与写入同事务留痕，同生共死
         try:
             from ducky.event_ledger import content_hash, record_event
