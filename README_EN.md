@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.4" width="100%">
+  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI v20.5" width="100%">
 </p>
 
 # 🤔 aiduMEI — AI Wisdom Engine
@@ -32,7 +32,7 @@ Install aiduMEI from the official repo strictly following AGENTS.md: deploy in i
 
 ## What is aiduMEI?
 
-aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current public release is **v20.5** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, first of its kind.** The Wisdom Engine Autoshift provides a dual engine with automatic gear shifting. When external services fail it downshifts automatically and keeps running seamlessly; when they recover it upshifts and replays the debt; the gear is always honestly visible. v20.1's "deterministic fallbacks and honest recall" (17 remediation items closed across five external reviews) is its foundation. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
+aiduMEI is an **AI Wisdom Engine** — a persistent memory and reasoning system for AI Agents. The current public release is **v20.5 Preview** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, first of its kind.** This is a **preview release**, opened to external users and reviewers for use and audit; it will be promoted to a suffix-free formal version number once feedback is collected. The Wisdom Engine Autoshift provides a dual engine with automatic gear shifting. When external services fail it downshifts automatically and keeps running seamlessly; when they recover it upshifts and replays the debt; the gear is always honestly visible. v20.1's "deterministic fallbacks and honest recall" (17 remediation items closed across five external reviews) is its foundation. It embodies a complete **cognitive architecture** that enables AI to **remember, think, and evolve**.
 
 <!-- distribution-policy: github-source-only -->
 > **Distribution (GitHub-only):** aiduMEI no longer publishes or maintains packages on PyPI or GHCR. Get ongoing updates from the repository's `main` branch or formal versions from [GitHub Releases](https://github.com/monkey2jack/aiduMEI/releases). The `pip install -r requirements.txt` command below installs dependencies from a cloned source tree; it is not a package distribution method.
@@ -183,7 +183,7 @@ AIDUMEI_ENGINE_MODE=local   # zero model API calls; deterministic + local embedd
 
 ### Containers and Dockhold
 
-The 2026-09-07 `main` maintenance update adds container-hosting support (that update kept the public version and Release at v20.3; the current public release is **v20.4**). Port priority is `AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767`; leave the first two unset to use the platform's injected `PORT`. The image provides a writable HOME and supports platform-assigned UIDs in group 0.
+The 2026-09-07 `main` maintenance update adds container-hosting support (that update kept the public version and Release at v20.3). Port priority is `AIDUMEM_API_PORT → MEM0_API_PORT → PORT → 8767`; leave the first two unset to use the platform's injected `PORT`. The image provides a writable HOME and supports platform-assigned UIDs in group 0.
 
 Persist the data, model configuration, Qdrant vectors and history database. Setting `AIDUMEM_DATA_DIR` alone does not relocate the last two. Follow the [Dockhold deployment guide](docs/DEPLOY_DOCKHOLD.md) for credentials, storage and recall checks across container replacement. Thanks to [Maziar110](https://github.com/Maziar110) for [container fixes #10](https://github.com/monkey2jack/aiduMEI/pull/10) and [the deployment guide #11](https://github.com/monkey2jack/aiduMEI/pull/11).
 

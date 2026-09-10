@@ -1,6 +1,8 @@
 # aiduMEI 版本演进史
 
-## v20.5.0（2026-09-10 preview 预发布版）：可信联邦授权与记忆密码学谱系基础
+## v20.5.0（2026-09-10 Preview 预览版）：可信联邦授权与记忆密码学谱系基础
+
+> **公开身份 = 20.5 Preview**（tag / Release 均为 `v20.5-preview`）。本版面向外部用户与专家开放使用与审计，收集反馈后再升格为不带后缀的正式版本号。
 
 > **从「认知与混合检索引擎」向具备「可信授权治理与密码学级谱系溯源」的可信记忆控制平面跨越。**
 > 吸收 Walrus 调研精髓，彻底告别仅靠 `shared: bool` 的粗粒度联邦标记，在保持本地优先、轻量低摩擦的前提下，扎实铸造两大核心工程骨架。
@@ -13,7 +15,7 @@
 - **已知谱系射程限制（登记待下版）**：`hot/crud.py` 记忆更新、`refine_memory.py` 精炼摘要插入、`governance.py` 归档/trust 调整、`raw_drawer.py` verbatim 登记仍无版本链（属事实元数据或派生摘要变更，不在 P0 点名射程内）；`tombstone.py` 快照恢复按快照原样回灌。
 - **配套守卫与台账对齐**：`DELETE_CHAIN_MATRIX` 补充 `federation_grants` / `memory_lineage` 豁免登记；`_MIGRATION_LEDGER` 登记迁移点；`write_endpoint_budgets` 补登记 `/federation/grants` 与 `/federation/grants/revoke`；`_LOGGER_SITES` 95→97；except 棘轮基线 609→626（+17 均谱系/授权降级钩子，ledger/governance 同型惯例）；`mkdtemp` 位点数基线 46→47。
 - **用例总数 1837 → 1857**（`pytest --collect-only`；新增 20 个用例：grants 授权判定、端点 403 拦截/撤销/过期/动作隔离/单机回环、lineage 谱系链、merge/facts-add 谱系推进，b 阶段用户审计整改回归 5 条——scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/crud-update 谱系推进/内联 style 元素守卫）。
-- **生产与沙箱实测（待填）**：待生产机独立沙箱验证通过后补齐四环实测数字。
+- **四环实测（2026-09-10 归档）**：本树 `pytest --collect-only` 总数 **1857**。① 独立开发机 **1845 通过 · 12 跳过**（2026-09-10 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）；② 基础安装路径 **1821 通过 · 25 跳过**（2026-09-09 生产机干净 venv，只装 `requirements*`）；③ 生产机独立沙箱 **1846 通过 · 11 跳过**（2026-09-10 生产机实测，本树 `48ca0cb`，宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed）；④ 全轴齐备 **1844 通过 · 1 跳过**（2026-09-09 生产机独立全轴 venv，工具/extras/宿主/模型缓存/公开 LoCoMo 数据集齐备）。数字与日期一体，未实测不写「实测」。
 
 ### b 阶段 · 用户审计整改（2026-09-10 · 条件通过 2🔴+1🟡）
 
