@@ -1,6 +1,6 @@
 """v20.3.2-beta P1-3 / P1-5：WAL 对账不闭环 + MCP×REST 绑定错位。
 
-**P1-3**（Gemini 3.7 Flash 报，小猴实测复现）：`reconcile_startup()` 对
+**P1-3**（Gemini 3.7 Flash 报，本方实测复现）：`reconcile_startup()` 对
 delete / delete_all 两支调完级联删除就 `report["recovered"] += 1`，
 **从不给原条目 `mark_status(..., "committed")`**。而 `cascade_delete_*` 内部
 铸的是**新**的 wal_id、committed 的也是那个新 id。于是原条目永久 pending：
@@ -10,7 +10,7 @@ delete / delete_all 两支调完级联删除就 `report["recovered"] += 1`，
 而是**账本永不收敛**。定级 P1，但必修 —— 一个报告「已恢复」却没闭合的账本，
 比没有账本更坏：它让运维以为对账成功了。
 
-**P1-5**（Qwen 报，小猴实测 body→422 / query→200）：MCP 工具把 `session_id`
+**P1-5**（Qwen 报，本方实测 body→422 / query→200）：MCP 工具把 `session_id`
 发进 JSON body，而 REST 端点是裸标量参数、FastAPI 从 **query** 绑定 → 恒 422。
 最难堪的是：**同一个提交** ad3ba6c 修了 `agent_integration_check.py` 的同型缺陷、
 漏了 `mcp_server.py`，而结案陈词还把它写成「实机发现」。加完一处漏一处，第 N 次。
