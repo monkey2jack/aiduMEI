@@ -237,6 +237,16 @@ document.addEventListener('keydown', function (e) {
 })();
 
 /* ---------------------------------------------------------------------------
+   aiduPARK orbital slogan（与登录页同一动效，v20.5.0 继承修复）
+   --------------------------------------------------------------------------- */
+(function () {
+  var host = document.getElementById('heroSloganOrbital');
+  if (host && window.OrbitalSlogan) {
+    window.OrbitalSlogan.attach(host, { centered: true });
+  }
+})();
+
+/* ---------------------------------------------------------------------------
    boot
    --------------------------------------------------------------------------- */
 createHexBackground('#hexBg', 666, BRAND_COLORS, 0.3);
