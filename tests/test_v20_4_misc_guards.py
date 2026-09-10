@@ -127,7 +127,7 @@ class TestNoInlineStyleInFrontend:
             + "\n  ".join(offenders[:10]))
 
     def test_html_has_no_style_elements(self):
-        """v20.5.0 preview（用户用户审计 · UI 修复）：`<style>` 元素形态。
+        """v20.5.0 preview（用户审计 · UI 修复）：`<style>` 元素形态。
 
         「守卫射程病」第五次发作：本守卫此前只拦 `style=` 内容属性，漏了
         `<style>` 元素——CSP `style-src 'self'`（无 unsafe-inline）对两种

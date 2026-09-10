@@ -1029,7 +1029,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .h4-purple { color: #7030a0; }
 
 /* =============================================================================
-   v20.5.0 preview（用户用户审计 · UI 修复）：以下两段自 HTML 内联 <style> 收编。
+   v20.5.0 preview（用户审计 · UI 修复）：以下两段自 HTML 内联 <style> 收编。
    根因：CSP `style-src 'self'`（无 unsafe-inline）拒绝渲染 <style> 元素，
    v20.4.0 P2-11 只搬了六块蜂窝砖与徽章显隐，login 页整卡样式与两页 slogan
    样式留在 HTML 里被 CSP 打死——登录页变无样式白板（生产 2026-09-10 实锤）。
