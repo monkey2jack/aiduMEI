@@ -1,5 +1,5 @@
 /* =============================================================================
-   aiduBOX — lattice-bg.js
+   lattice-bg.js
    -----------------------------------------------------------------------------
    Tri-colour geometric lattice backdrop. Vanilla port of the "Lattice
    Background" component by daiwiikharihar
