@@ -132,9 +132,7 @@
   <footer class="site-foot">
     <div class="site-foot-brand">
       <img class="brand-logo" src="logo.png" alt="aiduMEI" />
-      <!-- 品牌字标是标签拆分写法（aidu + <b>MEI</b>），全局 sed 扫不到，
-           v19.4.1 的改名就是从这里漏出去的。改名时必须手工核对这一行。 -->
-      <span class="wordmark"><span class="lbl">aidu<b>MEI</b></span><i class="sep">⚕</i><span class="lbl">爱嘟</span>优忆思</span>
+      <span class="wordmark"><span class="lbl"><span class="brand-gray">aidu</span><b class="brand-blue">MEI</b></span><i class="sep brand-blue">⚕</i><span class="lbl"><span class="brand-gray">智慧</span><b class="brand-blue">引擎</b></span></span>
     </div>
   </footer>
 
@@ -160,8 +158,9 @@
   </div>
 </div>
 
+<script src="js/lattice-bg.js?v=2"></script>
 <script src="js/api.js?v=9"></script>
 <script src="js/panels.js?v=9"></script>
-<script src="js/main.js?v=9"></script>
+<script src="js/main.js?v=10"></script>
 </body>
 </html>
