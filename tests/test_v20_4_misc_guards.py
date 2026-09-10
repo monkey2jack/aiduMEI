@@ -126,6 +126,34 @@ class TestNoInlineStyleInFrontend:
             "frontend 出现 inline style 内容属性（P2-11 已清零，CSP 已不再容纳）：\n  "
             + "\n  ".join(offenders[:10]))
 
+    def test_html_has_no_style_elements(self):
+        """v20.5.0 preview（用户用户审计 · UI 修复）：`<style>` 元素形态。
+
+        「守卫射程病」第五次发作：本守卫此前只拦 `style=` 内容属性，漏了
+        `<style>` 元素——CSP `style-src 'self'`（无 unsafe-inline）对两种
+        形态一律拒绝渲染。login.html 的 124 行与 index.html 的 45 行内联
+        `<style>` 块就死在这一格：登录页样式塌成无样式白板（生产 2026-09-10
+        实锤）。新代码的页面样式必须进 frontend/css/。"""
+        import glob
+        import re
+        elem_re = re.compile(r"<style(?:\s[^>]*)?>")
+        comment_re = re.compile(r"<!--.*?-->", re.S)
+        offenders = []
+        for path in sorted(glob.glob(os.path.join(_ROOT, "frontend", "*.html"))):
+            rel = os.path.relpath(path, _ROOT)
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            # 剥 HTML 注释后再扫：注释里的 "<style>" 字样（如本守卫来由的
+            # 说明文字）不是元素，不违 CSP——守卫判据对结构不对字面。
+            text = comment_re.sub("", text)
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if elem_re.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()[:80]}")
+        assert not offenders, (
+            "frontend 出现内联 <style> 元素（CSP style-src 'self' 拒绝渲染，"
+            "v20.5.0 preview 已清零）——请收进 frontend/css/：\n  "
+            + "\n  ".join(offenders[:10]))
+
     def test_js_has_no_style_attributes_in_injected_markup(self):
         """P0-2：innerHTML/insertAdjacentHTML 模板串里的内联样式属性与 HTML
         里的同罪 —— style-src 'self'（无 unsafe-inline）一律拒绝渲染。
