@@ -8,7 +8,7 @@
 <meta name="author" content="monkey²" />
 <meta name="theme-color" content="#1f4e79" />
 <link rel="icon" href="logo.png" />
-<link rel="stylesheet" href="css/style.css?v=6" />
+<link rel="stylesheet" href="css/style.css?v=11" />
 <!-- v20.5.0 preview：登录页样式整体收编 css/style.css（CSP style-src self 拒渲染内联样式元素，守卫已补该形态） -->
 </head>
 <body>
@@ -31,40 +31,38 @@
     </div>
   </header>
 
-  <!-- slogan: aidu / I do / AI do -->
-  <div class="slogan-en" aria-hidden="true">
-    <span class="row row--1">aidu</span>
-    <span class="row row--2">I do</span>
-    <span class="row row--3">AI do</span>
-  </div>
-
-  <!-- slogan 中文：爱嘟 / 唯吾 / 智助 -->
-  <div class="slogan-cn" aria-hidden="true">
-    <span class="row row--1">爱嘟</span>
-    <span class="row row--2">唯吾</span>
-    <span class="row row--3">智助</span>
-  </div>
-
   <div class="login-wrap">
+    <!-- slogan: aiduPARK orbital dynamic slogan (centered above card) -->
+    <div class="hero-slogan-orbital" id="heroSloganOrbital"></div>
+
     <div class="login-card" id="loginCard">
+      <div class="login-head">
+        <img class="login-logo" src="logo.png" alt="aiduMEI" width="48" height="48" />
+        <h2 class="login-title">控制台访问授权</h2>
+        <p class="login-desc">智能体通用智慧引擎 · 开启记忆中枢</p>
+      </div>
       <form id="loginForm" autocomplete="off">
-        <input class="login-input" type="password" id="password" placeholder="输入密码 / Password input" autofocus required />
-        <button class="login-btn" type="submit" id="loginBtn">登 录 / Login</button>
+        <div class="login-group">
+          <label class="login-label" for="password">访问密钥 / Password</label>
+          <input class="login-input" type="password" id="password" placeholder="输入控制台访问密钥..." autofocus required />
+        </div>
+        <button class="login-btn" type="submit" id="loginBtn">验证并进入控制台 / Enter</button>
       </form>
       <p class="login-err" id="loginErr"></p>
       <p class="login-hint" id="loginHint"></p>
     </div>
   </div>
 
-  <!-- bottom: same as index -->
+  <!-- bottom: logo + brand name, centered (same as index) -->
   <footer class="site-foot">
     <div class="site-foot-brand">
       <img class="brand-logo" src="logo.png" alt="aiduMEI" />
-      <!-- 与 index.html 同款标签拆分字标，改名时必须一起手工核对。 -->
-      <span class="wordmark"><span class="lbl">aidu<b>MEI</b></span><i class="sep">⚕</i><span class="lbl">爱嘟</span>优忆思</span>
+      <span class="wordmark"><span class="lbl"><span class="brand-gray">aidu<b>MEI</b></span></span><i class="sep brand-blue">⚕</i><span class="lbl"><span class="brand-gray">智慧</span><b class="brand-blue">引擎</b></span></span>
     </div>
   </footer>
 
-<script src="js/login.js?v=9"></script>
+<script src="js/lattice-bg.js?v=2"></script>
+<script src="js/orbital-slogan.js?v=2"></script>
+<script src="js/login.js?v=10"></script>
 </body>
 </html>
