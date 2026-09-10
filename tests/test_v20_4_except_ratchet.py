@@ -44,7 +44,12 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 627  # 2026-09-10 v20.5.0 preview：+1 crud /update 谱系记录降级钩子（用户审计 🟡-1 整改，lineage 失败不拖垮 /update 主路径，ledger/governance 同型）
+_BASELINE = 632  # 2026-09-10 v20.5.0 preview：+1 crud /update 谱系记录降级钩子（用户审计 🟡-1 整改，lineage 失败不拖垮 /update 主路径，ledger/governance 同型）
+# 2026-09-10 v20.5.0 正式版：+5 均用户审计整改的「降级钩子/迁移容错」——
+# wal_engine.py×2（DELETE 终链同事务留痕 ×2 路径，失败不拖垮删除主路径）、
+# refine_memory.py×1（回滚终链同型）、memory_lineage.py×1（UNIQUE 索引存量
+# 兼容失败 warning 出声而非炸启动）、schema_bootstrap.py×1（v5 回填失败不
+# 阻塞启动、verify 如实报出）。全部为「失败只降级不阻断 + 有日志」同型惯例。
 # 2026-09-10 v20.5.0a：+17 均「谱系/授权钩子失败不得拖垮主路径」降级包裹
 #（ledger/governance 钩子同型惯例：record_lineage/ensure_*_schema/grants 读写
 # 失败仅 logger.debug 跳过，事实写入照常 commit）——grants.py×5、memory_lineage.py×2、

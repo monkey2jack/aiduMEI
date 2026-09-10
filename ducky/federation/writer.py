@@ -157,7 +157,7 @@ def write_fact(
                     actor=source or agent_id,
                     previous_version_hash=prev_hash,
                     source=source,
-                    diff_summary=f"federation update: {category}/{verdict.fact_key}",
+                    diff_summary=f"federation update: {category} (hash {new_hash[:8]})",
                 )
             except Exception as le:
                 logger.debug("lineage 记录跳过: %s", le)
@@ -186,8 +186,13 @@ def write_fact(
         # （见 federation/schema.py FACTS_UNIQUE_COLUMNS），否则报
         # "no such conflict target"。
         from ducky.memory_lineage import compute_content_hash, record_lineage
+        from ducky.utils import upsert_returning_id
         initial_hash = compute_content_hash(fact_value)
-        cur = conn.execute(
+        # v20.5.0 正式版（用户审计 🔴-1）：upsert 冲突命中时 lastrowid 不是
+        # 被更新行的 id——谱系曾因此串链并产生幽灵链。改走 RETURNING/唯一键
+        # 回查拿真实行 id，version<=1 为首写、>1 为冲突改写。
+        fact_id, row_ver = upsert_returning_id(
+            conn,
             """INSERT INTO facts
                  (category, fact_key, fact_value, source, summary, overview,
                   agent_id, profile, memory_tier, recorded_at, decay_at, tags, shared,
@@ -210,20 +215,22 @@ def write_fact(
              agent_id, profile, resolved_tier, recorded_at, decay_at, tags,
              1 if shared else 0, valid_from or None, valid_to or None,
              scope.user_id, scope.bank_id, initial_hash, 1, "", source or agent_id),
+            "SELECT id, version FROM facts WHERE agent_id=? AND user_id=? AND bank_id=? AND category=? AND fact_key=?",
+            (agent_id, scope.user_id, scope.bank_id, category, fact_key),
         )
-        fact_id = cur.lastrowid or 0
+        upsert_action = "CREATE" if row_ver <= 1 else "UPDATE"
 
         # 🧬 memory_lineage 链式账本记录
         try:
             record_lineage(
                 conn,
-                memory_id=f"fact:{fact_id or fact_key}",
+                memory_id=f"fact:{fact_id}",
                 content=fact_value,
-                action="CREATE",
+                action=upsert_action,
                 actor=source or agent_id,
                 previous_version_hash="",
                 source=source,
-                diff_summary=f"federation insert: {category}/{fact_key}",
+                diff_summary=f"federation {upsert_action.lower()}: {category} (hash {initial_hash[:8]})",
             )
         except Exception as le:
             logger.debug("lineage 记录跳过: %s", le)
@@ -269,7 +276,7 @@ def write_fact(
 
     return {
         "status": "ok",
-        "action": ACTION_INSERT,
+        "action": ACTION_INSERT if upsert_action == "CREATE" else ACTION_UPDATE,
         "fact_id": fact_id,
         "agent_id": agent_id,
         "profile": profile,
@@ -277,5 +284,6 @@ def write_fact(
         "decay_at": decay_at,
         "dedup": verdict.to_dict() if verdict else {"action": "skipped"},
         "governance": gov,
-        "message": f"事实已存储: {category}/{fact_key}",
+        "message": f"事实已存储: {category}/{fact_key}" if upsert_action == "CREATE"
+                   else f"事实已更新: {category}/{fact_key}",
     }

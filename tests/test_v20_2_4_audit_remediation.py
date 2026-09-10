@@ -395,7 +395,9 @@ def test_ci_has_the_three_new_acceptance_jobs():
 
     触发面沿革：2026-08-27 裁决「只手动」；2026-09-09（v20.4.1a，四方外审
     Sonnet P0 / GPT Luna P1：「测试体系很强 ≠ 每次提交必经测试」）经维护者
-    重新拍板改为 pull_request 全量 + push→main 精简，dispatch/call 保留。
+    重新拍板改为 pull_request 全量 + push→main 精简，dispatch/call 保留；
+    2026-09-10（v20.5.0 正式版，Sonnet 5 外审 P0-3：依赖扫描未定时化）经维护者
+    拍板批准任务书 T10，新增 schedule（每周一 cron 全量 + 依赖扫描）。
     判据与 tests/test_v20_ci_pipeline.py 的触发面守卫同源，两处须同步改。
     """
     import yaml
@@ -405,9 +407,9 @@ def test_ci_has_the_three_new_acceptance_jobs():
         assert j in jobs, f"CI 缺少验收 job：{j}（现有 {sorted(jobs)}）"
     # PyYAML 会把裸 `on:` 解析成布尔 True 键
     triggers = set(wf.get(True) or wf.get("on") or {})
-    assert triggers == {"pull_request", "push", "workflow_dispatch", "workflow_call"}, (
-        f"触发方式变成 {sorted(triggers)} —— v20.4.1a 裁决为 "
-        "{pull_request, push, workflow_dispatch, workflow_call}，改它需要维护者重新拍板"
+    assert triggers == {"pull_request", "push", "schedule", "workflow_dispatch", "workflow_call"}, (
+        f"触发方式变成 {sorted(triggers)} —— v20.5.0 裁决为 "
+        "{pull_request, push, schedule, workflow_dispatch, workflow_call}，改它需要维护者重新拍板"
     )
 
 
@@ -415,7 +417,10 @@ def test_ci_has_the_three_new_acceptance_jobs():
 # 临时目录登记制（2026-08-28 生产机清理战场时触发）
 # ════════════════════════════════════════════════════════════════════
 
-_MKDTEMP_BASELINE = 47          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改
+_MKDTEMP_BASELINE = 51          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改
+                                # 2026-09-10 v20.5.0：+4（test_v20_5_0_lineage_identity / grant_authz /
+                                # backfill / crud_update 四个新模块的模块级测试库——模块顶层覆盖
+                                # utils.FACTS_DB 必须用持久目录，tmp_path 函数级作用域做不到）
                                 # 47 = 46 + test_v20_5_grants_lineage.py:22（v20.5.0a 联邦授权与谱系测试，
                                 # 模块级 tmpdir 钉 facts.db 路径，沿用 v20 各 bank_scope 测试同型）
 

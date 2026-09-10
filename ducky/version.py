@@ -44,7 +44,9 @@ v20.5 (Preview 预览版 · 可信联邦授权与记忆谱系 + 用户审计整�
        访问默认拒绝（403），支持授权即时撤销（revoke_grant）与自动过期失效。
     3. 新增 memory_lineage 表与 ducky/memory_lineage.py 密码学谱系账本：
        每次事实新增/冲突消解/自演化覆盖，计算 SHA-256 内容散列并链接父哈希，
-       形成不可篡改的链式演化历史（version + previous_version_hash）。
+       形成可检测篡改（tamper-evident）的链式演化历史（version + previous_version_hash）。
+       v20.5.0 正式版起 verify 端点补「事实行存在性 + 链尾内容对账」，链不再能
+       指向不存在的事实，也不再对绕行改写报绿灯。
     4. facts 表幂等扩充 content_hash/version/previous_version_hash/last_actor。
     5. PEP 织入（federation/routes.py _enforce_grant）：recall/facts-add/
        broadcast/awareness 四端点接受 caller_agent_id，跨 Agent 读写无有效
@@ -54,10 +56,9 @@ v20.5 (Preview 预览版 · 可信联邦授权与记忆谱系 + 用户审计整�
     7. 配套登记与守卫对齐：DELETE_CHAIN_MATRIX 豁免登记、_MIGRATION_LEDGER
        迁移点登记、write_endpoint_budgets 路由台账、logger 契约处数、
        except 棘轮基线（609→626，谱系/授权降级钩子）、mkdtemp 位点数基线。
-    8. 用例总数 1837 → 1857（--collect-only），新增 20 个针对性用例（grants 判定+
-       端点 403 拦截/撤销/过期/动作隔离/单机回环+lineage 链+merge/facts-add 谱系推进+
-       b 阶段用户审计整改回归 5 条：scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/
-       crud-update 谱系推进/内联 style 元素守卫）。
+    8. 用例总数 1837 → 1888（--collect-only），Preview 期新增 20 个针对性用例 +
+       正式版整改新增 31 条守卫（谱系身份/授权闭环/存量回填/crud 端到端，
+       全部红→绿对照）。四环实测数字以 2026-09-10 正式版归档为准。
     9. b 阶段用户审计整改 🔴-1（grants.py _match_scope）：scope 限定维度
        （category/tier/tag/user）调用方未提供时旧逻辑跳过 → 限定被当通配。
        改 fail-closed 白名单：缺维度一律拒绝，端点面同步堵死。

@@ -393,8 +393,11 @@ def test_endpoint_read_grant_cannot_write():
     assert resp.status_code == 403, "read Grant 不得隐含 write"
 
 
-def test_endpoint_legacy_single_agent_unchanged():
-    """向下兼容：不传 caller_agent_id 的旧单机请求零破坏（回环放行）。"""
+def test_endpoint_legacy_single_agent_unchanged(monkeypatch):
+    """向下兼容：逃生门 AIDUMEI_ALLOW_IMPLICIT_CALLER=1 开启时，
+    不传 caller_agent_id 的旧单机请求零破坏（回环放行）。
+    默认（逃生门关闭）必须 403——见 test_v20_5_0_grant_authz.py 的冒充守卫。"""
+    monkeypatch.setenv("AIDUMEI_ALLOW_IMPLICIT_CALLER", "1")
     client = _http_client()
 
     resp = client.get("/federation/recall", params={"query": "任意", "agent_id": "agent_a"})

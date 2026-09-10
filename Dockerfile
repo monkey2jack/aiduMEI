@@ -89,4 +89,9 @@ ENV AIDUMEM_CONFIG_FILE="/app/mem0_config_local.json"
 
 ENV HOME="/app/data"
 
+# v20.5.0 正式版（Sonnet 外审 P1-8）：容器原生健康检查，编排系统可直接探活。
+# 打 /livez（O(1) 存活探针），不打 /health（完整探针贵，不适合高频轮询）。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8767/livez', timeout=4).status == 200 else 1)"
+
 CMD ["aidumem"]

@@ -3,7 +3,7 @@ ducky.memory_lineage — 记忆密码学谱系与不可篡改历史链 (v20.5.0a
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 权威源数据（Facts/Ledger）与可重建派生索引（Vector/BM25/Graph）的二元解耦基础。
 
-每条记忆/事实变更生成一条不可篡改的 SHA-256 密码学版本链：
+每条记忆/事实变更生成一条**可检测篡改**（tamper-evident）的 SHA-256 密码学版本链：
   - memory_id: 记忆标识（如 "fact:123" 或 "fact:user_profile"）
   - version: 递增版本号 (1, 2, 3...)
   - content_hash: 内容 SHA-256 哈希值 (64位 hex)
@@ -45,6 +45,16 @@ _LINEAGE_INDEXES = (
 )
 
 
+# 🟡-5a（v20.5.0 正式版 · 用户审计）：版本号竞态兜底约束——把「沉默的链分叉」
+# 变成「显式报错」。独立成语句：存量库若已有重复 (memory_id, version) 对，
+# 建索引会失败，这时要 warning 出声（并靠 verify_lineage_integrity 报出），
+# 而不是 debug 吞掉。
+_LINEAGE_UNIQUE_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_lineage_mem_version_unique "
+    "ON memory_lineage(memory_id, version)"
+)
+
+
 def compute_content_hash(text: Any) -> str:
     """计算内容完整 SHA-256 散列值（64位 hex 小写字符串）。空内容返回 64 个 0。"""
     s = str(text or "").strip()
@@ -66,6 +76,10 @@ def ensure_lineage_schema(conn: sqlite3.Connection | None = None) -> None:
                 conn.execute(stmt)
             except Exception as exc:
                 logger.debug("memory_lineage 索引跳过: %s", exc)
+        try:
+            conn.execute(_LINEAGE_UNIQUE_INDEX)
+        except Exception as exc:
+            logger.warning("memory_lineage UNIQUE 约束未建立（存量重复对？请跑 verify 对账）: %s", exc)
         if should_close:
             conn.commit()
     except Exception as exc:
@@ -110,21 +124,39 @@ def record_lineage(
         if not previous_version_hash:
             previous_version_hash = ""
 
-    cur = conn.execute(
-        """INSERT INTO memory_lineage
-           (memory_id, version, content_hash, previous_version_hash, action, actor, source, diff_summary)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            memory_id,
-            next_version,
-            c_hash,
-            previous_version_hash,
-            action,
-            actor,
-            source,
-            diff_summary,
-        ),
-    )
+    cur = None
+    for _attempt in (1, 2):
+        try:
+            cur = conn.execute(
+                """INSERT INTO memory_lineage
+                   (memory_id, version, content_hash, previous_version_hash, action, actor, source, diff_summary)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    memory_id,
+                    next_version,
+                    c_hash,
+                    previous_version_hash,
+                    action,
+                    actor,
+                    source,
+                    diff_summary,
+                ),
+            )
+            break
+        except sqlite3.IntegrityError:
+            # 🟡-5a：UNIQUE(memory_id, version) 兜底触发——并发下另一写入者
+            # 抢了同一版本号。重读最新版本重试一次；仍冲突则显式上抛，
+            # 绝不沉默分叉。
+            if _attempt == 2:
+                raise
+            prev_row = conn.execute(
+                "SELECT version, content_hash FROM memory_lineage WHERE memory_id=? ORDER BY version DESC LIMIT 1",
+                (memory_id,),
+            ).fetchone()
+            if prev_row:
+                next_version = prev_row[0] + 1
+                if not previous_version_hash:
+                    previous_version_hash = prev_row[1] or ""
     lineage_id = cur.lastrowid or 0
 
     return {
@@ -137,6 +169,61 @@ def record_lineage(
         "action": action,
         "actor": actor,
     }
+
+
+def record_terminal_lineage(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    action: str = "DELETE",
+    actor: str = "system",
+    source: str = "",
+    diff_summary: str = "",
+) -> dict[str, Any]:
+    """记录 DELETE/FORGET 终链（🟡-5b · v20.5.0 正式版）。
+
+    「删过什么」是审计里最需要留痕的一类操作。终链不留正文：
+    content_hash 沿用链尾前一版的哈希（链仍可自洽验证，但不保存已删内容
+    的任何副本）；无既有链时记单节点终链——证明「该行存在过且被删了」。
+    verify_lineage_integrity 视 DELETE/FORGET 链尾为合法闭链（行应已不存在）。
+    """
+    action = (action or "DELETE").upper()
+    if action not in ("DELETE", "FORGET"):
+        return {"status": "error", "detail": "终链动作仅支持 DELETE/FORGET"}
+    if not memory_id:
+        return {"status": "error", "detail": "memory_id 不能为空"}
+
+    actor = actor or "system"
+    next_version = 1
+    prev_hash = ""
+    for _attempt in (1, 2):
+        tail = conn.execute(
+            "SELECT version, content_hash FROM memory_lineage WHERE memory_id=? ORDER BY version DESC LIMIT 1",
+            (memory_id,),
+        ).fetchone()
+        if tail:
+            next_version = tail[0] + 1
+            prev_hash = tail[1] or ""
+        else:
+            next_version, prev_hash = 1, ""
+        try:
+            cur = conn.execute(
+                """INSERT INTO memory_lineage
+                   (memory_id, version, content_hash, previous_version_hash, action, actor, source, diff_summary)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (memory_id, next_version, prev_hash, prev_hash, action, actor, source, diff_summary),
+            )
+            return {
+                "status": "ok",
+                "lineage_id": cur.lastrowid or 0,
+                "memory_id": memory_id,
+                "version": next_version,
+                "action": action,
+                "actor": actor,
+            }
+        except sqlite3.IntegrityError:
+            if _attempt == 2:
+                raise
+    return {"status": "error", "detail": "unreachable"}
 
 
 def get_memory_lineage(memory_id: str) -> list[dict[str, Any]]:
@@ -175,19 +262,28 @@ def get_memory_lineage(memory_id: str) -> list[dict[str, Any]]:
 
 
 def verify_lineage_integrity(memory_id: str | None = None) -> dict[str, Any]:
-    """验证谱系链的哈希连续性与完整性。"""
+    """验证谱系链的哈希连续性、**事实行存在性与内容一致性**。
+
+    v20.5.0 正式版（用户审计 🔴-1）：旧实现只校验链内 previous_version_hash
+    咬合与 version 连号——于是「指向不存在事实行的幽灵链」和「链尾哈希与
+    facts 行实际内容不符」两种篡改/缺陷全部报绿灯。本版补齐对账：
+      · fact:<id> 链指向的 facts 行必须存在（链尾为 DELETE/FORGET 的合法
+        终链除外）；
+      · facts 行 content_hash 非空时，链尾版本哈希必须等于行内容哈希；
+      · fact:<非数字> 形态是 v20.5.0a lastrowid 缺陷路径的产物，一律判 broken。
+    """
     ensure_lineage_schema()
     conn = get_facts_conn()
     try:
         if memory_id:
             query = (
-                "SELECT memory_id, version, content_hash, previous_version_hash FROM memory_lineage "
+                "SELECT memory_id, version, content_hash, previous_version_hash, action FROM memory_lineage "
                 "WHERE memory_id=? ORDER BY memory_id, version ASC"
             )
             params = (memory_id,)
         else:
             query = (
-                "SELECT memory_id, version, content_hash, previous_version_hash FROM memory_lineage "
+                "SELECT memory_id, version, content_hash, previous_version_hash, action FROM memory_lineage "
                 "ORDER BY memory_id, version ASC"
             )
             params = ()
@@ -197,13 +293,14 @@ def verify_lineage_integrity(memory_id: str | None = None) -> dict[str, Any]:
         chains_checked = 0
         broken_chains: list[dict[str, Any]] = []
 
-        # 按 memory_id 检查链连续性
+        # 按 memory_id 检查链连续性，同时记录每条链的链尾（供 facts 对账）
         current_mem = None
         expected_prev_hash = ""
         expected_version = 1
+        chain_tails: dict[str, dict[str, Any]] = {}
 
         for r in rows:
-            m_id, ver, c_hash, prev_hash = r[0], r[1], r[2], r[3]
+            m_id, ver, c_hash, prev_hash, action = r[0], r[1], r[2], r[3], r[4]
             if m_id != current_mem:
                 current_mem = m_id
                 expected_version = 1
@@ -228,6 +325,45 @@ def verify_lineage_integrity(memory_id: str | None = None) -> dict[str, Any]:
 
             expected_version = ver + 1
             expected_prev_hash = c_hash
+            chain_tails[m_id] = {"version": ver, "content_hash": c_hash, "action": (action or "").upper()}
+
+        # ── facts 对账（存在性 + 链尾内容一致性）──
+        if chain_tails:
+            facts_rows = conn.execute("SELECT id, content_hash FROM facts").fetchall()
+            facts_map = {int(fr[0]): (fr[1] or "") for fr in facts_rows}
+            for m_id, tail in chain_tails.items():
+                if not m_id.startswith("fact:"):
+                    continue  # 非 facts 链（未来形态）不在本对账射程
+                fid_str = m_id.split(":", 1)[1]
+                if not fid_str.isdigit():
+                    broken_chains.append({
+                        "memory_id": m_id,
+                        "version": tail["version"],
+                        "reason": "非法 memory_id 形态：fact:<fact_key> 是 v20.5.0a lastrowid 缺陷路径的产物，正规链一律为 fact:<行id>",
+                    })
+                    continue
+                fid = int(fid_str)
+                row_hash = facts_map.get(fid)
+                terminal = tail["action"] in ("DELETE", "FORGET")
+                if row_hash is None:
+                    if not terminal:
+                        broken_chains.append({
+                            "memory_id": m_id,
+                            "version": tail["version"],
+                            "reason": f"谱系指向不存在的事实行 fact:{fid}（幽灵链）",
+                        })
+                elif terminal:
+                    broken_chains.append({
+                        "memory_id": m_id,
+                        "version": tail["version"],
+                        "reason": f"链尾为 {tail['action']} 终链但 facts 行 fact:{fid} 仍存在",
+                    })
+                elif row_hash and tail["content_hash"] != row_hash:
+                    broken_chains.append({
+                        "memory_id": m_id,
+                        "version": tail["version"],
+                        "reason": "链尾哈希与 facts 行实际内容不一致（内容被绕过写入路径改写）",
+                    })
 
         return {
             "status": "ok" if not broken_chains else "broken",

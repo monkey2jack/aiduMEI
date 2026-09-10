@@ -118,13 +118,18 @@ def register_legacy_routes(app):
         scope_uid = normalize_user_id(user_id)
         scope_bid = normalize_bank_id(bank_id)
         conn = _get_facts_conn()
-        cur = conn.cursor()
         # 🧬 密码学谱系 (v20.5.0a P0-3)：/facts/add 与 federation writer 是
         # facts 表的两条外部写入路径，版本链口径必须一致——否则同一行经
         # 两条路径交替更新，version 在 1↔2 间打转，链直接断。
         from ducky.memory_lineage import compute_content_hash
+        from ducky.utils import upsert_returning_id
         _v205_hash = compute_content_hash(fact_value)
-        cur.execute("""
+        # v20.5.0 正式版（用户审计 🔴-1）：upsert 冲突命中时 lastrowid 不是
+        # 被更新行的 id，谱系曾因此分叉/串链。改走 RETURNING/唯一键回查，
+        # version<=1 为首写(CREATE)、>1 为冲突改写(UPDATE)。
+        fid, row_ver = upsert_returning_id(
+            conn,
+            """
             INSERT INTO facts (category, fact_key, fact_value, source, summary, overview, level,
                                valid_from, valid_to, agent_id, profile, memory_tier,
                                recorded_at, decay_at, user_id, bank_id,
@@ -142,23 +147,26 @@ def register_legacy_routes(app):
                 previous_version_hash=facts.content_hash,
                 last_actor=excluded.last_actor,
                 valid_from=COALESCE(excluded.valid_from, facts.valid_from),
-                valid_to=COALESCE(excluded.valid_to, facts.valid_to)
-        """, (category, fact_key, fact_value, source, summary, overview, resolved_level,
-              vf, vt, effective_agent, _PANTHEON_DEFAULT_PROFILE, fed_tier,
-              recorded_at.isoformat(), decay_at, scope_uid, scope_bid,
-              _v205_hash, 1, "", source or effective_agent))
-        # 🧬 memory_lineage 链式账本（同事务）：action 区分首写/改写，
-        # 冲突时 fid 还是旧行 id，谱系照实记 UPDATE。
+                valid_to=COALESCE(excluded.valid_to, facts.valid_to)""",
+            (category, fact_key, fact_value, source, summary, overview, resolved_level,
+             vf, vt, effective_agent, _PANTHEON_DEFAULT_PROFILE, fed_tier,
+             recorded_at.isoformat(), decay_at, scope_uid, scope_bid,
+             _v205_hash, 1, "", source or effective_agent),
+            "SELECT id, version FROM facts WHERE agent_id=? AND user_id=? AND bank_id=? AND category=? AND fact_key=?",
+            (effective_agent, scope_uid, scope_bid, category, fact_key),
+        )
+        _lineage_action = "CREATE" if row_ver <= 1 else "UPDATE"
+        # 🧬 memory_lineage 链式账本（同事务）：action 区分首写/改写，照实记录。
         try:
             from ducky.memory_lineage import record_lineage
             record_lineage(
                 conn,
-                memory_id=f"fact:{cur.lastrowid or fact_key}",
+                memory_id=f"fact:{fid}",
                 content=fact_value,
-                action="CREATE",
+                action=_lineage_action,
                 actor=source or effective_agent,
                 source="/facts/add",
-                diff_summary=f"legacy add: {category}/{fact_key}",
+                diff_summary=f"legacy {_lineage_action.lower()}: {category} (hash {_v205_hash[:8]})",
             )
         except Exception as le:
             logger.debug("legacy lineage 记录跳过: %s", le)
@@ -171,7 +179,7 @@ def register_legacy_routes(app):
                          user_id=scope_uid, bank_id=scope_bid)
         except Exception as le:
             logger.debug("ledger 记录跳过: %s", le)
-        fid = cur.lastrowid or 0
+        # fid 已由 upsert_returning_id 落定（真实行 id），不再取 lastrowid。
         # 🏛️ 治理管线（v19.4.0 Mímir 借鉴 B1）：写入后审计 + provisional 语义。
         #    规则 reject 同事务归档+tombstone 留痕；待审事实降权 0.30。
         gov = {"route": "skipped"}

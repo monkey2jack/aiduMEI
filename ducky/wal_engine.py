@@ -599,7 +599,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "refine_wal":       ("exempt", "refine 操作 WAL（若存在）：操作流水，随 WAL 引擎自身生命周期管理"),
     "wal_entries":      ("exempt", "WAL 引擎自身账本：删除操作的执行凭证，清掉等于销毁「删过」的证据"),
     "federation_grants": ("exempt", "联邦授权凭据表（grantor/grantee/scope，无记忆正文）：跨 Agent 授权与撤销契约，随授权生命周期管理（v20.5.0a）"),
-    "memory_lineage":   ("exempt", "记忆密码学谱系账本（memory_id/version/hash/action，无记忆正文）：审计与历史版本链不可篡改凭据（v20.5.0a）"),
+    "memory_lineage":   ("exempt", "记忆谱系账本（memory_id/version/hash/action，无记忆正文——diff_summary 不含 fact_key 明文，v20.5.0 起）：审计与历史版本链的可检测篡改凭据（v20.5.0a）"),
     # ── facts.db 之外的存储 ──
     "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
     "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),
@@ -1011,6 +1011,18 @@ def _cascade_single_facts(
         #
         # 契约抄两遍，就一定会改一遍漏一遍。改成调用，副本消失。
         scope_sql, own_params = legacy_fact_scope_predicate(scope)
+        # 🧬 v20.5.0 正式版（用户审计 🟡-5b）：删除前先取将删行的 id，
+        # 删除后同事务补 DELETE 终链——「删过什么」必须留痕。
+        _del_ids = [
+            r[0] for r in conn.execute(
+                f"""SELECT id FROM facts
+                   WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=? OR
+                          (? IS NOT NULL AND fact_key=?))
+                     AND (1=1{scope_sql})""",
+                (memory_id, exact_keys[0], exact_keys[1], exact_keys[2],
+                 _raw_fact_key, _raw_fact_key, *own_params),
+            ).fetchall()
+        ]
         c1 = conn.execute(
             f"""DELETE FROM facts
                WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=? OR
@@ -1019,6 +1031,16 @@ def _cascade_single_facts(
             (memory_id, exact_keys[0], exact_keys[1], exact_keys[2],
              _raw_fact_key, _raw_fact_key, *own_params),
         ).rowcount
+        try:
+            from ducky.memory_lineage import record_terminal_lineage
+            for _fid in _del_ids:
+                record_terminal_lineage(
+                    conn, memory_id=f"fact:{_fid}", action="DELETE",
+                    actor=user_id or "system", source="wal_cascade",
+                    diff_summary=f"cascade delete ({len(_del_ids)} row scope)",
+                )
+        except Exception as le:
+            logger.debug("删除终链记录跳过: %s", le)
         try:
             # memory_types.memory_ref 存的是**带作用域的**键（见
             # memory_types._storage_ref），memory_ref_raw 才是对外裸 id。
@@ -1362,6 +1384,17 @@ def _cascade_all_facts(scope: Any, res: Dict[str, Any], layer_failed: Any) -> se
                 "DELETE FROM facts WHERE 1=1" + fact_scope_sql,
                 fact_scope_params,
             ).rowcount or 0
+            # 🧬 v20.5.0 正式版（🟡-5b）：整域清空同样逐行补 DELETE 终链
+            try:
+                from ducky.memory_lineage import record_terminal_lineage
+                for _fid in fact_ids:
+                    record_terminal_lineage(
+                        fconn, memory_id=f"fact:{_fid}", action="DELETE",
+                        actor=scope.user_id or "system", source="wal_cascade_all",
+                        diff_summary="cascade delete (scope wipe)",
+                    )
+            except Exception as le:
+                logger.debug("整域删除终链记录跳过: %s", le)
             fconn.commit()
             res["facts_deleted"] = c_facts
         finally:

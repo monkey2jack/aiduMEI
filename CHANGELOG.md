@@ -14,7 +14,7 @@
 - **谱系射程补全（P0-3 收口）**：`federation/dedup.py` 的 `apply_merge`（self-edit 语义判重的 SQL 兜底）与 `hot/legacy_routes.py` 的 `/facts/add` 端点补齐 hash/version 推进与 lineage 同事务记录——两条次路径此前绕过谱系，会让 facts 行哈希与账本失同步。
 - **已知谱系射程限制（登记待下版）**：`hot/crud.py` 记忆更新、`refine_memory.py` 精炼摘要插入、`governance.py` 归档/trust 调整、`raw_drawer.py` verbatim 登记仍无版本链（属事实元数据或派生摘要变更，不在 P0 点名射程内）；`tombstone.py` 快照恢复按快照原样回灌。
 - **配套守卫与台账对齐**：`DELETE_CHAIN_MATRIX` 补充 `federation_grants` / `memory_lineage` 豁免登记；`_MIGRATION_LEDGER` 登记迁移点；`write_endpoint_budgets` 补登记 `/federation/grants` 与 `/federation/grants/revoke`；`_LOGGER_SITES` 95→97；except 棘轮基线 609→626（+17 均谱系/授权降级钩子，ledger/governance 同型惯例）；`mkdtemp` 位点数基线 46→47。
-- **用例总数 1837 → 1857**（`pytest --collect-only`；新增 20 个用例：grants 授权判定、端点 403 拦截/撤销/过期/动作隔离/单机回环、lineage 谱系链、merge/facts-add 谱系推进，b 阶段用户审计整改回归 5 条——scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/crud-update 谱系推进/内联 style 元素守卫）。
+- **用例总数 1837 → 1888**（`pytest --collect-only`；Preview 期新增 20 个用例：grants 授权判定、端点 403 拦截/撤销/过期/动作隔离/单机回环、lineage 谱系链、merge/facts-add 谱系推进，b 阶段用户审计整改回归 5 条；正式版整改再增 31 条红→绿对照守卫：谱系身份/授权闭环/存量回填/crud 端到端）。
 - **四环实测（2026-09-10 归档）**：本树 `pytest --collect-only` 总数 **1857**。① 独立开发机 **1845 通过 · 12 跳过**（2026-09-10 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）；② 基础安装路径 **1821 通过 · 25 跳过**（2026-09-09 生产机干净 venv，只装 `requirements*`）；③ 生产机独立沙箱 **1846 通过 · 11 跳过**（2026-09-10 生产机实测，本树 `48ca0cb`，宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed）；④ 全轴齐备 **1844 通过 · 1 跳过**（2026-09-09 生产机独立全轴 venv，工具/extras/宿主/模型缓存/公开 LoCoMo 数据集齐备）。数字与日期一体，未实测不写「实测」。
 
 ### b 阶段 · 用户审计整改（2026-09-10 · 条件通过 2🔴+1🟡）

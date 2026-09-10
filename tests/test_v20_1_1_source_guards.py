@@ -256,6 +256,8 @@ _MIGRATION_LEDGER = {
     ("ducky/checkpoint.py", "ALTER", "checkpoints"),
     ("ducky/federation/schema.py", "CREATE", "facts_dedup_quarantine"),
     ("ducky/federation/grants.py", "CREATE", "federation_grants"),
+    # v20.5.0 正式版：federation_grants 补 created_by 列（审计主体派生，additive）
+    ("ducky/federation/grants.py", "ALTER", "federation_grants"),
     ("ducky/memory_lineage.py", "CREATE", "memory_lineage"),
     ("ducky/schema_bootstrap.py", "ALTER", "entities"),
     ("ducky/tree_memory.py", "ALTER", "memory_nodes_v2"),

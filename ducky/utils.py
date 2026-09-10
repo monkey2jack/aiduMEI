@@ -439,6 +439,34 @@ def get_salience_conn():
     return _get_thread_conn(SALIENCE_DB)
 
 
+def upsert_returning_id(conn, insert_sql, insert_params, id_select_sql, id_select_params):
+    """执行 INSERT ... ON CONFLICT 并返回受影响行的真实 (id, version)。
+
+    v20.5.0 正式版（用户审计 🔴-1）：SQLite 的 upsert 冲突命中（走 DO UPDATE
+    分支）时 cursor.lastrowid **不是**被更新行的 id——残留同一连接上上一条
+    真正 INSERT 的 id 或 0。曾据此写谱系，导致 A 事实的版本记到 B 的链上、
+    以及指向不存在事实行的幽灵链（生产库实证 fact:4351/4352）。
+
+    这里只用两种可靠途径，绝不信任 lastrowid：
+      1. SQLite ≥ 3.35：INSERT ... RETURNING id, version（一条语句原子返回）；
+      2. 更老 SQLite：去掉 RETURNING 执行后按唯一键回查。
+    返回 (row_id, version)；调用方以 version<=1 区分首写(CREATE)/改写(UPDATE)。
+    插入已成功却回查不到行属于「不可能事件」——直接抛错，宁可 500 也不写幽灵链。
+    """
+    try:
+        cur = conn.execute(insert_sql + " RETURNING id, version", insert_params)
+        row = cur.fetchone()
+        if row and row[0]:
+            return int(row[0]), int(row[1] or 1)
+    except sqlite3.OperationalError:
+        # SQLite < 3.35 不支持 RETURNING：退回「执行 + 唯一键回查」
+        conn.execute(insert_sql, insert_params)
+    row = conn.execute(id_select_sql, id_select_params).fetchone()
+    if row and row[0]:
+        return int(row[0]), int(row[1] or 1)
+    raise RuntimeError("upsert 后按唯一键回查行 id 失败——拒绝在身份不明的情况下写谱系")
+
+
 def ensure_evolution_tables():
     """在 facts.db 里创建 Lethe 版知识演化追踪表和记忆生命周期表"""
     try:

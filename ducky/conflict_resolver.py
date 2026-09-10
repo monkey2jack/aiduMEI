@@ -288,7 +288,7 @@ def resolve_fact_conflict(
                         action="CONFLICT_RESOLVE",
                         actor=scope.user_id or "conflict_resolver",
                         source="conflict_resolver",
-                        diff_summary=f"conflict override: {category}/{fact_key} -> valid_to set",
+                        diff_summary=f"conflict override: {category} -> valid_to set",
                     )
             except Exception as le:
                 logger.debug("conflict lineage 记录跳过: %s", le)

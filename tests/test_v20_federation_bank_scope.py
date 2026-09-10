@@ -396,8 +396,11 @@ def test_federation_recall_endpoint_threads_scope_params():
     register_federation_routes(app)
     client = TestClient(app)
 
+    # v20.5.0 正式版（🔴-2）：联邦端点默认要求声明 caller_agent_id——
+    # 本 Agent 访问自己（caller == agent_id）合法放行。
     resp = client.get("/federation/recall", params={
-        "query": "咖啡", "agent_id": LOCAL_AGENT, "federated": "true",
+        "query": "咖啡", "agent_id": LOCAL_AGENT, "caller_agent_id": LOCAL_AGENT,
+        "federated": "true",
         "user_id": "user_x", "bank_id": "bank_a",
     })
     assert resp.status_code == 200, resp.text
@@ -408,7 +411,8 @@ def test_federation_recall_endpoint_threads_scope_params():
         "端点没把作用域递进梯子（防「函数修了、路由没传」）"
 
     resp = client.get("/federation/recall", params={
-        "query": "咖啡", "user_id": "user_x", "bank_id": "../etc",
+        "query": "咖啡", "agent_id": LOCAL_AGENT, "caller_agent_id": LOCAL_AGENT,
+        "user_id": "user_x", "bank_id": "../etc",
     })
     assert resp.status_code == 200, "联邦层约定：异常包成 error dict 不抛 500"
     body = resp.json()

@@ -29,6 +29,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # v20.5.0 正式版（Sonnet 外审 P0-3）：依赖漏洞扫描定时化——
+  # 两次提交之间新披露的 CVE 不能靠手动触发才发现。
+  schedule:
+    - cron: "17 2 * * 1"
   workflow_dispatch:
   workflow_call:
 

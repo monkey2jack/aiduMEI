@@ -547,17 +547,41 @@ def register_crud_routes(app: FastAPI) -> None:
             # （verify_lineage_integrity 对账时链完整但数据陈旧）。按用户审计裁决
             # 与 writer UPDATE 路径对齐：hash/version/previous_version_hash 推进
             # + memory_lineage 同事务记录。
+            #
+            # v20.5.0 正式版（用户审计 🟡-1 第六次「守卫射程 ≠ 缺陷分布」）：
+            # 真实调用里 memory_id 多为 mem0 UUID，`(id=? OR fact_key=?)` 命中
+            # 0 行 → 静默空转。修法：
+            #   · 命中网放宽到与删除路径同构（id / fact_key / fact:<id> 形态）；
+            #   · 「看似 facts 引用却命中 0 行」记 WARNING 出声（配置面出错必须
+            #     出声）；「纯向量记忆（UUID）无 facts 腿」记 info——后者是正常
+            #     形态，不是错误；
+            #   · 响应带出 facts_sync 字段，让调用方看得见这条腿的状态。
+            facts_sync = "skipped"
             try:
                 from ducky.memory_lineage import compute_content_hash, record_lineage
                 from ducky.utils import get_facts_conn
                 fconn = get_facts_conn()
                 _new_hash = compute_content_hash(content)
-                # 命中的行可能不止一条（id=? OR fact_key=?），逐行读旧 hash/version
-                # 再逐行推进，保证每条的链都从自己的父版本续上
+                _mid = (req.memory_id or "").strip()
+                _digits = _mid.split(":", 1)[1] if _mid.startswith("fact:") else _mid
+                # 命中网与 wal_engine 单条删除同构：裸 id / fact:<id> / fact_key
                 _rows = fconn.execute(
-                    "SELECT id, content_hash, version FROM facts WHERE (id=? OR fact_key=?) AND user_id=? AND bank_id=?",
-                    (req.memory_id, req.memory_id, user_id, scope.bank_id),
+                    "SELECT id, content_hash, version FROM facts "
+                    "WHERE (id=? OR fact_key=? OR fact_key=?) AND user_id=? AND bank_id=?",
+                    (_digits if _digits.isdigit() else -1, _mid, _digits,
+                     user_id, scope.bank_id),
                 ).fetchall()
+                if not _rows:
+                    if _digits.isdigit() or _mid.startswith("fact:"):
+                        logger.warning(
+                            "/update: memory_id=%r 形似 facts 引用但命中 0 行"
+                            "（user=%s bank=%s）——谱系腿未推进，请核对归属与 id",
+                            _mid, user_id, scope.bank_id)
+                        facts_sync = "no_match"
+                    else:
+                        logger.info(
+                            "/update: memory_id=%r 为纯向量记忆（无 facts 腿），谱系不推进", _mid)
+                        facts_sync = "not_a_fact"
                 for _fid, _old_hash, _old_ver in _rows:
                     fconn.execute(
                         """UPDATE facts
@@ -580,12 +604,15 @@ def register_crud_routes(app: FastAPI) -> None:
                         )
                     except Exception as le:
                         logger.debug(f"lineage on update 跳过: {le}")
+                if _rows:
+                    facts_sync = f"advanced:{len(_rows)}"
                 fconn.commit()
                 fconn.close()
             except Exception as fte:
-                logger.debug(f"facts update on update 跳过: {fte}")
+                logger.warning(f"facts update on update 失败（已出声，不再静默）: {fte}")
+                facts_sync = "error"
 
-            return {"status": "ok"}
+            return {"status": "ok", "facts_sync": facts_sync}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。

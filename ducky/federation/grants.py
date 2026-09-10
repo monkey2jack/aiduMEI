@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS federation_grants (
     resource_scope  TEXT NOT NULL DEFAULT '*',
     actions         TEXT NOT NULL DEFAULT 'read',
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by      TEXT DEFAULT '',
     expires_at      TEXT,
     revoked_at      TEXT,
     revoked_by      TEXT DEFAULT ''
@@ -49,14 +50,40 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 已知 scope 维度白名单（v20.5.0 正式版 · 用户审计 🟡-4）：
+# 维度名拼错或未来新增维度绝不可被静默当成通配——不认识的 key 一律拒绝。
+_SCOPE_KNOWN_KEYS = frozenset((
+    "category", "cat", "tier", "memory_tier", "tag", "tags", "user", "user_id",
+))
+
+
+def validate_resource_scope(scope: str) -> str:
+    """创建 Grant 时的 scope 语法校验。返回错误描述，合法返回 ""。"""
+    s = (scope or "*").strip()
+    if s == "*":
+        return ""
+    for rule in [r.strip() for r in s.split(";") if r.strip()]:
+        if ":" in rule:
+            k = rule.split(":", 1)[0].strip().lower()
+            if k not in _SCOPE_KNOWN_KEYS:
+                return (f"未知 scope 维度 '{k}'——合法维度: "
+                        "category/tier/tag/user（拼错的维度会整体拒绝授权，fail-closed）")
+        # 裸词形态按 category 解读，合法
+    return ""
+
+
 def ensure_grants_schema(conn: sqlite3.Connection | None = None) -> None:
-    """幂等建立 federation_grants 表与索引。"""
+    """幂等建立 federation_grants 表与索引（含存量库 created_by 补列）。"""
     should_close = False
     if conn is None:
         conn = get_facts_conn()
         should_close = True
     try:
         conn.execute(_GRANTS_DDL)
+        # v20.5.0 正式版：created_by 补列迁移（审计主体自认证身份派生）
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(federation_grants)").fetchall()}
+        if "created_by" not in cols:
+            conn.execute("ALTER TABLE federation_grants ADD COLUMN created_by TEXT DEFAULT ''")
         for stmt in _GRANTS_INDEXES:
             try:
                 conn.execute(stmt)
@@ -81,10 +108,28 @@ def create_grant(
     actions: str | list[str] = "read",
     expires_at: str | None = None,
     grant_id: str | None = None,
+    created_by: str = "",
 ) -> dict[str, Any]:
-    """创建或更新一条联邦授权 Grant。"""
+    """创建或更新一条联邦授权 Grant。
+
+    v20.5.0 正式版：
+      · created_by 从**认证主体**派生（路由层传入 caller），不接受调用方
+        自报任意字符串——审计身份必须可溯源（用户审计 🔴-2 / Luna P1-2）；
+      · expires_at 非法值直接拒绝创建（🟡-3：安全特性静默降级必须朝更严）；
+      · resource_scope 未知维度名直接拒绝创建（🟡-4：拼错的维度不得入库）。
+    """
     if not grantor_agent or not grantee_agent:
         return {"status": "error", "detail": "grantor_agent 与 grantee_agent 不能为空"}
+
+    scope_err = validate_resource_scope(resource_scope)
+    if scope_err:
+        return {"status": "error", "detail": scope_err}
+
+    if expires_at is not None and str(expires_at).strip():
+        exp_ts = parse_iso_timestamp(str(expires_at).strip())
+        if not exp_ts:
+            return {"status": "error",
+                    "detail": f"expires_at 格式非法: {expires_at!r}（需 ISO 8601，如 2030-01-01T00:00:00+00:00）"}
 
     gid = grant_id or f"grant_{uuid.uuid4().hex[:16]}"
     if isinstance(actions, (list, set, tuple)):
@@ -115,9 +160,9 @@ def create_grant(
                     "detail": f"grant_id={gid} 已存在，不得覆盖（防撤销复活/防覆盖他人授权）"}
         conn.execute(
             """INSERT INTO federation_grants
-               (grant_id, grantor_agent, grantee_agent, resource_scope, actions, expires_at, revoked_at, revoked_by)
-               VALUES (?, ?, ?, ?, ?, ?, NULL, '')""",
-            (gid, grantor_agent, grantee_agent, resource_scope, act_str, expires_at or None),
+               (grant_id, grantor_agent, grantee_agent, resource_scope, actions, created_by, expires_at, revoked_at, revoked_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, '')""",
+            (gid, grantor_agent, grantee_agent, resource_scope, act_str, created_by or "", expires_at or None),
         )
         conn.commit()
         return {
@@ -127,6 +172,7 @@ def create_grant(
             "grantee_agent": grantee_agent,
             "resource_scope": resource_scope,
             "actions": act_str.split(","),
+            "created_by": created_by or "",
             "expires_at": expires_at,
         }
     except Exception as exc:
@@ -188,7 +234,7 @@ def list_grants(
         if not include_revoked:
             where.append("(revoked_at IS NULL OR revoked_at='')")
 
-        sql = "SELECT grant_id, grantor_agent, grantee_agent, resource_scope, actions, created_at, expires_at, revoked_at, revoked_by FROM federation_grants"
+        sql = "SELECT grant_id, grantor_agent, grantee_agent, resource_scope, actions, created_at, created_by, expires_at, revoked_at, revoked_by FROM federation_grants"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at DESC"
@@ -203,11 +249,30 @@ def list_grants(
                 "resource_scope": r[3],
                 "actions": (r[4] or "").split(","),
                 "created_at": str(r[5]),
-                "expires_at": r[6],
-                "revoked_at": r[7],
-                "revoked_by": r[8],
+                "created_by": r[6],
+                "expires_at": r[7],
+                "revoked_at": r[8],
+                "revoked_by": r[9],
             })
         return results
+    finally:
+        conn.close()
+
+
+def get_grant(grant_id: str) -> dict[str, Any] | None:
+    """按 grant_id 取单条授权（供路由层做 grantor 所有权校验）。"""
+    if not grant_id:
+        return None
+    ensure_grants_schema()
+    conn = get_facts_conn()
+    try:
+        r = conn.execute(
+            "SELECT grant_id, grantor_agent, grantee_agent, revoked_at FROM federation_grants WHERE grant_id=?",
+            (grant_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {"grant_id": r[0], "grantor_agent": r[1], "grantee_agent": r[2], "revoked_at": r[3]}
     finally:
         conn.close()
 
@@ -251,12 +316,18 @@ def check_grant_permission(
         for gid, scope, acts, exp in rows:
             # 1. 检查是否过期
             if exp:
+                # 🟡-3（v20.5.0 正式版）：解析失败绝不静默视为永久——安全特性
+                # 的降级方向必须朝「更严」。非法过期值按已过期处理并出声。
+                exp_ts = 0.0
                 try:
                     exp_ts = parse_iso_timestamp(str(exp))
-                    if exp_ts and now_ts > exp_ts:
-                        continue
                 except Exception:
-                    pass
+                    exp_ts = 0.0
+                if not exp_ts:
+                    logger.warning("grant %s 的 expires_at 非法（%r），按已过期处理", gid, exp)
+                    continue
+                if now_ts > exp_ts:
+                    continue
 
             # 2. 检查 action 是否包含
             allowed_actions = {a.strip().lower() for a in (acts or "").split(",") if a.strip()}
@@ -291,6 +362,8 @@ def _match_scope(
         return True
 
     # 支持形如 "category:finance", "tier:semantic", "tag:personal", "user:user_123"
+    # 🟡-4（v20.5.0 正式版）：四组已知 key 之外的维度名（拼错的、未来新增的）
+    # 一律拒绝——未知维度不得静默退化成通配。
     rules = [r.strip() for r in scope.split(";") if r.strip()]
     for rule in rules:
         if ":" in rule:
@@ -302,22 +375,24 @@ def _match_scope(
                     return False  # 🔴-1：scope 限定了 category 而调用方没给 → 拒绝
                 if category.lower() != v.lower():
                     return False
-            if k in ("tier", "memory_tier"):
+            elif k in ("tier", "memory_tier"):
                 if not tier:
                     return False  # 🔴-1：同上，缺维度拒绝
                 if tier.lower() != v.lower():
                     return False
-            if k in ("tag", "tags"):
+            elif k in ("tag", "tags"):
                 if not tags:
                     return False  # 🔴-1：同上
                 tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
                 if v.lower() not in tag_list:
                     return False
-            if k in ("user", "user_id"):
+            elif k in ("user", "user_id"):
                 if not user_id:
                     return False  # 🔴-1：同上
                 if user_id.lower() != v.lower():
                     return False
+            else:
+                return False  # 🟡-4：未知维度名一律拒绝（fail-closed）
         else:
             # 裸词形态默认按 category 解读：调用方必须提供且匹配
             if not category or rule.lower() != category.lower():
