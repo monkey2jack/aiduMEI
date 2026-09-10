@@ -1,38 +1,20 @@
 /* 从 login.html 的 inline <script> 原样搬出（v20.4-alpha，2026-09-08）。
    搬家理由同 js/auth-guard.js：CSP script-src 'self' 不执行 inline 块。
    内容逐字未改（六边形背景 + 版本徽章 + 口令提示 + 登录提交）。 */
-/* random hexagon backdrop (same as index) */
+/* aiduPARK lattice-bg backdrop (tri-colour geometric lattice) */
 (function () {
-  var BRAND_COLORS = ['#1f4e79', '#525252', '#000000'];
   var container = document.getElementById('hexBg');
-  var count = 666;
-  var palette = [];
-  var per = Math.floor(count / BRAND_COLORS.length);
-  BRAND_COLORS.forEach(function (c) {
-    for (var i = 0; i < per; i++) palette.push(c);
-  });
-  while (palette.length < count) palette.push(BRAND_COLORS[palette.length % BRAND_COLORS.length]);
-  for (var i = palette.length - 1; i > 0; i--) {
-    var j = Math.floor(Math.random() * (i + 1));
-    var t = palette[i]; palette[i] = palette[j]; palette[j] = t;
+  if (container && window.LatticeBG) {
+    window.LatticeBG.mount(container);
   }
-  var frag = document.createDocumentFragment();
-  for (var k = 0; k < count; k++) {
-    var left = Math.random() * 100;
-    var top = Math.random() * 100;
-    var size = 15 + Math.random() * 70;
-    var height = size * 1.1547;
-    var rot = Math.floor(Math.random() * 61) - 30;
-    var stroke = (0.3 + Math.random() * 0.5).toFixed(1);
-    var el = document.createElement('div');
-    el.className = 'hex-bg-item';
-    el.style.cssText = 'left:' + left + '%; top:' + top + '%; width:' + size +
-      'px; height:' + height + 'px; transform:rotate(' + rot + 'deg); opacity:0.3;';
-    el.innerHTML = '<svg viewBox="0 0 100 115.47"><polygon points="50,0 100,28.87 100,86.6 50,115.47 0,86.6 0,28.87" fill="none" stroke="' +
-      palette[k] + '" stroke-width="' + stroke + '"/></svg>';
-    frag.appendChild(el);
+})();
+
+/* Orbital Slogan Letters animation */
+(function () {
+  var host = document.getElementById('heroSloganOrbital');
+  if (host && window.OrbitalSlogan) {
+    window.OrbitalSlogan.attach(host, { centered: true });
   }
-  container.appendChild(frag);
 })();
 
 /* version badge (same as index) */
