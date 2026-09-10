@@ -1,7 +1,7 @@
 /* 从 login.html 的 inline <script> 原样搬出（v20.4-alpha，2026-09-08）。
    搬家理由同 js/auth-guard.js：CSP script-src 'self' 不执行 inline 块。
    内容逐字未改（六边形背景 + 版本徽章 + 口令提示 + 登录提交）。 */
-/* aiduPARK lattice-bg backdrop (tri-colour geometric lattice) */
+/* lattice-bg backdrop (tri-colour geometric lattice) */
 (function () {
   var container = document.getElementById('hexBg');
   if (container && window.LatticeBG) {
