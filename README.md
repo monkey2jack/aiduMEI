@@ -412,7 +412,7 @@ python -m compileall ducky api_server.py mcp_server.py
 | 用例总数 | **1888**（`pytest --collect-only` 实测，2026-09-10，v20.5.0 正式版整改本树） |
 | 独立开发机 | 1876 通过 · **12 跳过** —— **2026-09-10 实测**（v20.5.0 正式版整改本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，v20.5a 本树，Python 3.12） |
-| 生产机沙箱 | 1846 通过 · **11 跳过** —— **2026-09-10 生产机实测**（v20.5 preview 本树 48ca0cb，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed；缺 `ruff` ×3、`mcp` ×7、备胎模型缓存 ×1） |
+| 生产机沙箱 | 1877 通过 · **11 跳过** —— **2026-09-10 生产机实测**（v20.5.0 正式版本树 6781c7d，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed；缺 `ruff` ×3、`mcp` ×7、备胎模型缓存 ×1） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（v20.5a 本树，独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
 | 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
 | 平台前提 | 全量套件按 **Linux/macOS（POSIX）**口径维护：`backup_gate` 轴要 POSIX shell；`/health` 的 CPU/RSS 指标走 `resource` 模块，非 POSIX 平台诚实置 `None` 不崩（v20.1 整改）。Windows 未列为全量测试平台 |
