@@ -1,6 +1,6 @@
 # aiduMEI 版本演进史
 
-## v20.5.0（2026-09-09 alpha 内部验证版）：可信联邦授权与记忆密码学谱系基础
+## v20.5.0（2026-09-10 preview 预发布版）：可信联邦授权与记忆密码学谱系基础
 
 > **从「认知与混合检索引擎」向具备「可信授权治理与密码学级谱系溯源」的可信记忆控制平面跨越。**
 > 吸收 Walrus 调研精髓，彻底告别仅靠 `shared: bool` 的粗粒度联邦标记，在保持本地优先、轻量低摩擦的前提下，扎实铸造两大核心工程骨架。
@@ -12,8 +12,16 @@
 - **谱系射程补全（P0-3 收口）**：`federation/dedup.py` 的 `apply_merge`（self-edit 语义判重的 SQL 兜底）与 `hot/legacy_routes.py` 的 `/facts/add` 端点补齐 hash/version 推进与 lineage 同事务记录——两条次路径此前绕过谱系，会让 facts 行哈希与账本失同步。
 - **已知谱系射程限制（登记待下版）**：`hot/crud.py` 记忆更新、`refine_memory.py` 精炼摘要插入、`governance.py` 归档/trust 调整、`raw_drawer.py` verbatim 登记仍无版本链（属事实元数据或派生摘要变更，不在 P0 点名射程内）；`tombstone.py` 快照恢复按快照原样回灌。
 - **配套守卫与台账对齐**：`DELETE_CHAIN_MATRIX` 补充 `federation_grants` / `memory_lineage` 豁免登记；`_MIGRATION_LEDGER` 登记迁移点；`write_endpoint_budgets` 补登记 `/federation/grants` 与 `/federation/grants/revoke`；`_LOGGER_SITES` 95→97；except 棘轮基线 609→626（+17 均谱系/授权降级钩子，ledger/governance 同型惯例）；`mkdtemp` 位点数基线 46→47。
-- **用例总数 1837 → 1852**（`pytest --collect-only`；新增 15 个针对 grants 授权判定、端点 403 拦截/撤销/过期/动作隔离/单机回环、lineage 谱系链与 merge/facts-add 谱系推进的用例）。
+- **用例总数 1837 → 1857**（`pytest --collect-only`；新增 20 个用例：grants 授权判定、端点 403 拦截/撤销/过期/动作隔离/单机回环、lineage 谱系链、merge/facts-add 谱系推进，b 阶段用户审计整改回归 5 条——scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/crud-update 谱系推进/内联 style 元素守卫）。
 - **生产与沙箱实测（待填）**：待生产机独立沙箱验证通过后补齐四环实测数字。
+
+### b 阶段 · 用户用户审计整改（2026-09-10 · 条件通过 2🔴+1🟡）
+
+- **🔴-1 `_match_scope` 缺维度绕行**（grants.py）：scope 限定过的维度（category/tier/tag/user）调用方未提供时旧逻辑跳过 → 限定 scope 被当成 `*`。改白名单思维：**缺维度一律拒绝**（fail-closed），裸词形态同样收紧。端点面（recall 不传 category）同步堵死。
+- **🔴-2 `INSERT OR REPLACE` 撤销复活**（grants.py）：已撤销/已存在的 grant_id 可被覆盖——revoked_at 重置 NULL，撤销原地复活、他人授权可被劫持。改显式冲突检查：**已存在 grant_id 一律拒绝**，撤销是终态，重授权必须用新 ID（审计链不断）。
+- **🟡-1 crud `/update` 谱系织入**（hot/crud.py）：按用户审计裁决——/update 改的是 fact_value 正文（与 federation writer 同字段），此前「元数据」归类不成立。补 hash/version/previous_version_hash 推进 + memory_lineage 同事务记录，与 writer UPDATE 路径对齐。
+- **UI 修复（登录页样式塌陷）**：CSP `style-src 'self'`（无 unsafe-inline）拒绝渲染 `<style>` 元素——v20.4.0 P2-11 只搬了 style= 内容属性，login.html 124 行与 index.html 45 行内联 `<style>` 块被打死，登录页变无样式白板（生产实锤）。两页样式整体收编 css/style.css（1029→1162 行），缓存戳 v=6/v=10。**「守卫射程病」第五次发作**：TestNoInlineStyleInFrontend 新增 `<style>` 元素形态断言（剥 HTML 注释后扫描，防字面误伤）。
+- **回归**：新增 5 条用户整改用例（scope 缺维度拒绝/撤销终态防复活/grant_id 防劫持/crud-update 谱系推进/style 元素守卫）；except 棘轮 626→627（+1 crud /update lineage 降级钩子）；🟢-2（grantor 权限校验）按用户审计裁决不阻塞，转 v20.5.0 正式版前评估。
 
 ---
 
