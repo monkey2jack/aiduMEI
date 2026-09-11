@@ -404,7 +404,7 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 177
 | Total cases | **1993** (measured via `pytest --collect-only`, 2026-09-11, v20.5.1 tree) = **1787 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
 | Clean dev machine | 1981 passed · **12 skipped** — **measured 2026-09-11** (v20.5.1 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
-| Sandbox on the production box | 1877 passed · **11 skipped** — **measured 2026-09-10** (v20.5.0 formal this tree 6781c7d, separate sandbox venv on the production box: host source present, no `.env`, without ruff/mcp/fastembed; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1) |
+| Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09** (v20.5a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
 | Statement coverage | ~51% over `ducky/` and entry points |
 | Test layering | Mostly module-level unit tests plus source-level guard assertions, with `TestClient`-driven API tests in support |
@@ -419,7 +419,7 @@ with host: 1993 passed
 forced off: 1981 passed, 12 skipped
 ```
 
-On a production host where other optional axes are absent, the bare command **actually prints 1877 passed, 11 skipped** (measured 2026-09-10 on the v20.5.0 formal tree 6781c7d in an isolated sandbox on the production box, no `.env`, isolated HOME, public dataset reused read-only; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1). A number without its environment and date is not a reproducible claim.
+On a production host where other optional axes are absent, the bare command **actually prints 1967 passed, 26 skipped** (measured 2026-09-11 on the v20.5.1 tree de09794 in an isolated sandbox on the production box, no `.env`, isolated HOME). A number without its environment and date is not a reproducible claim.
 
 ### Skip-axis census
 
