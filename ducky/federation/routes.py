@@ -71,10 +71,80 @@ def _is_admin_caller(caller: str) -> bool:
     return bool(caller) and caller in _federation_admins()
 
 
+def _caller_bindings() -> dict[str, Any] | None:
+    """AIDUMEI_CALLER_BINDINGS：`{"<token_sha256前16位>": ["agent_a", ...]}`。
+
+    返回 None = 未配置 → 调用方逐字走旧行为（兼容红线，v20.5.1 T-07）。
+    配置了但 JSON 非法/不是对象 → fail-closed 抛 403：安全档配置写错
+    不能静默失效（与 scoring._evidence_gate_on「非法值按开」同一家训）。
+    请求时实时解析，不做模块级定格 —— 与凭据读取同一纪律。
+    """
+    import os
+    raw = os.environ.get("AIDUMEI_CALLER_BINDINGS", "").strip()
+    if not raw:
+        return None
+    from fastapi import HTTPException
+    import json
+    try:
+        table = json.loads(raw)
+        if not isinstance(table, dict):
+            raise ValueError("顶层必须是 JSON 对象")
+    except ValueError:
+        logger.error("🛑 [Security] AIDUMEI_CALLER_BINDINGS 不是合法 JSON 对象，"
+                     "本次调用 fail-closed 拒绝（配置修正前绑定面不可用）")
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "caller_bindings_misconfigured",
+                "hint": "AIDUMEI_CALLER_BINDINGS 须为 JSON 对象："
+                        "{\"<token_sha256前16位>\": [\"agent_a\", ...]}；"
+                        "暂不需要绑定时请整体移除该变量",
+            },
+        )
+    return table
+
+
+def _enforce_caller_binding(caller: str, operation: str) -> None:
+    """🛡️ caller↔凭据轻量绑定（v20.5.1 · T-07）：token 可代表的 agent_id 白名单。
+
+    强制条件**同时**成立才拦（缺一即按现状放行）：
+      ① 配置了 AIDUMEI_CALLER_BINDINGS；
+      ② 本请求经 Bearer / X-API-Token 过闸，且其指纹已登记在 bindings。
+    未配置 env 时本函数逐字等价于不存在 —— 这是兼容红线。
+    session cookie（控制台）与无凭据回环请求不带指纹，不参与绑定。
+    """
+    table = _caller_bindings()
+    if table is None:
+        return
+    from ducky.security.auth import current_request_token_fingerprint
+    fp = current_request_token_fingerprint()
+    if not fp or fp not in table:
+        return
+    allowed = table[fp]
+    if not isinstance(allowed, list):
+        allowed = []
+    if caller not in {str(a) for a in allowed}:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "caller_token_binding_mismatch",
+                "operation": operation,
+                "caller_agent_id": caller,
+                "hint": "本凭据（token）未登记可代表该 agent_id；"
+                        "请在 AIDUMEI_CALLER_BINDINGS 的白名单中补登，或换用对应凭据",
+            },
+        )
+
+
 def _require_caller(caller_agent_id: str, *, operation: str) -> str:
     """管理/查询面身份门槛：caller_agent_id 必填（逃生门开启时放行空 caller）。
 
     返回规范化后的 caller（逃生门放行时为空串，调用方按单机兼容语义处理）。
+
+    v20.5.1（T-07）：caller 非空时再过一道 caller↔凭据轻量绑定 —— 仅当
+    配置了 AIDUMEI_CALLER_BINDINGS 且本请求 token 指纹已登记时强制
+    caller ∈ 白名单；未配置该 env 时行为与此前逐字一致。
     """
     caller = (caller_agent_id or "").strip()
     if not caller:
@@ -90,6 +160,7 @@ def _require_caller(caller_agent_id: str, *, operation: str) -> str:
                         "存量单机部署可显式设 AIDUMEI_ALLOW_IMPLICIT_CALLER=1 过渡",
             },
         )
+    _enforce_caller_binding(caller, operation)
     return caller
 
 
@@ -191,7 +262,22 @@ def register_federation_routes(app: FastAPI) -> None:
         profile: str = DEFAULT_PROFILE,
         description: str = "",
         endpoint: str = "",
+        caller_agent_id: str = "",
     ):
+        # 🛡️ v20.5.1（T-06 · 根因 R-1 接缝排查）：register 是 upsert——
+        # 无门槛时任何持 Bearer 者可改写他人 display_name/endpoint，
+        # 且 ON CONFLICT 会把已 deactivate 的 agent 重新激活（active=1），
+        # 等于 deactivate 被 register 反制。规则：本人或 admin。
+        caller = _require_caller(caller_agent_id, operation="register_agent")
+        if caller and caller != agent_id and not _is_admin_caller(caller):
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "register_forbidden",
+                    "hint": "只能注册/刷新自己（caller == agent_id），或由 admin 代劳",
+                },
+            )
         return _safe(
             registry_mod.register_agent,
             agent_id,
@@ -203,14 +289,38 @@ def register_federation_routes(app: FastAPI) -> None:
 
     @app.post("/federation/agents/heartbeat")
     def federation_heartbeat(agent_id: str = DEFAULT_AGENT):
+        # 有意不加 caller 门槛：心跳是高频自保信号，registry.heartbeat 对未注册
+        # id 自动补注册是文档化的宽容设计；伪造心跳的最坏后果是让一个 agent
+        # 「看起来在线」，不读不写他人数据。改这里要先想清楚生产 cron 的调用形态。
         return _safe(registry_mod.heartbeat, agent_id)
 
     @app.post("/federation/agents/deactivate")
-    def federation_deactivate(agent_id: str):
+    def federation_deactivate(agent_id: str, caller_agent_id: str = ""):
+        # 🛡️ v20.5.1（T-06）：无门槛时任何持 Bearer 者可休眠任意 agent ——
+        # 联邦面 DoS。规则：本人或 admin。
+        caller = _require_caller(caller_agent_id, operation="deactivate_agent")
+        if caller and caller != agent_id and not _is_admin_caller(caller):
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "deactivate_forbidden",
+                    "hint": "只能休眠自己（caller == agent_id），或由 admin 代劳",
+                },
+            )
         return _safe(registry_mod.deactivate_agent, agent_id)
 
     @app.get("/federation/agents")
-    def federation_list_agents(profile: str | None = None, include_inactive: bool = True):
+    def federation_list_agents(
+        profile: str | None = None,
+        include_inactive: bool = True,
+        caller_agent_id: str = "",
+    ):
+        # 🛡️ v20.5.1（T-08）：此前全仓唯一没接 _require_caller 的管理/查询端点。
+        # Agent 清单（谁在线、谁挂了多少事实）是侦察面 —— 拿到它才能挑受害者
+        # agent_id 去试 grants。与 create/list/revoke_grant、get/verify_lineage
+        # 同构 fail-closed；逃生门语义由 _require_caller 统一承载。
+        _require_caller(caller_agent_id, operation="list_agents")
         agents = _safe(registry_mod.list_agents, profile, include_inactive)
         if isinstance(agents, dict):  # 异常路径
             return agents
@@ -344,6 +454,9 @@ def register_federation_routes(app: FastAPI) -> None:
     # ── 迁移 ──────────────────────────────────────
     @app.post("/federation/migrate")
     def federation_migrate(force: bool = False):
+        # 有意不加 caller 门槛：ensure_federation_schema 幂等且只做 ADD COLUMN /
+        # CREATE TABLE（无任何 DROP/改写），重复触发无副作用。若哪天它长出破坏性
+        # 分支，这里必须先补门槛。
         return _safe(ensure_federation_schema, force)
 
     # ── 授权管理 (Grants & Revocation · v20.5.0a) ──

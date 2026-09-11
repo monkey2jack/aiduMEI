@@ -91,6 +91,209 @@ def _upsert_fact_row(conn, *, category, fact_key, fact_value, source, agent_id,
     )
 
 
+# ── 子步骤（v20.5.1 · T-13 圈复杂度整改）─────────────────────────────
+#
+# write_fact 曾是 CC 44（radon F 级）的巨函数：校验闸门、归属/分层、去重
+# 三分支（merge/update/insert）、谱系链、事件账本、治理钩子全在一个函数
+# 体里。这里只做**换骨架**（与 scoring.py v20.4.1a 同款打法）：每道子步骤
+# 一个可独立测试的函数，编排函数只负责流程组合；SQL、哈希链推进顺序、
+# 账本顺序、返回值结构逐行未动 —— 谱系行为一丁点都不能变。
+
+
+def _strip_and_guard_fact(fact_key, fact_value):
+    """入参剥离 + 终审注入防护。返回 (fact_key, fact_value, error|None)。"""
+    fact_key = (fact_key or "").strip()
+    fact_value = (fact_value or "").strip()
+    if not fact_key or not fact_value:
+        return fact_key, fact_value, {"status": "error", "detail": "fact_key 和 fact_value 不能为空"}
+    from ducky.security.injection_guard import validate_and_sanitize_memory_content
+    is_safe, sanitized_val, rejection = validate_and_sanitize_memory_content(fact_value)
+    if not is_safe:
+        logger.warning("🛡️ [InjectionGuard] 联邦写入拦截注入: %s", rejection)
+        return fact_key, fact_value, {"status": "error", "detail": f"Fact value rejected: {rejection}"}
+    return fact_key, sanitized_val, None
+
+
+def _normalize_scope_tier(*, category, agent_id, profile, user_id, bank_id,
+                          memory_tier, fact_key, fact_value):
+    """归属落定 + 分层解析。返回 (category, agent_id, profile, scope, tier, recorded_at, decay_at)。"""
+    category = (category or "general").strip()
+    agent_id = (agent_id or DEFAULT_AGENT).strip() or DEFAULT_AGENT
+    profile = (profile or DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
+    scope = make_scope(user_id, bank_id)  # 规范化 + 非法字符拒绝
+
+    resolved_tier = (
+        tier_mod.normalize_tier(memory_tier)
+        if memory_tier
+        else tier_mod.infer_tier(category, fact_key, fact_value)
+    )
+    now = datetime.now(timezone.utc)
+    recorded_at = now.isoformat()
+    decay_at = tier_mod.decay_deadline(resolved_tier, now)
+    return category, agent_id, profile, scope, resolved_tier, recorded_at, decay_at
+
+
+def _verdict_hits(verdict, action: str) -> bool:
+    """去重判定命中指定动作且有落点行 id —— 三分支共用同一道闸。"""
+    return bool(verdict and verdict.action == action and verdict.fact_id)
+
+
+def _merge_fact_branch(conn, *, verdict, fact_value, tags, category,
+                       resolved_tier, agent_id, source, scope) -> dict:
+    """── 合并：不新增行 ──"""
+    merged = apply_merge(verdict.fact_id, fact_value, tags, conn=conn)
+    # 📒 事件账本（v19.4.0 🟡-D）：apply_merge 已内部 commit，
+    # 账本紧随补记；失败只降级不阻断。
+    try:
+        from ducky.event_ledger import content_hash, record_event
+        record_event(conn, actor=source or "federation", action="update",
+                     target_id=f"fact:{verdict.fact_id}",
+                     reason=f"federation merge: {category}/{verdict.fact_key}",
+                     after_hash=content_hash(fact_value),
+                     user_id=scope.user_id, bank_id=scope.bank_id)
+        conn.commit()
+    except Exception as le:
+        logger.debug("merge 账本记录跳过: %s", le)
+    merged.update({
+        "dedup": verdict.to_dict(),
+        "memory_tier": resolved_tier,
+        "agent_id": agent_id,
+        "message": f"与既有事实合并: {category}/{verdict.fact_key}",
+    })
+    return merged
+
+
+def _update_fact_branch(conn, *, verdict, fact_value, resolved_tier, agent_id,
+                        category, source, scope) -> dict:
+    """── 更新：视为同一事实的新版本，就地覆盖 ──
+
+    🟢25：不重置 recorded_at/decay_at，与 dedup.apply_merge 语义对齐，
+    避免 0.70-0.85 相似度更新反复刷新衰减时钟让旧事实"无限续命"。
+    """
+    # 🧬 密码学谱系 (v20.5.0a): 计算新 hash 并版本自增
+    from ducky.memory_lineage import compute_content_hash, record_lineage
+    new_hash = compute_content_hash(fact_value)
+    old_row = conn.execute(
+        "SELECT content_hash, version FROM facts WHERE id=?", (verdict.fact_id,)
+    ).fetchone()
+    prev_hash = old_row[0] if old_row else ""
+    old_ver = (old_row[1] or 1) if old_row else 1
+    next_ver = old_ver + 1
+
+    conn.execute(
+        """UPDATE facts
+           SET fact_value=?, overview=?, summary=?, memory_tier=?,
+               source=?, content_hash=?, version=?, previous_version_hash=?,
+               last_actor=?, updated_at=CURRENT_TIMESTAMP
+           WHERE id=?""",
+        (fact_value, fact_value, _summary_of(fact_value), resolved_tier,
+         source, new_hash, next_ver, prev_hash, source or agent_id, verdict.fact_id),
+    )
+    # 🧬 memory_lineage 链式账本记录
+    try:
+        record_lineage(
+            conn,
+            memory_id=f"fact:{verdict.fact_id}",
+            content=fact_value,
+            action="UPDATE",
+            actor=source or agent_id,
+            previous_version_hash=prev_hash,
+            source=source,
+            diff_summary=f"federation update: {category} (hash {new_hash[:8]})",
+        )
+    except Exception as le:
+        logger.debug("lineage 记录跳过: %s", le)
+
+    # 📒 事件账本（v19.4.0 🟡-D）：与更新同事务留痕，同生共死
+    try:
+        from ducky.event_ledger import content_hash, record_event
+        record_event(conn, actor=source or "federation", action="update",
+                     target_id=f"fact:{verdict.fact_id}",
+                     reason=f"federation update: {category}/{verdict.fact_key}",
+                     after_hash=content_hash(fact_value),
+                     user_id=scope.user_id, bank_id=scope.bank_id)
+    except Exception as le:
+        logger.debug("update 账本记录跳过: %s", le)
+    conn.commit()
+    return {
+        "status": "ok", "action": ACTION_UPDATE, "fact_id": verdict.fact_id,
+        "memory_tier": resolved_tier, "agent_id": agent_id,
+        "version": next_ver, "content_hash": new_hash,
+        "dedup": verdict.to_dict(),
+        "message": f"事实已更新: {category}/{verdict.fact_key}",
+    }
+
+
+def _insert_fact_branch(conn, *, category, fact_key, fact_value, source, agent_id,
+                        profile, resolved_tier, recorded_at, decay_at, tags, shared,
+                        valid_from, valid_to, scope) -> tuple[int, str, dict]:
+    """── 新增（upsert）──：落库 + 谱系 + 事件账本 + 治理钩子，同事务 commit。
+
+    返回 (fact_id, upsert_action, gov)；gov 带出治理结论供编排层在
+    commit 后派异步评估。
+    """
+    from ducky.memory_lineage import compute_content_hash, record_lineage
+    initial_hash = compute_content_hash(fact_value)
+    # v20.5.0 正式版（用户审计 🔴-1）：upsert 冲突命中时 lastrowid 不是
+    # 被更新行的 id——谱系曾因此串链并产生幽灵链。改走 RETURNING/唯一键
+    # 回查拿真实行 id（实现见 _upsert_fact_row），version<=1 为首写、>1 为冲突改写。
+    fact_id, row_ver = _upsert_fact_row(
+        conn, category=category, fact_key=fact_key, fact_value=fact_value,
+        source=source, agent_id=agent_id, profile=profile,
+        resolved_tier=resolved_tier, recorded_at=recorded_at, decay_at=decay_at,
+        tags=tags, shared=shared, valid_from=valid_from, valid_to=valid_to,
+        scope=scope, initial_hash=initial_hash, summary=_summary_of(fact_value),
+    )
+    upsert_action = "CREATE" if row_ver <= 1 else "UPDATE"
+
+    # 🧬 memory_lineage 链式账本记录
+    try:
+        record_lineage(
+            conn,
+            memory_id=f"fact:{fact_id}",
+            content=fact_value,
+            action=upsert_action,
+            actor=source or agent_id,
+            previous_version_hash="",
+            source=source,
+            diff_summary=f"federation {upsert_action.lower()}: {category} (hash {initial_hash[:8]})",
+        )
+    except Exception as le:
+        logger.debug("lineage 记录跳过: %s", le)
+
+    # 📒 事件账本（v19.4.0 🟡-D）：与写入同事务留痕，同生共死
+    try:
+        from ducky.event_ledger import content_hash, record_event
+        record_event(conn, actor=source or "federation", action="add",
+                     target_id=f"fact:{fact_key}",
+                     reason=f"federation insert: {category}",
+                     after_hash=content_hash(fact_value),
+                     user_id=scope.user_id, bank_id=scope.bank_id)
+    except Exception as le:
+        logger.debug("insert 账本记录跳过: %s", le)
+    # 🏛️ 治理管线（v19.4.0 🟡-D）：联邦 insert 是真实外部路径，
+    #    与 /facts/add 同等审计；失败只降级不阻断写入。
+    gov = {"route": "skipped"}
+    try:
+        from ducky.governance import govern_fact_write
+        gov = govern_fact_write(conn, fact_id, category, fact_key, fact_value,
+                                user_id=source or DEFAULT_USER_ID)
+    except Exception as ge:
+        logger.debug("联邦治理钩子跳过: %s", ge)
+    conn.commit()
+    return fact_id, upsert_action, gov
+
+
+def _spawn_async_eval(gov: dict) -> None:
+    """独立评估器异步补审（commit 后；失败保守进人审，绝不自动批准）。"""
+    if gov.get("route") == "llm_eval" and gov.get("candidate_id"):
+        try:
+            from ducky.governance import spawn_async_eval
+            spawn_async_eval(gov["candidate_id"])
+        except Exception as ae:
+            logger.debug("联邦异步评估派发跳过: %s", ae)
+
+
 def write_fact(
     category: str,
     fact_key: str,
@@ -114,30 +317,16 @@ def write_fact(
     （行为归因），二者语义不同，不再互相顶替。不传作用域时落 default 库，
     与 v19 行为逐字节一致。
     """
-    fact_key = (fact_key or "").strip()
-    fact_value = (fact_value or "").strip()
-    if not fact_key or not fact_value:
-        return {"status": "error", "detail": "fact_key 和 fact_value 不能为空"}
-    from ducky.security.injection_guard import validate_and_sanitize_memory_content
-    is_safe, sanitized_val, rejection = validate_and_sanitize_memory_content(fact_value)
-    if not is_safe:
-        logger.warning("🛡️ [InjectionGuard] 联邦写入拦截注入: %s", rejection)
-        return {"status": "error", "detail": f"Fact value rejected: {rejection}"}
-    fact_value = sanitized_val
+    fact_key, fact_value, err = _strip_and_guard_fact(fact_key, fact_value)
+    if err is not None:
+        return err
 
-    category = (category or "general").strip()
-    agent_id = (agent_id or DEFAULT_AGENT).strip() or DEFAULT_AGENT
-    profile = (profile or DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
-    scope = make_scope(user_id, bank_id)  # 规范化 + 非法字符拒绝
-
-    resolved_tier = (
-        tier_mod.normalize_tier(memory_tier)
-        if memory_tier
-        else tier_mod.infer_tier(category, fact_key, fact_value)
+    category, agent_id, profile, scope, resolved_tier, recorded_at, decay_at = (
+        _normalize_scope_tier(
+            category=category, agent_id=agent_id, profile=profile,
+            user_id=user_id, bank_id=bank_id, memory_tier=memory_tier,
+            fact_key=fact_key, fact_value=fact_value)
     )
-    now = datetime.now(timezone.utc)
-    recorded_at = now.isoformat()
-    decay_at = tier_mod.decay_deadline(resolved_tier, now)
 
     conn = get_facts_conn()
     try:
@@ -149,148 +338,33 @@ def write_fact(
         )
 
         # ── 合并：不新增行 ──
-        if verdict and verdict.action == ACTION_MERGE and verdict.fact_id:
-            merged = apply_merge(verdict.fact_id, fact_value, tags, conn=conn)
-            # 📒 事件账本（v19.4.0 🟡-D）：apply_merge 已内部 commit，
-            # 账本紧随补记；失败只降级不阻断。
-            try:
-                from ducky.event_ledger import content_hash, record_event
-                record_event(conn, actor=source or "federation", action="update",
-                             target_id=f"fact:{verdict.fact_id}",
-                             reason=f"federation merge: {category}/{verdict.fact_key}",
-                             after_hash=content_hash(fact_value),
-                             user_id=scope.user_id, bank_id=scope.bank_id)
-                conn.commit()
-            except Exception as le:
-                logger.debug("merge 账本记录跳过: %s", le)
-            merged.update({
-                "dedup": verdict.to_dict(),
-                "memory_tier": resolved_tier,
-                "agent_id": agent_id,
-                "message": f"与既有事实合并: {category}/{verdict.fact_key}",
-            })
-            return merged
+        if _verdict_hits(verdict, ACTION_MERGE):
+            return _merge_fact_branch(
+                conn, verdict=verdict, fact_value=fact_value, tags=tags,
+                category=category, resolved_tier=resolved_tier,
+                agent_id=agent_id, source=source, scope=scope)
 
         # ── 更新：视为同一事实的新版本，就地覆盖 ──
-        # 🟢25：不重置 recorded_at/decay_at，与 dedup.apply_merge 语义对齐，
-        # 避免 0.70-0.85 相似度更新反复刷新衰减时钟让旧事实"无限续命"。
-        if verdict and verdict.action == ACTION_UPDATE and verdict.fact_id:
-            # 🧬 密码学谱系 (v20.5.0a): 计算新 hash 并版本自增
-            from ducky.memory_lineage import compute_content_hash, record_lineage
-            new_hash = compute_content_hash(fact_value)
-            old_row = conn.execute(
-                "SELECT content_hash, version FROM facts WHERE id=?", (verdict.fact_id,)
-            ).fetchone()
-            prev_hash = old_row[0] if old_row else ""
-            old_ver = (old_row[1] or 1) if old_row else 1
-            next_ver = old_ver + 1
-
-            conn.execute(
-                """UPDATE facts
-                   SET fact_value=?, overview=?, summary=?, memory_tier=?,
-                       source=?, content_hash=?, version=?, previous_version_hash=?,
-                       last_actor=?, updated_at=CURRENT_TIMESTAMP
-                   WHERE id=?""",
-                (fact_value, fact_value, _summary_of(fact_value), resolved_tier,
-                 source, new_hash, next_ver, prev_hash, source or agent_id, verdict.fact_id),
-            )
-            # 🧬 memory_lineage 链式账本记录
-            try:
-                record_lineage(
-                    conn,
-                    memory_id=f"fact:{verdict.fact_id}",
-                    content=fact_value,
-                    action="UPDATE",
-                    actor=source or agent_id,
-                    previous_version_hash=prev_hash,
-                    source=source,
-                    diff_summary=f"federation update: {category} (hash {new_hash[:8]})",
-                )
-            except Exception as le:
-                logger.debug("lineage 记录跳过: %s", le)
-
-            # 📒 事件账本（v19.4.0 🟡-D）：与更新同事务留痕，同生共死
-            try:
-                from ducky.event_ledger import content_hash, record_event
-                record_event(conn, actor=source or "federation", action="update",
-                             target_id=f"fact:{verdict.fact_id}",
-                             reason=f"federation update: {category}/{verdict.fact_key}",
-                             after_hash=content_hash(fact_value),
-                             user_id=scope.user_id, bank_id=scope.bank_id)
-            except Exception as le:
-                logger.debug("update 账本记录跳过: %s", le)
-            conn.commit()
-            return {
-                "status": "ok", "action": ACTION_UPDATE, "fact_id": verdict.fact_id,
-                "memory_tier": resolved_tier, "agent_id": agent_id,
-                "version": next_ver, "content_hash": new_hash,
-                "dedup": verdict.to_dict(),
-                "message": f"事实已更新: {category}/{verdict.fact_key}",
-            }
+        if _verdict_hits(verdict, ACTION_UPDATE):
+            return _update_fact_branch(
+                conn, verdict=verdict, fact_value=fact_value,
+                resolved_tier=resolved_tier, agent_id=agent_id,
+                category=category, source=source, scope=scope)
 
         # ── 新增 ──
-        from ducky.memory_lineage import compute_content_hash, record_lineage
-        initial_hash = compute_content_hash(fact_value)
-        # v20.5.0 正式版（用户审计 🔴-1）：upsert 冲突命中时 lastrowid 不是
-        # 被更新行的 id——谱系曾因此串链并产生幽灵链。改走 RETURNING/唯一键
-        # 回查拿真实行 id（实现见 _upsert_fact_row），version<=1 为首写、>1 为冲突改写。
-        fact_id, row_ver = _upsert_fact_row(
+        fact_id, upsert_action, gov = _insert_fact_branch(
             conn, category=category, fact_key=fact_key, fact_value=fact_value,
             source=source, agent_id=agent_id, profile=profile,
             resolved_tier=resolved_tier, recorded_at=recorded_at, decay_at=decay_at,
             tags=tags, shared=shared, valid_from=valid_from, valid_to=valid_to,
-            scope=scope, initial_hash=initial_hash, summary=_summary_of(fact_value),
-        )
-        upsert_action = "CREATE" if row_ver <= 1 else "UPDATE"
-
-        # 🧬 memory_lineage 链式账本记录
-        try:
-            record_lineage(
-                conn,
-                memory_id=f"fact:{fact_id}",
-                content=fact_value,
-                action=upsert_action,
-                actor=source or agent_id,
-                previous_version_hash="",
-                source=source,
-                diff_summary=f"federation {upsert_action.lower()}: {category} (hash {initial_hash[:8]})",
-            )
-        except Exception as le:
-            logger.debug("lineage 记录跳过: %s", le)
-
-        # 📒 事件账本（v19.4.0 🟡-D）：与写入同事务留痕，同生共死
-        try:
-            from ducky.event_ledger import content_hash, record_event
-            record_event(conn, actor=source or "federation", action="add",
-                         target_id=f"fact:{fact_key}",
-                         reason=f"federation insert: {category}",
-                         after_hash=content_hash(fact_value),
-                         user_id=scope.user_id, bank_id=scope.bank_id)
-        except Exception as le:
-            logger.debug("insert 账本记录跳过: %s", le)
-        # 🏛️ 治理管线（v19.4.0 🟡-D）：联邦 insert 是真实外部路径，
-        #    与 /facts/add 同等审计；失败只降级不阻断写入。
-        gov = {"route": "skipped"}
-        try:
-            from ducky.governance import govern_fact_write
-            gov = govern_fact_write(conn, fact_id, category, fact_key, fact_value,
-                                    user_id=source or DEFAULT_USER_ID)
-        except Exception as ge:
-            logger.debug("联邦治理钩子跳过: %s", ge)
-        conn.commit()
+            scope=scope)
     except Exception as exc:
         logger.error("联邦写入失败: %s", exc)
         return {"status": "error", "detail": str(exc)}
     finally:
         conn.close()
 
-    # 独立评估器异步补审（commit 后；失败保守进人审，绝不自动批准）
-    if gov.get("route") == "llm_eval" and gov.get("candidate_id"):
-        try:
-            from ducky.governance import spawn_async_eval
-            spawn_async_eval(gov["candidate_id"])
-        except Exception as ae:
-            logger.debug("联邦异步评估派发跳过: %s", ae)
+    _spawn_async_eval(gov)
 
     try:
         heartbeat(agent_id)

@@ -50,6 +50,7 @@ from ducky.bank_contract import (
     ensure_memory_banks_schema,
     make_scope,
 )
+from ducky.scope_sql import scope_clause as _unified_scope_clause
 
 logger = logging.getLogger("aiduMEM.verbatim")
 
@@ -636,11 +637,13 @@ def _delete_turn_ids(fconn, ids: list, scope=None) -> int:
     params = list(ids)
     fts_params = list(ids)
     if scope is not None:
-        scope_clause = " AND user_id=? AND bank_id=?"
-        sql += scope_clause
-        fts_sql += scope_clause
-        params.extend([scope.user_id, scope.bank_id])
-        fts_params.extend([scope.user_id, scope.bank_id])
+        # v20.5.1（T-05）：手拼片段收敛进统一构建器（canonical = 精确
+        # user_id+bank_id，与原来逐字同语义）。
+        scoped_sql, scoped_params = _unified_scope_clause(scope, flavor="canonical")
+        sql += scoped_sql
+        fts_sql += scoped_sql
+        params.extend(scoped_params)
+        fts_params.extend(scoped_params)
     deleted = fconn.execute(sql, params).rowcount or 0
     fconn.commit()
     try:

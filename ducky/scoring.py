@@ -351,8 +351,12 @@ def _bm25_factor(query: str, item: dict, content_text: str) -> float:
     """词法分：上游给了 bm25_score 就用，否则现算 token 覆盖率。
 
     v20.2.4（F-20）：外部数值一律过有限性闸门 —— min(nan, 1.0) 返回 nan。
+    v20.5.1（T-17）：`x or 现算` 会把上游显式的 0（真算过的零重合）偷换成
+    现算覆盖率 —— 改为**缺失（None）才现算**，显式 0 原样进闸门。
     """
-    bm25_s = (item.get("metadata") or {}).get("bm25_score", 0) or calc_token_overlap_score(query, content_text)
+    bm25_s = (item.get("metadata") or {}).get("bm25_score")
+    if bm25_s is None:
+        bm25_s = calc_token_overlap_score(query, content_text)
     return min(finite_or(bm25_s, 0.0), 1.0)
 
 
@@ -364,14 +368,26 @@ def _time_factor(item: dict, now_ts: float, type_decay_on: bool, mtype: str) -> 
 
 
 def _reliability_factor(item: dict) -> float:
-    """可靠性分（缺省 0.5；外部数值过有限性闸门）。"""
-    reliability = (item.get("metadata") or {}).get("reliability", 0.5) or 0.5
+    """可靠性分（缺省 0.5；外部数值过有限性闸门）。
+
+    v20.5.1（T-17）：`or 0.5` 会把显式 0（不可信）兜成中性 0.5 ——
+    方向性错误。缺失（None）才兜底，显式 0 原样进闸门。
+    """
+    reliability = (item.get("metadata") or {}).get("reliability")
+    if reliability is None:
+        reliability = 0.5
     return min(finite_or(reliability, 0.5), 1.0)
 
 
 def _heat_factor(item: dict, sal_rec: dict) -> float:
-    """访问热度分：metadata 优先，salience 批量缓存兜底。"""
-    access_count = (item.get("metadata") or {}).get("access_count") or sal_rec.get("access_count", 1)
+    """访问热度分：metadata 优先，salience 批量缓存兜底。
+
+    v20.5.1（T-17）：`or` 会把 metadata 显式的 access_count=0 换成
+    salience 兜底 —— 缺失（None）才回落，显式 0 原样进闸门。
+    """
+    access_count = (item.get("metadata") or {}).get("access_count")
+    if access_count is None:
+        access_count = sal_rec.get("access_count", 1)
     return min(finite_or(access_count, 1.0) / 100.0, 1.0)
 
 

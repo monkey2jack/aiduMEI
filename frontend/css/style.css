@@ -1052,7 +1052,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
    「守卫射程病」第五次发作：守卫只拦 style= 内容属性，漏了 <style> 元素形态。
    ============================================================================= */
 
-/* ---------- login card（Ruixen UI Newsletter Form 极简现代风格） ---------- */
+/* ---------- login card（极简现代风格） ---------- */
 .login-wrap {
   flex: 1;
   display: flex;

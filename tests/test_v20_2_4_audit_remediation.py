@@ -417,12 +417,15 @@ def test_ci_has_the_three_new_acceptance_jobs():
 # 临时目录登记制（2026-08-28 生产机清理战场时触发）
 # ════════════════════════════════════════════════════════════════════
 
-_MKDTEMP_BASELINE = 51          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改
+_MKDTEMP_BASELINE = 54          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改
                                 # 2026-09-10 v20.5.0：+4（test_v20_5_0_lineage_identity / grant_authz /
                                 # backfill / crud_update 四个新模块的模块级测试库——模块顶层覆盖
                                 # utils.FACTS_DB 必须用持久目录，tmp_path 函数级作用域做不到）
                                 # 47 = 46 + test_v20_5_grants_lineage.py:22（v20.5.0a 联邦授权与谱系测试，
                                 # 模块级 tmpdir 钉 facts.db 路径，沿用 v20 各 bank_scope 测试同型）
+                                # 2026-09-11 v20.5.1：+3 —— list_agents_caller / caller_binding /
+                                # cc_refactor 各 1，均模块级测试库（同 v20.5.0 同型理由：模块顶层
+                                # 重定向 utils.FACTS_DB，tmp_path 函数级作用域做不到）
 
 
 def test_mkdtemp_sites_are_registered():

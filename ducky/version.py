@@ -34,6 +34,41 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
+v20.5.1 (维护版 · 四份审计整合收口 + 发布工程修复 · 2026-09-11)
+    主题：**门禁必须真的在场；接缝必须真的接上。**
+    四份审计（用户视角生产实测 / Sonnet / Luna / DeepSeek v4.1 Flash 自评）+
+    维护者独立增量审计，逐条 file:line 复核后闭环：
+    1. 🔴 CI 失防窗口根修：docker-context-secrets 的 grep -c 计数与退出码
+       未解耦（无泄漏时 `|| echo 0` 让 leaked="0\n0"，门自 08-28 诞生起
+       永不绿；09-09 首跑即红 → workflow 被禁用 → 次日正式版零门禁发布）。
+       步骤修正三态（无泄漏绿/有泄漏红/构建失败红），本地 stub 三场景验证；
+       scripts/push_gate.sh 焊第五道关：Tests workflow 非 active 立即停推。
+    2. 🔴 联邦管理面接缝（根因 R-1 排查）：register/deactivate 补 caller
+       门槛（本人或 admin）——upsert 曾可被他人复活已休眠 agent；
+       list_agents 补 _require_caller（用户审计 🟡-1）；heartbeat/migrate/tiers
+       三端点经评估「有意开放」，理由随码注释在案。
+    3. caller↔凭据轻量绑定（T-07）：AIDUMEI_CALLER_BINDINGS（token 指纹 →
+       可代表 agent 白名单），未配置时行为逐字不变；配置非法 fail-closed。
+    4. 统一作用域 SQL 构建器 ducky/scope_sql.py + 棘轮守卫（183 处手拼片段
+       只减不增，30 文件逐一带理由登记）；verbatim/conflict_resolver 首批迁移。
+    5. 复杂度回吐：run_add_pipeline 53→7 / write_fact 44→10 /
+       funnel_search 41→8（行为逐字不变，子步骤补单测）。
+    6. WAL 崩溃/重放幂等矩阵：重放 N 次 == 重放 1 次的不变量入测试。
+    7. 打分正确性：scoring.py 三处 `or` 吞显式 0 修正为「缺失才兜底」；
+       mem0_sync md5→sha256；/health 新增 mem0 路径一致性探针
+       （DATA_DIR 与 qdrant path 脱钩时告警——DEPLOY_DOCKHOLD 记录在案的坑）。
+    8. 文档归真：README 头条拆分行为 1787 + 脚本行为 70 + 守卫 136
+       （口径脚本可复算）；docs/archive/ 建立，v14 时代 ARCHITECTURE 等
+       四份历史文档移入；POSITIONING 租户行加脚注、「10–20 分」标注非实测；
+       ONE_LINE_INSTALL 收敛子项经复核驳回（逐字相等守卫钉死，无漂移面）；
+       结案陈词「前端零触碰」勘误（4632e4e 实为 8 文件 +977/-118）。
+    9. 生产侧随部署执行：潮浪 cron prompt 两处 curl 补 Bearer（用户审计 🔴-1）；
+       生产 facts.db 清理 3 条 smoke_sandbox grants 残留（用户审计 🔴-2，先备份）。
+    10. 用例总数 1888 → 1993（--collect-only），新增用例全部红→绿对照；
+       独立开发机 1981 通过 · 12 跳过（2026-09-11 本树）。
+    11. 已知瑕疵如实登记：tests 子集选择（-k）下 test_jia13_verbatim 存在
+       顺序依赖（全量套件不受影响，随测试重组一并治理）。
+
 v20.5.0 (正式版 · 三方评审整改收口 · 2026-09-10)
     主题：**说出口的承诺，必须实测成立。**
     三方评审（用户视角端点复现 + Sonnet 5 / Luna 代码审计）各推翻半个核心卖点，
@@ -108,7 +143,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.5.0"  # 正式版三段式（维护者拍板：小仓 v20.5.0 / 大仓 v20.5）；格式守卫接受两段或三段
+SERVICE_VERSION = "20.5.1"  # 维护版三段式（维护者拍板：小仓 v20.5.1 / 大仓随正式节点）；格式守卫接受两段或三段
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -122,6 +157,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("20.5.1", "", "v20.5.1", "维护版 · 四份审计整合收口 · CI失防根修 · 联邦接缝与作用域构建器 · 2026-09-11"),
     ("20.5.0", "", "v20.5.0", "正式版 · 三方评审整改收口（授权闭环/谱系身份/存量基线）· 2026-09-10"),
     ("20.5", "", "v20.5-preview", "Preview 预览版 · Grants+Lineage+用户审计整改+UI修复 · 2026-09-10"),
     ("20.4.1", "", "v20.4.1", "正式版 · 四方网页外审+用户审计整改 · CI接入链路/复杂度回吐/版本源单源化 · 2026-09-09"),

@@ -58,7 +58,7 @@ STALENESS_DAYS = 30  # 全局兜底（未知块 / 未分级配置），与 v20.0
 # 告警很快就没人看了 —— 而真正易过期的「当前项目」（审计实锤：写着三个版本
 # 以前的状态）淹没在同一种叫声里。
 #
-# 分级默认值的依据是联邦分层的既有 TTL 语义（ARCHITECTURE.md 分层生命周期：
+# 分级默认值的依据是联邦分层的既有 TTL 语义（docs/archive/ARCHITECTURE.md 分层生命周期：
 # semantic 180 天 / episodic 30 天）：画像与决策 ≈ semantic 档，当前项目 ≈
 # episodic 档。**分级是给依据，不是调大消音**：最易过期的 current_project
 # 保持 30 天，一分没放松。

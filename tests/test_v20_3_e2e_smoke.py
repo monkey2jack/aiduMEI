@@ -259,7 +259,7 @@ def test_readme_en_key_sections_align_with_zh():
 
 def test_v20_3_current_facts_are_not_contradicted():
     zh = (_ROOT / "README.md").read_text(encoding="utf-8")
-    architecture = (_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    architecture = (_ROOT / "docs" / "archive" / "ARCHITECTURE.md").read_text(encoding="utf-8")
     assert "ECharts CDN" not in zh, "frontend/index.html serves ECharts from local vendor assets"
     assert "Python 3.12+" not in zh
     assert "AIDUMEI_ENGINE_MODE=auto" in zh

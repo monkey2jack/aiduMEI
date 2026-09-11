@@ -1,5 +1,21 @@
 # aiduMEI 版本演进史
 
+## v20.5.1（2026-09-11 维护版）：四份审计整合收口 · CI 失防根修 —— 门禁必须真的在场，接缝必须真的接上
+
+> **性质：维护版。公开 Tag 停在大仓 `v20.5`；小仓按三段式 `v20.5.1`。** 输入：用户视角审计（生产实测）+ Sonnet / Luna / DeepSeek v4.1 Flash 三份外部代码审计 + 维护者独立增量审计。所有论断经逐条 file:line 复核（复核结论与四份报告的评级见 wiki《aiduMEI v20.5.1a 计划任务书》），P0/P1 全闭环。
+
+- **🔴 CI 失防窗口（维护者增量审计，四份外审均未完整发现）**：`docker-context-secrets` 的「假密钥进不了构建上下文」步骤里，`grep -c` 无命中时打印 0 但退出码为 1，`|| echo 0` 再补一个 0——`leaked` 变成 `"0\n0"` 永不等于 `"0"`，**这道门自 4a2c4b9（08-28）诞生起无论泄不泄漏都必红**。09-09 它随新触发面第一次真正运行（run #6）即红，约 2 小时后整个 Tests workflow 被手动禁用，次日 v20.5.0 正式版在零 CI 门禁下发布。修复：容器内 `|| true` 把计数与退出码解耦；`docker run` 自身失败不再被吞（构建/运行故障必须红）；三态经本地 stub 全场景验证。`scripts/push_gate.sh` 焊入**第五道关**：Tests workflow 非 `active` 立即停推——本地四道关全绿抵不掉线上门禁不存在。
+- **🔴 联邦管理面接缝（根因 R-1「门槛存在而端点没接上」排查）**：`/federation/agents/register`（upsert 可改写他人 endpoint 并**复活已休眠 agent**）与 `/federation/agents/deactivate`（任意休眠他人 = 联邦面 DoS）补 caller 门槛（本人或 admin）；`/federation/agents`（list）补 `_require_caller`（用户审计 🟡-1）；heartbeat/migrate/tiers 三端点经逐条评估定为「有意开放」，理由随码注释在案。新增 tests/test_v20_5_1_federation_mgmt_gates.py 红→绿。
+- **caller↔凭据轻量绑定（T-07）**：`AIDUMEI_CALLER_BINDINGS`（token sha256 指纹前 16 位 → 可代表 agent_id 白名单）；鉴权层经 contextvar 传递指纹（不落盘、不进响应）；未配置该 env 时行为与 v20.5.0 逐字一致，配置非法 fail-closed。完整密码学绑定留 v21（用户审计 🟢-2 与 Sonnet P0-1 的优先级分歧：轻量版本轮落地）。
+- **统一作用域 SQL 构建器（T-05）**：新增 `ducky/scope_sql.py` 唯一入口（canonical / transition / facts 三 flavor 路由到既有三个正规谓词，语义一字未动；alias 标识符校验防注入；`scope_from_mapping` 未知维度默认拒绝）；新增棘轮守卫 test_v20_5_1_scope_sql_guard.py：全仓 183 处手拼片段、30 文件逐一带理由登记，**只减不增**；verbatim_vault / conflict_resolver 首批迁入（20→18 处）。
+- **复杂度回吐（Sonnet P1-3）**：`run_add_pipeline` CC 53→7、`write_fact` 44→10、`funnel_search` 41→8（radon 复测）；拆出的子步骤配单测（tests/test_v20_5_1_cc_refactor.py）；行为逐字不变。无 rollback 写函数棘轮 103→104（拆分的 update 分支函数，事务纪律同前，基线注释在案）。
+- **WAL 崩溃/重放幂等矩阵（Luna F-05 采纳）**：tests/test_v20_5_1_wal_replay.py——append 未 commit 崩溃、部分写入、重复 replay、终态防复活；不变量「同一逻辑 job 重放 N 次 == 重放 1 次」。
+- **打分正确性**：`scoring.py` 三处 `or` 吞显式 0（reliability/access_count/bm25_score）修正为「缺失才兜底」（维护者新发现-2，v20.2.4 NaN 闸门的同型残留）；`mem0_sync.py` md5→sha256 截断（Sonnet B324）；`/health` 新增 mem0 路径一致性探针：`AIDUMEM_DATA_DIR` 与 mem0 配置里 qdrant `path`/`history_db_path` 脱钩时 WARNING（dsv4f M-5，DEPLOY_DOCKHOLD 记录在案的坑；绝对路径只进授权视图）。
+- **文档归真**：README 头条拆分 **行为 1787 + 脚本/钩子行为 70 + 守卫 136 = 1993**（dsv4f C-1；口径脚本 `scripts/count_test_kinds.py` 可复算）；`docs/archive/` 建立，v14 时代 `ARCHITECTURE.md` 与 v10 Synapse / viking-fs / osaurus 三份历史设计稿移入（dsv4f M-3 / Luna F-13）；`docs/POSITIONING.md` 租户行加脚注指向三类不在轴上的存储、「10–20 分」标注「行业惯例值非本引擎实测」（dsv4f M-1/C-3）；`ONE_LINE_INSTALL.md` 收敛子项**经复核驳回**——它与 `prompts/install.txt` 的逐字相等由 test_first_run_experience 钉死，漂移面不存在（判据在案）；结案陈词勘误：v20.5.0 段「前端零触碰」表述不确，4632e4e 实为 8 前端文件 +977/-118（用户审计 🟡-3，在此更正）；`frontend/css/style.css` 残留第三方组件名清除（用户审计 🔴-2）。
+- **生产侧（运维面，随本版部署执行）**：潮浪 cron prompt 两处 curl 补 `Authorization: Bearer`（用户审计 🔴-1：鉴权中间件对 /add 强制 401，按模板原样执行会静默失败）；生产 facts.db 清理 3 条 smoke_sandbox 测试 grants 残留（用户审计 🔴-2，先备份后清理）。
+- **用例总数 1888 → 1993**（`pytest --collect-only`；本轮新增 105 条：caller 绑定/list_agents 门槛/联邦管理面/评分零语义/scope 构建器与棘轮/复杂度子步骤/WAL 重放/路径一致性/哈希，全部红→绿对照）。四环实测：独立开发机 **1981 通过 · 12 跳过**（2026-09-11 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）；其余三环部署阶段复测后回填。
+- **已知瑕疵如实登记**：tests 子集选择（-k）下 test_jia13_verbatim 存在顺序依赖（全量套件不受影响，本版不修，随 T-23 测试重组一并治理）。
+
 ## v20.5.0（2026-09-10 正式版）：三方评审整改收口 —— 说出口的承诺，必须实测成立
 
 > **公开身份 = 20.5.0 正式版**（小仓 tag/Release `v20.5.0`；大仓按两段式惯例 `v20.5`）。Preview 期三方评审（用户视角端点复现 + Sonnet 5 / Luna 代码审计）全部闭环：两条 🔴 承诺级缺陷连根修，四条 🟡 全收口。
