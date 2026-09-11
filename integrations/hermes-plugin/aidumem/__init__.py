@@ -380,7 +380,12 @@ class AiduMemProvider(MemoryProvider):
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
+        turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # turn_author：宿主 2026-09 新增的可选参数（该轮发言者身份）。
+        # 当前接收但不落库 —— 签名必须与宿主基类逐字一致（契约守卫盯着），
+        # 参数的使用价值（按作者分桶记忆）另行评估，本轮只为接口兼容。
+        _ = turn_author
         if len((user_content or "").strip()) < _MIN_QUERY_LEN:
             return
         combined = f"User: {user_content[:4000]}\nAssistant: {(assistant_content or '')[:4000]}"
