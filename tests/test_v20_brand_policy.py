@@ -234,7 +234,7 @@ _CRITICAL_ENV_READS = [
 # 用户会打开来读或编辑的纯文档 / 样例文件。这些文件里出现的 AIDUMEM_* 是大写键名，
 # 与大小写敏感的 aiduMEM 不冲突，所以可以要求「整份归零」。
 _CLEAN_FILES = [
-    "docs/ARCHITECTURE.md",
+    "docs/archive/ARCHITECTURE.md",
     ".env.example",
     "requirements.txt",
     "requirements-dev.txt",
@@ -341,7 +341,7 @@ _HISTORY_KEEPS_LEGACY = [
     ("CHANGELOG.md", "变更史：抹掉旧名等于篡改历史"),
     ("ducky/version.py", "版本条目：旧条目只增不改"),
     ("README.md", "「品牌演进 aiduMEM → aiduMEI」那句话，改了演进史就被抹平"),
-    ("docs/aiduMEM-v10-Synapse-Design.md", "有日期的设计文档，属历史存档"),
+    ("docs/archive/aiduMEM-v10-Synapse-Design.md", "有日期的设计文档，属历史存档"),
     ("aiduMEM-v11-Hyperion-Whitepaper.md", "白皮书：署了版本与代号的历史文本"),
     ("aiduMEM-v9.3-Aletheia-Whitepaper.md", "白皮书，同上"),
 ]

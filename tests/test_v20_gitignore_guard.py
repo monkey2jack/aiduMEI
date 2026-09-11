@@ -191,7 +191,7 @@ _MUST_SHIP = (
     ("assets/aidumei-v20-banner.svg", "图片面也要发得出去（v20.0 起横幅改手写 SVG）"),
     ("assets/aidumei-v20-banner.gen.py", "横幅的生成器 —— 图必须是可复现的，不是来历不明的二进制"),
     ("frontend/index.html", "前端资产"),
-    ("docs/ARCHITECTURE.md", "文档"),
+    ("docs/archive/ARCHITECTURE.md", "文档"),
 )
 
 # ── 走盘剪掉的目录 ────────────────────────────────────────────────────────────

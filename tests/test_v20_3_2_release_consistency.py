@@ -198,7 +198,7 @@ def test_write_functions_without_rollback_only_decrease():
             writes = any(k in src for k in ("INSERT", "UPDATE ", "DELETE FROM", "ALTER TABLE", "CREATE "))
             if writes and ".execute(" in src and any(isinstance(x, ast.Try) for x in ast.walk(fn)) and "rollback" not in src:
                 n += 1
-    BASELINE = 103  # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；
+    BASELINE = 104  # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；
     # 2026-09-09 v20.4.1a：wal_engine cascade_delete_memory(66)/cascade_delete_all(53)
     # 圈复杂度按层拆分（四方外审 Sonnet B2），同一段写 SQL 从 2 个巨型函数分散进
     # 按层辅助函数，本守卫按函数计数故 93 → 102 —— **写入路径与事务归属未变**
@@ -206,6 +206,11 @@ def test_write_functions_without_rollback_only_decrease():
     # 2026-09-10 v20.5.0 正式版：+1 = memory_lineage.record_terminal_lineage
     # （DELETE/FORGET 终链，🟡-5b）——与 record_lineage 同一事务纪律：
     # 不主动 commit/rollback，由外层删除路径统一提交（同生共死）。
+    # 2026-09-11 v20.5.1：+1 = federation/writer._update_fact_branch
+    # （write_fact CC44→10 拆分的 update 分支函数）——三分支函数各自
+    # `conn.commit()` 自成事务单元，事务归属与拆前逐字一致（拆分前全部
+    # 挤在 write_fact 一个函数里，本来就只计 1）。增长来自按函数计数
+    # 对同一段事务的重新分布，不是新增无 rollback 覆盖的写路径。
     # 只降不升纪律不变：此后再涨必须真的新增了无 rollback 覆盖的写路径。
     assert n <= BASELINE, f"无 rollback 的写函数从 {BASELINE} 涨到 {n} —— 新代码请用 with conn: 或显式 rollback"
 
