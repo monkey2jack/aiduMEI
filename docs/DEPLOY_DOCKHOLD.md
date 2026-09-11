@@ -78,6 +78,11 @@ aiduMEI's SQLite files; it does **not** rewrite mem0's Qdrant or history paths.
 Keeping the template's relative `./data/...` values would write those stores
 to `/app/data` even when Dockhold persists a different directory.
 
+Since v20.5.1 the authenticated `/health` reports this drift itself:
+`probes.runtime_paths.path_consistency` is `warning` (and names the diverging
+keys) when either path resolves outside the effective `AIDUMEM_DATA_DIR`.
+The probe warns only; it never blocks startup.
+
 Restart the service after provisioning the configuration. Without valid model
 configuration, `POST /add/raw` still works while recall is degraded, as
 described in [HEALTH.md](HEALTH.md). A raw-record persistence check alone does

@@ -298,7 +298,11 @@ def _auth_enabled() -> bool:
 
 def _request_authorized(request: Request) -> bool:
     """钥匙 A（session cookie）∨ 钥匙 B（Bearer token），任一有效即放行。"""
-    from ducky.security.auth import SESSION_COOKIE_NAME, validate_session
+    from ducky.security.auth import (
+        SESSION_COOKIE_NAME,
+        set_request_token_fingerprint,
+        validate_session,
+    )
 
     session_token = request.cookies.get(SESSION_COOKIE_NAME, "")
     if session_token and validate_session(session_token):
@@ -308,10 +312,15 @@ def _request_authorized(request: Request) -> bool:
     if token:
         supplied = request.headers.get("Authorization", "")
         if supplied and hmac.compare_digest(supplied, f"Bearer {token}"):
+            # v20.5.1（T-07）：钥匙 B 通过时把 token 指纹挂进请求上下文，
+            # 供联邦层 _require_caller 做 caller↔凭据轻量绑定
+            # （AIDUMEI_CALLER_BINDINGS 未配置时该指纹无人读取，零行为变化）。
+            set_request_token_fingerprint(token)
             return True
         # 兼容以 X-API-Token 头传递的调用方
         alt = request.headers.get("X-API-Token", "")
         if alt and hmac.compare_digest(alt, token):
+            set_request_token_fingerprint(token)
             return True
     return False
 

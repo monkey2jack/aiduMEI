@@ -51,7 +51,7 @@ class TestVersioningDoc:
 
 class TestArchitectureBanner:
     def test_banner_at_top(self):
-        with open(os.path.join(_ROOT, "docs/ARCHITECTURE.md"), encoding="utf-8") as f:
+        with open(os.path.join(_ROOT, "docs/archive/ARCHITECTURE.md"), encoding="utf-8") as f:
             head = f.read(600)
         assert "v14 时代" in head and "设计史" in head, \
             "ARCHITECTURE.md 文首缺「v14 时代 · 设计史」横幅（P2-18）"

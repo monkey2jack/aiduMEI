@@ -25,7 +25,6 @@ from ducky.bank_contract import (
     DEFAULT_BANK_ID,
     ensure_bank_registered,
     ensure_memory_banks_schema,
-    legacy_fact_scope_predicate,
     make_scope,
     table_columns,
 )
@@ -73,7 +72,11 @@ def _fact_scope_sql(conn: Any, scope) -> tuple[str, list[Any]]:
     columns = table_columns(conn, "facts")
 
     if {"user_id", "bank_id", "source", "agent_id"} <= columns:
-        sql, params = legacy_fact_scope_predicate(scope)
+        # v20.5.1（T-05）：委托改经统一入口 scope_clause（transition ＝
+        # legacy_fact_scope_predicate，语义逐字不变）。
+        from ducky.scope_sql import scope_clause
+
+        sql, params = scope_clause(scope, flavor="transition")
         return sql.removeprefix(" AND "), list(params)
 
     channel_terms: list[str] = []

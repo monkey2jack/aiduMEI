@@ -52,8 +52,40 @@ logger = logging.getLogger("mem0_sync")
 # ═══════════════════════════════════════════════
 
 def hash_entry(text: str) -> str:
-    """对条目内容做短 hash"""
+    """对条目内容做短 hash（v20.5.1 · T-16：md5 → sha256，截断保持 12 位）。
+
+    这是**持久键**：写进 .sync_state.json 当去重键。裸换算法会让存量
+    状态键全部失配、升级后首次同步把整本 MEMORY.md 重推一遍 —— 所以
+    配套 migrate_legacy_state_hashes 做幂等平移（见 sync_once）。
+    """
+    return hashlib.sha256(text.strip().encode()).hexdigest()[:12]
+
+
+def _legacy_hash_entry_md5(text: str) -> str:
+    """v20.5.0 及之前的旧算法，**只**供存量 .sync_state.json 迁移复算旧键。"""
     return hashlib.md5(text.strip().encode()).hexdigest()[:12]
+
+
+def migrate_legacy_state_hashes(state: dict, texts: list[str]) -> dict:
+    """把存量 md5 键平移成 sha256 键（仅限当前 MEMORY.md 里还对得上的条目）。
+
+    判据与取舍：
+      · 旧算法已知 → 对当前条目重算 md5 旧键 → 命中即把 memory_id 原值
+        平移到新键，存量条目升级后**零重推**；
+      · 对不上的键属于已删除条目的历史残留 → 丢弃（去重义务随条目消失
+        而终结；原文日后回归的代价是重推一条，可接受）；
+      · 已是新格式的键原样穿过 → 迁移对新状态是恒等操作，无需版本标记，
+        sync_once 每次无条件跑。
+    """
+    legacy_to_new = {_legacy_hash_entry_md5(t): hash_entry(t) for t in texts}
+    new_keys = set(legacy_to_new.values())
+    migrated = {}
+    for key, value in state.items():
+        if key in legacy_to_new:
+            migrated[legacy_to_new[key]] = value
+        elif key in new_keys:
+            migrated[key] = value
+    return migrated
 
 
 def parse_entries(content: str) -> list[tuple[str, str]]:
@@ -163,6 +195,9 @@ def sync_once() -> dict:
     content = MEMORY_MD.read_text()
     entries = parse_entries(content)
     state = load_state()
+    # v20.5.1（T-16）：去重键算法 md5 → sha256。存量 .sync_state.json 的
+    # 旧键在这里幂等平移，升级后首次同步不重推整本 MEMORY.md。
+    state = migrate_legacy_state_hashes(state, [t for _, t in entries])
 
     skipped, new, errors = 0, 0, 0
     for h, text in entries:

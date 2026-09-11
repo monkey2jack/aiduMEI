@@ -23,19 +23,17 @@ IGNITION_MAX = 8
 IGNITION_BOOST = 1.5
 
 
-def funnel_search(memory, query: str, user_id: str, limit: int = 10,
-                  enable_ignition: bool = True, bank_id: str = "default") -> dict:
-    """
-    搜索记忆 + Recall Funnel trace + Ignition。
+# ── 子步骤（v20.5.1 · T-13 圈复杂度整改）─────────────────────────────
+#
+# funnel_search 曾是 CC 41（radon F 级）的巨函数：候选池降级链、Ignition、
+# 文本去重、superseded 批量过滤、点火分融合、增益收敛全在一个函数体里。
+# 这里只做**换骨架**（与 scoring.py v20.4.1a 同款打法）：每个 Stage 一个
+# 可独立测试的函数，编排函数只负责流程组合与 trace 组装；判据、取字段
+# 顺序、stage 遥测键、返回值结构逐行未动。
 
-    返回 {results, trace: {stages, total_ms, final_count, has_ignition}}
-    """
-    start = time.time()
-    stages = []
-    ignited = []
-    remaining = []
 
-    # Stage 1: 候选池 — 扩大搜索
+def _fetch_candidate_pool(memory, query: str, user_id: str, bank_id: str, limit: int):
+    """Stage 1: 候选池 — 扩大搜索。返回 (candidates, stage)。"""
     t0 = time.time()
     try:
         # 🔴v20：默认域不下推 bank_id（存量向量 payload 无此字段，下推即清零），
@@ -58,36 +56,34 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     except Exception as e:
         logger.warning(f"候选池搜索失败: {e}")
         candidates = []
-    stages.append({"name": "candidate_pool", "count": len(candidates), "ms": int((time.time()-t0)*1000)})
+    stage = {"name": "candidate_pool", "count": len(candidates), "ms": int((time.time()-t0)*1000)}
+    return candidates, stage
 
-    if not candidates:
-        return {"results": [], "trace": {"stages": stages, "total_ms": int((time.time()-start)*1000), "final_count": 0, "has_ignition": False}}
 
-    # Stage 2: 🔥 Ignition — 高相似度记忆点火直达
-    if enable_ignition:
-        t0 = time.time()
-        try:
-            from .memory_ignition import ignition_filter
-            ign_result = ignition_filter(query, candidates, threshold=IGNITION_THRESHOLD, max_ignited=IGNITION_MAX)
-            ignited = ign_result["ignited"]
-            remaining = ign_result["remaining"]
-            stages.append({
-                "name": "ignition",
-                "ignited": len(ignited),
-                "remaining": len(remaining),
-                "threshold": IGNITION_THRESHOLD,
-                "ms": ign_result["stats"]["ms"],
-            })
-        except ImportError:
-            logger.debug("Ignition 模块不可用，跳过")
-            remaining = candidates
-    else:
-        remaining = candidates
+def _apply_ignition(query: str, candidates: list, enable_ignition: bool):
+    """Stage 2: 🔥 Ignition — 高相似度记忆点火直达。返回 (ignited, remaining, stage|None)。"""
+    if not enable_ignition:
+        return [], candidates, None
+    try:
+        from .memory_ignition import ignition_filter
+        ign_result = ignition_filter(query, candidates, threshold=IGNITION_THRESHOLD, max_ignited=IGNITION_MAX)
+        ignited = ign_result["ignited"]
+        remaining = ign_result["remaining"]
+        stage = {
+            "name": "ignition",
+            "ignited": len(ignited),
+            "remaining": len(remaining),
+            "threshold": IGNITION_THRESHOLD,
+            "ms": ign_result["stats"]["ms"],
+        }
+        return ignited, remaining, stage
+    except ImportError:
+        logger.debug("Ignition 模块不可用，跳过")
+        return [], candidates, None
 
-    if not remaining and not ignited:
-        return {"results": [], "trace": {"stages": stages, "total_ms": int((time.time()-start)*1000), "final_count": 0, "has_ignition": len(ignited) > 0}}
 
-    # Stage 3: 去重 — 相同 memory 文本去重，ignition 优先
+def _dedup_candidates(ignited: list, remaining: list):
+    """Stage 3: 去重 — 相同 memory 文本去重，ignition 优先。返回 (deduped_ignited, deduped_remaining, stage)。"""
     t0 = time.time()
     seen = set()
     deduped_ignited = []
@@ -109,53 +105,50 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
         if key not in seen:
             seen.add(key)
             deduped_remaining.append(item)
-    stages.append({
+    stage = {
         "name": "dedup",
         "ignited": len(deduped_ignited),
         "remaining": len(deduped_remaining),
         "ms": int((time.time()-t0)*1000),
-    })
+    }
+    return deduped_ignited, deduped_remaining, stage
 
-    # Stage 4: 时间衰减 — 仅对非 Ignition 记忆降权
-    t0 = time.time()
 
-    # Lethe v9.2.0: 批量获取 memory_states 状态
+def _load_superseded_ids(candidate_ids: list) -> set:
+    """Lethe v9.2.0: 批量获取 memory_states 状态（被取代集合）。失败按无取代降级。"""
     superseded_ids = set()
-    candidate_ids = [item.get("id") for item in (deduped_remaining + deduped_ignited) if item.get("id")]
-    if candidate_ids:
-        try:
-            # 批量获取被取代的状态 (from facts.db)
-            conn_facts = get_facts_conn()
-            placeholders = ",".join("?" for _ in candidate_ids)
-            states = conn_facts.execute(
-                f"SELECT memory_id FROM memory_states WHERE memory_id IN ({placeholders}) AND state = 'superseded'",
-                candidate_ids
-            ).fetchall()
-            superseded_ids = {row[0] for row in states}
-            conn_facts.close()
-        except Exception as e:
-            logger.debug(f"从数据库获取 lane 映射或状态失败: {e}")
+    if not candidate_ids:
+        return superseded_ids
+    try:
+        # 批量获取被取代的状态 (from facts.db)
+        conn_facts = get_facts_conn()
+        placeholders = ",".join("?" for _ in candidate_ids)
+        states = conn_facts.execute(
+            f"SELECT memory_id FROM memory_states WHERE memory_id IN ({placeholders}) AND state = 'superseded'",
+            candidate_ids
+        ).fetchall()
+        superseded_ids = {row[0] for row in states}
+        conn_facts.close()
+    except Exception as e:
+        logger.debug(f"从数据库获取 lane 映射或状态失败: {e}")
+    return superseded_ids
 
-    # 过滤掉已被取代的记忆 (Lethe v9.2.0)
-    filtered_remaining = []
-    for item in deduped_remaining:
+
+def _drop_superseded(items: list, superseded_ids: set) -> list:
+    """过滤掉已被取代的记忆 (Lethe v9.2.0)。"""
+    kept = []
+    for item in items:
         if item.get("id") in superseded_ids:
             logger.info(f"Lethe 过滤已取代记忆: {item.get('id', '')[:8]} '{item.get('memory', '')[:20]}'")
             continue
-        filtered_remaining.append(item)
+        kept.append(item)
+    return kept
 
-    filtered_ignited = []
-    for item in deduped_ignited:
-        if item.get("id") in superseded_ids:
-            logger.info(f"Lethe 过滤已取代记忆: {item.get('id', '')[:8]} '{item.get('memory', '')[:20]}'")
-            continue
-        filtered_ignited.append(item)
 
-    # Stage 4: 统一 5 维打分与时效衰减（委托 scoring.py 单一真源）
-    candidates_to_score = filtered_ignited + filtered_remaining
+def _fuse_ignition_scores(candidates_to_score: list) -> None:
+    """Stage 4 前半：Ignition 特征融合进入 score 供 scoring 引擎归一化。"""
     for item in candidates_to_score:
         if item.get("_ignited"):
-            # Ignition 特征融合进入 score 供 scoring 引擎归一化
             ign_score = item.get("_ignition_score", 0) or 0
             base_s = item.get("score", 0) or 0
             item["score"] = max(base_s, ign_score)
@@ -163,16 +156,9 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
             if isinstance(item["metadata"], dict):
                 item["metadata"]["is_ignited"] = True
 
-    ranked_candidates = score_and_rank_candidates(
-        query=query,
-        candidates=candidates_to_score,
-        user_id=user_id,
-        bank_id=bank_id,              # v20.2.4 F-15：此前断在这里
-        limit=limit * 2,
-    )
-    stages.append({"name": "unified_scoring", "count": len(ranked_candidates), "ms": int((time.time()-t0)*1000)})
 
-    # Stage 5: 最终排序与 Ignition 增益收敛
+def _finalize_ranking(ranked_candidates: list, limit: int):
+    """Stage 5: 最终排序与 Ignition 增益收敛。返回 (final, stage)。"""
     t0 = time.time()
     for item in ranked_candidates:
         if item.get("_ignited"):
@@ -186,7 +172,64 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
         item.pop("_decay", None)
         item.pop("_composite", None)
 
-    stages.append({"name": "final", "count": len(final), "from_ignition": sum(1 for f in final if f.get("_ignited")), "ms": int((time.time()-t0)*1000)})
+    stage = {"name": "final", "count": len(final), "from_ignition": sum(1 for f in final if f.get("_ignited")), "ms": int((time.time()-t0)*1000)}
+    return final, stage
+
+
+def funnel_search(memory, query: str, user_id: str, limit: int = 10,
+                  enable_ignition: bool = True, bank_id: str = "default") -> dict:
+    """
+    搜索记忆 + Recall Funnel trace + Ignition。
+
+    返回 {results, trace: {stages, total_ms, final_count, has_ignition}}
+    """
+    start = time.time()
+    stages = []
+
+    # Stage 1: 候选池 — 扩大搜索
+    candidates, stage = _fetch_candidate_pool(memory, query, user_id, bank_id, limit)
+    stages.append(stage)
+
+    if not candidates:
+        return {"results": [], "trace": {"stages": stages, "total_ms": int((time.time()-start)*1000), "final_count": 0, "has_ignition": False}}
+
+    # Stage 2: 🔥 Ignition — 高相似度记忆点火直达
+    ignited, remaining, stage = _apply_ignition(query, candidates, enable_ignition)
+    if stage is not None:
+        stages.append(stage)
+
+    if not remaining and not ignited:
+        return {"results": [], "trace": {"stages": stages, "total_ms": int((time.time()-start)*1000), "final_count": 0, "has_ignition": len(ignited) > 0}}
+
+    # Stage 3: 去重 — 相同 memory 文本去重，ignition 优先
+    deduped_ignited, deduped_remaining, stage = _dedup_candidates(ignited, remaining)
+    stages.append(stage)
+
+    # Stage 4: 时间衰减 — 仅对非 Ignition 记忆降权
+    t0 = time.time()
+
+    candidate_ids = [item.get("id") for item in (deduped_remaining + deduped_ignited) if item.get("id")]
+    superseded_ids = _load_superseded_ids(candidate_ids)
+
+    filtered_remaining = _drop_superseded(deduped_remaining, superseded_ids)
+    filtered_ignited = _drop_superseded(deduped_ignited, superseded_ids)
+
+    # Stage 4: 统一 5 维打分与时效衰减（委托 scoring.py 单一真源）
+    candidates_to_score = filtered_ignited + filtered_remaining
+    _fuse_ignition_scores(candidates_to_score)
+
+    ranked_candidates = score_and_rank_candidates(
+        query=query,
+        candidates=candidates_to_score,
+        user_id=user_id,
+        bank_id=bank_id,              # v20.2.4 F-15：此前断在这里
+        limit=limit * 2,
+    )
+    stages.append({"name": "unified_scoring", "count": len(ranked_candidates), "ms": int((time.time()-t0)*1000)})
+
+    # Stage 5: 最终排序与 Ignition 增益收敛
+    final, stage = _finalize_ranking(ranked_candidates, limit)
+    stages.append(stage)
 
     total_ms = int((time.time() - start) * 1000)
 

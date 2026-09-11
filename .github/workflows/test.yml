@@ -250,13 +250,19 @@ jobs:
           PY
       - name: 造一个假密钥，证明它进不了构建上下文
         # 前提反证：不是只读 .dockerignore 的文本，而是让 docker 自己说话。
+        # v20.5.1 根修（维护者审计新发现-1）：grep -c 无命中时**打印 0 但退出码为 1**，
+        # 原先的 `|| echo 0` 于是再补一个 0，leaked 变成 "0\n0"，永远 != "0" ——
+        # 这道门自 4a2c4b9（08-28）诞生起无论泄不泄漏都必红；09-09 它随新触发面
+        # 第一次真正运行（run #6）即红，随后整个 workflow 被禁用、次日正式版零门禁
+        # 发布。修复：容器内 `|| true` 把 grep 的计数与退出码解耦；docker run 自身
+        # 失败（镜像没建成）不再被 `|| echo 0` 吞掉——构建/运行故障必须红，不许绿。
         run: |
           printf 'AIDUMEM_API_TOKEN=ci-fake-not-a-real-secret\n' > .env
           printf 'ci-fake-llm-key\n' > .llm_key
           docker build -t aidumei-ctx-probe -f Dockerfile . --target builder 2>/dev/null \
             || docker build -t aidumei-ctx-probe -f Dockerfile .
           leaked=$(docker run --rm --entrypoint sh aidumei-ctx-probe -c \
-            'ls -a /app 2>/dev/null | grep -cE "^\.env$|^\.llm_key$"' || echo 0)
+            'ls -a /app 2>/dev/null | grep -cE "^\.env$|^\.llm_key$" || true')
           rm -f .env .llm_key
           if [ "$leaked" != "0" ]; then
             echo "❌ 镜像层里找到了 $leaked 个密钥文件"

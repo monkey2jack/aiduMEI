@@ -251,6 +251,12 @@ def register_health_routes(app: FastAPI) -> None:
                 None if probes["runtime_paths"]["data_dir_writable"]
                 else "数据目录不可写：%s —— 首次写入会以 readonly database 失败"
                      % probes["runtime_paths"]["data_dir"])
+            # v20.5.1（T-10 · DEPLOY_DOCKHOLD 记录在案的坑上门）：DATA_DIR 只搬
+            # SQLite，mem0 配置里的 qdrant path / history_db_path 不会被跟着重写
+            # —— 脱钩时向量库写进旧位置且无症状。「能写」上面查了，这里查
+            # 「写对地方」。只告警不拒启（诚实暴露，由运维裁决）。
+            from ducky.mem0_runtime import vector_path_consistency as _vpc
+            probes["runtime_paths"]["path_consistency"] = _vpc()
         except Exception as _rp_exc:
             probes["runtime_paths"] = {"error": str(_rp_exc)[:120]}
 
@@ -507,6 +513,12 @@ def register_health_routes(app: FastAPI) -> None:
         _rp_warn = (probes.get("runtime_paths") or {}).get("writable_warning")
         if _rp_warn:
             warnings.append(_rp_warn)
+        # v20.5.1（T-10）：路径一致性 WARNING 同型上 warnings 面。
+        # 绝对路径只进授权视图——匿名面经 _public_view 白名单只留
+        # data_dir_writable 布尔，本字段整体不出现在匿名载荷里。
+        _pc_warn = ((probes.get("runtime_paths") or {}).get("path_consistency") or {}).get("warning")
+        if _pc_warn:
+            warnings.append(_pc_warn)
         try:
             from ducky.pipeline.memory_gate import entity_keywords_status
             ek = entity_keywords_status()

@@ -106,6 +106,10 @@ _OUTBOUND_THIRD_PARTY = {
         ":186 的 Bearer 是网关侧的供应商 key，地址来自 :191 的 gateway.base_url，"
         "网关只能取自 ROUTES 白名单，本服务不在其中）。"
         "与本服务的 AIDUMEM_API_TOKEN 无关，永远撞不上本服务门禁。",
+    "scripts/push_gate.sh":
+        "出站只打 api.github.com（第五道关：查 Tests workflow 是否 active；"
+        "urllib.request.urlopen 匿名 GET，无任何凭据头）。GitHub 公开 API，"
+        "不是本服务，永远撞不上本服务门禁。",
 }
 
 
