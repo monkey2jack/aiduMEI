@@ -66,7 +66,7 @@ The public allow-list intentionally excludes deep diagnostics. With a valid API 
 |---|---|---|
 | Runtime | `modules`, `probes`, `service`, `warnings` | Complete diagnostic state and operator hints. |
 | Scope | `probes.default_bank_id`, `probes.memory_banks_ok` | Active default memory bank and schema status. |
-| Paths | `probes.runtime_paths` | Actual `BASE_DIR`, `DATA_DIR`, `LOG_DIR`, `facts_db`, writability, and package-escape detection. |
+| Paths | `probes.runtime_paths` | Actual `BASE_DIR`, `DATA_DIR`, `LOG_DIR`, `facts_db`, writability, package-escape detection, and `path_consistency` — a WARNING when the mem0 config's `vector_store.config.path` / `history_db_path` do not resolve under the effective `AIDUMEM_DATA_DIR` (changing that variable relocates only SQLite; see docs/DEPLOY_DOCKHOLD.md). |
 | Recall | `probes.vector_backend*`, `probes.local_embed`, `probes.rerank_*`, `probes.recall_verdict_threshold_effective` | Which recall legs are configured, reachable, or degraded. |
 | Gears | `probes.engine_gear`, `probes.llm_gear`, `probes.engine_mode_policy` | Active gear, breaker state, thresholds, cooldown, and policy-disabled legs. |
 | Capacity | `probes.facts_active_count`, `probes.facts_watermark_effective`, `probes.wal_total_bytes`, `probes.process_rss_mb`, `probes.process_max_rss_mb`, `probes.process_open_fds`, `probes.process_threads` | Fact size, WAL recovery pressure, and process resource pressure. |

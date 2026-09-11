@@ -262,7 +262,7 @@ FastAPI / MCP contract ── relevance gate ── recall funnel
        └─ WAL + governance + evolution ledgers
 ```
 
-The host owns short-term conversation state; aiduMEI owns durable long-term memory. Cloud and local vector legs are independent, while deterministic extraction and FTS remain available without model credentials. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (v14-era historical snapshot, archived under docs/ since v20.4.1) for module boundaries and [docs/HEALTH.md](docs/HEALTH.md) for probe semantics.
+The host owns short-term conversation state; aiduMEI owns durable long-term memory. Cloud and local vector legs are independent, while deterministic extraction and FTS remain available without model credentials. See [docs/archive/ARCHITECTURE.md](docs/archive/ARCHITECTURE.md) (v14-era historical snapshot, archived under docs/archive/ since v20.5.1) for module boundaries and [docs/HEALTH.md](docs/HEALTH.md) for probe semantics.
 
 Key capabilities include relevance-gated recall, tidal write coalescing, time-aware decay, verbatim storage, code-impact analysis, feedback-driven retrieval, persona memory, conflict resolution, skill crystallization and multi-agent federation. The release history belongs in [CHANGELOG.md](CHANGELOG.md), not in this deployment entry page.
 
@@ -388,9 +388,9 @@ All five rows — Total cases, Clean dev machine, Basic install path, Sandbox an
 pip install -r requirements.txt -r requirements-dev.txt
 pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
-pytest tests/ -q -rs | tail -1                                 # no host: 1876 passed, 12 skipped
-HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1888 passed
-HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1876 passed, 12 skipped
+pytest tests/ -q -rs | tail -1                                 # no host: 1981 passed, 12 skipped
+HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 1993 passed
+HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 1981 passed, 12 skipped
 
 # Basic source-install path: use a separate clean venv; measured 2026-09-08
 pip install -r requirements.txt -r requirements-dev.txt
@@ -401,8 +401,8 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 177
 
 | Dimension | Status |
 |---|---|
-| Total cases | **1888** (measured via `pytest --collect-only`, 2026-09-10, v20.5.0 formal-remediation tree) |
-| Clean dev machine | 1876 passed · **12 skipped** — **measured 2026-09-10** (v20.5.0 formal-remediation tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **1993** (measured via `pytest --collect-only`, 2026-09-11, v20.5.1 tree) = **1787 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
+| Clean dev machine | 1981 passed · **12 skipped** — **measured 2026-09-11** (v20.5.1 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
 | Sandbox on the production box | 1877 passed · **11 skipped** — **measured 2026-09-10** (v20.5.0 formal this tree 6781c7d, separate sandbox venv on the production box: host source present, no `.env`, without ruff/mcp/fastembed; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09** (v20.5a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
@@ -411,12 +411,12 @@ pytest tests/ -q -rs | tail -1                                 # basic path: 177
 | Platform premise | The suite is maintained for Linux/macOS (POSIX): the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms. Windows is not a full-suite platform |
 | External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
 
-**Why report both 1876 and 1821**: the first is the 2026-09-10 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only, this tree). With the complete environment, model cache and public LoCoMo dataset present, both host states produce:
+**Why report both 1981 and 1821**: the first is the 2026-09-11 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only, this tree). With the complete environment, model cache and public LoCoMo dataset present, both host states produce:
 
 ```text
-no host: 1876 passed, 12 skipped
-with host: 1888 passed
-forced off: 1876 passed, 12 skipped
+no host: 1981 passed, 12 skipped
+with host: 1993 passed
+forced off: 1981 passed, 12 skipped
 ```
 
 On a production host where other optional axes are absent, the bare command **actually prints 1877 passed, 11 skipped** (measured 2026-09-10 on the v20.5.0 formal tree 6781c7d in an isolated sandbox on the production box, no `.env`, isolated HOME, public dataset reused read-only; the 11 are `ruff` ×3, `mcp` ×7 and an empty standby-model cache ×1). A number without its environment and date is not a reproducible claim.

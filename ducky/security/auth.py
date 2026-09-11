@@ -38,6 +38,7 @@ ducky.security.auth — 控制台凭据与会话的单一真相源（v19.4.1 · 
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import hmac
 import logging
@@ -323,3 +324,41 @@ def active_session_count() -> int:
     with _session_lock:
         _purge_expired_locked(now)
         return len(_sessions)
+
+
+# ── 请求级 token 指纹（v20.5.1 · T-07 caller↔凭据轻量绑定）──────────────
+#
+# 问题：`_require_caller` 把关的 caller_agent_id 是自报参数，与 Bearer
+# token 无绑定 —— 持合法 token 者可自报任意 agent_id。
+# 解法（轻量版）：HTTP 鉴权通过时把 token 的 sha256 指纹挂进请求上下文
+# （contextvar，随请求任务隔离，不跨请求泄漏）；联邦层 _require_caller
+# 仅在配置了 AIDUMEI_CALLER_BINDINGS 且该指纹已登记时强制校验白名单。
+# 指纹只在进程内流转，不落盘、不进响应 —— 明文 token 不出鉴权层。
+
+_REQUEST_TOKEN_FP: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "aidumei_request_token_fp", default=""
+)
+
+#: 指纹 = sha256(token) 的前 16 位十六进制（64 bit）。它只是 bindings 表的
+#: 查表键，不是抗碰撞凭证 —— 64 bit 对「同一张配置表内的键」绰绰有余。
+TOKEN_FINGERPRINT_LEN = 16
+
+
+def fingerprint_token(token: str) -> str:
+    """token 的对外标识：sha256 十六进制前 16 位（AIDUMEI_CALLER_BINDINGS 的键）。"""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:TOKEN_FINGERPRINT_LEN]
+
+
+def set_request_token_fingerprint(token: str) -> None:
+    """鉴权中间件在 Bearer / X-API-Token 通过时调用（session cookie 不挂指纹）。"""
+    if token:
+        _REQUEST_TOKEN_FP.set(fingerprint_token(token))
+
+
+def clear_request_token_fingerprint() -> None:
+    _REQUEST_TOKEN_FP.set("")
+
+
+def current_request_token_fingerprint() -> str:
+    """本请求的 token 指纹；未带 Bearer（或门禁未启用）时为空串。"""
+    return _REQUEST_TOKEN_FP.get()

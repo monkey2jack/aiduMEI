@@ -93,3 +93,29 @@ if [[ -n "${GATE_SKIPPED:-}" ]]; then
 else
   echo "  ── 四道关全过，可以推 ──"
 fi
+
+# v20.5.1（维护者审计新发现-1 · 第五道关：线上门禁必须真的在场）
+# 2026-09-09 docker-context-secrets 红 → 整个 Tests workflow 被手动禁用 →
+# 09-10 正式版在零 CI 门禁下发布，且仓内无任何记录。本地四道关全绿，
+# 抵不掉「线上门禁不存在」。推送前必须确认 Tests workflow 处于 active；
+# 查询失败按失败处理（反正下一步 git push 也需要网络到 GitHub）。
+WF_STATE=$("$PY" - <<'EOF'
+import json, urllib.request
+try:
+    with urllib.request.urlopen(
+        "https://api.github.com/repos/monkey2jack/aiduMEI/actions/workflows", timeout=15
+    ) as r:
+        data = json.load(r)
+    for wf in data.get("workflows", []):
+        if wf.get("path") == ".github/workflows/test.yml":
+            print(wf.get("state", "unknown")); break
+    else:
+        print("missing")
+except Exception:
+    print("unreachable")
+EOF
+)
+if [[ "${WF_STATE}" != "active" ]]; then
+  fail "第五道关未过：Tests workflow 当前状态=${WF_STATE}（应为 active）。禁用它 = 拆掉全部线上门禁；先去 GitHub 恢复启用，并把禁用原因写进 CHANGELOG。"
+fi
+echo "  ✅ 第五道关：Tests workflow active（线上门禁在场）"

@@ -636,6 +636,120 @@ def _read_resolved_mem0_config() -> dict:
     return _resolve_api_keys(cfg)
 
 
+def _mem0_builtin_default_paths() -> tuple[str, str]:
+    """mem0 内建默认的（本地 Qdrant path, history_db_path）——配置缺省时真生效的值。
+
+    探针实读默认值而不是抄常量：mem0 升级改了默认时探针跟着走，不让
+    「以为的默认」与「运行时的默认」裂成两个真相源。读不到（mem0 未装、
+    构造签名变了）才回落 mem0ai 2.0.20 实测值——那两个默认本来就在
+    DATA_DIR 之外，回落不改变判定方向。
+    """
+    qdrant_default, history_default = "/tmp/qdrant", os.path.expanduser("~/.mem0/history.db")
+    try:
+        from mem0.configs.base import MemoryConfig
+        history_default = str(MemoryConfig().history_db_path)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    try:
+        from mem0.vector_stores.configs import VectorStoreConfig
+        vs_cfg = VectorStoreConfig().config
+        path = vs_cfg.get("path") if isinstance(vs_cfg, dict) else getattr(vs_cfg, "path", None)
+        if path:
+            qdrant_default = str(path)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    return qdrant_default, history_default
+
+
+def vector_path_consistency() -> dict:
+    """mem0 向量库/历史库路径 vs AIDUMEM_DATA_DIR 生效值的一致性探针（v20.5.1 · T-10）。
+
+    立案背景（docs/DEPLOY_DOCKHOLD.md 记录在案的坑）：改 ``AIDUMEM_DATA_DIR``
+    只重定向 SQLite 面，mem0 配置里的 ``vector_store.config.path`` 与
+    ``history_db_path`` 是独立配置项，不会被跟着重写。两者不指向同一持久根时，
+    向量库写进旧位置且**没有任何症状**——服务正常起、接口正常答，容器重建
+    后数据消失。runtime_paths 探针此前只查「能写」（data_dir_writable），
+    本探针查「写对地方」。只观测、不拒启：不一致给 WARNING，由运维裁决。
+
+    判据（可复算）：
+      · 相对路径按**进程 CWD** 解析——与 qdrant-client / sqlite 运行时的真实
+        解析一致（模板里的 ``./data/...`` 就是这个语义，Dockhold 上它被解析到
+        /app/data 正是事故原形）；
+      · realpath 后等于 DATA_DIR 或位于其下 → 一致；
+      · 远端 Qdrant（配了 host/url、无本地 path）不在射程——那是部署方显式
+        指定的外部服务（与 _assert_vector_store_inside_sandbox 同一边界）；
+      · 配置缺省的字段按 mem0 内建默认路径判定——缺省不等于不写别处。
+
+    返回 dict，由 /health 挂到 probes.runtime_paths.path_consistency：
+    status ∈ ok / warning / skipped（无配置）/ error（配置不可读）。
+    永不抛异常——探针失败不许拖垮 /health。
+    """
+    try:
+        cfg = _read_resolved_mem0_config()
+    except Mem0NotConfiguredError as exc:
+        return {"status": "skipped", "reason": exc.reason,
+                "checks": {}, "mismatched": [], "warning": None}
+    except (OSError, ValueError, TypeError) as exc:
+        # 配置损坏/不可读是部署故障：诚实报 error，不冒充 ok，也不拖垮 /health
+        return {"status": "error", "reason": str(exc)[:120],
+                "checks": {}, "mismatched": [], "warning": None}
+    if not isinstance(cfg, dict):
+        return {"status": "error", "reason": "config_root_not_object",
+                "checks": {}, "mismatched": [], "warning": None}
+
+    from ducky.utils import DATA_DIR  # 调用时读：/reload 与测试 monkeypatch 都取生效值
+    data_root = os.path.realpath(DATA_DIR)
+
+    vs_sec = cfg.get("vector_store")
+    vs_cfg = vs_sec.get("config") if isinstance(vs_sec, dict) else {}
+    if not isinstance(vs_cfg, dict):
+        vs_cfg = {}
+    qdrant_default, history_default = _mem0_builtin_default_paths()
+    items: list[dict] = []
+    if vs_cfg.get("path"):
+        items.append({"key": "vector_store.config.path", "path": str(vs_cfg["path"]),
+                      "origin": "configured"})
+    elif vs_cfg.get("host") or vs_cfg.get("url"):
+        items.append({"key": "vector_store.config.path", "path": None,
+                      "origin": "remote"})
+    else:
+        items.append({"key": "vector_store.config.path", "path": qdrant_default,
+                      "origin": "mem0_builtin_default"})
+    if cfg.get("history_db_path"):
+        items.append({"key": "history_db_path", "path": str(cfg["history_db_path"]),
+                      "origin": "configured"})
+    else:
+        items.append({"key": "history_db_path", "path": history_default,
+                      "origin": "mem0_builtin_default"})
+
+    mismatched: list[str] = []
+    for item in items:
+        raw = item["path"]
+        if raw is None:  # 远端向量库：部署方显式指定的外部服务，不在本探针射程
+            item["under_data_dir"] = None
+            continue
+        real = os.path.realpath(os.path.expanduser(raw))
+        item["under_data_dir"] = real == data_root or real.startswith(data_root + os.sep)
+        if not item["under_data_dir"]:
+            mismatched.append(item["key"])
+
+    out = {
+        "status": "ok",
+        "checks": {item["key"]: item for item in items},
+        "mismatched": mismatched,
+        "warning": None,
+    }
+    if mismatched:
+        out["status"] = "warning"
+        out["warning"] = (
+            "mem0 配置里的 %s 不在 AIDUMEM_DATA_DIR 生效值（%s）之下：改 DATA_DIR "
+            "只搬 SQLite，向量库/历史库会写进旧位置且无症状——把 mem0 配置的这两项 "
+            "一并指向持久盘（见 docs/DEPLOY_DOCKHOLD.md）"
+            % ("、".join(mismatched), data_root)
+        )
+    return out
+
+
 def _is_placeholder_mem0_config(cfg: dict) -> bool:
     """只把完整的生产形状样例配置认作「从未配置」。
 
