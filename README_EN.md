@@ -49,6 +49,25 @@ python scripts/e2e_smoke.py --json                                              
 
 Container deployment: [docs/DEPLOY_DOCKHOLD.md](docs/DEPLOY_DOCKHOLD.md). The full agent-side runbook (acceptance probes, backups, maintenance): [AGENTS.md](AGENTS.md).
 
+## 📦 Load & consumption — both sizes, measured and on the table
+
+> How heavy is it to deploy? **Depends on the gear you pick.** (2-core 3.5GB cloud box, measured 2026-08-27)
+
+| Dimension | ☁️ Cloud gear (`cloud`) | ⚙️ Auto gear (`auto`, default) | 🔋 Local gear (`local`) |
+|---|---|---|---|
+| **Resident memory** | **~280 MB** | **~430 MB** | ~430 MB |
+| **Dependency disk** | ~275 MB | ~353 MB + 91 MB model | same as auto |
+| **During an outage** | no spare; honestly reports `degraded` | **auto-downshift keeps running** | no external dependency at all |
+| **Token burn** | normal | normal (zero during outages) | **always zero** |
+| **Keys needed** | yes | yes (without them it just runs local) | **none** |
+
+**Shared**: 2 CPU cores suffice, idle < 1%; `/search` 0.14~0.23s per call; cold start 5.2s; a thousand memories cost ~13 MB of vectors + a few hundred KB of SQLite; zero frontend dependencies; Python 3.10–3.12.
+
+**Where the 150 MB goes, and whether it can be shaved** (measured, not estimated): the onnxruntime library alone (imported, model not loaded) **75 MB**; the bge-small-zh-v1.5 session & weights **~122 MB**; the measured two-gear delta **150 MB** (components measured separately share pages with the baseline — both figures honestly shown, no forced arithmetic). We tried to shrink it: `threads=1`, ONNX arena on-demand allocation, `malloc_trim`, `MALLOC_ARENA_MAX=2` — **all four knobs measurably did nothing**; the model is already the smallest Chinese-capable option in the fastembed catalog (the next-smallest multilingual option is 2.4× its size). So instead of pretending to optimize, we gave you the switch: **don't want the spare? Pick the cloud gear and the 150 MB costs you nothing.**
+
+> **Why the spare is resident**: dual indexing computes a local vector for *every* write — load the model only when the outage hits, and nothing written so far is recallable. The spare is stocked in advance, not found on the spot.
+> The rest of the lightness is deliberate: embedded on-disk vector store (no separate process/port), no GPU, a relevance gate that blocks chit-chat from ever triggering retrieval, SQLite+FTS5 underneath. In one line: **cloud gear runs on 1 core / 1 GB; auto and local gears want 2 cores / 2 GB.**
+
 ## The console: memory is not a black box
 
 Open `http://127.0.0.1:8767/ui` after starting: browse/search/tune memories, health probes and gear state, federation and evolution, retrieval-quality panel, **one-click memory dossier export** (Markdown, partitioned by epistemic origin, inferred entries marked "unverified").
@@ -84,10 +103,6 @@ Bearer token (`AIDUMEM_API_TOKEN`) + console password (PBKDF2) + injection guard
 | `AIDUMEM_CONFIG_READONLY` | Read-only demo mode for console config | 0 |
 
 The full registry lives in `ducky/env_registry.py` (code is the source of truth; typos trigger a startup warning).
-
-## Measured resources (registered in `ducky/doc_facts.py` — change numbers there first)
-
-Cloud gear idles at ~280 MB; auto/local at ~430 MB — a measured delta of 150 MB (onnxruntime 75 MB + bge-small-zh session & weights ~122 MB, etc.). Cold start 5.2s; `/search` 0.14–0.23s per call (2-core 3.5GB production-grade box, measured 2026-08).
 
 ## Capability map (one table, no stories)
 
