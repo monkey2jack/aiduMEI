@@ -247,7 +247,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
                 "error": f"{type(ue).__name__}: {str(ue)[:200]}",
             }
             add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
-            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id)
+            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id, infer=infer)
             action = "new"
     else:
         # Step 2: 容量检查
@@ -269,7 +269,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
         # Step 3: 写入
         # 🔴2：主链写入路径必须登记 salience + FTS 索引，否则新记忆全文搜不到、热度不累计。
         add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
-        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id)
+        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id, infer=infer)
 
     elapsed_ms = int((time.time() - start) * 1000)
     details["ms"] = elapsed_ms
@@ -281,7 +281,8 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
     }
 
 
-def _index_after_add(add_result, user_id: str, category: str | None = None, bank_id: str = "default") -> None:
+def _index_after_add(add_result, user_id: str, category: str | None = None, bank_id: str = "default",
+                     infer: bool = True) -> None:
     """🔴2：mem0.add() 成功后登记 salience + 写 FTS 索引。
 
     正常新增路径此前只调 memory.add()，既不注册显著性、也不写全文索引，
@@ -291,6 +292,24 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
     """
     if add_result is None:
         return
+    # v21.0 收口（生产用户审计 🔴-1）：出身打标落在本登记点——layer1 包装器吞掉
+    # mem0 的 results，路由层拿不到 ref。infer=True（LLM 蒸馏经手）→ reasoned；
+    # infer=False（确定性直写）→ user_provided。失败静默降级不阻断写入。
+    try:
+        from ducky.epistemic import stamp_memory_refs
+        _refs = [
+            r.get("id") or r.get("memory_id")
+            for r in (add_result if isinstance(add_result, list)
+                      else (add_result.get("results") if isinstance(add_result, dict) else []))
+            if isinstance(r, dict)
+        ]
+        stamp_memory_refs(
+            [r for r in _refs if r],
+            "reasoned" if infer else "user_provided",
+            user_id=user_id, bank_id=bank_id, source="add:layer1",
+        )
+    except Exception as e:
+        logger.debug(f"epistemic sidecar 打标跳过: {e}")
     try:
         from ducky.mem0_runtime import register_salience_for_add
         register_salience_for_add(add_result, user_id=user_id, bank_id=bank_id)
@@ -445,13 +464,26 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
             if has_replaces or is_polar_flip:
                 relation = "replaces"
 
-            # 4. 保存演化关系到 facts.db
+            # 4. 保存演化关系到 facts.db（v21 F2：随带溯源三件套——
+            #    读 origin_context；未迁移库（无列）如实退回旧五列写法）
+            from ducky.origin_context import get_origin
+            _oa, _os, _ot = get_origin()
             conn = get_facts_conn()
-            conn.execute(
-                "INSERT INTO knowledge_evolution (source_id, target_id, relation_type, confidence, reason) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (old_id, new_id, relation, sim, reason)
-            )
+            _ke_cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(knowledge_evolution)").fetchall()}
+            if "origin_agent" in _ke_cols:
+                conn.execute(
+                    "INSERT INTO knowledge_evolution (source_id, target_id, relation_type, confidence, reason,"
+                    " origin_agent, origin_session_id, origin_turn) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (old_id, new_id, relation, sim, reason, _oa, _os, _ot)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO knowledge_evolution (source_id, target_id, relation_type, confidence, reason) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (old_id, new_id, relation, sim, reason)
+                )
 
             # 5. 如果是 replaces，将旧记忆的状态标记为 superseded
             if relation == "replaces":

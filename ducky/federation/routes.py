@@ -396,6 +396,7 @@ def register_federation_routes(app: FastAPI) -> None:
             dedup=dedup,
             valid_from=valid_from,
             valid_to=valid_to,
+            via_federation=True,  # v21.0 收口：联邦路由=外部引入，出身打 referenced
         )
 
     # ── 广播与感知 ────────────────────────────────

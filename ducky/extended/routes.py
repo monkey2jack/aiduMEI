@@ -106,6 +106,9 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
             + ")",
             (category, key, value, now, now, *_scope_vals))
         fid = cur.lastrowid or 0
+        # 🏷️ v21 F1：AI 自我认知写入补打 reasoned（未迁移库如实跳过）
+        from ducky.epistemic import stamp_epistemic
+        stamp_epistemic(db, fid, "ai-self")
         # 📒 事件账本（v19.4.0 🟡-D）：AI 自我认知写入留痕，同事务
         try:
             from ducky.event_ledger import content_hash, record_event

@@ -148,6 +148,14 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     # 拼接，不含任何请求数据；列名无法走 ? 参数化。人工核对：ducky/schema_bootstrap.py:172。
     ("ducky/schema_bootstrap.py", "col"),
     ("ducky/schema_bootstrap.py", "ddl"),
+    # v21 preview：scope_clause() 产出的 canonical 片段拼接（结构性常量，无请求数据）
+    ("ducky/dossier.py", "frag"),
+    ("ducky/routes_knowledge.py", "frag"),
+    # v21.0 收口：scoring sidecar 批量查询的 IN 占位符拼接（结构性，无请求数据）
+    ("ducky/scoring.py", "placeholders"),
+    # v21 preview：dossier evolve 段计数查询的表名插值——三个表名全是本文件
+    # 内硬编码字面量（evolve_queries/feedback/adjustments），无任何外部输入
+    ("ducky/dossier.py", "table"),
     ("ducky/bank_contract.py", "column"), ("ducky/bank_contract.py", "ddl"),
     ("ducky/bank_contract.py", "table"),
     ("ducky/checkpoint.py", "placeholders"),
@@ -309,6 +317,14 @@ _MIGRATION_LEDGER = {
     ("ducky/schema_bootstrap.py", "CREATE", "fact_entities"),
     ("ducky/schema_bootstrap.py", "CREATE", "fact_events"),
     ("ducky/schema_bootstrap.py", "CREATE", "facts"),
+    # v21 preview：认知治理总批次（additive-only；knowledge_evolution 兜底建表与
+    # utils.py:490 同一基线结构，防换库路径/新库场景下 ALTER 落空）
+    ("ducky/schema_bootstrap.py", "ALTER", "knowledge_evolution"),
+    ("ducky/schema_bootstrap.py", "CREATE", "knowledge_evolution"),
+    ("ducky/schema_bootstrap.py", "CREATE", "reflection_candidates"),
+    ("ducky/schema_bootstrap.py", "CREATE", "retrieval_weights"),
+    # v21.0 收口（生产用户审计 🔴-1）：mem0 腿出身 sidecar
+    ("ducky/schema_bootstrap.py", "CREATE", "memory_epistemic"),
     ("ducky/self_edit.py", "CREATE", "memory_edits"),
     ("ducky/skill_crystallizer.py", "ALTER", "skill_crystals"),
     ("ducky/skill_crystallizer.py", "CREATE", "skill_crystals"),

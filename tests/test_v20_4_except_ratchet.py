@@ -44,7 +44,7 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 632  # 2026-09-10 v20.5.0 preview：+1 crud /update 谱系记录降级钩子（用户审计 🟡-1 整改，lineage 失败不拖垮 /update 主路径，ledger/governance 同型）
+_BASELINE = 651  # v21.0 收口：+4 schema v6 迁移容错 +1 §16 钩子 +9 dossier 只读容错 +2 dossier 域拆分/sidecar 容错 +1 scoring sidecar 批量加载 +2 add.py 主链路打标降级钩子
 # 2026-09-10 v20.5.0 正式版：+5 均用户审计整改的「降级钩子/迁移容错」——
 # wal_engine.py×2（DELETE 终链同事务留痕 ×2 路径，失败不拖垮删除主路径）、
 # refine_memory.py×1（回滚终链同型）、memory_lineage.py×1（UNIQUE 索引存量

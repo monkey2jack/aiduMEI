@@ -445,6 +445,8 @@ def _score_one_candidate(
     type_map: Dict[str, str],
     memory_type_filter: Optional[str],
     gate_on: bool,
+    epistemic_mult: Optional[Dict[str, float]] = None,
+    epi_map: Optional[Dict[str, str]] = None,
 ) -> tuple:
     """对单条候选算五维分、过六型/证据两道闸门，并原地写回分数字段。
 
@@ -480,10 +482,40 @@ def _score_one_candidate(
     base_score = _hybrid_base_score(w, vec_s, bm25_s, time_s, reliability_s, heat_s)
     base_score = _fact_type_boost(base_score, is_fact_query, mtype)
 
+    # v21 F1：认知出身乘数（零证据条目已在上方闸门出局；缺列/未知值 ×1.00 零变化）
+    epi_mult = _epistemic_factor(item, epistemic_mult, epi_map)
+    if epi_mult != 1.0:
+        base_score = round(base_score * epi_mult, 4)
+
     item["_hybrid_score"] = round(base_score, 4)
+    item["_epistemic_mult"] = epi_mult
     item["_time_decay"] = round(time_s, 4)
     item["memory_type"] = mtype
     return item, False
+
+
+def _epistemic_factor(item: dict, multipliers: Dict[str, float],
+                      epi_map: Optional[Dict[str, str]] = None) -> float:
+    """v21 F1：按候选的 epistemic_mode 查有界乘数。
+    查找顺序：facts 列（item.epistemic_mode）→ sidecar（epi_map，
+    键构造与类型账本同一点 memory_type_ref）→ ×1.00。
+    缺列 / None / 未登记值一律 1.00——存量行与未迁移库的排序行为
+    与 v20.5.1 逐字一致（零回归铁律）。"""
+    if not multipliers:
+        return 1.0
+    mode = item.get("epistemic_mode")
+    if (not mode or not isinstance(mode, str)) and epi_map:
+        from ducky.memory_types import memory_type_ref
+        mode = epi_map.get(memory_type_ref(item)) or ""
+    if not mode or not isinstance(mode, str):
+        return 1.0
+    try:
+        val = float(multipliers.get(mode, 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    if not (0.0 <= val <= 2.0):  # 与 load 侧同一有限性闸门
+        return 1.0
+    return val
 
 
 def _load_type_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[str, str]:
@@ -498,6 +530,35 @@ def _load_type_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[s
     except Exception as e:
         logger.debug(f"批量查询 memory_types 跳过: {e}")
     return type_map
+
+
+def _load_epi_map(candidates: List[dict]) -> Dict[str, str]:
+    """v21.0 收口（生产用户审计 🔴-1）：sidecar memory_epistemic 批量加载——
+    mem0 主链路腿的出身。键的构造与类型账本同一点（memory_type_ref），
+    同一纪律：单次 SQL 批量加载，零 N+1；表不在（未迁移库）如实空表。"""
+    epi_map: Dict[str, str] = {}
+    try:
+        from ducky.memory_types import memory_type_ref
+        from ducky.utils import get_facts_conn
+        refs = [r for r in (memory_type_ref(it) for it in candidates) if r]
+        if not refs:
+            return epi_map
+        conn = get_facts_conn()
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "memory_epistemic" not in tables:
+                return epi_map
+            placeholders = ",".join("?" for _ in refs)
+            for ref, mode in conn.execute(
+                    f"SELECT memory_ref, epistemic_mode FROM memory_epistemic "
+                    f"WHERE memory_ref IN ({placeholders})", refs):
+                epi_map[ref] = mode
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug(f"批量查询 memory_epistemic 跳过: {e}")
+    return epi_map
 
 
 def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
@@ -630,11 +691,17 @@ def score_and_rank_candidates(
     # v20.2.4：开关在循环外读一次（每条候选读 env 是白烧）
     _type_decay_on = type_decay_enabled()
 
+    # v21 F1：epistemic 乘数同样循环外读一次（env 可配，非法已 fail-closed）
+    from ducky.epistemic import load_epistemic_multipliers
+    _epistemic_mult = load_epistemic_multipliers()
+
     # 1. 批量查询 Salience 记录（0 N+1）
     salience_map = get_batch_salience_records(_candidate_memory_ids(candidates))
 
     # 2. 批量查询 Memory Types（单次 SQL 批量加载，彻底消除 N+1 数据库往返）
     type_map = _load_type_map(candidates, user_id, bank_id)
+    # v21.0 收口：sidecar 出身同纪律批量加载（mem0 主链路腿）
+    epi_map = _load_epi_map(candidates)
 
     scored: List[dict] = []
     _gate_on = _evidence_gate_on()
@@ -645,7 +712,7 @@ def score_and_rank_candidates(
             w=w, now_ts=now_ts, is_fact_query=is_fact_query,
             type_decay_on=_type_decay_on, salience_map=salience_map,
             type_map=type_map, memory_type_filter=memory_type_filter,
-            gate_on=_gate_on,
+            gate_on=_gate_on, epistemic_mult=_epistemic_mult, epi_map=epi_map,
         )
         if _filtered_by_gate:
             _evidence_filtered += 1

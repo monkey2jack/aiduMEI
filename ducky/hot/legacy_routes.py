@@ -36,6 +36,7 @@ from ducky.hot.legacy_helpers import (
 
 logger = logging.getLogger("aiduMEM.legacy.routes")
 
+
 def register_legacy_routes(app):
     """把 §6-§10 的全部 22 个端点注册到 FastAPI app 上"""
 
@@ -155,6 +156,9 @@ def register_legacy_routes(app):
             "SELECT id, version FROM facts WHERE agent_id=? AND user_id=? AND bank_id=? AND category=? AND fact_key=?",
             (effective_agent, scope_uid, scope_bid, category, fact_key),
         )
+        # 🏷️ v21 F1：upsert 后补打认知出身（同事务；未迁移库如实跳过）
+        from ducky.epistemic import stamp_epistemic
+        stamp_epistemic(conn, fid, source)
         _lineage_action = "CREATE" if row_ver <= 1 else "UPDATE"
         # 🧬 memory_lineage 链式账本（同事务）：action 区分首写/改写，照实记录。
         try:

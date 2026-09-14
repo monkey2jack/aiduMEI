@@ -36,7 +36,7 @@
 
 **aiduMEI**（爱嘟优忆思，aidu Memory Engine Insight）是一个**智能体通用智慧引擎**（AI Wisdom Engine）—— 为 AI Agent 提供持久化记忆、推理与**可视化洞察**能力。它承载着一套完整的**认知架构**，让 AI **会记忆、会思考、会进化**，并通过自带的**控制台**让一切可见、可调、可追溯。
 
-> **当前公开版本 v20.5.0 正式版 —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 市面独一份。**（Preview 期三方评审整改全部收口：两条承诺级缺陷连根修，六条黄灯全清零——详见 CHANGELOG v20.5.0 段。）
+> **当前公开版本 v21.0 Preview —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 市面独一份。**（本版为 **Preview 预览版（在途）**：EchoMind 融改认知治理全量版——记忆出身标签/溯源/档案导出/治理核心，三态开关护航、影子起步；详见 CHANGELOG v21 段。）
 
 <!-- distribution-policy: github-source-only -->
 > **分发说明（GitHub-only）**：aiduMEI 不再通过 PyPI 或 GHCR 发布和维护安装包。请从本仓库的
@@ -409,8 +409,8 @@ python -m compileall ducky api_server.py mcp_server.py
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **1993**（`pytest --collect-only` 实测，2026-09-11，v20.5.1 本树）＝ **行为用例 1787（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
-| 独立开发机 | 1981 通过 · **12 跳过** —— **2026-09-11 实测**（v20.5.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 用例总数 | **2034**（`pytest --collect-only` 实测，2026-09-14，v21-dev 本树）＝ **行为用例 1828（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
+| 独立开发机 | 2022 通过 · **12 跳过** —— **2026-09-14 实测**（v21-dev 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，v20.5a 本树，Python 3.12） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（v20.5.1 本树 de09794，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（v20.5a 本树，独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
@@ -449,7 +449,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt && pip install pytest pyyaml && pytest tests/ -q -rs
 > ```
 
-> **为什么要把 1981 和 1967 都写出来**：1981 是本树开发环境 2026-09-11 实测（缺宿主 ×12）；1967 是本树生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 2022 和 1967 都写出来**：2021 是本树开发环境 2026-09-14 实测（缺宿主 ×12）；1967 是本树生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
 > **跳过不止一条轴**（v20.0 实测补正）：此前这一段只认「宿主 Hermes 源码」一条轴，于是把「全绿」
 > 当成了装上宿主就能拿到的东西。生产实跑打脸 —— 沙箱里宿主明明在场，跑出来**仍有 1 条跳过**。
 > 全量普查登记了**十三条跳过轴**：宿主、工具、可选依赖和模型文件分别门控，不能只看安装包是否在场。
@@ -484,9 +484,9 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py                       # 必须取模；运行时 HF_HUB_OFFLINE=1，只有安装包仍会多跳 1 条
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：1981 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：1993 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 1981 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：2022 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2034 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2022 passed, 12 skipped
 >
 > # 基础安装路径须另建干净 venv；2026-09-08 实测
 > pip install -r requirements.txt -r requirements-dev.txt
@@ -505,7 +505,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > 在本树的生产机独立沙箱上跑出来是 1967 passed、26 skipped（2026-09-11 实测，v20.5.1 本树 de09794，不带 `.env`）——
 > `mcp` extra ×2 两条轴上（沙箱用生产 venv，不装 lint 工具与可选 extra；模型缓存和公开基准数据已显式配置；
 > 本树 mcp 轴已增至 ×7，沙箱行待复测）。
-> 上面代码块里的 `有宿主：1993 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 ——
+> 上面代码块里的 `有宿主：2034 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 ——
 > 别把「装上宿主」当成「全绿」。基线：2026-09-07 在 v20.3.4 树的生产机独立全轴 venv 中，隔离 HOME、去掉 `.env`，
 > 显式配置模型缓存和公开数据集后，实测到 **1743 passed、0 skipped**；本树全轴行 2026-09-09 生产机实测 1844/1。
 > 没有 `HERMES_SRC=none` 这一档，读者根本无法在自己机器上把我们宣称的「12 跳过」复现出来。

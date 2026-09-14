@@ -47,7 +47,7 @@ def _summary_of(value: str) -> str:
 def _upsert_fact_row(conn, *, category, fact_key, fact_value, source, agent_id,
                      profile, resolved_tier, recorded_at, decay_at, tags, shared,
                      valid_from, valid_to, scope, initial_hash,
-                     summary) -> tuple[int, int]:
+                     summary, via_federation: bool = False) -> tuple[int, int]:
     """写入/改写 facts 行并返回真实 (row_id, version)。
 
     v20.5.0 正式版（用户审计 🔴-1）：从 `write_fact` 中抽出——原实现直接用
@@ -62,7 +62,7 @@ def _upsert_fact_row(conn, *, category, fact_key, fact_value, source, agent_id,
     # ON CONFLICT 目标必须与 idx_facts_unique 列集完全一致
     # （见 federation/schema.py FACTS_UNIQUE_COLUMNS），否则报
     # "no such conflict target"。
-    return upsert_returning_id(
+    _fid_ver = upsert_returning_id(
         conn,
         """INSERT INTO facts
              (category, fact_key, fact_value, source, summary, overview,
@@ -89,6 +89,13 @@ def _upsert_fact_row(conn, *, category, fact_key, fact_value, source, agent_id,
         "SELECT id, version FROM facts WHERE agent_id=? AND user_id=? AND bank_id=? AND category=? AND fact_key=?",
         (agent_id, scope.user_id, scope.bank_id, category, fact_key),
     )
+    # 🏷️ v21 F1：认知出身补打（同事务；未迁移库如实跳过）。
+    # v21.0 收口（生产用户审计 🔴-2）：本函数是共享底层——pattern_extract 等
+    # 本地产物也走这里，has_external_ref 不许在共享层一刀切，只在
+    # 联邦路由入口显式传 via_federation=True（联邦同步=外部引入）。
+    from ducky.epistemic import stamp_epistemic
+    stamp_epistemic(conn, _fid_ver[0], source, has_external_ref=via_federation)
+    return _fid_ver
 
 
 # ── 子步骤（v20.5.1 · T-13 圈复杂度整改）─────────────────────────────
@@ -226,7 +233,7 @@ def _update_fact_branch(conn, *, verdict, fact_value, resolved_tier, agent_id,
 
 def _insert_fact_branch(conn, *, category, fact_key, fact_value, source, agent_id,
                         profile, resolved_tier, recorded_at, decay_at, tags, shared,
-                        valid_from, valid_to, scope) -> tuple[int, str, dict]:
+                        valid_from, valid_to, scope, via_federation: bool = False) -> tuple[int, str, dict]:
     """── 新增（upsert）──：落库 + 谱系 + 事件账本 + 治理钩子，同事务 commit。
 
     返回 (fact_id, upsert_action, gov)；gov 带出治理结论供编排层在
@@ -243,6 +250,7 @@ def _insert_fact_branch(conn, *, category, fact_key, fact_value, source, agent_i
         resolved_tier=resolved_tier, recorded_at=recorded_at, decay_at=decay_at,
         tags=tags, shared=shared, valid_from=valid_from, valid_to=valid_to,
         scope=scope, initial_hash=initial_hash, summary=_summary_of(fact_value),
+        via_federation=via_federation,
     )
     upsert_action = "CREATE" if row_ver <= 1 else "UPDATE"
 
@@ -310,12 +318,17 @@ def write_fact(
     dedup: bool = True,
     valid_from: str = "",
     valid_to: str = "",
+    via_federation: bool = False,
 ) -> dict[str, Any]:
     """写入一条联邦事实。返回含 action(insert/update/merge) 的结果。
 
     v20 P0-2：user_id/bank_id 是行的归属库（作用域），source 仍是「谁写的」
     （行为归因），二者语义不同，不再互相顶替。不传作用域时落 default 库，
     与 v19 行为逐字节一致。
+
+    via_federation（v21.0 收口）：仅联邦同步路由入口传 True——认知出身
+    按「外部引入」打 referenced；本地产物（pattern_extract 等）保持
+    False，由 source 映射自行判定（生产用户审计 🔴-2 整改）。
     """
     fact_key, fact_value, err = _strip_and_guard_fact(fact_key, fact_value)
     if err is not None:
@@ -357,7 +370,7 @@ def write_fact(
             source=source, agent_id=agent_id, profile=profile,
             resolved_tier=resolved_tier, recorded_at=recorded_at, decay_at=decay_at,
             tags=tags, shared=shared, valid_from=valid_from, valid_to=valid_to,
-            scope=scope)
+            scope=scope, via_federation=via_federation)
     except Exception as exc:
         logger.error("联邦写入失败: %s", exc)
         return {"status": "error", "detail": str(exc)}
