@@ -198,7 +198,7 @@ def test_write_functions_without_rollback_only_decrease():
             writes = any(k in src for k in ("INSERT", "UPDATE ", "DELETE FROM", "ALTER TABLE", "CREATE "))
             if writes and ".execute(" in src and any(isinstance(x, ast.Try) for x in ast.walk(fn)) and "rollback" not in src:
                 n += 1
-    BASELINE = 104  # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；
+    BASELINE = 106  # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；
     # 2026-09-09 v20.4.1a：wal_engine cascade_delete_memory(66)/cascade_delete_all(53)
     # 圈复杂度按层拆分（四方外审 Sonnet B2），同一段写 SQL 从 2 个巨型函数分散进
     # 按层辅助函数，本守卫按函数计数故 93 → 102 —— **写入路径与事务归属未变**
@@ -211,6 +211,11 @@ def test_write_functions_without_rollback_only_decrease():
     # `conn.commit()` 自成事务单元，事务归属与拆前逐字一致（拆分前全部
     # 挤在 write_fact 一个函数里，本来就只计 1）。增长来自按函数计数
     # 对同一段事务的重新分布，不是新增无 rollback 覆盖的写路径。
+    # 2026-09-13 v21 preview：+1 = wal_engine._cascade_all_v21_governance
+    #（§16 两张 v21 新表级联清理）——与既有 15 个 cascade 分层函数同一
+    # 事务纪律：函数内 commit、失败 layer_failed 记账不拖垮其他层。
+    # 2026-09-14 v21.0 收口：+1 = epistemic.stamp_memory_refs（sidecar 批量
+    # 打标）——函数内 commit 自成事务单元，主链路失败经调用处降级钩子记账。
     # 只降不升纪律不变：此后再涨必须真的新增了无 rollback 覆盖的写路径。
     assert n <= BASELINE, f"无 rollback 的写函数从 {BASELINE} 涨到 {n} —— 新代码请用 with conn: 或显式 rollback"
 

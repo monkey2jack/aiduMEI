@@ -1067,8 +1067,27 @@ async function renderEvolve(body) {
         : '<div class="hint">目前没有待结晶的模式 / No crystal candidates. 结晶是把反复出现的事实压成"技能"，数据量上来之后才会有。</div>') +
     '</div>' +
 
+    '<div class="sec">' + secHead('记忆档案', 'DOSSIER', '一键导出为 Markdown · v21') +
+      '<div class="hint">按本部署默认域导出完整记忆档案：出身分区（亲口/推断/引用/模糊）、未经验证标注、健康总览、演化与进化统计。</div>' +
+      '<div class="param-row"><button class="param-edit" id="dossierBtn">导出记忆档案 / Export dossier</button></div>' +
+    '</div>' +
+
     '<div class="sec" id="evGov">' + secHead('治理候选队列', 'GOVERNANCE', '第二双眼睛 · 未过审即降权') + loading('候选队列') + '</div>' +
     '<div class="sec" id="evOpinion">' + secHead('信念层', 'BELIEF', '事实是「是什么」·信念是「我多确定」') + '</div>';
+
+  // 记忆档案导出：先取域提示，再开下载（same-origin cookie 随浏览器导航自动携带）
+  const dBtn = body.querySelector('#dossierBtn');
+  if (dBtn) dBtn.onclick = async function () {
+    dBtn.disabled = true;
+    try {
+      const hint = await API.get('/dossier/scope-hint');
+      window.open('/dossier?user_id=' + encodeURIComponent(hint.user_id) +
+        '&bank_id=' + encodeURIComponent(hint.bank_id) + '&download=1', '_blank');
+    } catch (e) {
+      dBtn.textContent = '导出失败：' + (e.message || e);
+    }
+    dBtn.disabled = false;
+  };
 
   // B1 治理候选队列 + 人审入口
   await loadGovernance(body.querySelector('#evGov'));

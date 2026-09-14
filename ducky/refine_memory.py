@@ -531,7 +531,7 @@ def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") ->
         _cols = table_columns(conn, "facts")
         _scope_cols = [c for c in ("user_id", "bank_id") if c in _cols]
         _scope_vals = [owner if c == "user_id" else owner_bank for c in _scope_cols]
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO facts (category, fact_key, fact_value, source"
             + "".join(f", {c}" for c in _scope_cols)
             + ") VALUES (?, ?, ?, 'refine_memory'"
@@ -539,6 +539,9 @@ def apply_refinement(refine_id: int, *, user_id: str = "", bank_id: str = "") ->
             + ")",
             (cat, f"refined:{refine_id}", summary_val, *_scope_vals)
         )
+        # 🏷️ v21 F1：精炼摘要补打 reasoned（未迁移库如实跳过）
+        from ducky.epistemic import stamp_epistemic
+        stamp_epistemic(conn, cur.lastrowid or 0, "refine_memory")
         # 📒 事件账本（v19.4.0 🟡-D）：精炼摘要入库留痕，同事务
         try:
             from ducky.event_ledger import content_hash, record_event

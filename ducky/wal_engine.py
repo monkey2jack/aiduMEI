@@ -600,6 +600,9 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "wal_entries":      ("exempt", "WAL 引擎自身账本：删除操作的执行凭证，清掉等于销毁「删过」的证据"),
     "federation_grants": ("exempt", "联邦授权凭据表（grantor/grantee/scope，无记忆正文）：跨 Agent 授权与撤销契约，随授权生命周期管理（v20.5.0a）"),
     "memory_lineage":   ("exempt", "记忆谱系账本（memory_id/version/hash/action，无记忆正文——diff_summary 不含 fact_key 明文，v20.5.0 起）：审计与历史版本链的可检测篡改凭据（v20.5.0a）"),
+    "reflection_candidates": ("clean", "v21 反思质量门候选表含候选全文（§16，随 F5 同版接线）：(user_id, bank_id) 谓词删除——被拒/待审的认知草稿也是用户数据"),
+    "retrieval_weights": ("clean", "v21 检索权重学习表（§16）：(user_id, bank_id) 谓词删除——学出来的偏好画像同样属于租户数据"),
+    "memory_epistemic": ("clean", "v21.0 收口：mem0 腿出身 sidecar（§16）：(user_id, bank_id) 谓词删除——出身标签随记忆同属租户数据"),
     # ── facts.db 之外的存储 ──
     "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
     "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),
@@ -762,6 +765,9 @@ def cascade_delete_all(
         # 14. 本地向量库 / 15. 欠账账本
         _cascade_all_local_vectors(scope, res, _layer_failed)
         _cascade_all_pending(scope, res, _layer_failed)
+
+        # 16. v21 治理新表（反思候选 / 权重学习）
+        _cascade_all_v21_governance(scope, res, _layer_failed)
 
         # 核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。
         # 辅助层残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
@@ -1622,6 +1628,38 @@ def _cascade_all_scenes(scope: Any, res: Dict[str, Any], layer_failed: Any) -> N
     except Exception as e:
         logger.warning("scenes delete_all 清理失败: %s", e)
         layer_failed("scenes", e)
+
+
+def _cascade_all_v21_governance(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§16 v21 治理新表（reflection_candidates / retrieval_weights）。
+    两张表都带 (user_id, bank_id) 域键——候选草稿与学到的偏好画像同样
+    是租户数据，delete_all 的擦除承诺覆盖它们。
+    作用域片段走 scope_clause() canonical（新代码默认入口，零手拼）。"""
+    from ducky.scope_sql import scope_clause
+
+    frag, params = scope_clause(scope, flavor="canonical")
+    for table, key, base_sql in (
+        ("reflection_candidates", "reflection_candidates_deleted",
+         "DELETE FROM reflection_candidates WHERE 1=1 "),
+        ("retrieval_weights", "retrieval_weights_deleted",
+         "DELETE FROM retrieval_weights WHERE 1=1 "),
+        ("memory_epistemic", "memory_epistemic_deleted",
+         "DELETE FROM memory_epistemic WHERE 1=1 "),
+    ):
+        try:
+            sconn = get_facts_conn()
+            try:
+                if sconn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (table,)).fetchone():
+                    cur = sconn.execute(base_sql + frag, params)
+                    sconn.commit()
+                    res[key] = int(cur.rowcount or 0)
+            finally:
+                sconn.close()
+        except Exception as e:
+            logger.warning("%s delete_all 清理失败: %s", table, e)
+            layer_failed(table, e)
 
 
 def _cascade_all_local_vectors(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:

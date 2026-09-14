@@ -131,7 +131,7 @@ _INDEXES = (
 _lock = threading.Lock()
 _done = False
 
-CURRENT_SCHEMA_VERSION = 5  # v20.5.0 正式版(P1): 存量行 content_hash 回填 + BACKFILL 谱系基线；v20.5.0a(P0): facts 谱系字段 + grants/lineage 表
+CURRENT_SCHEMA_VERSION = 7  # v21.0 收口（生产用户审计 🔴-1）：memory_epistemic sidecar（mem0 主链路腿出身登记）；v21 preview: epistemic 出身标签 + provenance 三件套 + 两新表
 
 
 def apply_migrations(conn) -> None:
@@ -261,6 +261,109 @@ def apply_migrations(conn) -> None:
             conn.execute("PRAGMA user_version = 5")
             conn.commit()
             user_version = 5
+
+        # 版本迁移流：Version 5 -> Version 6
+        # v21 preview（任务书 §二）：EchoMind 融改总批次。
+        # F1 facts.epistemic_mode（认知出身标签，默认 'fuzzy'，存量不回填——宁缺毋滥）；
+        # F2 knowledge_evolution 溯源三件套（origin_agent/origin_session_id/origin_turn）；
+        # F4 facts.superseded_by（生命周期「被取代」指针）；
+        # F5 reflection_candidates（反思质量门候选表）；
+        # F9 retrieval_weights（检索权重学习表，按 (user_id,bank_id) 隔离）。
+        # 全部纯增量：无新写入时行为与 v20.5.1 逐字一致。
+        if user_version < 6:
+            logger.info("执行数据库增量升级：v5 -> v6 (v21 认知治理总批次)")
+            for col, ddl in (
+                ("epistemic_mode", "TEXT DEFAULT 'fuzzy'"),
+                ("superseded_by", "INTEGER DEFAULT NULL"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE facts ADD COLUMN {col} {ddl};")
+                except Exception as e:
+                    logger.debug(f"字段 facts.{col} 已存在或跳过: {e}")
+
+            # knowledge_evolution 由 utils.ensure_evolution_tables 在 import 时建，
+            # 换库路径/测试新库场景下可能尚不存在——先按同一基线结构兜底建表再加列
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS knowledge_evolution (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_id TEXT NOT NULL,
+                        target_id TEXT NOT NULL,
+                        relation_type TEXT NOT NULL,
+                        confidence REAL DEFAULT 0.5,
+                        reason TEXT DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );""")
+            except Exception as e:
+                logger.debug(f"knowledge_evolution 兜底建表跳过: {e}")
+
+            for col, ddl in (
+                ("origin_agent", "TEXT DEFAULT ''"),
+                ("origin_session_id", "TEXT DEFAULT ''"),
+                ("origin_turn", "INTEGER DEFAULT 0"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE knowledge_evolution ADD COLUMN {col} {ddl};")
+                except Exception as e:
+                    logger.debug(f"字段 knowledge_evolution.{col} 已存在或跳过: {e}")
+
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS reflection_candidates (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        bank_id TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        candidate_text TEXT NOT NULL,
+                        evidence_ids TEXT DEFAULT '',
+                        novelty_score REAL,
+                        confidence REAL,
+                        status TEXT DEFAULT 'pending',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        decided_at TIMESTAMP,
+                        decider TEXT DEFAULT ''
+                    );""")
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS retrieval_weights (
+                        user_id TEXT NOT NULL,
+                        bank_id TEXT NOT NULL,
+                        dimension TEXT NOT NULL,
+                        weight REAL NOT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (user_id, bank_id, dimension)
+                    );""")
+            except Exception as e:
+                logger.debug(f"v21 新表初始化跳过: {e}")
+
+            conn.execute("PRAGMA user_version = 6")
+            conn.commit()
+            logger.info("数据库秒级增量升级 v6 成功 ✅")
+            user_version = 6
+
+        # 版本迁移流：Version 6 -> Version 7
+        # v21.0 收口（生产用户审计 🔴-1）：mem0 主链路蒸馏产物不进 facts 表，
+        # 出身标签经 sidecar 表 memory_epistemic 按 memory_ref（UUID）登记，
+        # 带 (user_id, bank_id) 域键——检索打分与审计可读，零干扰既有表。
+        if user_version < 7:
+            logger.info("执行数据库增量升级：v6 -> v7 (memory_epistemic sidecar)")
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS memory_epistemic (
+                        memory_ref TEXT PRIMARY KEY,
+                        epistemic_mode TEXT NOT NULL,
+                        user_id TEXT NOT NULL DEFAULT 'default',
+                        bank_id TEXT NOT NULL DEFAULT 'default',
+                        source TEXT DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );""")
+            except Exception as e:
+                logger.debug(f"memory_epistemic 建表跳过: {e}")
+
+            conn.execute("PRAGMA user_version = 7")
+            conn.commit()
+            logger.info("数据库秒级增量升级 v7 成功 ✅")
+            user_version = 7
 
     except Exception as exc:
         logger.error("数据库增量补丁执行异常 (服务继续启动): %s", exc)

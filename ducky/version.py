@@ -34,6 +34,35 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
+v21.0 (Preview 预览版 · EchoMind 融改：认知治理全量版 · 开工 2026-09-13)
+    主题：**记忆有出身、有户口、可导出；治理核心开关护航、影子起步。**
+    维护者 2026-09-13 拍板一次性全量（施工任务书：wiki v21 文件夹；
+    四份外部评估 + 施工方独立复核为据；EchoMind 无 LICENSE，只借思路不搬代码）。
+    1. schema v6 总批次：facts.epistemic_mode（默认 'fuzzy'，存量不回填——
+       宁缺毋滥）+ facts.superseded_by + knowledge_evolution 溯源三件套
+       （兜底建表防新库 ALTER 落空）+ reflection_candidates /
+       retrieval_weights 两新表（均带 (user_id, bank_id) 域键）。
+       全部 additive；迁移总账 +4 迁移点同步登记。
+    2. ducky/epistemic.py：resolve_epistemic 纯函数（零 LLM 成本 source
+       映射：用户直述→user_provided / 外部引用→referenced / LLM 推断→
+       reasoned / 兜底→fuzzy）；检索乘数四档默认 ×1.15/×1.05/×1.00/×0.85，
+       env 可配、非法 fail-closed 回默认（env 注册表 +4 同步）。
+    3. 删除链矩阵补两新表显式 clean 裁决并接线 §16 级联清理——
+       候选草稿与偏好画像同样在擦除承诺内。
+    4. 守卫同步：mkdtemp 基线 54→55；except 棘轮 632→636
+       （v6 迁移 4 处容错，与 v5 同型纪律）。
+    5. 用例总数 1993 → 2034（--collect-only），新增 41 条全部红→绿对照；
+       独立开发机 2022 通过 · 12 跳过（2026-09-14 本树）。
+    6. 在途（本段随施工推进持续更新，分项验收以任务书为准）：
+       F1 写入路径/检索乘数/探针；F2 provenance 填充与审计端点；
+       F3 dossier 导出；F4–F9 治理核心（三态开关：关/影子/开，影子起步）。
+    7. v21.0 收口（2026-09-14，生产用户审计 2🔴3🟡3🟢 全闭环）：🔴-1 主链路
+       sidecar memory_epistemic 打标（schema v7，infer 诚实映射）+ 打分
+       回落链；🔴-2 via_federation 参数归位（共享底层不一刀切）；
+       🟡-3 单源精确回填脚本（dry-run 默认，具名来源不碰）；
+       🟡-1/2 口径诚实 + 端点 UUID 判据改判；🟢 三项全采纳
+       （token 配对复位 / 探针多样性 / 结晶审批提示）。明细见 CHANGELOG。
+
 v20.5.1 (维护版 · 四份审计整合收口 + 发布工程修复 · 2026-09-11)
     主题：**门禁必须真的在场；接缝必须真的接上。**
     四份审计（用户视角生产实测 / Sonnet / Luna / DeepSeek v4.1 Flash 自评）+
@@ -143,7 +172,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "20.5.1"  # 维护版三段式（维护者拍板：小仓 v20.5.1 / 大仓随正式节点）；格式守卫接受两段或三段
+SERVICE_VERSION = "21.0"  # Preview 两段式（v20.5-preview 先例：Preview 身份由 tag/Release 承载，格式守卫钉死纯数字 X.Y）
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -157,6 +186,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("21.0", "", "v21.0-preview", "Preview 预览版（在途）· EchoMind 融改认知治理全量版（开关护航）· 开工 2026-09-13"),
     ("20.5.1", "", "v20.5.1", "维护版 · 四份审计整合收口 · CI失防根修 · 联邦接缝与作用域构建器 · 2026-09-11"),
     ("20.5.0", "", "v20.5.0", "正式版 · 三方评审整改收口（授权闭环/谱系身份/存量基线）· 2026-09-10"),
     ("20.5", "", "v20.5-preview", "Preview 预览版 · Grants+Lineage+用户审计整改+UI修复 · 2026-09-10"),
