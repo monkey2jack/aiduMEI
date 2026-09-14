@@ -34,6 +34,12 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
+v21.0.1 (维护版 · 外部 Agent session 生命周期契约闭环 · 2026-09-14)
+    主题：**会话生命周期双向闭环，拒绝静默丢弃。**
+    1. ducky/routes_v8.py 的 /session/start 路由与 ducky/pipeline/memory_persistence.py 支持可选 session_id 参数，优先采纳外部 Agent 原生会话 UUID，未传保持 ses_* 兜底。
+    2. integrations/hermes-plugin/aidumem/__init__.py 在 initialize 建立双保险契约，解析并对齐服务端响应的 session_id，确保 on_session_end 与后台反思链路 100% 畅通。
+    3. 用例总数 2034 → 2034（--collect-only），tests/test_v20_broadcast_session_bank_scope.py 补齐路由参数递进与自定义 session_id 断言，四道门禁全绿。
+
 v21.0 (正式版 · EchoMind 融改：认知治理全量版 · 2026-09-13 开工 · 2026-09-14 收口发布)
     主题：**记忆有出身、有户口、可导出；治理核心开关护航、影子起步。**
     维护者 2026-09-13 拍板一次性全量（施工任务书：wiki v21 文件夹；
@@ -172,7 +178,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "21.0"  # Preview 两段式（v20.5-preview 先例：Preview 身份由 tag/Release 承载，格式守卫钉死纯数字 X.Y）
+SERVICE_VERSION = "21.0.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -186,6 +192,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("21.0.1", "", "v21.0.1", "补丁版 · 外部 Agent session 生命周期契约闭环（/session/start 接收 session_id）· 2026-09-14"),
     ("21.0", "", "v21.0", "正式版 · EchoMind 融改认知治理全量版 + 生产用户审计收口 · 2026-09-14"),
     ("20.5.1", "", "v20.5.1", "维护版 · 四份审计整合收口 · CI失防根修 · 联邦接缝与作用域构建器 · 2026-09-11"),
     ("20.5.0", "", "v20.5.0", "正式版 · 三方评审整改收口（授权闭环/谱系身份/存量基线）· 2026-09-10"),

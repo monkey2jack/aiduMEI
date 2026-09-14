@@ -179,6 +179,13 @@ def test_v8_routes_thread_bank_scope(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["bank_id"] == "bank_a"
 
+    # v21.0.1：支持客户端传入自定义 session_id
+    resp_custom = client.post("/session/start",
+                              params={"user_id": "user_x", "bank_id": "bank_a", "session_id": "agent_custom_uuid_123"})
+    assert resp_custom.status_code == 200
+    assert resp_custom.json()["session_id"] == "agent_custom_uuid_123"
+    assert resp_custom.json()["bank_id"] == "bank_a"
+
     resp = client.post("/session/start",
                        params={"user_id": "user_x", "bank_id": "../etc"})
     assert resp.status_code == 200, "v8 约定：异常包成 error dict 不抛 500"

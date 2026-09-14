@@ -292,9 +292,11 @@ class AiduMemProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
-        self._client.try_request(
+        res = self._client.try_request(
             "POST", f"/session/start?session_id={session_id}", timeout=_CONNECT_TIMEOUT
         )
+        if isinstance(res, dict) and res.get("session_id"):
+            self._session_id = str(res["session_id"])
 
     def system_prompt_block(self) -> str:
         return (

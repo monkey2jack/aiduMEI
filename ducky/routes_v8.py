@@ -162,10 +162,11 @@ def register_v8_routes(app: FastAPI) -> None:
 
     # ── Session (Persistence) ─────────────────────────
     @app.post("/session/start")
-    def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
+    def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
+                      session_id: str = ""):
         try:
             from ducky.memory_persistence import session_start as _session_start
-            return {"status": "ok", **_session_start(user_id, bank_id=bank_id)}
+            return {"status": "ok", **_session_start(user_id, bank_id=bank_id, session_id=session_id)}
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 

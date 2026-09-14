@@ -1,5 +1,13 @@
 # aiduMEI 版本演进史
 
+## v21.0.1（2026-09-14 维护版）：外部 Agent session 生命周期契约闭环
+
+> **性质：维护版。大仓 Tag 保持 `v21.0`；小仓 Tag/Release `v21.0.1`。**
+
+- **服务端 session/start 接收 session_id**：`ducky/routes_v8.py` 的 `/session/start` 路由与 `ducky/pipeline/memory_persistence.py` 补充可选参数 `session_id: str = ""`，若外部 Agent 传入自有会话 UUID 则优先采纳为主键；未传或为空时继续沿用原有的服务端自生成 `ses_*` 兜底。
+- **插件端双保险闭环**：官方插件 `integrations/hermes-plugin/aidumem/__init__.py` 在 `initialize` 建立双保险契约：请求 `/session/start` 后解析响应，如果服务端返回了 `session_id` 则对齐本地持有变量，彻底根治此前参数被 FastAPI 静默丢弃导致 `on_session_end` 恒 404、反思与会话级归档断流的问题。
+- **单测与门禁回归**：用例总数 2034 → 2034（--collect-only），`tests/test_v20_broadcast_session_bank_scope.py` 补齐路由参数递进与自定义 session_id 断言，四道门禁全绿。
+
 ## v21.0（2026-09-13 开工 · 2026-09-14 收口 · 正式版）：EchoMind 融改 · 认知治理全量版
 
 > **性质：正式版。** 生产用户审计（2🔴3🟡3🟢）全闭环后发布。大仓 Tag `v21.0`；小仓 Tag/Release `v21.0.0`。

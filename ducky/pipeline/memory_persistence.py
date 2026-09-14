@@ -55,16 +55,21 @@ def _owner_mismatch(sess: dict, user_id: str, bank_id: str) -> bool:
             or str(sess.get("bank_id") or DEFAULT_BANK_ID) != caller_bank)
 
 
-def session_start(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict:
+def session_start(user_id: str, bank_id: str = DEFAULT_BANK_ID,
+                  session_id: str | None = None) -> dict:
     """创建新搜索 Session。返回 {session_id, user_id, bank_id, created, ttl}
 
     v20 P0-2：作用域在 session_start 一次定死、随会话走——
     之后的每次 session_search 都继承它，中途换不了库。
+
+    v21.0.1：支持接收外部传入的 session_id（如 Agent 原生会话 UUID）。
+    未传或为空时保持服务端自生成 ses_* 兼容回退。
     """
     now = time.time()
     # 非法作用域在建会话前炸出 BankScopeError（路由层包成 error dict）
     bank_id = normalize_bank_id(bank_id)
-    sid = f"ses_{uuid.uuid4().hex[:12]}"
+    sid = (str(session_id).strip() if session_id and str(session_id).strip()
+           else f"ses_{uuid.uuid4().hex[:12]}")
 
     with _sessions_lock:
         # 清理过期
