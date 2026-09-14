@@ -1,5 +1,23 @@
 # aiduMEI 版本演进史
 
+## v21.0（2026-09-13 开工 · Preview 预览版 · 在途）：EchoMind 融改 · 认知治理全量版
+
+> **性质：Preview（在途）。** 维护者 2026-09-13 拍板：EchoMind 融改全部变更一次性入版、不拆分（施工任务书见 wiki v21 文件夹《aiduMEI v21 preview 施工任务书》；生产侧指导书 + sonnet/k3/luna 三份外审 + 施工方独立复核为据）。
+> 铁律：只吸收思路不照搬代码（EchoMind 仓库无 LICENSE）；改变默认行为的功能一律三态开关（0=关 / 1=影子 / 2=开），影子起步，任何时刻排序公式在役变更 ≤1。
+
+- **schema v6 总批次**（`ducky/schema_bootstrap.py`，CURRENT_SCHEMA_VERSION 5→6）：facts 加 `epistemic_mode`（默认 'fuzzy'，**存量不回填——宁缺毋滥**）与 `superseded_by`；`knowledge_evolution` 加溯源三件套 `origin_agent / origin_session_id / origin_turn`（先按 utils.py:490 同一基线兜底建表，防换库路径/新库场景 ALTER 落空）；新建 `reflection_candidates`（反思质量门候选）与 `retrieval_weights`（检索权重学习，(user_id,bank_id) 复合主键）。全部 additive；迁移总账 +4 迁移点登记（tests/test_v20_1_1_source_guards.py）。
+- **F1 认知出身标签（首部落地）**：新增 `ducky/epistemic.py`——`resolve_epistemic(source, has_external_ref)` 唯一判定纯函数，零 LLM 成本（用户直述→`user_provided` / 外部引用→`referenced` / LLM 推断→`reasoned` / 兜底→`fuzzy`；映射表按本仓真实 source 值核定：pattern_extract/reflect/autodream/self_edit/cron_lesson 等在册）；检索乘数默认 ×1.15/×1.05/×1.00/×0.85，`AIDUMEI_EPISTEMIC_MULT_*` env 可配、非法 fail-closed 回默认（env 注册表 +4）。写入路径接入、检索落地、`/health` 探针随本版后续提交。
+- **删除链矩阵**（`ducky/wal_engine.py`）：两张 v21 新表补显式 clean 裁决并接线 §16 级联清理（(user_id,bank_id) 谓词删除）——被拒的认知草稿与学到的偏好画像同样在擦除承诺内。
+- **守卫同步**：mkdtemp 基线 54→55（新测试文件独立临时库）；except 棘轮 632→636（v6 迁移 4 处容错，与 v5「迁移失败不阻塞启动」同型纪律）；`tests/test_v20_5_0_backfill.py` 版本断言放宽为 `>=5`（历史迁移守卫不清账）。
+- **用例总数 1993 → 2034**（--collect-only；新增 41 条全部红→绿对照）。独立开发机 **2022 通过 · 12 跳过**（2026-09-14 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）。
+- **在途登记**（本段随施工推进持续更新，分项验收标准以任务书为准）：F1 写入路径/检索乘数/探针；F2 provenance 填充与 `GET /knowledge/{id}/evolution`；F3 `GET /dossier` 档案导出 + 控制台按钮；F4 生命周期派生态 / F5 反思质量门 / F6 纠正即时反思 / F7 CJK 新颖度预筛 / F8 健康面板 / F9 检索权重学习（全部影子起步）。
+
+### v21.0 收口（2026-09-14 · 生产用户视角审计整改全闭环）
+
+> 输入：dudu《v21.0 Preview 生产用户审计报告》审计报告（2🔴3🟡3🟢，逐条经施工方 file:line 复核，**全部认领，无一驳回**）。详见 wiki v21 文件夹《aiduMEI v21.0 正式版任务计划书》。
+
+- **v21.0 收口（生产用户审计 2🔴3🟡3🟢 全闭环）**：🔴-1 主链路打标根修——mem0 蒸馏产物不进 facts 表，新增 schema v7 sidecar `memory_epistemic`（memory_ref 主键 + 域键），`/add` 三通路在 mem.add 返回处统一打标（infer=True=LLM 经手→reasoned；infer=False 直写→user_provided 诚实映射），`scoring.py` 出身乘数回落链 facts 列→sidecar→×1.00（dudu建议的「memory_types 反查 fact_id」经核实不存在该映射，sidecar 为替代正解，在案）；🔴-2 误标归位——共享底层 `_upsert_fact_row` 的一刀切 `has_external_ref=True` 拆除，`via_federation` 参数穿透 write_fact→_insert_fact_branch→_upsert_fact_row，仅联邦路由入口传 True，pattern_extract 正确落 reasoned，存量 6 条误标随回填纠正；🟡-3 单源精确回填 `scripts/backfill_epistemic.py`（dry-run 默认）——fuzzy 存量中白名单推断来源（experience_distiller 949 / pattern_extract 291 等）安全转 reasoned + 误标纠正，具名来源行（dudu/生产域具名直述来源/dudu…）一律不碰，回填记 fact_events 可追；🟡-1 dossier 演化计数拆「全局 N / 本域可关联 M」+ 口径注记 + sidecar 分布披露；🟡-2 `/knowledge/{id}/evolution` 判据改判——fact: 数字 id 保留域校验（跨域 404），UUID 不可枚举且载荷零正文，链上存在即可见（旧预检误杀 69% 真实查询）；🟢-1 origin 上下文 token 配对 try/finally；🟢-2 探针加 epistemic_diversity（24h 新写入 ≥10 条且全同档记 degraded，存量全 fuzzy 不误报）；🟢-3 dossier 结晶章全候选零复用追加审批闸门提示；守卫同步——迁移总账 +1（memory_epistemic）、删除链 §16 扩三表、f-string 登记 +1（scoring placeholders）、mkdtemp 57→58、except 646→651、无 rollback 105→106、scope 手拼零新增（dossier 两处字面量改走 scope_clause）。
+
 ## v20.5.1（2026-09-11 维护版）：四份审计整合收口 · CI 失防根修 —— 门禁必须真的在场，接缝必须真的接上
 
 > **性质：维护版。公开 Tag 停在大仓 `v20.5`；小仓按三段式 `v20.5.1`。** 输入：用户视角审计（生产实测）+ Sonnet / Luna / DeepSeek v4.1 Flash 三份外部代码审计 + 维护者独立增量审计。所有论断经逐条 file:line 复核（复核结论与四份报告的评级见 wiki《aiduMEI v20.5.1a 计划任务书》），P0/P1 全闭环。

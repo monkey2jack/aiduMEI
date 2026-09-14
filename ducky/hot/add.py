@@ -177,6 +177,15 @@ def register_add_routes(app: FastAPI) -> None:
             # inferred from a table name or a free-form user string.
             md.setdefault("bank_id", req.bank_id)
 
+            # 🧬 v21 F2：溯源三件套进 md 保留键（调用方显式传了优先；
+            # 缺省留空——如实，不编造）。同步/async job/coalesce 三条
+            # 通路共享这一份 md，各自在 _run_pipeline 入口落 context。
+            from ducky.origin_context import extract_origin_fields
+            _oa, _os, _ot = extract_origin_fields(extra, md)
+            md.setdefault("_origin_agent", _oa)
+            md.setdefault("_origin_session_id", _os)
+            md.setdefault("_origin_turn", _ot)
+
             # P0-1 写入侧自动时间戳（与生产环境对齐）：
             # 调用方未显式传 recorded_at 时自动补 UTC ISO 时间，供
             # 时间过滤（before/after）和三级时间戳回退使用。
@@ -378,6 +387,8 @@ def register_add_routes(app: FastAPI) -> None:
                 免抽取不许偷偷变回 LLM 抽取）；LLM 故障/挡位 open 强制
                 False（否则 fallback 里还藏着一次 mem0 内部 LLM 调用 ——
                 2026-08-26 实弹里网关恰好复活才没暴露的洞）。"""
+                from ducky.origin_context import set_origin_from_metadata, reset_origin
+                _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
                 try:
                     add_result = mem.add(msgs, user_id=uid, metadata=meta,
                                          infer=infer_effective)
@@ -396,6 +407,19 @@ def register_add_routes(app: FastAPI) -> None:
                     note = note or "skipped_llm_error"
                     add_result = mem.add(msgs, user_id=uid, metadata=meta,
                                          infer=False)
+                reset_origin(_origin_token)  # 🟢-1：mem.add 临界区结束即复位
+                # 🏷️ v21.0 收口（生产用户审计 🔴-1）：主链路 mem0 产物的出身
+                # 登记进 sidecar——infer 用过 LLM 即 reasoned，直写即 user_provided。
+                try:
+                    from ducky.epistemic import stamp_memory_refs
+                    _rs = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
+                    _refs = [r.get("id") or r.get("memory_id") for r in _rs if isinstance(r, dict)]
+                    stamp_memory_refs([r for r in _refs if r],
+                                      "reasoned" if infer_effective else "user_provided",
+                                      user_id=uid, bank_id=req.bank_id,
+                                      source=str((meta or {}).get("_origin_agent") or "add"))
+                except Exception as _se:
+                    logger.debug(f"epistemic sidecar 打标跳过: {_se}")
                 register_salience_for_add(add_result, user_id=uid, bank_id=req.bank_id)
                 try:
                     from ducky.text_fts import _index_memory
@@ -442,6 +466,8 @@ def register_add_routes(app: FastAPI) -> None:
                 # 确定性直写秒回（原文/硬事实/云向量照落，内容照样可召回；
                 # 欠的只是蒸馏精修，故障账本与事件账本可查）。closed/half-open
                 # 走真实蒸馏，半开拿真实写入当探针（命门教训）。
+                from ducky.origin_context import set_origin_from_metadata, reset_origin
+                _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
                 from ducky.gear import record_llm_failure, record_llm_success, should_try_llm
                 try:
                     _try_llm = should_try_llm()
@@ -459,6 +485,8 @@ def register_add_routes(app: FastAPI) -> None:
                     # layer1 整段跳过 LLM——记成功就是假信号）。
                     if infer_flag:
                         record_llm_success()
+                    # 🏷️ v21.0 收口：主链路打标在 layer1 _index_after_add
+                    # （本包装器吞掉 results，路由层拿不到 ref）
                     return _r
                 except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
                     feature_failed("index_memory", e)
@@ -473,6 +501,8 @@ def register_add_routes(app: FastAPI) -> None:
                     # 调用方显式要的免抽取写入会在降级时偷偷变回 LLM 抽取，
                     # 确定性通路就成了「大部分时候确定」。
                     return _direct_write(uid, msgs, meta, infer_flag)
+                finally:
+                    reset_origin(_origin_token)  # 🟢-1：配对复位（含降级分支返回前）
 
             def _execute_batch(uid, msgs, meta, job_ids, *, bank_id=None):
                 """合并包 / 单条异步包统一执行，并把结果回写到所有关联 job。"""

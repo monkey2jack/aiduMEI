@@ -449,6 +449,60 @@ def register_health_routes(app: FastAPI) -> None:
             probes["schema_version_ok"] = False
             probes["schema_version_error"] = str(_sv_exc)[:120]
 
+        # v21 F1：epistemic 出身标签探针。抽样最新 100 行 facts，
+        # 校验 epistemic_mode 非空且落在合法枚举——只报代码常量同样
+        # 是假绿灯（列不存在时照样能 import 到枚举），所以抽的是磁盘真行。
+        try:
+            from ducky.epistemic import EPISTEMIC_MODES
+            from ducky.utils import get_facts_conn as _epi_conn_fn
+            _epi_conn = _epi_conn_fn()
+            try:
+                _epi_rows = _epi_conn.execute(
+                    "SELECT epistemic_mode, created_at FROM facts ORDER BY id DESC LIMIT 100"
+                ).fetchall()
+            finally:
+                _epi_conn.close()
+            _epi_total = len(_epi_rows)
+            _epi_bad = sum(
+                1 for m, _c in _epi_rows
+                if not m or m not in EPISTEMIC_MODES
+            )
+            probes["epistemic_sample_size"] = _epi_total
+            probes["epistemic_ok"] = _epi_bad == 0
+            if _epi_bad:
+                probes["epistemic_invalid"] = _epi_bad
+                DegradationTracker.record_degradation(
+                    "epistemic", f"{_epi_bad}/{_epi_total} sampled rows have invalid epistemic_mode"
+                )
+            # v21.0 收口（生产用户 🟢-2）：合法性 ≠ 在主链路工作。
+            # 告警签名收窄为「全是 fuzzy」——那才是打标没在干活的铁证；
+            # 全是 reasoned 不报警：pattern_extract 是主笔，单一推断档是健康常态
+            # （否则告警疲劳，探针会被人关掉）。存量全 fuzzy 且 fresh<10 不判。
+            from datetime import datetime, timedelta, timezone
+            _cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            _fresh_modes = []
+            for _m, _c in _epi_rows:
+                if not _c:
+                    continue
+                try:
+                    _ct = datetime.fromisoformat(str(_c).replace(" ", "T")).replace(
+                        tzinfo=None if "+" not in str(_c) else timezone.utc)
+                    _ct_cmp = _ct.replace(tzinfo=None)
+                    if _ct_cmp >= _cutoff.replace(tzinfo=None):
+                        _fresh_modes.append(_m)
+                except (ValueError, TypeError):
+                    continue
+            probes["epistemic_fresh_24h"] = len(_fresh_modes)
+            probes["epistemic_diversity"] = len(set(_fresh_modes))
+            if len(_fresh_modes) >= 10 and set(_fresh_modes) == {"fuzzy"}:
+                DegradationTracker.record_degradation(
+                    "epistemic_diversity",
+                    f"最近 24h 的 {len(_fresh_modes)} 条新写入全部是 fuzzy"
+                    "——主链路打标疑似不工作")
+        except Exception as _epi_exc:
+            probes["epistemic_ok"] = False
+            probes["epistemic_error"] = str(_epi_exc)[:120]
+
         try:
             from ducky.vector_backend import backend_health
             _backend = backend_health()

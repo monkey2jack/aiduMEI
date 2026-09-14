@@ -58,7 +58,7 @@ def test_v5_migration_backfills_hash_and_baseline_chain():
     conn = utils.get_facts_conn()
     apply_migrations(conn)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION >= 5
         row = conn.execute(
             "SELECT id, content_hash, version FROM facts WHERE fact_key='legacy_key'").fetchone()
         assert row[1] == compute_content_hash("原始老内容"), "存量行必须回填当前内容哈希"

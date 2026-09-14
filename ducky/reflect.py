@@ -509,6 +509,10 @@ def run_reflect(
     Returns:
         {"status": "ok", "insights": [...], "saved": int, "source": ..., "llm_used": bool}
     """
+    # v21 F2：反思触发的写入在溯源上下文里如实标记来源（reflect:<source>）。
+    from ducky.origin_context import set_origin
+    set_origin(agent=f"reflect:{source}")
+
     ensure_reflect_schema()
     # 非法 bank_id 让 BankScopeError 直接抛给调用方（路由层统一转 error dict）
     bank = normalize_bank_id(bank_id or "default")
