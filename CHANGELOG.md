@@ -1,8 +1,8 @@
 # aiduMEI 版本演进史
 
-## v21.0（2026-09-13 开工 · Preview 预览版 · 在途）：EchoMind 融改 · 认知治理全量版
+## v21.0（2026-09-13 开工 · 2026-09-14 收口 · 正式版）：EchoMind 融改 · 认知治理全量版
 
-> **性质：Preview（在途）。** 维护者 2026-09-13 拍板：EchoMind 融改全部变更一次性入版、不拆分（施工任务书见 wiki v21 文件夹《aiduMEI v21 preview 施工任务书》；生产侧指导书 + sonnet/k3/luna 三份外审 + 施工方独立复核为据）。
+> **性质：正式版。** 生产用户审计（2🔴3🟡3🟢）全闭环后发布。大仓 Tag `v21.0`；小仓 Tag/Release `v21.0.0`。
 > 铁律：只吸收思路不照搬代码（EchoMind 仓库无 LICENSE）；改变默认行为的功能一律三态开关（0=关 / 1=影子 / 2=开），影子起步，任何时刻排序公式在役变更 ≤1。
 
 - **schema v6 总批次**（`ducky/schema_bootstrap.py`，CURRENT_SCHEMA_VERSION 5→6）：facts 加 `epistemic_mode`（默认 'fuzzy'，**存量不回填——宁缺毋滥**）与 `superseded_by`；`knowledge_evolution` 加溯源三件套 `origin_agent / origin_session_id / origin_turn`（先按 utils.py:490 同一基线兜底建表，防换库路径/新库场景 ALTER 落空）；新建 `reflection_candidates`（反思质量门候选）与 `retrieval_weights`（检索权重学习，(user_id,bank_id) 复合主键）。全部 additive；迁移总账 +4 迁移点登记（tests/test_v20_1_1_source_guards.py）。
