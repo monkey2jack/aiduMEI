@@ -1933,12 +1933,13 @@ def test_jia12_contradiction_v2_must_not_halve_another_banks_trust_score(jia12_c
                 f"A 域自己那条没被降权：{a_low_before} → {a_low_after}"
                 f"（护栏过紧，端点被废掉了）"
             )
-        # 记账轴：挡掉了就得说挡掉了
-        if body.get("skipped_out_of_scope", 0) < 1:
+        # 记账轴（v21.1 众神殿 WP-4）：读侧补域后跨域行在【读侧即排除】，不再走
+        # 「读全库→写侧 w_clause 挡→记 skip」旧路径，故 skipped_out_of_scope 应为 0；
+        # 核心防护由危害轴（B 域 trust 不变）+ 过紧轴（A 域正常降权）保证，更彻底。
+        if body.get("skipped_out_of_scope", 0) != 0:
             problems.append(
-                f"跨域的那一行被挡掉了却没上报："
-                f"skipped_out_of_scope={body.get('skipped_out_of_scope')!r}，"
-                f"audited={body.get('audited')!r}"
+                f"v21.1 读侧已按域隔离，跨域行应在读侧即排除、skipped_out_of_scope 应为 0，"
+                f"实为 {body.get('skipped_out_of_scope')!r}（audited={body.get('audited')!r}）"
             )
 
     assert not problems, "；".join(problems)
@@ -1982,12 +1983,13 @@ def test_jia12_contradiction_v1_must_not_halve_another_banks_trust_score(jia12_c
                 f"A 域自己那条没被降权：{a_low_before} → {a_low_after}"
                 f"（护栏过紧，端点被废掉了）"
             )
-        if body.get("skipped_out_of_scope", 0) < 1:
+        # 记账轴（v21.1 众神殿 WP-4）：读侧补域后跨域行读侧即排除，skipped_out_of_scope 应为 0。
+        if body.get("skipped_out_of_scope", 0) != 0:
             problems.append(
-                f"跨域的那一行被挡掉了却没上报："
-                f"skipped_out_of_scope={body.get('skipped_out_of_scope')!r}"
+                f"v21.1 读侧已按域隔离，跨域行应在读侧即排除、skipped_out_of_scope 应为 0，"
+                f"实为 {body.get('skipped_out_of_scope')!r}"
             )
-        # audited 必须只数真落地的行：本域 1 行落地、跨域 1 行被挡 → 恰好 1
+        # audited 必须只数真落地的行：本域 1 行降权落地（跨域行读侧已排除）→ 恰好 1
         if body.get("audited") != 1:
             problems.append(
                 f"audited 在替没落地的行作证：audited={body.get('audited')!r}，"

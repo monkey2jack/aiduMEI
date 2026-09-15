@@ -1,5 +1,37 @@
 # aiduMEI 版本演进史
 
+## v21.1.0（2026-09-15 众神殿地基版）：多 bot/多 profile 域隔离 · v21.0.1 会话补丁收口
+
+> **性质：二级版本节点。** 定位裁决（维护者 2026-09-15）：aiduMEI 走「众神殿」——一个后端挂多个 bot/profile，每尊神各据一殿、记忆人格独立（定位①：单主人多分身，token 仍是一把）。本版为众神殿铺路 + 收口昨晚 v21.0.1 会话补丁自带的债；不推倒 v21.0.1 扎实的基本盘，做加固。
+> 输入：维护者（Opus 4.8）满血重审 + 三路只读子代理内审（会话生命周期 / 认知治理核心 / 隔离·注入·守卫），逐条 file:line 复核零假指控。本轮经维护者裁决不设外审与用户审计，标准不降（红→绿对照 + 守卫在场 + 验证逐条点名）。任务书见内部 wiki v21 目录。
+
+### 众神殿产品功能（本版主题：多 bot/多 profile 各据一殿）
+- **殿注册表 + 管理 API**（schema v8 `pantheon_halls`）：每个 bot/profile 一座殿（user_id 为殿主键）；`/pantheon/hall` 创建/更新、`/pantheon/halls` 列出、`/pantheon/hall/{id}` 查、`/pantheon/hall/{id}/deactivate` 停用（软删——只熄灯不删记忆，生产数据生命线）。
+- **跨殿借阅**（schema v8 `hall_grants` + `ducky/pantheon.py`）：本殿显式授权他殿 `read`/`export`，可撤销（终态）、可过期（创建即校验，fail-closed 防 NaN）；`/pantheon/grant`、`/pantheon/grant/{id}/revoke`、`/pantheon/grants`。主体一律 user_id（殿），与 core 隔离维度对齐。
+- **借阅在 core 读路径真生效**（非假闭环）：`SearchRequest` 加 `caller_user_id`；`/recall_chain`、`/session/search`、`/dossier`(export) 跨殿访问须持有效借阅，`caller` 空或 ==user_id 放行（读自己殿/主人直连）——「谁能看谁」有据可查，默认互不可见（人格独立）。
+
+### 会话域收口（v21.0.1 补丁自带的债）
+- **WP-2 反思落对殿（违背众神殿本意）**：`integrations/hermes-plugin/aidumem/__init__.py` 的 `initialize`/`on_session_end` 此前建/结束会话不传 user_id → 会话锚在 default 殿，而 /add /search 带 `AIDUMEM_USER_ID`。非默认部署下 session_end 触发的反思跑在 default 殿、对本 bot 记忆无效（「雅典娜的复盘记到宙斯账上」）。修复：两处带上当前殿 user_id，反思落回本殿。
+- **WP-3 拒绝跨殿会话夺权**：`ducky/pipeline/memory_persistence.py` 的 `session_start` 写入前无 owner 检查、无条件覆盖 → A 传 B 的 session_id 可静默清空并夺走 B 的会话（owner_mismatch 只守读侧）。修复：外部 session_id 已被他殿占用则拒绝（`SessionOwnerConflict`），同殿重连放行。
+- **WP-5 session_id 校验 + 日志占位**：`session_start` 此前仅 `.strip()`（全仓唯一缺 max_length 的 ID 入口）→ 补白名单校验（长度 1..200、字符 `[A-Za-z0-9_.:@=+-]`，拒绝空格/换行/URL·SQL 元字符，顺带堵死日志注入）；日志改占位符。
+- **WP-7 reflect 溯源上下文配对复位**：`ducky/reflect.py` 的 `set_origin` 只 set 不 reset → 反思跑完污染后续演化写入的 origin。修复：token 配对 + try/finally，兑现 origin_context「入口 set、出口复位、无 stale leak」承诺。
+- **S5/S6**：plugin 拼 URL 补 `quote()`（与同文件 /facts/add 对齐）；MCP `session_start` 工具加回 session_id 参数（v21.0.1 端点已接收，三入口契约对齐）。
+
+### 众神殿读侧隔离（WP-1 地基 · 方案 A：殿=user_id/profile，bank_id 为殿内分区）
+- **WP-4 读侧补域**：两个 `/prune` 端点读侧 SQL 此前全库无域（只写侧带 scope），dry_run 即把他殿 fact_key/fact_value 装进响应 → 读侧补 `tenant_clause`（还上「甲5→丙9」欠账）；`/observe`、`/scene`、persona 三处 opt-in scope（省略/default = 全殿视图）→ 收敛为「省略 = 默认殿」（默认殿含无归属存量空/NULL，命名殿严格），default 不再是上帝视角。
+- **WP-6 evolution 跨殿脱敏**：`/knowledge/{uuid}/evolution` 的 UUID 形态（v21.0 裁决保留可见以免 69% 误杀）此前返回含 `reason` 与 origin 三件套（可能含内容片段/会话身份）→ 对 UUID（不可域校验）脱敏敏感字段、只留关系结构；fact:NNN（经域校验=拥有本殿事实）返回完整。不动 schema、不重现误杀。
+
+### 诚信归真与卫生
+- **WP-8 债务与措辞归真**：① caller 凭据密码学绑定 / mTLS、强不可抵赖 WORM/签名——自 v20.5 挂着「留 v21」，在众神殿①（单主人多分身、同一主人）定位下**正式改判「不适用」**：不需要密码学防自己的 bot 冒充另一个 bot，从路线图债务里划掉（历史各版均诚实标注「未做」，非虚假宣称）；② 「F4–F9 治理核心三态开关（关/影子/开，影子起步）」全仓无实现，措辞归真为「schema 就位·逻辑未接线」（对外 README 未用「影子」措辞，属内部口径精确化）。
+- **WP-9 死代码如实登记**：`reflection_candidates`（F5）、`retrieval_weights`（F9）、`facts.superseded_by`（F4）三处为纯 schema 空壳（零生产者/读者），本版明确登记「schema 预留·逻辑未接线」，不再称「影子起步」；不删，为后续 F5/F9 留位。
+- **WP-10 防御纵深**：`scoring._load_epi_map` 补 (user_id,bank_id) 域作用域（与同胞 `_load_type_map` 口径一致，写入侧已按殿 stamp）；`tombstone.py` 恢复 facts 时 cols 用表实际列白名单（防标识符注入）；`scripts/health_check.py` `all()` 补非空判（空 checks 不再假绿）。
+
+### 守卫与用例
+- 新增 `tests/test_v21_1_session_domain.py`：WP-2..7 + WP-4/WP-6 共 8 条红→绿对照守卫（负向对照 git stash 实测：改前 4 条缺陷守卫 failed、2 条边界守卫仍 passed，有区分力）。
+- **用例总数 2034 → 2048**（`pytest --collect-only` 实测 2026-09-15；行为 1842 + 脚本 70 + 守卫 136，`scripts/count_test_kinds.py` 可复算）。新增 `tests/test_v21_1_pantheon.py`（殿 CRUD/借阅/授权/借阅在 recall_chain 真生效）。
+
+> **保留边界（如实写明）**：core 路由的 user_id/bank_id 是自报参数——众神殿①（单主人多分身）下同一主人、无外部越权威胁，「人格独立」由「每个 bot 各带自己的 user_id + tenant_clause 隔离 + 本版会话/反思落对殿」共同保证。observe/scene 的 opt-in（传 user_id=殿视角、不传=主人全量管理视图）在①下即正确语义。**仅当未来转多主人（定位②互不信任）**，才需另立 Principal→Scope 身份体系专题（届时 caller 密码学绑定与 federation/core 主体统一重新进入射程）。
+
 ## v21.0.1（2026-09-14 维护版）：外部 Agent session 生命周期契约闭环
 
 > **性质：维护版。大仓 Tag 保持 `v21.0`；小仓 Tag/Release `v21.0.1`。**

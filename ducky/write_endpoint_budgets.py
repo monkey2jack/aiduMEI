@@ -109,6 +109,11 @@ WRITE_ROUTES_SCALAR = {
     "/federation/facts/add",
     "/federation/grants",
     "/federation/grants/revoke",
+    # v21.1 众神殿：殿管理与借阅写端点（标量 query/path 参数，无大文本体）
+    "/pantheon/hall",
+    "/pantheon/hall/{user_id}/deactivate",
+    "/pantheon/grant",
+    "/pantheon/grant/{grant_id}/revoke",
     "/federation/migrate",
     "/graduate",
     "/login",

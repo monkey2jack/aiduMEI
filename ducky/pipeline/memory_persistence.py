@@ -15,7 +15,7 @@ J-space：中间概念跨层持久存在，不被新输入覆盖
 Persistence：Session 内的搜索上下文跨请求保留
 """
 
-import time, uuid, threading, logging
+import time, uuid, threading, logging, re
 
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,
@@ -36,6 +36,21 @@ SESSION_HISTORY_LIMIT = 50  # Session 内搜索历史上限
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
 _last_session_cleanup = 0
+
+# ── session_id 契约（v21.1 WP-5）──
+# 外部 Agent 可传自有会话 UUID 作 session_id。全仓其它 ID 字段一律有 max_length，
+# 这个入口不能是唯一例外。白名单容纳 UUID / ses_<hex> / 常见 agent id，同时排除
+# 空格·换行·控制符·URL(&#%/) 与 SQL 元字符——顺带堵死日志注入（S4）。
+_SESSION_ID_MAX = 200
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_.:@=+-]{1,%d}" % _SESSION_ID_MAX)
+
+
+class SessionIdError(ValueError):
+    """外部传入的 session_id 非法（超长或含非法字符）；路由层包成 error dict。"""
+
+
+class SessionOwnerConflict(ValueError):
+    """外部 session_id 已被他殿占用，拒绝覆盖（v21.1 WP-3：防跨殿会话夺权）。"""
 
 
 # ── 公共 API ──
@@ -68,17 +83,32 @@ def session_start(user_id: str, bank_id: str = DEFAULT_BANK_ID,
     now = time.time()
     # 非法作用域在建会话前炸出 BankScopeError（路由层包成 error dict）
     bank_id = normalize_bank_id(bank_id)
-    sid = (str(session_id).strip() if session_id and str(session_id).strip()
-           else f"ses_{uuid.uuid4().hex[:12]}")
+    # v21.1（WP-5）：外部传入 session_id 必须过白名单校验，非法即拒（fail-closed）。
+    if session_id is not None and str(session_id).strip():
+        sid = str(session_id).strip()
+        if not _SESSION_ID_RE.fullmatch(sid):
+            raise SessionIdError(
+                f"session_id 非法：长度须 1..{_SESSION_ID_MAX}、"
+                "仅允许字母数字与 _.:@=+-（拒绝空格/换行/URL 与 SQL 元字符）"
+            )
+    else:
+        sid = f"ses_{uuid.uuid4().hex[:12]}"
 
     with _sessions_lock:
         # 清理过期
         _evict_stale_locked(now)
 
+        # v21.1（WP-3 · 众神殿）：外部 session_id 若已被【他殿】占用，拒绝覆盖——
+        # 否则 A 传 B 的 session_id 即可静默清空并夺走 B 的会话（owner_mismatch
+        # 只守读侧，写侧此前大开）。同殿重复 start（重连/幂等）放行。
+        existing = _sessions.get(sid)
+        if existing is not None and _owner_mismatch(existing, user_id, bank_id):
+            raise SessionOwnerConflict("session_id 冲突：该 id 已被占用，请改用其它 id")
+
         # 容量控制
         if len(_sessions) >= SESSION_MAX:
             oldest_sid = min(_sessions, key=lambda k: _sessions[k]["last_active"])
-            logger.debug(f"Session 淘汰: {oldest_sid}")
+            logger.debug("Session 淘汰: %s", oldest_sid)
             del _sessions[oldest_sid]
 
         _sessions[sid] = {
@@ -91,7 +121,8 @@ def session_start(user_id: str, bank_id: str = DEFAULT_BANK_ID,
             "context_text": "",
         }
 
-    logger.info(f"Session 创建: {sid} (user={user_id}, bank={bank_id})")
+    # v21.1（S4）：日志用占位符而非 f-string 直插——校验已排除换行，占位是纪律
+    logger.info("Session 创建: %s (user=%s, bank=%s)", sid, user_id, bank_id)
     return {
         "session_id": sid,
         "user_id": user_id,
