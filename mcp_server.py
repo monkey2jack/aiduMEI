@@ -476,24 +476,25 @@ def code_graph_view(path: str = "") -> str:
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = "default") -> str:
+def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = "default",
+                  session_id: str = "") -> str:
     """开始一个新会话，建立记忆锚点。
 
     Args:
         user_id: 用户标识
         bank_id: 记忆库标识
+        session_id: 可选，外部 Agent 自有会话 UUID；不传则服务端生成 ses_*。
 
     Note:
-        会话 id 由**服务端生成**并在响应里返回。此前本工具声明过
-        session_id / metadata 两个参数，而端点并不接收它们（v20.2.4 外审整改
-        中由逐工具对表发现）—— 收了不发比不收更糟，所以签名改成了实话。
+        会话 id 优先采纳外部传入的 session_id，未传则由**服务端生成**并在响应里返回。
     """
-    # v20.2.4（外审 F-21 同族，本轮对表新发现）：端点 session_start 的签名是
-    # (user_id, bank_id) —— 此前发的 session_id / metadata **两个都不被接收**，
-    # 会话 id 一直是服务端自己生成的。收了参数却不发送，是给调用方一个假承诺；
-    # 与其留着骗人，不如让签名说实话。
+    # v21.1（S6）：v20.2.4 曾删掉本参数——因当时端点 /session/start 的签名是
+    # (user_id, bank_id)、**根本不接收** session_id，声明即假承诺。v21.0.1 起端点
+    # 已真正接收 session_id（外部 Agent 原生 UUID 优先），故本工具随之加回，与
+    # route/plugin 三入口契约对齐——签名说的仍是实话，只是「实话」的内容变了。
     result = _api_post("/session/start", None,
-                       params={"user_id": user_id, "bank_id": bank_id})
+                       params={"user_id": user_id, "bank_id": bank_id,
+                               "session_id": session_id})
     return _ok(result)
 
 

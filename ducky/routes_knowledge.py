@@ -62,7 +62,8 @@ def register_knowledge_routes(app: FastAPI) -> None:
         scope = _require_scope(user_id, bank_id)
         conn = get_facts_conn()
         try:
-            if not _memory_visible_in_scope(memory_id, conn, scope.user_id, scope.bank_id):
+            visible = _memory_visible_in_scope(memory_id, conn, scope.user_id, scope.bank_id)
+            if not visible:
                 raise HTTPException(status_code=404, detail="memory not found")
             cur = conn.execute(
                 "SELECT * FROM knowledge_evolution WHERE source_id=? OR target_id=? "
@@ -71,11 +72,23 @@ def register_knowledge_routes(app: FastAPI) -> None:
             chain = [dict(zip(cols, row)) for row in cur.fetchall()]
         finally:
             conn.close()
+        # v21.1（众神殿 WP-6）：fact:NNN 经域校验 = 拥有本殿事实 → 完整链。
+        # UUID 不可域校验（knowledge_evolution 无殿列，v21.0 裁决保留可见以免 69%
+        # 误杀），但链上的 reason 与 origin 三件套可能含内容片段/会话身份——跨殿
+        # 人格独立，这些字段一律脱敏，只留关系结构（source/target/relation/confidence）。
+        owns = memory_id.startswith("fact:")
+        if not owns:
+            _SENSITIVE = ("reason", "origin_agent", "origin_session_id", "origin_turn")
+            for row in chain:
+                for k in _SENSITIVE:
+                    if k in row:
+                        row[k] = ""
         return {
             "status": "ok",
             "memory_id": memory_id,
             "count": len(chain),
             "chain": chain,
+            "redacted": not owns,
         }
 
     @app.get("/dossier/scope-hint")
@@ -88,10 +101,18 @@ def register_knowledge_routes(app: FastAPI) -> None:
         return {"status": "ok", "user_id": DEFAULT_USER_ID, "bank_id": DEFAULT_BANK_ID}
 
     @app.get("/dossier", response_class=PlainTextResponse)
-    def memory_dossier(user_id: str = "", bank_id: str = "", download: int = 0):
+    def memory_dossier(user_id: str = "", bank_id: str = "", download: int = 0,
+                       caller_user_id: str = ""):
         """导出该域的完整记忆档案（Markdown）。"""
         from ducky.dossier import build_dossier_data, render_markdown
         scope = _require_scope(user_id, bank_id)
+        # v21.1 众神殿：跨殿导出须持 export 借阅（caller 空/==user_id 放行=导出自己殿）
+        from ducky.pantheon import authorize_cross_hall
+        try:
+            authorize_cross_hall(scope.user_id, caller_user_id,
+                                 bank_id=scope.bank_id, action="export")
+        except Exception as e:
+            raise HTTPException(status_code=403, detail=str(e))
         data = build_dossier_data(scope.user_id, scope.bank_id)
         text = render_markdown(data)
         headers = {}

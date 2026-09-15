@@ -318,7 +318,10 @@ def restore_tombstone(
                 fr = json.loads(facts_snapshot)
                 # 剔除自增主键与快照元字段，让 facts 表重新分配 id
                 fr.pop("id", None)
-                cols = [k for k in fr.keys() if k not in ("id",)]
+                # v21.1（WP-10）：cols 来自快照 JSON 键，若快照被污染则成标识符注入面——
+                # 用 facts 表实际列做白名单，剔除未知列（防御纵深）。
+                _valid = {r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
+                cols = [k for k in fr.keys() if k != "id" and k in _valid]
                 if cols:
                     placeholders = ",".join("?" for _ in cols)
                     conn.execute(

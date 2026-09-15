@@ -72,6 +72,7 @@ _BASELINE: dict[str, tuple[int, str]] = {
     "ducky/federation/broadcast.py": (1, "广播表自身键；豁免"),
     "ducky/federation/schema.py": (1, "schema 迁移 DDL 内片段；豁免"),
     "ducky/self_edit.py": (1, "自编辑精确匹配；待迁"),
+    "ducky/pantheon.py": (8, "v21.1 众神殿：殿主体表——user_id 是殿主键(pantheon_halls)、grantor/grantee_user_id 是借阅主体(hall_grants)，属主体标识而非记忆的二维租户 scope；精确主键匹配，刻意不走 scope_clause（那是记忆表租户过滤的出口）"),
 }
 
 # 正规入口自身，不参与普查（片段本来就是它们的职责）。

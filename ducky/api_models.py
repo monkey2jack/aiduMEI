@@ -129,6 +129,9 @@ class SearchRequest(BaseModel):
     query: str = Field(default=..., max_length=10000)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    # v21.1 众神殿：跨殿借阅——调用方声明「我是哪座殿」(caller)。空或 ==user_id
+    # 表示读自己殿/主人直连（放行）；与 user_id 不同则须持目标殿的有效借阅（否则拒）。
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
     limit: int = Field(default=5, ge=1, le=100)
     # MCP 等调用方传的是 top_k；显式接收，避免被 Pydantic 静默丢弃
     # 导致调用方指定数量永远不生效（P2-1 审计发现）。
