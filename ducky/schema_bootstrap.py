@@ -131,7 +131,7 @@ _INDEXES = (
 _lock = threading.Lock()
 _done = False
 
-CURRENT_SCHEMA_VERSION = 7  # v21.0 收口（生产用户审计 🔴-1）：memory_epistemic sidecar（mem0 主链路腿出身登记）；v21 preview: epistemic 出身标签 + provenance 三件套 + 两新表
+CURRENT_SCHEMA_VERSION = 8  # v21.1 众神殿：pantheon_halls 殿注册表 + hall_grants 跨殿借阅；v21.0 收口：memory_epistemic sidecar；v21 preview: epistemic 出身标签 + provenance 三件套 + 两新表
 
 
 def apply_migrations(conn) -> None:
@@ -364,6 +364,45 @@ def apply_migrations(conn) -> None:
             conn.commit()
             logger.info("数据库秒级增量升级 v7 成功 ✅")
             user_version = 7
+
+        # 版本迁移流：Version 7 -> Version 8
+        # v21.1 众神殿：每个 bot/profile 一座殿（user_id 为殿主键）。pantheon_halls 存殿
+        # 元数据（显示名/描述/启停）；hall_grants 存跨殿借阅（本殿显式授权他殿 read/export，
+        # 可撤销、可过期）——主体一律 user_id（殿），与 core 隔离维度对齐。全 additive。
+        if user_version < 8:
+            logger.info("执行数据库增量升级：v7 -> v8 (众神殿 pantheon_halls + hall_grants)")
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS pantheon_halls (
+                        user_id TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL DEFAULT '',
+                        description TEXT DEFAULT '',
+                        active INTEGER NOT NULL DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );""")
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS hall_grants (
+                        grant_id TEXT PRIMARY KEY,
+                        grantor_user_id TEXT NOT NULL,
+                        grantee_user_id TEXT NOT NULL,
+                        actions TEXT NOT NULL DEFAULT 'read',
+                        bank_id TEXT NOT NULL DEFAULT '*',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        expires_at TIMESTAMP,
+                        revoked_at TIMESTAMP,
+                        created_by TEXT NOT NULL DEFAULT ''
+                    );""")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_hall_grants_grantee "
+                    "ON hall_grants(grantee_user_id, grantor_user_id)")
+            except Exception as e:
+                logger.debug(f"众神殿建表跳过: {e}")
+
+            conn.execute("PRAGMA user_version = 8")
+            conn.commit()
+            logger.info("数据库秒级增量升级 v8 成功 ✅")
+            user_version = 8
 
     except Exception as exc:
         logger.error("数据库增量补丁执行异常 (服务继续启动): %s", exc)

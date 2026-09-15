@@ -510,49 +510,54 @@ def run_reflect(
         {"status": "ok", "insights": [...], "saved": int, "source": ..., "llm_used": bool}
     """
     # v21 F2：反思触发的写入在溯源上下文里如实标记来源（reflect:<source>）。
-    from ducky.origin_context import set_origin
-    set_origin(agent=f"reflect:{source}")
+    # v21.1（WP-7）：token 配对 + try/finally 复位——与 hot/add.py 各写入通路一致，
+    # 兑现 origin_context「入口先 set、出口必复位、无 stale leak」的承诺；否则反思
+    # 跑完不复位，后续任何「读 origin 却没先 set」的演化写入会落上一次反思的残值。
+    from ducky.origin_context import set_origin, reset_origin
+    _origin_token = set_origin(agent=f"reflect:{source}")
+    try:
+        ensure_reflect_schema()
+        # 非法 bank_id 让 BankScopeError 直接抛给调用方（路由层统一转 error dict）
+        bank = normalize_bank_id(bank_id or "default")
+        mem = memory
+        if mem is None:
+            try:
+                from ducky.mem0_runtime import get_memory
+                mem = get_memory()
+            except Exception:
+                mem = None
 
-    ensure_reflect_schema()
-    # 非法 bank_id 让 BankScopeError 直接抛给调用方（路由层统一转 error dict）
-    bank = normalize_bank_id(bank_id or "default")
-    mem = memory
-    if mem is None:
-        try:
-            from ducky.mem0_runtime import get_memory
-            mem = get_memory()
-        except Exception:
-            mem = None
+        if topic and mem is not None:
+            memories = _gather_topic_memories(mem, user_id, topic, top_k, bank_id=bank)
+        else:
+            memories = _gather_recent_memories(mem, user_id, top_k, bank_id=bank) if mem is not None else []
+        facts = _gather_recent_facts(max(10, top_k // 2), user_id=user_id, bank_id=bank)
 
-    if topic and mem is not None:
-        memories = _gather_topic_memories(mem, user_id, topic, top_k, bank_id=bank)
-    else:
-        memories = _gather_recent_memories(mem, user_id, top_k, bank_id=bank) if mem is not None else []
-    facts = _gather_recent_facts(max(10, top_k // 2), user_id=user_id, bank_id=bank)
+        if not memories and not facts:
+            return {"status": "ok", "insights": [], "saved": 0, "source": source, "llm_used": False}
 
-    if not memories and not facts:
-        return {"status": "ok", "insights": [], "saved": 0, "source": source, "llm_used": False}
+        raw = call_llm(
+            _build_prompt(memories, facts),
+            system=REFLECT_SYSTEM,
+            max_tokens=1024,
+            temperature=0.3,
+        )
+        insights = _parse_insights(raw)
+        saved = save_insights(insights, user_id, source, bank_id=bank) if (save and insights) else 0
 
-    raw = call_llm(
-        _build_prompt(memories, facts),
-        system=REFLECT_SYSTEM,
-        max_tokens=1024,
-        temperature=0.3,
-    )
-    insights = _parse_insights(raw)
-    saved = save_insights(insights, user_id, source, bank_id=bank) if (save and insights) else 0
-
-    logger.info(
-        "🧠 Reflect 完成: user=%s source=%s 提炼=%d 落库=%d",
-        user_id, source, len(insights), saved,
-    )
-    return {
-        "status": "ok",
-        "insights": insights,
-        "saved": saved,
-        "source": source,
-        "llm_used": raw is not None,
-    }
+        logger.info(
+            "🧠 Reflect 完成: user=%s source=%s 提炼=%d 落库=%d",
+            user_id, source, len(insights), saved,
+        )
+        return {
+            "status": "ok",
+            "insights": insights,
+            "saved": saved,
+            "source": source,
+            "llm_used": raw is not None,
+        }
+    finally:
+        reset_origin(_origin_token)
 
 
 def get_reflections(

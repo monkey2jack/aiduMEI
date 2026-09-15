@@ -107,6 +107,10 @@ def register_v8_routes(app: FastAPI) -> None:
     def recall_chain(req: SearchRequest, max_depth: int = 3):
         """记忆广播链：从一条查询出发，发现关联记忆（3 层传播）"""
         try:
+            # v21.1 众神殿：跨殿检索须持借阅（caller 空/==user_id 放行=读自己殿）
+            from ducky.pantheon import authorize_cross_hall
+            authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
+                                 bank_id=req.bank_id, action="read")
             mem = get_memory()
             from ducky.memory_broadcast import broadcast_chain
             result = broadcast_chain(mem, req.query, req.user_id,
@@ -178,6 +182,10 @@ def register_v8_routes(app: FastAPI) -> None:
         if not session_id:
             return {"status": "error", "detail": "需要 session_id"}
         try:
+            # v21.1 众神殿：会话内跨殿检索同样须持借阅（caller 空/==user_id 放行）
+            from ducky.pantheon import authorize_cross_hall
+            authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
+                                 bank_id=req.bank_id, action="read")
             mem = get_memory()
             from ducky.memory_persistence import session_search as _session_search
             return _session_search(mem, session_id, req.query, req.limit, use_context,

@@ -291,10 +291,14 @@ class AiduMemProvider(MemoryProvider):
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        from urllib.parse import quote
         self._session_id = session_id
-        res = self._client.try_request(
-            "POST", f"/session/start?session_id={session_id}", timeout=_CONNECT_TIMEOUT
-        )
+        # v21.1（众神殿）：会话必须建在当前殿（user_id），否则 session_end 的反思会
+        # 跑在 default 殿而非本 bot 的记忆域——须与 /add /search 用的 user_id 对齐。
+        # session_id 一律 quote：外部 Agent 原生 UUID 若含 & / # / 空格不会破坏 query。
+        qs = (f"/session/start?session_id={quote(str(session_id), safe='')}"
+              f"&user_id={quote(self._client.user_id, safe='')}")
+        res = self._client.try_request("POST", qs, timeout=_CONNECT_TIMEOUT)
         if isinstance(res, dict) and res.get("session_id"):
             self._session_id = str(res["session_id"])
 
@@ -476,9 +480,14 @@ class AiduMemProvider(MemoryProvider):
         sid = self._session_id
         if not sid:
             return
+        from urllib.parse import quote
 
         def _end():
-            self._client.try_request("POST", f"/session/end?session_id={sid}", timeout=_WRITE_TIMEOUT)
+            # v21.1（众神殿）：带上当前殿 user_id，session_end 反思落回本 bot 的殿；
+            # sid 一律 quote，防特殊字符破坏 query（与 initialize 对称）。
+            qs = (f"/session/end?session_id={quote(str(sid), safe='')}"
+                  f"&user_id={quote(self._client.user_id, safe='')}")
+            self._client.try_request("POST", qs, timeout=_WRITE_TIMEOUT)
 
         self._spawn(_end, "aidumem-session-end")
 
