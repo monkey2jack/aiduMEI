@@ -21,6 +21,7 @@ from ducky.routes_config import register_config_routes
 from ducky.routes_evolve import register_evolve_routes
 from ducky.routes_obsidian import register_obsidian_routes
 from ducky.routes_knowledge import register_knowledge_routes
+from ducky.routes_pantheon import register_pantheon_routes
 from ducky.routes_p0 import register_p0_routes
 from ducky.routes_p1 import register_p1_routes
 from ducky.routes_persona import register_persona_routes
@@ -77,5 +78,6 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
 
     # 16. 注册 v21 知识治理只读端点（演化审计 / 记忆档案导出）
     register_knowledge_routes(app)
+    register_pantheon_routes(app)
 
     logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus + v18.1 EvolveMem + aiduMEI 配置 + Obsidian + v19.0 Reflect/类型分离/人格基座 + v21 知识治理)")

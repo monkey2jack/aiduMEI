@@ -9,7 +9,7 @@
 > Let your AI Agent **actually remember you**: hybrid retrieval + governance + a visual console + dual-engine autoshift. A **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **v21.0 (formal)** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, first of its kind.** v21.0 ships the cognitive-governance batch: epistemic origin tagging, knowledge provenance, one-click memory dossier export — the production user audit (2🔴 3🟡 3🟢) is fully closed. See [CHANGELOG](CHANGELOG.md).
+> The current public release is **v21.1 (formal)** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, Pantheon multi-bot memory personas, first of its kind.** v21.1 lays the Pantheon foundation: multiple bots/profiles each in their own hall with independent memory personas and cross-hall isolation by default; includes v21.0 cognitive governance (epistemic origin tagging, knowledge provenance, one-click dossier export). See [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -122,8 +122,8 @@ The full registry lives in `ducky/env_registry.py` (code is the source of truth;
 
 | Dimension | Status |
 |---|---|
-| Total cases | **2034** (measured via `pytest --collect-only`, 2026-09-14, v21-dev tree) = **1828 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
-| Clean dev machine | 2022 passed · **12 skipped** — **measured 2026-09-14** (v21-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **2048** (measured via `pytest --collect-only`, 2026-09-15, v21.1-dev tree) = **1842 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
+| Clean dev machine | 2036 passed · **12 skipped** — **measured 2026-09-15** (v21.1-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09** (v20.5a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
@@ -139,7 +139,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2022 and 1821**: the first is the 2026-09-14 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only, this tree). A number only means anything with its environment and date attached.
+> **Why report both 2036 and 1821**: the first is the 2026-09-15 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
 
 > **The 12 skips are falsifiable, reproduce them yourself**: all thirteen skip axes (host, tools, optional deps, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state controllable, reproducible in both directions:
 >
@@ -148,12 +148,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2022 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2034 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2022 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2036 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2048 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2036 passed, 12 skipped
 > ```
 >
-> `2034 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2048 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

@@ -603,6 +603,8 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "reflection_candidates": ("clean", "v21 反思质量门候选表含候选全文（§16，随 F5 同版接线）：(user_id, bank_id) 谓词删除——被拒/待审的认知草稿也是用户数据"),
     "retrieval_weights": ("clean", "v21 检索权重学习表（§16）：(user_id, bank_id) 谓词删除——学出来的偏好画像同样属于租户数据"),
     "memory_epistemic": ("clean", "v21.0 收口：mem0 腿出身 sidecar（§16）：(user_id, bank_id) 谓词删除——出身标签随记忆同属租户数据"),
+    "pantheon_halls":   ("exempt", "v21.1 众神殿殿注册表：行是「殿存在过」的元数据（显示名/描述/启停），不含记忆正文；删殿走软删（active=0，deactivate_hall）不注销殿名——同 memory_banks 语义，避免删后同名殿复用造成审计断代；记忆本身按 (user_id,bank_id) 谓词经上列各表清理"),
+    "hall_grants":      ("exempt", "v21.1 众神殿跨殿借阅凭据（grantor/grantee/actions，无记忆正文）：随殿停用撤销、随借阅生命周期管理——同 federation_grants 语义"),
     # ── facts.db 之外的存储 ──
     "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
     "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),

@@ -376,8 +376,12 @@ def register_legacy_routes(app):
         conn = _get_facts_conn()
         w_clause, w_params = tenant_clause(user_id, bank_id=normalize_bank_id(bank_id), conn=conn)
         cur = conn.cursor()
+        # v21.1（众神殿 WP-4）：读侧也挂殿作用域——此前只有写侧 UPDATE 带 w_clause，
+        # 读侧全库拉取，dry_run 即把他殿的 fact_key/fact_value 装进响应（还上"甲5→丙9"欠账）。
         rows = cur.execute(
-            "SELECT id,category,fact_key,fact_value,trust_score FROM facts WHERE archived=0 ORDER BY updated_at DESC LIMIT 200"
+            "SELECT id,category,fact_key,fact_value,trust_score FROM facts WHERE archived=0"
+            + w_clause + " ORDER BY updated_at DESC LIMIT 200",
+            w_params,
         ).fetchall()
         if len(rows) < 2:
             conn.close()
@@ -452,12 +456,13 @@ def register_legacy_routes(app):
         conn = _get_facts_conn()
         w_clause, w_params = tenant_clause(user_id, bank_id=normalize_bank_id(bank_id), conn=conn)
         cur = conn.cursor()
-        cur.execute("""
+        # v21.1（众神殿 WP-4）：读侧子查询挂殿作用域，堵住他殿正文进响应（同 v2 修法）。
+        cur.execute(f"""
             SELECT category, COUNT(*) as cnt, GROUP_CONCAT(id) as ids
-            FROM (SELECT id,category,trust_score FROM facts WHERE archived=0 AND trust_score>=?
+            FROM (SELECT id,category,trust_score FROM facts WHERE archived=0 AND trust_score>=?{w_clause}
                   ORDER BY id DESC LIMIT 500)
             GROUP BY category HAVING COUNT(*)>=2 ORDER BY cnt DESC LIMIT 10
-        """, (min_trust,))
+        """, (min_trust, *w_params))
         groups = cur.fetchall()
         contradictions, audited = [], 0
         skipped_out_of_scope = 0

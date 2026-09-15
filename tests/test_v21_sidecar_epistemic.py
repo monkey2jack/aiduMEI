@@ -43,7 +43,7 @@ def setup_test_db():
 def test_v7_sidecar_table_lands():
     from ducky.schema_bootstrap import CURRENT_SCHEMA_VERSION
     conn = utils.get_facts_conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
     cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_epistemic)").fetchall()}
     assert {"memory_ref", "epistemic_mode", "user_id", "bank_id", "source"} <= cols
     conn.close()

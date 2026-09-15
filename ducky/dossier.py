@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ducky.utils import DEFAULT_USER_ID, get_facts_conn
+from ducky.utils import get_facts_conn
 
 logger = logging.getLogger("aiduMEM.Dossier")
 
@@ -164,7 +164,7 @@ def render_markdown(data: dict[str, Any]) -> str:
     u, b = data.get("user_id", ""), data.get("bank_id", "")
     s = data.get("sections", {})
     out: list[str] = []
-    out.append(f"# 记忆档案（Memory Dossier）")
+    out.append("# 记忆档案（Memory Dossier）")
     out.append("")
     out.append(f"> 域：`{u}` / `{b}` · 由 aiduMEI v21 导出 · "
                "user_provided=用户亲口事实 · reasoned=AI 推断（未经验证）")

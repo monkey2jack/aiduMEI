@@ -532,10 +532,14 @@ def _load_type_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[s
     return type_map
 
 
-def _load_epi_map(candidates: List[dict]) -> Dict[str, str]:
+def _load_epi_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[str, str]:
     """v21.0 收口（生产用户审计 🔴-1）：sidecar memory_epistemic 批量加载——
     mem0 主链路腿的出身。键的构造与类型账本同一点（memory_type_ref），
-    同一纪律：单次 SQL 批量加载，零 N+1；表不在（未迁移库）如实空表。"""
+    同一纪律：单次 SQL 批量加载，零 N+1；表不在（未迁移库）如实空表。
+
+    v21.1（WP-10/众神殿 T5）：补 (user_id,bank_id) 域作用域，与同胞
+    _load_type_map 口径一致——memory_epistemic 有域键、写入侧按殿精确 stamp，
+    出身乘数只认本殿登记，不跨殿借他殿的出身。"""
     epi_map: Dict[str, str] = {}
     try:
         from ducky.memory_types import memory_type_ref
@@ -549,10 +553,16 @@ def _load_epi_map(candidates: List[dict]) -> Dict[str, str]:
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
             if "memory_epistemic" not in tables:
                 return epi_map
+            # v21.1（WP-10/众神殿 T5）：走 scope_clause 统一入口而非手拼作用域片段
+            # （scope_sql 棘轮铁律：作用域一律经 scope_clause，不新增手拼点）。
+            from ducky.scope_sql import scope_clause
+            from ducky.bank_contract import make_scope
+            frag, sparams = scope_clause(make_scope(user_id, bank_id), flavor="canonical")
             placeholders = ",".join("?" for _ in refs)
             for ref, mode in conn.execute(
                     f"SELECT memory_ref, epistemic_mode FROM memory_epistemic "
-                    f"WHERE memory_ref IN ({placeholders})", refs):
+                    f"WHERE memory_ref IN ({placeholders}){frag}",
+                    (*refs, *sparams)):
                 epi_map[ref] = mode
         finally:
             conn.close()
@@ -701,7 +711,7 @@ def score_and_rank_candidates(
     # 2. 批量查询 Memory Types（单次 SQL 批量加载，彻底消除 N+1 数据库往返）
     type_map = _load_type_map(candidates, user_id, bank_id)
     # v21.0 收口：sidecar 出身同纪律批量加载（mem0 主链路腿）
-    epi_map = _load_epi_map(candidates)
+    epi_map = _load_epi_map(candidates, user_id, bank_id)
 
     scored: List[dict] = []
     _gate_on = _evidence_gate_on()

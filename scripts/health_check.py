@@ -167,7 +167,7 @@ except Exception as e:
 
 # ═══════════ 汇总 ═══════════
 total_ms = int((time.time() - start) * 1000)
-all_ok = all(v.get("ok") for v in checks.values())
+all_ok = bool(checks) and all(v.get("ok") for v in checks.values())
 
 # 这一行是运维直接读的输出，属用户可见门面，用当前品牌名。
 # 本文件其余 aiduMEM 都在注释里（不露脸），刻意不动。

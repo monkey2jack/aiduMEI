@@ -47,7 +47,7 @@ def _cols(conn, table):
 def test_v6_migration_lands_all_columns_and_tables():
     from ducky.schema_bootstrap import CURRENT_SCHEMA_VERSION
     conn = utils.get_facts_conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
 
     facts_cols = _cols(conn, "facts")
     assert "epistemic_mode" in facts_cols
@@ -78,7 +78,7 @@ def test_v6_migration_idempotent():
     conn = utils.get_facts_conn()
     apply_migrations(conn)  # 重跑不炸
     apply_migrations(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 # ── 2. resolve_epistemic 映射表 ─────────────────────────────────────────────

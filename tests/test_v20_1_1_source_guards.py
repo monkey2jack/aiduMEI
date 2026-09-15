@@ -153,6 +153,10 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/routes_knowledge.py", "frag"),
     # v21.0 收口：scoring sidecar 批量查询的 IN 占位符拼接（结构性，无请求数据）
     ("ducky/scoring.py", "placeholders"),
+    # v21.1(WP-10)：_load_epi_map 走 scope_clause() 产出的 canonical 片段（结构性，值走 ? params）
+    ("ducky/scoring.py", "frag"),
+    # v21.1 众神殿：list_hall_grants 的 {col} 是 grantor/grantee_user_id 字面量二选一（无外部输入，值走 ?）
+    ("ducky/pantheon.py", "col"),
     # v21 preview：dossier evolve 段计数查询的表名插值——三个表名全是本文件
     # 内硬编码字面量（evolve_queries/feedback/adjustments），无任何外部输入
     ("ducky/dossier.py", "table"),
@@ -182,6 +186,8 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/hot/legacy_routes.py", "','.join('?' * len(ids))"),
     ("ducky/hot/legacy_routes.py", "placeholders"), ("ducky/hot/legacy_routes.py", "scope_sql"),
     ("ducky/hot/legacy_routes.py", "t_clause"), ("ducky/hot/legacy_routes.py", "where"),
+    # v21.1(WP-4)：prune 读侧补 tenant_clause 产出的 w_clause（结构性，值走 ? w_params）
+    ("ducky/hot/legacy_routes.py", "w_clause"),
     ("ducky/memory_types.py", "DEFAULT_BANK_ID"), ("ducky/memory_types.py", "LEGACY_PLACEHOLDER_USER_ID"),
     ("ducky/memory_types.py", "column"), ("ducky/memory_types.py", "ddl"),
     # v20.3.2-beta（外审 P1-A）：_table_columns() 的 PRAGMA table_info({table})。
@@ -325,6 +331,9 @@ _MIGRATION_LEDGER = {
     ("ducky/schema_bootstrap.py", "CREATE", "retrieval_weights"),
     # v21.0 收口（生产用户审计 🔴-1）：mem0 腿出身 sidecar
     ("ducky/schema_bootstrap.py", "CREATE", "memory_epistemic"),
+    # v21.1 众神殿（schema v8）：殿注册表 + 跨殿借阅，全 additive
+    ("ducky/schema_bootstrap.py", "CREATE", "pantheon_halls"),
+    ("ducky/schema_bootstrap.py", "CREATE", "hall_grants"),
     ("ducky/self_edit.py", "CREATE", "memory_edits"),
     ("ducky/skill_crystallizer.py", "ALTER", "skill_crystals"),
     ("ducky/skill_crystallizer.py", "CREATE", "skill_crystals"),

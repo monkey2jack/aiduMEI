@@ -34,6 +34,28 @@ v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-0
        匿名可见裁决保留（理由入 docs/HEALTH.md）；异步一致性窗口与冷启动
        语义入双语 README 与 AGENTS.md；评审申请须标被审代码位置入 SOP。
 
+v21.1.0 (众神殿地基版 · 多 bot/多 profile 域隔离 + v21.0.1 会话补丁收口 · 2026-09-15)
+    主题：**记忆有殿，人格独立——多 bot 各据一殿，跨殿不串味。**（定位①：单主人多分身）
+    1. 众神殿殿注册表 + 管理 API（schema v8 pantheon_halls：创建/列出/查/停用软删，删殿不删记忆）。
+    2. 跨殿借阅（schema v8 hall_grants：grant/revoke/list，可撤销可过期 fail-closed；主体=user_id 殿）。
+    3. 借阅在 core 读路径真生效：SearchRequest 加 caller_user_id，recall_chain/session_search/dossier
+       跨殿须持借阅（caller 空/==user_id 放行=读自己殿/主人直连）。
+    4. WP-2 反思落对殿：plugin 建/结束会话带当前殿 user_id，session_end 反思不再跑 default 殿。
+    5. WP-3 拒绝跨殿会话夺权：session_start 写入前 owner 检查，他殿占用即拒。
+    6. WP-5 session_id 白名单校验 + 日志占位（拒空格/换行/URL·SQL 元字符）。
+    7. WP-7 reflect 溯源上下文 token 配对复位（无 stale leak）。
+    8. S5/S6 plugin 拼 URL quote() + MCP session_start 加回 session_id（三入口契约对齐）。
+    9. WP-4 prune 读侧补域：不跨库比矛盾（读侧此前全库拉取）。
+    10. WP-6 evolution UUID 跨殿脱敏：reason 与 origin 三件套只对拥有本殿事实者完整可见。
+    11. WP-8 债务归真：caller 密码学绑定/WORM 在①定位改判「不适用」；F4–F9「三态开关/
+        影子起步」措辞归真为「schema 就位·逻辑未接线」。
+    12. WP-9 死代码登记：reflection_candidates/retrieval_weights/superseded_by 三空壳明标预留。
+    13. WP-10 防御纵深：出身乘数查询走 scope_clause 补域 / 墓碑恢复列名白名单 / 健康探针非空判。
+    14. 守卫：新增 tests/test_v21_1_session_domain.py 与 tests/test_v21_1_pantheon.py 红→绿对照。
+    15. 用例总数 2034 → 2048（--collect-only）。
+    保留边界：core 路由 user_id 仍自报——①下同一主人多分身、无外部越权威胁。详见
+    CHANGELOG「## v21.1.0」段。
+
 v21.0.1 (维护版 · 外部 Agent session 生命周期契约闭环 · 2026-09-14)
     主题：**会话生命周期双向闭环，拒绝静默丢弃。**
     1. ducky/routes_v8.py 的 /session/start 路由与 ducky/pipeline/memory_persistence.py 支持可选 session_id 参数，优先采纳外部 Agent 原生会话 UUID，未传保持 ses_* 兜底。
@@ -178,7 +200,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "21.0.1"
+SERVICE_VERSION = "21.1.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -192,6 +214,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("21.1.0", "", "v21.1", "众神殿地基版 · 多 bot/多 profile 域隔离（读侧补域/evolution 跨殿脱敏）+ v21.0.1 会话补丁收口 · 2026-09-15"),
     ("21.0.1", "", "v21.0.1", "补丁版 · 外部 Agent session 生命周期契约闭环（/session/start 接收 session_id）· 2026-09-14"),
     ("21.0", "", "v21.0", "正式版 · EchoMind 融改认知治理全量版 + 生产用户审计收口 · 2026-09-14"),
     ("20.5.1", "", "v20.5.1", "维护版 · 四份审计整合收口 · CI失防根修 · 联邦接缝与作用域构建器 · 2026-09-11"),
