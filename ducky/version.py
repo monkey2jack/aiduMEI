@@ -8,6 +8,13 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v21.1.1 (文档补丁 · 内存挡位选择指导 + 冷备 v21.2 roadmap · 2026-09-15)
+    主题：**让部署 Agent 看懂内存挡位取舍。** 无代码功能变化，测试基线不变。
+    1. README.md / README_EN.md 补「按机器内存选挡」指导：auto 常驻热备（+174MB 换断网全量召回韧性）vs cloud（~280MB，无本地备胎）。
+    2. README.md / README_EN.md 加冷备 v21.2 roadmap：本地模型不常驻、cloud 故障时加载 + 批量补算存量本地向量、degraded 窗口 ∝ 库大小（中小库实测十几秒）。
+    3. 版本号补丁位五文件对齐（pyproject.toml / manifest.json / CHANGELOG.md / README banner 保持两段 v21.1）。
+    4. 用例总数 2048 → 2048（纯文档补丁，无新增用例；--collect-only 实测本树）。
+
 v20.4.1 (正式版 · 四方网页外审 + 用户审计整改收口 · 2026-09-09)
     主题：**防线接入链路，复杂度开始回吐。**
     四方网页版外审（GPT Luna / Sonnet 5 / Grok / Gemini 3.8 Flash）经逐条
@@ -200,7 +207,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "21.1.0"
+SERVICE_VERSION = "21.1.1"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -214,6 +221,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("21.1.1", "", "v21.1.1", "文档补丁 · 内存挡位选择指导 + 冷备 v21.2 roadmap · 2026-09-15"),
     ("21.1.0", "", "v21.1", "众神殿地基版 · 多 bot/多 profile 域隔离（读侧补域/evolution 跨殿脱敏）+ v21.0.1 会话补丁收口 · 2026-09-15"),
     ("21.0.1", "", "v21.0.1", "补丁版 · 外部 Agent session 生命周期契约闭环（/session/start 接收 session_id）· 2026-09-14"),
     ("21.0", "", "v21.0", "正式版 · EchoMind 融改认知治理全量版 + 生产用户审计收口 · 2026-09-14"),
