@@ -163,6 +163,17 @@ def grant_hall_access(grantor_user_id: str, grantee_user_id: str,
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (gid, gr, ge, acts, bank, expires_at or None, str(created_by or "")),
         )
+        # v21.2 M8：借阅授权进事件账本留痕（来源标记 = 哪端发起）。
+        # 与事实变更同一纪律：在调用方事务内 INSERT，随后一起 commit ——
+        # 授权成功而账没记上，等于留了一条查不到出处的权限。
+        try:
+            from ducky.event_ledger import record_event
+            record_event(conn, actor=str(created_by or gr), action="hall_grant",
+                         target_id=gid,
+                         reason=f"grantor={gr} grantee={ge} actions={acts} bank={bank}",
+                         user_id=gr, bank_id=bank if bank != "*" else "")
+        except Exception as _le:
+            logger.debug("借阅留痕跳过: %s", _le)
         conn.commit()
     finally:
         conn.close()
@@ -181,8 +192,17 @@ def revoke_hall_grant(grant_id: str) -> dict:
         cur = conn.execute(
             "UPDATE hall_grants SET revoked_at=CURRENT_TIMESTAMP "
             "WHERE grant_id=? AND revoked_at IS NULL", (gid,))
-        conn.commit()
         revoked = cur.rowcount
+        # v21.2 M8：只有**真撤到了**才记账 —— 对一条早已撤销（或不存在）的
+        # grant 记一笔「已撤销」，是往账本里写一件没发生过的事。
+        if revoked:
+            try:
+                from ducky.event_ledger import record_event
+                record_event(conn, actor="revoke", action="hall_grant_revoke",
+                             target_id=gid, reason="借阅撤销（终态）")
+            except Exception as _le:
+                logger.debug("借阅撤销留痕跳过: %s", _le)
+        conn.commit()
     finally:
         conn.close()
     return {"grant_id": gid, "revoked": bool(revoked)}

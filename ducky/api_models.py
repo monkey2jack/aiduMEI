@@ -142,6 +142,10 @@ class SearchRequest(BaseModel):
     # P0-4 时间窗口过滤（可选，兼容旧调用方）
     before: str = Field(default="", max_length=64)
     after: str = Field(default="", max_length=64)
+    # v21.2 M2 回声抑制：本次会话 id。传了才过滤「本会话自己刚写入的记忆」；
+    # 不传 = 不过滤（所有存量调用方零破坏）。宿主侧键名沿用 origin_context
+    # 的口径（session_id / hermes_session_id 皆可，路由处归一）。
+    session_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 class SearchResponse(BaseModel):

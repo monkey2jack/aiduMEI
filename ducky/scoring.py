@@ -447,6 +447,9 @@ def _score_one_candidate(
     gate_on: bool,
     epistemic_mult: Optional[Dict[str, float]] = None,
     epi_map: Optional[Dict[str, str]] = None,
+    err_signatures: tuple = (),
+    credit_map: Optional[Dict[str, float]] = None,
+    credit_w: float = 0.0,
 ) -> tuple:
     """对单条候选算五维分、过六型/证据两道闸门，并原地写回分数字段。
 
@@ -487,11 +490,68 @@ def _score_one_candidate(
     if epi_mult != 1.0:
         base_score = round(base_score * epi_mult, 4)
 
+    # v21.2 M6：错误签名命中加成（查询里没有报错标识符时恒为 0，零回归）
+    _err_b = _errsig_factor(content_text, err_signatures)
+    if _err_b:
+        base_score = round(base_score + _err_b, 4)
+        item["_errsig_hit"] = True
+
+    # v21.2 M1：轨迹信用第六维（credit_w 默认 0 → 本段恒不生效，零回归）
+    if credit_w > 0.0:
+        _credit = _credit_factor(item, credit_map)
+        if _credit:
+            base_score = round(base_score + credit_w * _credit, 4)
+            item["_credit"] = round(_credit, 6)
+
     item["_hybrid_score"] = round(base_score, 4)
     item["_epistemic_mult"] = epi_mult
     item["_time_decay"] = round(time_s, 4)
     item["memory_type"] = mtype
     return item, False
+
+
+# ── M6 错误签名通道（v21.2 · 借鉴 Memmy structural channel 的设计思想）──
+# 写入侧由 pattern_extract 抽成 errsig 类硬事实；这里是检索侧的另一半：
+# 查询里带报错标识符时，正文真含同一签名的候选拿一个有界 bonus。
+_ERRSIG_QUERY_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,60}(?:Error|Exception|Warning))\b")
+ERRSIG_BONUS_DEFAULT = 0.10
+
+
+def extract_error_signatures(query: str) -> tuple:
+    """从查询里取出报错签名（CamelCase + Error/Exception/Warning 收尾）。
+
+    纯函数、零 LLM。识别不到返回空元组 —— 绝大多数中文查询走这条,
+    等于整条规则不参与打分（零回归）。"""
+    if not query:
+        return ()
+    return tuple(dict.fromkeys(_ERRSIG_QUERY_RE.findall(query)))
+
+
+def _errsig_bonus() -> float:
+    """错误签名加权（有界，非法值 fail-closed 回默认）。"""
+    raw = os.getenv("AIDUMEI_ERRSIG_BONUS")
+    if raw is None:
+        return ERRSIG_BONUS_DEFAULT
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return ERRSIG_BONUS_DEFAULT
+    if not (0.0 <= val <= 1.0):
+        return ERRSIG_BONUS_DEFAULT
+    return val
+
+
+def _errsig_factor(content_text: str, signatures: tuple) -> float:
+    """候选正文命中查询里的报错签名 → 返回加分；不命中返回 0.0。
+
+    只认**精确出现**，不做模糊匹配：报错名是高辨识度标识符，模糊化
+    只会把噪音放进来（本仓「宁可漏不可错」的检索纪律）。"""
+    if not signatures or not content_text:
+        return 0.0
+    for sig in signatures:
+        if sig in content_text:
+            return _errsig_bonus()
+    return 0.0
 
 
 def _epistemic_factor(item: dict, multipliers: Dict[str, float],
@@ -569,6 +629,195 @@ def _load_epi_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[st
     except Exception as e:
         logger.debug(f"批量查询 memory_epistemic 跳过: {e}")
     return epi_map
+
+
+# ── M1 轨迹信用维度（v21.2 · 默认权重 0 = 行为零变化）──
+CREDIT_WEIGHT_DEFAULT = 0.0
+
+
+def credit_dimension_weight() -> float:
+    """第六维（轨迹信用）的权重。
+
+    **默认 0.0 —— 装上但不生效。** 这是刻意的：Memmy 的参数是否经充分调优
+    无从验证，本仓要先用自己的 /evolve/report 观察一段时间，拿到数据再开。
+    有界 [0, 0.5]，非法值回默认（与其余配置同一 fail-closed 纪律）。"""
+    raw = os.getenv("AIDUMEI_CREDIT_WEIGHT")
+    if raw is None:
+        return CREDIT_WEIGHT_DEFAULT
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return CREDIT_WEIGHT_DEFAULT
+    if not (0.0 <= val <= 0.5):
+        return CREDIT_WEIGHT_DEFAULT
+    return val
+
+
+def _load_credit_map(candidates: List[dict]) -> Dict[str, float]:
+    """批量取轨迹信用（v21.2 M1）。权重为 0 时**直接空表返回**——
+    不生效的维度不该白花一次数据库往返。"""
+    if credit_dimension_weight() <= 0.0:
+        return {}
+    try:
+        from ducky.memory_types import memory_type_ref
+        from ducky.evolve_mem import get_credit_map
+        refs = [r for r in (memory_type_ref(it) for it in candidates) if r]
+        return get_credit_map(refs) if refs else {}
+    except Exception as e:
+        logger.debug(f"批量查询轨迹信用跳过: {e}")
+        return {}
+
+
+def _credit_factor(item: dict, credit_map: Optional[Dict[str, float]]) -> float:
+    """候选的轨迹信用增量（已带 30 天半衰期）。无记录返回 0.0。"""
+    if not credit_map:
+        return 0.0
+    from ducky.memory_types import memory_type_ref
+    try:
+        return float(credit_map.get(memory_type_ref(item), 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def echo_suppress_enabled() -> bool:
+    """v21.2 M2：回声抑制开关（默认开）。
+
+    非法值按「开」处理 —— 与 load_epistemic_multipliers 同一 fail-closed
+    纪律：配置写错不该悄悄改变默认的安全行为。"""
+    return os.getenv("AIDUMEI_ECHO_SUPPRESS", "1").strip() not in ("0", "false", "False")
+
+
+def _load_echo_refs(candidates: List[dict], session_id: str,
+                    user_id: str, bank_id: str) -> set:
+    """v21.2 M2（借鉴 Memmy turn_start 排除本 session L1 的设计思想）：
+    取出「本次会话自己刚写入」的候选 ref。
+
+    与 _load_epi_map / _load_type_map 同一纪律：单次批量 SQL、零 N+1、
+    走 scope_clause 正规入口、表不在或未迁移库如实返回空集（= 不过滤，
+    存量库行为逐字不变）。session_id 为空一律不过滤 —— 空不是「匹配空串」，
+    是「无从判断」，宁可不滤也不误杀。"""
+    echo: set = set()
+    if not session_id or not candidates:
+        return echo
+    try:
+        from ducky.memory_types import memory_type_ref
+        from ducky.utils import get_facts_conn
+        refs = [r for r in (memory_type_ref(it) for it in candidates) if r]
+        if not refs:
+            return echo
+        conn = get_facts_conn()
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_epistemic)")}
+            if "origin_session_id" not in cols:
+                return echo  # 未迁到 schema v9：无数据面，不过滤
+            from ducky.scope_sql import scope_clause
+            from ducky.bank_contract import make_scope
+            frag, sparams = scope_clause(make_scope(user_id, bank_id), flavor="canonical")
+            placeholders = ",".join("?" for _ in refs)
+            for row in conn.execute(
+                    f"SELECT memory_ref FROM memory_epistemic "
+                    f"WHERE memory_ref IN ({placeholders}) "
+                    f"AND origin_session_id = ?{frag}",
+                    (*refs, session_id, *sparams)):
+                echo.add(row[0])
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug(f"回声抑制查询跳过（按不过滤降级）: {e}")
+    return echo
+
+
+def _drop_echo(candidates: List[dict], echo_refs: set) -> List[dict]:
+    """滤掉本 session 自己刚写入的候选（v21.2 M2）。"""
+    if not echo_refs:
+        return candidates
+    from ducky.memory_types import memory_type_ref
+    kept = []
+    for item in candidates:
+        if memory_type_ref(item) in echo_refs:
+            logger.info("回声抑制: %s '%s'",
+                        str(item.get("id", ""))[:8], str(item.get("memory", ""))[:20])
+            continue
+        kept.append(item)
+    return kept
+
+
+# ── M4 MMR 多样性（借鉴 Memmy 的 0.7·relevance − 0.3·redundancy，独立实现）──
+MMR_LAMBDA_DEFAULT = 0.7
+
+
+def _mmr_config():
+    """读 MMR 开关与 lambda。非法值 fail-closed 回默认（与乘数同纪律）。"""
+    enabled = os.getenv("AIDUMEI_MMR_ENABLED", "1").strip() not in ("0", "false", "False")
+    raw = os.getenv("AIDUMEI_MMR_LAMBDA")
+    lam = MMR_LAMBDA_DEFAULT
+    if raw is not None:
+        try:
+            val = float(raw)
+            if 0.0 <= val <= 1.0:
+                lam = val
+        except (TypeError, ValueError):
+            pass  # 非法：回默认，不炸检索
+    return enabled, lam
+
+
+def _redundancy(item: dict, chosen: List[dict]) -> float:
+    """候选与已选集合的冗余度 = 与已选各条的最大文本重叠。
+
+    纯本地计算零 LLM：向量在候选里并不总是带着（hybrid / funnel 两路候选
+    形状不同），所以统一用本模块现成的 token 重叠度量 —— 宁可用一个到处
+    都在的弱信号，也不要一个一半候选上缺失的强信号。"""
+    if not chosen:
+        return 0.0
+    text = str(item.get("memory") or item.get("data") or "")
+    if not text:
+        return 0.0
+    worst = 0.0
+    for c in chosen:
+        other = str(c.get("memory") or c.get("data") or "")
+        if not other:
+            continue
+        sim = calc_token_overlap_score(text, other)
+        if sim > worst:
+            worst = sim
+    return worst
+
+
+def mmr_select(scored: List[dict], limit: int) -> List[dict]:
+    """v21.2 M4：MMR 多样性选择 —— mmr = λ·relevance − (1−λ)·redundancy。
+
+    借鉴 Memmy 的 mmrLambda 0.7 语义（思路级借鉴，本函数为独立实现）。
+    开关关闭、候选不足或 limit 非正时**逐条退回按分截断**，与改前行为
+    一字不差（零回归铁律）。
+
+    点火条（_ignited）豁免：点火即直达是本仓既有铁律，不参与多样性淘汰。
+    """
+    if limit <= 0:
+        return []
+    if len(scored) <= limit:
+        return scored[:limit]
+    enabled, lam = _mmr_config()
+    if not enabled:
+        return scored[:limit]
+
+    pool = list(scored)
+    chosen: List[dict] = []
+    while pool and len(chosen) < limit:
+        best = None
+        best_score = None
+        for it in pool:
+            rel = float(it.get("_hybrid_score", 0) or 0)
+            # 点火条豁免的是**冗余惩罚**，不是排序本身：让它无条件占位，
+            # 会把分更高的非点火条挤掉（点火是「不因近义被淘汰」，
+            # 不是「压过所有人」）。这里按 redundancy=0 参与同一场竞争。
+            red = 0.0 if it.get("_ignited") else _redundancy(it, chosen)
+            mmr = lam * rel - (1.0 - lam) * red
+            if best_score is None or mmr > best_score:
+                best = it
+                best_score = mmr
+        chosen.append(best)
+        pool.remove(best)
+    return chosen
 
 
 def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
@@ -680,6 +929,9 @@ def score_and_rank_candidates(
     limit: int = 10,
     weights: Optional[Dict[str, float]] = None,
     memory_type_filter: Optional[str] = None,
+    # v21.2 M2：本次会话 id。两条召回路（RecallEngine / recall_funnel）都
+    # 汇到本函数，回声抑制放这里 = 一处生效两路覆盖。空值 = 不过滤。
+    session_id: str = "",
 ) -> List[dict]:
     """统一候选记忆打分与排序入口。
 
@@ -694,6 +946,14 @@ def score_and_rank_candidates(
     if not candidates:
         return []
 
+    # v21.2 M2：回声抑制放在打分之前 —— 本 session 自己刚写入的条目
+    # 连分都不必算（省掉它们在 salience/type/epistemic 批量查询里的份额）。
+    if session_id and echo_suppress_enabled():
+        candidates = _drop_echo(
+            candidates, _load_echo_refs(candidates, session_id, user_id, bank_id))
+        if not candidates:
+            return []
+
     w = weights or DEFAULT_WEIGHTS
     now_ts = time.time()
     is_fact_query = is_fact_seeking_query(query)
@@ -705,6 +965,12 @@ def score_and_rank_candidates(
     from ducky.epistemic import load_epistemic_multipliers
     _epistemic_mult = load_epistemic_multipliers()
 
+    # v21.2 M6：报错签名也循环外提取一次（每条候选重跑正则是白烧）
+    _err_sigs = extract_error_signatures(query)
+
+    # v21.2 M1：轨迹信用维度（默认权重 0 → _load_credit_map 直接空表，零开销）
+    _credit_w = credit_dimension_weight()
+
     # 1. 批量查询 Salience 记录（0 N+1）
     salience_map = get_batch_salience_records(_candidate_memory_ids(candidates))
 
@@ -712,6 +978,7 @@ def score_and_rank_candidates(
     type_map = _load_type_map(candidates, user_id, bank_id)
     # v21.0 收口：sidecar 出身同纪律批量加载（mem0 主链路腿）
     epi_map = _load_epi_map(candidates, user_id, bank_id)
+    credit_map = _load_credit_map(candidates)
 
     scored: List[dict] = []
     _gate_on = _evidence_gate_on()
@@ -723,6 +990,8 @@ def score_and_rank_candidates(
             type_decay_on=_type_decay_on, salience_map=salience_map,
             type_map=type_map, memory_type_filter=memory_type_filter,
             gate_on=_gate_on, epistemic_mult=_epistemic_mult, epi_map=epi_map,
+            err_signatures=_err_sigs,
+            credit_map=credit_map, credit_w=_credit_w,
         )
         if _filtered_by_gate:
             _evidence_filtered += 1
@@ -749,7 +1018,8 @@ def score_and_rank_candidates(
 
     _report_gate_telemetry(_evidence_filtered, _score_filtered, _gate_on, _hist)
 
-    final = scored[:limit]
+    # v21.2 M4：最终截断走 MMR 多样性选择（开关关时逐条等价于 scored[:limit]）
+    final = mmr_select(scored, limit)
 
     return final
 

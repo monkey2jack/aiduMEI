@@ -8,6 +8,22 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
+    主题：**记忆不再自己回声，也不再让同一件事占满名额。**
+    调研 MemTensor/memmy-agent（MIT · 1.9k⭐）后只取设计不搬代码，六项一次落地：
+    1. M2 回声抑制：sidecar 补溯源三列（schema v9），检索排除「本会话自己刚写入」的记忆。
+    2. M4 MMR 多样性：最终截断走 λ·relevance − (1−λ)·redundancy，近义簇不再霸占名额；
+       点火条豁免的是冗余惩罚而非排序本身（实现期自查纠正的一处语义错误）。
+    3. M6 错误签名通道：pattern_extract 新增第八类硬事实 errsig + 检索侧有界加权。
+    4. M1 轨迹级奖励信用分配：episode 两表 + w_i = λ·(1/n) + (1−λ)·归一化(γ^(n−i))，
+       任务反馈按轨迹位置回传；**credit 维度默认权重 0** —— 装上不生效，等本仓
+       自己的 /evolve/report 数据说话再开（上游参数不盲信）。
+    5. M7 episode rollup（默认关）· M8 借阅留痕进事件账本 + 档案第八节「当前生效借阅」。
+       用例总数 2048 → 2075（+27 条验收守卫，全部红→绿）。
+    落位纠正两处（指导书按公开认知写，实测生产代码后修正）：回声/MMR 落在
+    scoring 单一真源而非仅 recall_funnel（主 /search 走 RecallEngine，两路都经打分出口）；
+    episode 表进 evolve 库的 ensure_evolve_schema 而非 facts.db 迁移流。
+
 v21.1.1 (文档补丁 · 内存挡位选择指导 + 冷备 v21.2 roadmap · 2026-09-15)
     主题：**让部署 Agent 看懂内存挡位取舍。** 无代码功能变化，测试基线不变。
     1. README.md / README_EN.md 补「按机器内存选挡」指导：auto 常驻热备（+174MB 换断网全量召回韧性）vs cloud（~280MB，无本地备胎）。
@@ -207,7 +223,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "21.1.1"
+SERVICE_VERSION = "21.2.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -221,6 +237,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("21.2.0", "", "v21.2.0", "Memmy 融改 · 回声抑制/MMR/错误签名/轨迹级奖励 · 2026-09-16"),
     ("21.1.1", "", "v21.1.1", "文档补丁 · 内存挡位选择指导 + 冷备 v21.2 roadmap · 2026-09-15"),
     ("21.1.0", "", "v21.1", "众神殿地基版 · 多 bot/多 profile 域隔离（读侧补域/evolution 跨殿脱敏）+ v21.0.1 会话补丁收口 · 2026-09-15"),
     ("21.0.1", "", "v21.0.1", "补丁版 · 外部 Agent session 生命周期契约闭环（/session/start 接收 session_id）· 2026-09-14"),
