@@ -10,7 +10,7 @@
 - **M4 MMR 多样性**：最终截断改走 `mmr_select`（λ·relevance − (1−λ)·redundancy，λ 默认 0.7，冗余用本仓现成 token 重叠度量）。点火条豁免的是**冗余惩罚**而非排序本身。开关 `AIDUMEI_MMR_ENABLED`，关闭时逐条等价于按分截断。
 - **M6 错误签名通道**：`pattern_extract` 新增第八类硬事实 `errsig`（CamelCase + Error/Exception/Warning、errno/错误码），截断优先级与指令/偏好同列最高；检索侧查询含报错标识符时给正文命中的候选有界 bonus（`AIDUMEI_ERRSIG_BONUS`，默认 0.10）。普通中文查询识别不到签名，整条规则不参与打分。
 - **M1 轨迹级奖励信用分配**：evolve 库新增 `evolve_episodes` / `evolve_episode_steps`；`w_i = λ·(1/n) + (1−λ)·归一化(γ^(n−i))`，权重和恒为 1、越靠近结果越重；新端点 `POST /evolve/episode/feedback` 按位置回传并聚合进 salience（**只写 evolve 侧表与 salience，不碰 facts 正文**）。无 session 的写入（cron 类）不产生 episode；`/evolve/report` 新增 episodes 维度。**credit 维度默认权重 0**——上游参数不盲信，等本仓自己的数据说话再开。
-- **M7 episode rollup（默认关）+ M8 借阅对齐**：同 episode 多条命中聚合为 ≤6 步轨迹摘要（拼接式零 LLM）；`grant_hall_access` / `revoke_hall_grant` 进事件账本留痕（撤销只在**真撤到了**时记账），记忆档案新增「## 八、当前生效借阅」。用例总数 2048 → 2075（+27 条验收守卫，全部红→绿）；env 新键 11 个全走 `AIDUMEI_` 前缀并三处登记。施工期被本仓守卫拦下 16 次并逐条收口，其中两次是真缺陷：函数内 `import os` 遮蔽模块级绑定（P0-2 同类）、MMR 点火豁免语义写错（低分点火条会压过高分条）。
+- **M7 episode rollup（默认关）+ M8 借阅对齐**：同 episode 多条命中聚合为 ≤6 步轨迹摘要（拼接式零 LLM）；`grant_hall_access` / `revoke_hall_grant` 进事件账本留痕（撤销只在**真撤到了**时记账），记忆档案新增「## 八、当前生效借阅」。用例总数 2048 → 2077（+29 条验收守卫，全部红→绿）；env 新键 11 个全走 `AIDUMEI_` 前缀并三处登记。施工期被本仓守卫拦下 16 次并逐条收口，其中两次是真缺陷：函数内 `import os` 遮蔽模块级绑定（P0-2 同类）、MMR 点火豁免语义写错（低分点火条会压过高分条）。
 
 ## v21.1.1（2026-09-15 文档补丁）：内存挡位选择指导 + 冷备 v21.2 roadmap
 
