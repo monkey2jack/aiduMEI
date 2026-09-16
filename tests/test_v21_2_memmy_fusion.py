@@ -127,6 +127,35 @@ def test_m2_cross_domain_isolation():
     assert echo == set()
 
 
+def test_m2_verbatim_leg_session_key_aligned():
+    """原文腿的 session 口径必须与 origin_context / sidecar 对齐。
+
+    实机冒烟暴露过：向量腿滤掉了本会话刚写入的那句话，原文腿（打分之后
+    才融合）又把它原样送了回来 —— 因为 verbatim 写入只认 `session_id` /
+    `conversation_id`，不认写入管道实际透传的 `_origin_session_id`。
+    键名不对不会报错，只会让整个功能静默失效。
+    """
+    import inspect
+    from ducky import verbatim_vault
+    src = inspect.getsource(verbatim_vault)
+    assert "_origin_session_id" in src, (
+        "verbatim 写入未认 _origin_session_id —— 回声抑制会在原文腿上漏")
+
+
+def test_m2_search_route_filters_verbatim_echo():
+    """/search 融合原文腿之前必须按同一规则滤掉本会话自己的原文。"""
+    import inspect
+    from ducky.hot import search as hs
+    src = inspect.getsource(hs)
+    i = src.find("verbatim_search(")
+    j = src.find("fuse_verbatim(", i)
+    assert i != -1 and j != -1, "原文融合段落找不到 —— 守卫失去着力点"
+    between = src[i:j]
+    assert "echo_suppress_enabled" in between and "session_id" in between, (
+        "verbatim_search 与 fuse_verbatim 之间没有回声过滤 —— "
+        "打分后融合的腿会把滤掉的那句话原样送回")
+
+
 # ══════════════════ M4 MMR ══════════════════
 
 def _near_dup_pool():
