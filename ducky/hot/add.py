@@ -428,7 +428,8 @@ def register_add_routes(app: FastAPI) -> None:
                     # 真有会话的写入，不许被无主写入稀释。失败只吞不炸主链路。
                     try:
                         from ducky.evolve_mem import record_episode_step
-                        record_episode_step(_origin_snapshot[1], [r for r in _refs if r],
+                        record_episode_step([r for r in _refs if r],
+                                            session_id=_origin_snapshot[1],
                                             user_id=uid, bank_id=req.bank_id)
                     except Exception as _ee:
                         logger.debug(f"episode step 登记跳过: {_ee}")
