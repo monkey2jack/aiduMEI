@@ -277,7 +277,7 @@ def test_m1_episode_settle_propagates_by_position(tmp_path, monkeypatch):
     em.ensure_evolve_schema()
     sid = "sess-ep-1"
     for ref in ("s1", "s2", "s3"):
-        assert em.record_episode_step(sid, [ref], user_id="dudu", bank_id="default") == 1
+        assert em.record_episode_step([ref], session_id=sid, user_id="dudu", bank_id="default") == 1
     res = em.record_episode_feedback(sid, -1.0)
     assert res["ok"] and res["steps"] == 3
     cm = em.get_credit_map(["s1", "s2", "s3"])
@@ -289,7 +289,7 @@ def test_m1_no_session_no_episode(tmp_path, monkeypatch):
     import ducky.evolve_mem as em
     monkeypatch.setattr(em, "EVOLVE_DB_PATH", str(tmp_path / "evolve.db"))
     em.ensure_evolve_schema()
-    assert em.record_episode_step("", ["x"]) == 0
+    assert em.record_episode_step(["x"], session_id="") == 0
     assert em.record_episode_feedback("", 1.0)["ok"] is False
 
 
@@ -322,6 +322,22 @@ def test_m1_episode_params_bounded():
         assert episode_params()["gamma"] == 0.9   # 越界回默认
     finally:
         os.environ.pop("AIDUMEI_EPISODE_GAMMA", None)
+
+
+def test_m1_episode_hook_sits_at_the_real_stamping_seam():
+    """轨迹登记必须跟着出身打标走同一个缝位。
+
+    实机冒烟暴露过：sidecar 里 origin_session_id 有值、episode 表却是空的 ——
+    因为主链路的打标发生在 layer1 的 `_index_after_add`（包装器吞掉了 mem0 的
+    results，路由层拿不到 ref），而轨迹登记只钩在路由层。钩错缝位不会报错，
+    只会让功能静默失效。
+    """
+    import inspect
+    from ducky import layer1_selfcheck as l1
+    src = inspect.getsource(l1._index_after_add)
+    assert "stamp_memory_refs" in src, "打标缝位变了 —— 守卫失去着力点"
+    assert "record_episode_step" in src, (
+        "layer1 打标缝位没有 episode 登记 —— 主链路写入不会产生轨迹")
 
 
 # ══════════════════ M7 rollup ══════════════════
