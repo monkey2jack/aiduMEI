@@ -289,7 +289,13 @@ def store_verbatim(
         scope = make_scope(user_id, effective_bank)
         ensure_verbatim_schema()
         ensure_bank_registered(scope)
-        session_id = str(md.get("session_id") or md.get("conversation_id") or "")
+        # v21.2 M2：session 口径必须与 origin_context / sidecar 对齐 ——
+        # 三条腿各认各的键名，回声抑制就会在原文腿上漏（实机冒烟正是这么
+        # 暴露的：向量腿滤掉了，原文腿又把同一句话原样送回来）。
+        session_id = str(
+            md.get("session_id") or md.get("conversation_id")
+            or md.get("_origin_session_id") or md.get("hermes_session_id") or ""
+        )
         fconn = get_facts_conn()
         tconn = get_text_conn()
 
