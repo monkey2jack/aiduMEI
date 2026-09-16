@@ -99,6 +99,7 @@ class RecallEngine:
         after: Optional[str] = None,
         memory_type: Optional[str] = None,
         bank_id: str = "default",
+        session_id: str = "",   # v21.2 M2：回声抑制作用域，空 = 不过滤
     ) -> List[dict]:
         """检索主逻辑。"""
         t0 = time.time()
@@ -194,6 +195,7 @@ class RecallEngine:
             limit=limit,
             weights=weights or DEFAULT_WEIGHTS,
             memory_type_filter=memory_type,
+            session_id=session_id,     # v21.2 M2
         )
 
         elapsed = round((time.time() - t0) * 1000, 1)

@@ -156,6 +156,18 @@ def build_dossier_data(user_id: str, bank_id: str) -> dict[str, Any]:
         logger.debug("dossier evolve 段跳过: %s", e)
         data["sections"]["evolve"] = {}
 
+    # v21.2 M8：当前生效的跨殿借阅（谁能看我的记忆，一目了然）
+    try:
+        from ducky.pantheon import list_hall_grants
+        granted = [g for g in list_hall_grants(user_id, direction="granted")
+                   if not g.get("revoked_at")]
+        received = [g for g in list_hall_grants(user_id, direction="received")
+                    if not g.get("revoked_at")]
+        data["sections"]["grants"] = {"granted": granted, "received": received}
+    except Exception as e:
+        logger.debug("dossier grants 段跳过: %s", e)
+        data["sections"]["grants"] = {"granted": [], "received": []}
+
     return data
 
 
@@ -247,6 +259,24 @@ def render_markdown(data: dict[str, Any]) -> str:
     out.append("")
     out.append(f"- 检索日志 {ev.get('queries', 0)} 条 · 用户反馈 {ev.get('feedback', 0)} 条 · "
                f"调整动作 {ev.get('adjustments', 0)} 次")
+    out.append("")
+
+    # v21.2 M8：当前生效借阅 —— 「谁能看我的记忆」必须能一眼看到
+    gr = s.get("grants") or {}
+    _granted = gr.get("granted") or []
+    _received = gr.get("received") or []
+    out.append("## 八、当前生效借阅")
+    out.append("")
+    if not _granted and not _received:
+        out.append("- 无（没有任何殿能读这座殿的记忆，这座殿也没借阅别处）")
+    else:
+        out.append(f"- 我授权出去 {len(_granted)} 条 · 我获授权 {len(_received)} 条")
+        for g in _granted[:20]:
+            out.append(f"  - → `{g.get('grantee_user_id', '')}` 可 {g.get('actions', '')}"
+                       f"（库 {g.get('bank_id', '*')}，到期 {g.get('expires_at') or '不限'}）")
+        for g in _received[:20]:
+            out.append(f"  - ← 来自 `{g.get('grantor_user_id', '')}`：{g.get('actions', '')}"
+                       f"（库 {g.get('bank_id', '*')}，到期 {g.get('expires_at') or '不限'}）")
     out.append("")
 
     return "\n".join(out)

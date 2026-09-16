@@ -55,6 +55,8 @@ WRITE_ROUTE_MODELS: Dict[str, str] = {
     "/delete": "DeleteRequest",          # POST 形态；DELETE 形态为 query 标量
     "/delete_all": "DeleteAllRequest",
     "/evolve/feedback": "FeedbackRequest",
+    # v21.2 M1：任务级（轨迹）反馈 —— reward 有界 [-1,1]，session_id 有长度上限
+    "/evolve/episode/feedback": "EpisodeFeedbackRequest",
     "/governance/review": "GovernanceReviewRequest",
     "/ignition_test": "SearchRequest",
     "/jlens": "SearchRequest",

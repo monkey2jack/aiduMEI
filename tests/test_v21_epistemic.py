@@ -78,7 +78,7 @@ def test_v6_migration_idempotent():
     conn = utils.get_facts_conn()
     apply_migrations(conn)  # 重跑不炸
     apply_migrations(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9  # v21.2 M2：+溯源三列
 
 
 # ── 2. resolve_epistemic 映射表 ─────────────────────────────────────────────

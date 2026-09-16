@@ -407,6 +407,10 @@ def register_add_routes(app: FastAPI) -> None:
                     note = note or "skipped_llm_error"
                     add_result = mem.add(msgs, user_id=uid, metadata=meta,
                                          infer=False)
+                # v21.2 M2/M1：复位**之前**先把 origin 捞出来 —— 下面的
+                # sidecar 打标与 episode 登记都要用它，复位后就读不到了。
+                from ducky.origin_context import get_origin as _get_origin
+                _origin_snapshot = _get_origin()
                 reset_origin(_origin_token)  # 🟢-1：mem.add 临界区结束即复位
                 # 🏷️ v21.0 收口（生产用户审计 🔴-1）：主链路 mem0 产物的出身
                 # 登记进 sidecar——infer 用过 LLM 即 reasoned，直写即 user_provided。
@@ -417,7 +421,17 @@ def register_add_routes(app: FastAPI) -> None:
                     stamp_memory_refs([r for r in _refs if r],
                                       "reasoned" if infer_effective else "user_provided",
                                       user_id=uid, bank_id=req.bank_id,
-                                      source=str((meta or {}).get("_origin_agent") or "add"))
+                                      source=str((meta or {}).get("_origin_agent") or "add"),
+                                      origin=_origin_snapshot)
+                    # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。
+                    # 无 session_id（cron / 后台作业）一律不记 —— 轨迹统计只认
+                    # 真有会话的写入，不许被无主写入稀释。失败只吞不炸主链路。
+                    try:
+                        from ducky.evolve_mem import record_episode_step
+                        record_episode_step(_origin_snapshot[1], [r for r in _refs if r],
+                                            user_id=uid, bank_id=req.bank_id)
+                    except Exception as _ee:
+                        logger.debug(f"episode step 登记跳过: {_ee}")
                 except Exception as _se:
                     logger.debug(f"epistemic sidecar 打标跳过: {_se}")
                 register_salience_for_add(add_result, user_id=uid, bank_id=req.bank_id)

@@ -44,7 +44,11 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 660  # v21.0 收口：+4 schema v6 迁移容错 +1 §16 钩子 +9 dossier 只读容错 +2 dossier 域拆分/sidecar 容错 +1 scoring sidecar 批量加载 +2 add.py 主链路打标降级钩子；v21.1 众神殿：+9 routes_pantheon 端点容错 + dossier 借阅 403 + 建表/借阅门降级
+_BASELINE = 678  # v21.2 Memmy 融改：+18（M1 episode 七处轨迹写入/报表容错、
+# M2 回声抑制查询与 sidecar 列探测降级、M4/M6 配置 fail-closed、M7 rollup 降级、
+# M8 借阅留痕降级）——全部是「统计/留痕失败绝不许打炸主链路」这一类，
+# 收窄异常类型做不到（底层 sqlite/import/属性错误形态各异），故如实抬基线；
+# v21.0 收口：+4 schema v6 迁移容错 +1 §16 钩子 +9 dossier 只读容错 +2 dossier 域拆分/sidecar 容错 +1 scoring sidecar 批量加载 +2 add.py 主链路打标降级钩子；v21.1 众神殿：+9 routes_pantheon 端点容错 + dossier 借阅 403 + 建表/借阅门降级
 # 2026-09-10 v20.5.0 正式版：+5 均用户审计整改的「降级钩子/迁移容错」——
 # wal_engine.py×2（DELETE 终链同事务留痕 ×2 路径，失败不拖垮删除主路径）、
 # refine_memory.py×1（回滚终链同型）、memory_lineage.py×1（UNIQUE 索引存量

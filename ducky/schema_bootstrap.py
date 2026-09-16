@@ -131,7 +131,7 @@ _INDEXES = (
 _lock = threading.Lock()
 _done = False
 
-CURRENT_SCHEMA_VERSION = 8  # v21.1 众神殿：pantheon_halls 殿注册表 + hall_grants 跨殿借阅；v21.0 收口：memory_epistemic sidecar；v21 preview: epistemic 出身标签 + provenance 三件套 + 两新表
+CURRENT_SCHEMA_VERSION = 9  # v21.2 Memmy 融改：memory_epistemic 补溯源三列（回声抑制 M2 的数据面）；v21.1 众神殿：pantheon_halls 殿注册表 + hall_grants 跨殿借阅；v21.0 收口：memory_epistemic sidecar；v21 preview: epistemic 出身标签 + provenance 三件套 + 两新表
 
 
 def apply_migrations(conn) -> None:
@@ -403,6 +403,34 @@ def apply_migrations(conn) -> None:
             conn.commit()
             logger.info("数据库秒级增量升级 v8 成功 ✅")
             user_version = 8
+
+        # 版本迁移流：Version 8 -> Version 9
+        # v21.2 Memmy 融改 M2（回声抑制）：sidecar memory_epistemic 补溯源三列。
+        # 写入侧 stamp_memory_refs 从 origin_context 落值，检索侧按本 session
+        # 排除「自己刚写入的记忆」——防止上一轮刚说的话下一轮从长期记忆绕回来
+        # 重复注入。存量行留空 —— 空值不参与过滤，宁缺毋滥不回填。
+        if user_version < 9:
+            logger.info("执行数据库增量升级：v8 -> v9 (memory_epistemic 补溯源三列)")
+            for col, ddl in (
+                ("origin_session_id", "TEXT DEFAULT ''"),
+                ("origin_agent", "TEXT DEFAULT ''"),
+                ("origin_turn", "INTEGER DEFAULT 0"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE memory_epistemic ADD COLUMN {col} {ddl};")
+                except Exception as e:
+                    logger.debug(f"字段 memory_epistemic.{col} 已存在或跳过: {e}")
+            try:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_mem_epi_session "
+                    "ON memory_epistemic(origin_session_id)")
+            except Exception as e:
+                logger.debug(f"memory_epistemic session 索引跳过: {e}")
+
+            conn.execute("PRAGMA user_version = 9")
+            conn.commit()
+            logger.info("数据库秒级增量升级 v9 成功 ✅")
+            user_version = 9
 
     except Exception as exc:
         logger.error("数据库增量补丁执行异常 (服务继续启动): %s", exc)

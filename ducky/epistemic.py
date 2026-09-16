@@ -126,8 +126,18 @@ def stamp_epistemic(conn, fact_id, source: str, *, has_external_ref: bool = Fals
     return mode
 
 
+def _sidecar_has_origin_cols(conn) -> bool:
+    """sidecar 是否已迁到 schema v9（带溯源三列）。未迁移库按无列降级，
+    绝不让 M2 的新列把写入主链路打炸（同 stamp_memory_refs 的表不在纪律）。"""
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_epistemic)")}
+        return "origin_session_id" in cols
+    except Exception:
+        return False
+
+
 def stamp_memory_refs(refs, mode: str, *, user_id: str, bank_id: str,
-                      source: str = "") -> int:
+                      source: str = "", origin: tuple | None = None) -> int:
     """mem0 主链路记忆的出身登记（sidecar 表 memory_epistemic）。
 
     v21.0 收口（生产用户审计 🔴-1）：mem0.add 蒸馏产物不进 facts 表，
@@ -149,13 +159,40 @@ def stamp_memory_refs(refs, mode: str, *, user_id: str, bank_id: str,
         if "memory_epistemic" not in tables:
             return 0
         now = datetime.now(timezone.utc).isoformat()
+        # v21.2 M2（回声抑制）：同一行顺带落溯源三件套 —— origin_context 是
+        # contextvars，写入通路入口都已 set，这里取一次即可；读不到一律空值
+        # （诚实红线：不猜、不编，空值在检索侧等于「不参与回声过滤」）。
+        has_origin = _sidecar_has_origin_cols(conn)
+        if has_origin:
+            # 🔴 origin 必须由调用方在 reset_origin **之前**捕获后显式传入：
+            # 写入路径在 mem.add 临界区结束时就复位了 contextvar，这里再
+            # get_origin() 读到的是复位后的空值 —— 那样 M2 回声抑制会
+            # 「改了等于没改」（本仓最怕的那种静默失效）。未传时才回退读
+            # 上下文，供尚在临界区内的调用方使用。
+            if origin is not None:
+                o_agent, o_session, o_turn = origin
+            else:
+                from ducky.origin_context import get_origin
+                o_agent, o_session, o_turn = get_origin()
         for ref in refs:
-            conn.execute(
-                "INSERT INTO memory_epistemic (memory_ref, epistemic_mode, user_id, bank_id,"
-                " source, created_at, updated_at) VALUES (?,?,?,?,?,?,?) "
-                "ON CONFLICT(memory_ref) DO UPDATE SET epistemic_mode=excluded.epistemic_mode,"
-                " updated_at=excluded.updated_at",
-                (ref, mode, user_id, bank_id, source, now, now))
+            if has_origin:
+                conn.execute(
+                    "INSERT INTO memory_epistemic (memory_ref, epistemic_mode, user_id, bank_id,"
+                    " source, created_at, updated_at, origin_session_id, origin_agent, origin_turn)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(memory_ref) DO UPDATE SET epistemic_mode=excluded.epistemic_mode,"
+                    " updated_at=excluded.updated_at,"
+                    " origin_session_id=excluded.origin_session_id,"
+                    " origin_agent=excluded.origin_agent, origin_turn=excluded.origin_turn",
+                    (ref, mode, user_id, bank_id, source, now, now,
+                     o_session, o_agent, o_turn))
+            else:
+                conn.execute(
+                    "INSERT INTO memory_epistemic (memory_ref, epistemic_mode, user_id, bank_id,"
+                    " source, created_at, updated_at) VALUES (?,?,?,?,?,?,?) "
+                    "ON CONFLICT(memory_ref) DO UPDATE SET epistemic_mode=excluded.epistemic_mode,"
+                    " updated_at=excluded.updated_at",
+                    (ref, mode, user_id, bank_id, source, now, now))
         conn.commit()
         return len(refs)
     finally:

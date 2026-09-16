@@ -25,7 +25,8 @@ DEFAULT_WEIGHTS = {
 
 def hybrid_search(memory, query: str, user_id: str, limit: int = 10,
                   weights: Optional[dict] = None,
-                  before: str = "", after: str = "", bank_id: str = "default") -> list:
+                  before: str = "", after: str = "", bank_id: str = "default",
+                  session_id: str = "") -> list:
     """
     加权混合召回（委托给 ducky.engine.RecallEngine 引擎处理）
 
@@ -36,4 +37,5 @@ def hybrid_search(memory, query: str, user_id: str, limit: int = 10,
     return engine.search(
         query=query, user_id=user_id, limit=limit, weights=weights,
         before=before, after=after, bank_id=bank_id,
+        session_id=session_id,     # v21.2 M2
     )

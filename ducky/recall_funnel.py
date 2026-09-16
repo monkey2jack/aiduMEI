@@ -8,6 +8,7 @@ Aletheia Memory 设计哲学：
 - 每步决策可追溯、可调试
 """
 
+import os
 import time
 from ducky.scoring import score_and_rank_candidates, logging
 
@@ -157,6 +158,58 @@ def _fuse_ignition_scores(candidates_to_score: list) -> None:
                 item["metadata"]["is_ignited"] = True
 
 
+def _rollup_enabled() -> bool:
+    """v21.2 M7：episode rollup 开关。**默认关** —— 它依赖 M1 攒够轨迹数据
+    才有意义，先让数据跑一段时间，观察 /evolve/report 的 episodes 维度再开。"""
+    return os.getenv("AIDUMEI_ROLLUP_ENABLED", "0").strip() in ("1", "true", "True")
+
+
+ROLLUP_MAX_STEPS = 6
+ROLLUP_LINE_CHARS = 200
+
+
+def _apply_episode_rollup(final: list, limit: int) -> tuple:
+    """同 episode 命中 ≥2 条时，拼一个「轨迹摘要」块替代其中的低分单条。
+
+    借鉴 Memmy 的 episode rollup 设计（≤6 步、与单条去重）；**拼接式摘要，
+    零 LLM**。返回 (结果列表, 本次生成的 rollup 数)。
+    """
+    if not _rollup_enabled() or len(final) < 2:
+        return final, 0
+    try:
+        from ducky.evolve_mem import get_episode_groups
+        from ducky.memory_types import memory_type_ref
+        groups = get_episode_groups([memory_type_ref(it) for it in final])
+        if not groups:
+            return final, 0
+        buckets: dict = {}
+        for it in final:
+            g = groups.get(memory_type_ref(it))
+            if g:
+                buckets.setdefault(g[0], []).append((g[1], it))
+        made = 0
+        for ep_id, members in buckets.items():
+            if len(members) < 2:
+                continue
+            members.sort(key=lambda x: x[0])
+            members = members[:ROLLUP_MAX_STEPS]
+            lines = [f"{idx}. {str(it.get('memory', ''))[:ROLLUP_LINE_CHARS]}"
+                     for idx, it in members]
+            member_items = [it for _idx, it in members]
+            # 用组内最高分那条的位置承载 rollup，其余同组条目移除（去重）
+            member_items.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
+            host = member_items[0]
+            host["memory"] = "【轨迹摘要】\n" + "\n".join(lines)
+            host["_rollup"] = {"episode_id": ep_id, "steps": len(members)}
+            drop = {id(x) for x in member_items[1:]}
+            final = [x for x in final if id(x) not in drop]
+            made += 1
+        return final, made
+    except Exception as e:
+        logger.debug(f"episode rollup 跳过: {e}")
+        return final, 0
+
+
 def _finalize_ranking(ranked_candidates: list, limit: int):
     """Stage 5: 最终排序与 Ignition 增益收敛。返回 (final, stage)。"""
     t0 = time.time()
@@ -165,19 +218,27 @@ def _finalize_ranking(ranked_candidates: list, limit: int):
             item["_hybrid_score"] = round(item.get("_hybrid_score", 0) * IGNITION_BOOST, 4)
 
     ranked_candidates.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
-    final = ranked_candidates[:limit]
+    # v21.2 M4：本模块向 scoring 要的是 limit*2 —— 真正的截断在这里，
+    # 所以多样性选择也必须在这里再做一次；只在 scoring 里做一次，
+    # 会被这里的「按分截断」把挑出来的异簇候选重新挤掉。
+    from ducky.scoring import mmr_select
+    final = mmr_select(ranked_candidates, limit)
 
     # 清理内部字段
     for item in final:
         item.pop("_decay", None)
         item.pop("_composite", None)
 
-    stage = {"name": "final", "count": len(final), "from_ignition": sum(1 for f in final if f.get("_ignited")), "ms": int((time.time()-t0)*1000)}
+    # v21.2 M7：同 episode 多条命中聚合为轨迹摘要（默认关）
+    final, _rollups = _apply_episode_rollup(final, limit)
+
+    stage = {"name": "final", "count": len(final), "from_ignition": sum(1 for f in final if f.get("_ignited")), "rollups": _rollups, "ms": int((time.time()-t0)*1000)}
     return final, stage
 
 
 def funnel_search(memory, query: str, user_id: str, limit: int = 10,
-                  enable_ignition: bool = True, bank_id: str = "default") -> dict:
+                  enable_ignition: bool = True, bank_id: str = "default",
+                  session_id: str = "") -> dict:
     """
     搜索记忆 + Recall Funnel trace + Ignition。
 
@@ -224,6 +285,9 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
         user_id=user_id,
         bank_id=bank_id,              # v20.2.4 F-15：此前断在这里
         limit=limit * 2,
+        # v21.2 M2：回声抑制与 M4 MMR 都住在 scoring 单一真源里 —— 本模块
+        # 与 RecallEngine 两条召回路都经过它，改一处两条路同时生效。
+        session_id=session_id,
     )
     stages.append({"name": "unified_scoring", "count": len(ranked_candidates), "ms": int((time.time()-t0)*1000)})
 

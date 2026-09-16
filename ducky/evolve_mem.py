@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+import uuid
 from ducky.shutdown import sleep as _shutdown_sleep
 from typing import Literal
 
@@ -54,6 +55,21 @@ _EVOLVE_CANDIDATE_SQL = (
 FEEDBACK_BOOST_USEFUL = 0.15  # 用户标记「有用」→ +0.15 salience
 FEEDBACK_PENALTY_USELESS = 0.12  # 用户标记「无用」→ -0.12 salience
 EVOLUTION_INTERVAL_HOURS = 6  # 每 6 小时自动进化一次
+
+# ── v21.2 M1：轨迹级奖励信用分配（借鉴 Memmy 的 reward.* 参数语义，独立实现）──
+# 一次连续任务 = 一个 episode；任务级奖励按轨迹位置回传给其中每一步记忆，
+# 而不是只调「被点名的那一条」的 salience。
+#
+# ⚠️ 参数纪律（施工方加严）：Memmy 开源仅一周，其默认值是否经充分调优**无从验证**。
+# 因此这里全部 env 可覆盖，且 credit 维度默认权重 0 —— 开权重必须先有本仓自己的
+# /evolve/report 观察数据支撑，不得因「上游就这么写」而开。
+EPISODE_GAMMA = 0.9           # 轨迹位置衰减：越靠后的步骤离结果越近，权重越高
+EPISODE_LAMBDA = 0.5          # 均匀权重 与 gamma 位置衰减 的混合系数
+EPISODE_DELTA = 0.1           # 「从跑偏恢复到正轨」那一步的额外奖励
+EPISODE_HALF_LIFE_DAYS = 30   # credit 的时间半衰期
+EPISODE_MERGE_GAP_SEC = 7200  # follow-up ≤2h 并入同一 episode
+EPISODE_IDLE_CLOSE_SEC = 7200 # 空闲 2h 判定 episode 关闭
+EPISODE_MIN_TRACE_VALUE = 0.005  # 低于此值的步骤不参与聚合
 MIN_SCORE_TO_PROMOTE = 0.65   # 搜索分数 ≥ 此值才算高质量命中
 
 
@@ -154,6 +170,33 @@ def ensure_evolve_schema() -> None:
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        -- v21.2 M1：轨迹级奖励信用分配（episode = 一次连续任务）
+        CREATE TABLE IF NOT EXISTS evolve_episodes (
+            episode_id TEXT PRIMARY KEY,
+            user_id    TEXT NOT NULL DEFAULT 'default',
+            bank_id    TEXT NOT NULL DEFAULT 'default',
+            session_id TEXT NOT NULL DEFAULT '',
+            started_at REAL NOT NULL,
+            last_step_at REAL NOT NULL DEFAULT 0,
+            closed_at  REAL,
+            status     TEXT NOT NULL DEFAULT 'open',  -- open | closed
+            reward     REAL NOT NULL DEFAULT 0.0,
+            step_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_ep_session ON evolve_episodes(session_id, status);
+
+        CREATE TABLE IF NOT EXISTS evolve_episode_steps (
+            episode_id  TEXT NOT NULL,
+            memory_ref  TEXT NOT NULL,
+            step_idx    INTEGER NOT NULL,
+            step_reward REAL NOT NULL DEFAULT 0.0,
+            credit_weight REAL NOT NULL DEFAULT 0.0,
+            created_at  REAL NOT NULL,
+            PRIMARY KEY (episode_id, memory_ref)
+        );
+        CREATE INDEX IF NOT EXISTS idx_eps_ep ON evolve_episode_steps(episode_id, step_idx);
+        CREATE INDEX IF NOT EXISTS idx_eps_ref ON evolve_episode_steps(memory_ref);
     """)
     conn.commit()
     conn.close()
@@ -244,6 +287,249 @@ def _guard_feedback_scope(memory_id: str, user_id: str, bank_id: str) -> tuple[s
         # 域不符与不存在同文案，不泄露他库记忆的存在性
         raise BankScopeError("记忆不在该库或不存在")
     return (want_uid, want_bid)
+
+
+# ═══════════════════════════════════════════════
+# v21.2 M1：Episode 轨迹级奖励信用分配
+# ═══════════════════════════════════════════════
+
+def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+    """读一个有界浮点配置。非法值 fail-closed 回默认（与检索侧同纪律）。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not (lo <= val <= hi):
+        return default
+    return val
+
+
+def episode_params() -> dict:
+    """本次读取生效的 episode 参数（全部 env 可覆盖、全部有界）。"""
+    return {
+        "gamma": _env_float("AIDUMEI_EPISODE_GAMMA", EPISODE_GAMMA, 0.0, 1.0),
+        "lambda": _env_float("AIDUMEI_EPISODE_LAMBDA", EPISODE_LAMBDA, 0.0, 1.0),
+        "delta": _env_float("AIDUMEI_EPISODE_DELTA", EPISODE_DELTA, 0.0, 1.0),
+        "half_life_days": _env_float("AIDUMEI_EPISODE_HALF_LIFE_DAYS",
+                                     EPISODE_HALF_LIFE_DAYS, 1.0, 3650.0),
+        "min_trace_value": _env_float("AIDUMEI_EPISODE_MIN_TRACE_VALUE",
+                                      EPISODE_MIN_TRACE_VALUE, 0.0, 1.0),
+    }
+
+
+def credit_weights(n: int, *, gamma: float | None = None,
+                   lam: float | None = None) -> list[float]:
+    """轨迹位置信用权重 w_i = λ·(1/n) + (1−λ)·归一化(γ^(n−i))。
+
+    借鉴 Memmy 的 reward.gamma / reward.lambda 语义（思路级借鉴，独立实现）。
+    直觉：越靠近任务结果的那一步，对结果的贡献越可信；但也不能把功劳全给
+    最后一步 —— λ 那一半是「雨露均沾」的保底。返回的权重和恒为 1.0。
+
+    纯函数：不读库、不看钟、不读环境（参数由调用方显式给）。
+    """
+    if n <= 0:
+        return []
+    p = episode_params()
+    g = p["gamma"] if gamma is None else gamma
+    lm = p["lambda"] if lam is None else lam
+    if n == 1:
+        return [1.0]
+    # γ^(n−i)：i 从 1 计，最后一步指数为 0（权重最大）
+    raw = [g ** (n - i) for i in range(1, n + 1)]
+    total = sum(raw)
+    pos = [r / total for r in raw] if total > 0 else [1.0 / n] * n
+    uni = 1.0 / n
+    return [round(lm * uni + (1.0 - lm) * pv, 6) for pv in pos]
+
+
+def _now() -> float:
+    return time.time()
+
+
+def open_or_extend_episode(session_id: str, *, user_id: str = "default",
+                           bank_id: str = "default") -> str:
+    """取本 session 当前开着的 episode；没有或已超合并窗则新开一个。
+
+    follow-up ≤ EPISODE_MERGE_GAP_SEC 并入同一 episode（Memmy 的
+    mergeMaxGapMs 语义）。session_id 为空返回 "" —— 无会话的写入
+    （cron / 后台作业）**不产生 episode**，不污染轨迹统计。
+    """
+    if not session_id:
+        return ""
+    ensure_evolve_schema()
+    now = _now()
+    conn = _get_evolve_conn()
+    try:
+        row = conn.execute(
+            "SELECT episode_id, last_step_at FROM evolve_episodes "
+            "WHERE session_id=? AND status='open' ORDER BY started_at DESC LIMIT 1",
+            (session_id,)).fetchone()
+        if row is not None:
+            last = row["last_step_at"] if hasattr(row, "keys") else row[1]
+            if (now - float(last or 0)) <= EPISODE_MERGE_GAP_SEC:
+                return row["episode_id"] if hasattr(row, "keys") else row[0]
+            # 超窗：先关旧的，再开新的
+            conn.execute(
+                "UPDATE evolve_episodes SET status='closed', closed_at=? "
+                "WHERE episode_id=?",
+                (now, row["episode_id"] if hasattr(row, "keys") else row[0]))
+        episode_id = f"ep_{uuid.uuid4().hex[:16]}"
+        conn.execute(
+            "INSERT INTO evolve_episodes(episode_id, user_id, bank_id, session_id,"
+            " started_at, last_step_at, status) VALUES(?,?,?,?,?,?, 'open')",
+            (episode_id, user_id, bank_id, session_id, now, now))
+        conn.commit()
+        return episode_id
+    finally:
+        conn.close()
+
+
+def record_episode_step(session_id: str, memory_refs, *,
+                        user_id: str = "default", bank_id: str = "default") -> int:
+    """登记一步轨迹：本次写入产生的记忆归属到本 session 当前 episode。
+
+    无 session_id 一律返回 0（不记）。失败只打 debug —— 轨迹统计不是
+    写入主链路的一部分，绝不许它把 /add 打炸。
+    """
+    if not session_id:
+        return 0
+    refs = [str(r) for r in (memory_refs or []) if r]
+    if not refs:
+        return 0
+    try:
+        episode_id = open_or_extend_episode(session_id, user_id=user_id, bank_id=bank_id)
+        if not episode_id:
+            return 0
+        now = _now()
+        conn = _get_evolve_conn()
+        try:
+            cur = conn.execute(
+                "SELECT COALESCE(MAX(step_idx), 0) FROM evolve_episode_steps "
+                "WHERE episode_id=?", (episode_id,)).fetchone()
+            next_idx = int((cur[0] if cur else 0) or 0)
+            n = 0
+            for ref in refs:
+                next_idx += 1
+                conn.execute(
+                    "INSERT INTO evolve_episode_steps(episode_id, memory_ref, step_idx,"
+                    " created_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(episode_id, memory_ref) DO NOTHING",
+                    (episode_id, ref, next_idx, now))
+                n += 1
+            conn.execute(
+                "UPDATE evolve_episodes SET last_step_at=?, step_count="
+                "(SELECT COUNT(*) FROM evolve_episode_steps WHERE episode_id=?) "
+                "WHERE episode_id=?", (now, episode_id, episode_id))
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("record_episode_step 跳过: %s", exc)
+        return 0
+
+
+def settle_episode(episode_id: str, reward: float) -> dict:
+    """结算一个 episode：任务奖励按轨迹位置回传给每一步，并聚合进 salience。
+
+    reward > 0 = 任务成功（整条轨迹受益）；< 0 = 失败（整条轨迹受罚，
+    但越靠后的步骤担责越重 —— 这正是「哪一步开始跑偏」的可学习信号）。
+
+    红线：只写 evolve 侧表与 salience，**绝不碰 facts 正文**。
+    """
+    ensure_evolve_schema()
+    reward = max(-1.0, min(1.0, float(reward or 0.0)))
+    conn = _get_evolve_conn()
+    try:
+        rows = conn.execute(
+            "SELECT memory_ref, step_idx FROM evolve_episode_steps "
+            "WHERE episode_id=? ORDER BY step_idx", (episode_id,)).fetchall()
+        if not rows:
+            return {"ok": False, "reason": "no_steps", "episode_id": episode_id}
+        n = len(rows)
+        weights = credit_weights(n)
+        p = episode_params()
+        applied = 0
+        for (row, w) in zip(rows, weights):
+            ref = row["memory_ref"] if hasattr(row, "keys") else row[0]
+            step_reward = round(reward * w, 6)
+            conn.execute(
+                "UPDATE evolve_episode_steps SET step_reward=?, credit_weight=? "
+                "WHERE episode_id=? AND memory_ref=?",
+                (step_reward, round(w, 6), episode_id, ref))
+            if abs(step_reward) >= p["min_trace_value"]:
+                _apply_salience_delta(ref, step_reward,
+                                      f"episode:{episode_id[:12]}")
+                applied += 1
+        conn.execute(
+            "UPDATE evolve_episodes SET status='closed', closed_at=?, reward=? "
+            "WHERE episode_id=?", (_now(), reward, episode_id))
+        conn.commit()
+        return {"ok": True, "episode_id": episode_id, "steps": n,
+                "reward": reward, "salience_applied": applied}
+    finally:
+        conn.close()
+
+
+def record_episode_feedback(session_id: str, reward: float) -> dict:
+    """对本 session 当前 episode 给一次任务级反馈并立即结算。
+
+    这是 M1 的用户面入口：与 record_feedback（单条记忆 ±salience）并存，
+    各管各的——单条反馈调「这一条」，episode 反馈调「这一整串」。
+    """
+    if not session_id:
+        return {"ok": False, "reason": "no_session"}
+    ensure_evolve_schema()
+    conn = _get_evolve_conn()
+    try:
+        row = conn.execute(
+            "SELECT episode_id FROM evolve_episodes WHERE session_id=? "
+            "AND status='open' ORDER BY started_at DESC LIMIT 1",
+            (session_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return {"ok": False, "reason": "no_open_episode", "session_id": session_id}
+    return settle_episode(row["episode_id"] if hasattr(row, "keys") else row[0], reward)
+
+
+def get_credit_map(memory_refs) -> dict:
+    """批量取 credit_weight（供 scoring 第六维用）。
+
+    与 _load_epi_map 同一纪律：单次批量 SQL、零 N+1、表不在如实空表。
+    带 30 天半衰期衰减 —— 老轨迹的功劳会自然淡出。
+    """
+    out: dict = {}
+    refs = [str(r) for r in (memory_refs or []) if r]
+    if not refs:
+        return out
+    try:
+        conn = _get_evolve_conn()
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "evolve_episode_steps" not in tables:
+                return out
+            half_life = episode_params()["half_life_days"] * 86400.0
+            now = _now()
+            placeholders = ",".join("?" for _ in refs)
+            for row in conn.execute(
+                    f"SELECT memory_ref, step_reward, created_at FROM evolve_episode_steps "
+                    f"WHERE memory_ref IN ({placeholders})", refs):
+                ref = row["memory_ref"] if hasattr(row, "keys") else row[0]
+                sr = float((row["step_reward"] if hasattr(row, "keys") else row[1]) or 0.0)
+                created = float((row["created_at"] if hasattr(row, "keys") else row[2]) or now)
+                age = max(0.0, now - created)
+                decay = 0.5 ** (age / half_life) if half_life > 0 else 1.0
+                out[ref] = round(out.get(ref, 0.0) + sr * decay, 6)
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("get_credit_map 跳过: %s", exc)
+    return out
 
 
 def record_feedback(
@@ -518,6 +804,8 @@ def get_evolve_report() -> dict:
         },
         "feedback_distribution": feedback_dist,
         "last_7d_adjustments": adjustments,
+        # v21.2 M1：轨迹维度 —— 开 credit 权重前要先看这里有没有数据
+        "episodes": _episode_report(),
         "last_cycle_ts": last_cycle_ts,
         "last_cycle_human": (
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_cycle_ts))
@@ -529,6 +817,72 @@ def get_evolve_report() -> dict:
 # ═══════════════════════════════════════════════
 # 后台进化循环
 # ═══════════════════════════════════════════════
+
+def get_episode_groups(memory_refs) -> dict:
+    """批量取候选的 episode 归属与步序（供 M7 rollup）。
+
+    返回 {memory_ref: (episode_id, step_idx)}。表不在如实空表。
+    """
+    out: dict = {}
+    refs = [str(r) for r in (memory_refs or []) if r]
+    if not refs:
+        return out
+    try:
+        conn = _get_evolve_conn()
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "evolve_episode_steps" not in tables:
+                return out
+            placeholders = ",".join("?" for _ in refs)
+            for row in conn.execute(
+                    f"SELECT memory_ref, episode_id, step_idx FROM evolve_episode_steps "
+                    f"WHERE memory_ref IN ({placeholders})", refs):
+                out[row[0]] = (row[1], int(row[2] or 0))
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("get_episode_groups 跳过: %s", exc)
+    return out
+
+
+def _episode_report() -> dict:
+    """v21.2 M1：episode 维度统计（供 /evolve/report）。
+
+    表不在如实返回 available=False —— 「没这张表」与「表里没数据」
+    是两回事，混成 0 会让人以为轨迹功能开着却没人用。
+    """
+    out = {"available": False, "open": 0, "closed": 0, "steps": 0,
+           "settled_steps": 0, "credit_weight": 0.0}
+    try:
+        from ducky.scoring import credit_dimension_weight
+        out["credit_weight"] = credit_dimension_weight()
+    except Exception:
+        pass
+    try:
+        conn = _get_evolve_conn()
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "evolve_episodes" not in tables:
+                return out
+            out["available"] = True
+            for status, cnt in conn.execute(
+                    "SELECT status, COUNT(*) FROM evolve_episodes GROUP BY status"):
+                if status in ("open", "closed"):
+                    out[status] = cnt
+            row = conn.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN credit_weight > 0 THEN 1 ELSE 0 END) "
+                "FROM evolve_episode_steps").fetchone()
+            if row:
+                out["steps"] = int(row[0] or 0)
+                out["settled_steps"] = int(row[1] or 0)
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("episode 报表跳过: %s", exc)
+    return out
+
 
 def evolve_background_loop() -> None:
     """后台线程：每 EVOLUTION_INTERVAL_HOURS 小时自动执行一次进化循环。"""

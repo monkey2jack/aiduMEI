@@ -169,6 +169,17 @@ _URL_RE = re.compile(r"https?://[^\s\"'<>（）()【】\[\]、，。；！？]+"
 _PATH_RE = re.compile(r"(?:^|(?<=\s))(~?/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+)")
 
 #: 键值断言。三种形态按可信度排：行首冒号定义 > X=Y > X是/为Y。
+# ⑧ 错误签名（v21.2 M6 · 借鉴 Memmy 的 structural 通道设计思想）
+# 施工记忆里大量 traceback/报错码，纯全文匹配 "ModuleNotFoundError" 命中不稳；
+# 抽成带稳定 key 的一类硬事实后，FTS 与检索加权都有了确定的抓手。
+# 只认 CamelCase 且以 Error/Exception/Warning 收尾的标识符 —— 宽一分就会把
+# 普通英文词当报错抓（本仓「判据太粗逼人绕过」的老教训）。
+_ERRSIG_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,60}(?:Error|Exception|Warning))\b")
+# 错误码：errno 17 / error code 500 / 错误码 40003 / exit code 1
+_ERRCODE_RE = re.compile(
+    r"(?:errno|error[ _]?code|exit[ _]?code|状态码|错误码)\s*[:：=]?\s*(\d{1,6})",
+    re.IGNORECASE)
+
 _KV_EQ_RE = re.compile(r"([A-Za-z0-9_一-鿿.\-]{2,24})\s*[=＝]\s*([^\s，。！？；]{1,120})")
 _KV_COLON_RE = re.compile(r"^([A-Za-z0-9_一-鿿.\-]{2,24})[：:]\s*(\S[^\n]{0,119})$")
 _KV_SHI_RE = re.compile(r"([A-Za-z0-9_一-鿿.\-]{2,24})\s*(?:是|为)\s*([^，。！？；\n]{2,120})")
@@ -247,7 +258,7 @@ def _normalize_date(token: str) -> str:
 # ───────────────────────── 抽取核心（纯函数） ─────────────────────────
 
 def extract_patterns(text: str, *, recorded_at: str | None = None) -> list[dict]:
-    """从文本中确定性地抽取七类硬事实。
+    """从文本中确定性地抽取八类硬事实（v21.2 M6 起含错误签名）。
 
     返回 ``[{"kind", "category", "fact_key", "fact_value"}, ...]``，
     顺序稳定（按句序 × 类别序），同一 (category, key, value) 只出一次。
@@ -314,6 +325,12 @@ def extract_patterns(text: str, *, recorded_at: str | None = None) -> list[dict]
                 continue
             emit("link", m.group(1), sentence)
 
+        # ⑧ 错误签名与错误码（v21.2 M6）——报错检索不再靠运气
+        for m in _ERRSIG_RE.finditer(sentence):
+            emit("errsig", m.group(1), sentence)
+        for m in _ERRCODE_RE.finditer(sentence):
+            emit("errsig", f"code:{m.group(1)}", sentence)
+
         # ⑤ 键值断言（= / 行首冒号 / 是·为）。
         # URL 占住的区间对 KV 规则做 span 屏蔽（v20.1 整改轮 R-04 ·
         # 外审 z P2-01 实例③）：行首 URL 的「:」会被行首冒号规则当成
@@ -374,7 +391,9 @@ def extract_and_store(
         # 日期会把 1 条关键指令挤出局。改按信息价值稳定排序后再切：
         # 指令/偏好（丢了最心疼）> 键值 > 日期/版本 > 数量/链接。
         # 稳定排序保证同输入同输出，确定性不破。
-        _KIND_PRIORITY = {"instruction": 0, "preference": 0, "kv": 1,
+        # v21.2 M6：errsig 与指令/偏好同列最高 —— 报错签名正是「丢了最心疼」
+        # 的那类，长 traceback 里的一堆日期不许把它挤出局。
+        _KIND_PRIORITY = {"instruction": 0, "preference": 0, "errsig": 0, "kv": 1,
                           "datetime": 2, "version": 2, "metric": 3, "link": 3}
         items.sort(key=lambda it: _KIND_PRIORITY.get(it["kind"], 4))
         dropped_kinds: dict[str, int] = {}
