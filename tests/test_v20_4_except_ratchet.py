@@ -44,7 +44,7 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 678  # v21.2 Memmy 融改：+18（M1 episode 七处轨迹写入/报表容错、
+_BASELINE = 679  # v21.2 Memmy 融改：+19（M1 episode 轨迹写入与报表容错、layer1 打标缝位的轨迹登记降级、
 # M2 回声抑制查询与 sidecar 列探测降级、M4/M6 配置 fail-closed、M7 rollup 降级、
 # M8 借阅留痕降级）——全部是「统计/留痕失败绝不许打炸主链路」这一类，
 # 收窄异常类型做不到（底层 sqlite/import/属性错误形态各异），故如实抬基线；

@@ -387,7 +387,7 @@ def open_or_extend_episode(session_id: str, *, user_id: str = "default",
         conn.close()
 
 
-def record_episode_step(session_id: str, memory_refs, *,
+def record_episode_step(memory_refs=None, *, session_id: str = "",
                         user_id: str = "default", bank_id: str = "default") -> int:
     """登记一步轨迹：本次写入产生的记忆归属到本 session 当前 episode。
 

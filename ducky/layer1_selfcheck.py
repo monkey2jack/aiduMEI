@@ -308,6 +308,20 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
             "reasoned" if infer else "user_provided",
             user_id=user_id, bank_id=bank_id, source="add:layer1",
         )
+        # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。
+        # 打标缝位在这里（layer1 包装器吞掉 mem0 的 results，路由层拿不到
+        # ref）—— 轨迹登记必须跟着打标走同一个缝，钩在路由层会漏掉主链路
+        # （实机冒烟正是这么暴露的：sidecar 有 session、episode 表却是空的）。
+        # 无 session（cron / 后台作业）一律不记，不稀释轨迹统计。
+        try:
+            from ducky.evolve_mem import record_episode_step
+            from ducky.origin_context import get_origin
+            _oa, _osid, _ot = get_origin()
+            if _osid:
+                record_episode_step([r for r in _refs if r], user_id=user_id,
+                                    bank_id=bank_id, session_id=_osid)
+        except Exception as _ee:
+            logger.debug(f"episode step 登记跳过: {_ee}")
     except Exception as e:
         logger.debug(f"epistemic sidecar 打标跳过: {e}")
     try:

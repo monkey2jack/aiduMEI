@@ -19,7 +19,7 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        任务反馈按轨迹位置回传；**credit 维度默认权重 0** —— 装上不生效，等本仓
        自己的 /evolve/report 数据说话再开（上游参数不盲信）。
     5. M7 episode rollup（默认关）· M8 借阅留痕进事件账本 + 档案第八节「当前生效借阅」。
-       用例总数 2048 → 2077（+29 条验收守卫，全部红→绿）。
+       用例总数 2048 → 2078（+30 条验收守卫，全部红→绿）。
     落位纠正两处（指导书按公开认知写，实测生产代码后修正）：回声/MMR 落在
     scoring 单一真源而非仅 recall_funnel（主 /search 走 RecallEngine，两路都经打分出口）；
     episode 表进 evolve 库的 ensure_evolve_schema 而非 facts.db 迁移流。
