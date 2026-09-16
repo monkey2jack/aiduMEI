@@ -388,6 +388,16 @@ def register_search_routes(app: FastAPI) -> None:
             try:
                 from ducky.verbatim_vault import verbatim_search, fuse_verbatim
                 v_hits = verbatim_search(req.query, uid, limit=effective_limit, bank_id=bank_id)
+                # v21.2 M2：原文腿在打分**之后**融合，绕过了 scoring 里的回声
+                # 抑制 —— 不在这里补一刀，向量腿滤掉的那句话会被原文腿原样送
+                # 回来（实机冒烟实测到的漏网）。verbatim 行自带 session_id，
+                # 零新增查询；session 为空或开关关闭时一律不过滤。
+                _sid = _req_session_id(req)
+                if v_hits and _sid:
+                    from ducky.scoring import echo_suppress_enabled
+                    if echo_suppress_enabled():
+                        v_hits = [h for h in v_hits
+                                  if str(h.get("session_id") or "") != _sid]
                 if v_hits:
                     results = fuse_verbatim(results, v_hits, limit=effective_limit, query=req.query)
             except Exception as _ve:
