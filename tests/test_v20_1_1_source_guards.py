@@ -266,6 +266,10 @@ _SQL_KEYWORD_TABLES = {"ADD"}
 # 迁移逻辑留在各模块（幂等 ensure_*），这张表补的是「谁在改 schema」的
 # 全景账——新迁移点不登记即红。
 _MIGRATION_LEDGER = {
+    # v21.2 Memmy 融改（均 additive）：M2 回声抑制的数据面 + M1 轨迹信用两表
+    ("ducky/schema_bootstrap.py", "ALTER", "memory_epistemic"),
+    ("ducky/evolve_mem.py", "CREATE", "evolve_episodes"),
+    ("ducky/evolve_mem.py", "CREATE", "evolve_episode_steps"),
     # v20.4.0 P1 租户轴/去重：以下均 additive（ADD COLUMN / CREATE IF NOT EXISTS / 表重建）。
     ("ducky/checkpoint.py", "ALTER", "checkpoints"),
     ("ducky/federation/schema.py", "CREATE", "facts_dedup_quarantine"),

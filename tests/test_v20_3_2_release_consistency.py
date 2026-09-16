@@ -198,7 +198,10 @@ def test_write_functions_without_rollback_only_decrease():
             writes = any(k in src for k in ("INSERT", "UPDATE ", "DELETE FROM", "ALTER TABLE", "CREATE "))
             if writes and ".execute(" in src and any(isinstance(x, ast.Try) for x in ast.walk(fn)) and "rollback" not in src:
                 n += 1
-    BASELINE = 110  # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；v21.1：+4 众神殿写函数（create_hall/grant/revoke/deactivate，均单事务 commit，失败不 commit 且 conn 关闭即回滚，无需显式 rollback）；
+    BASELINE = 113  # v21.2 Memmy 融改：+3（evolve_mem 的 open_or_extend_episode /
+    # record_episode_step / settle_episode —— 均单事务 commit，写的是 evolve 侧
+    # 统计表；失败路径不 commit 且 conn 在 finally 关闭即自动回滚，无需显式 rollback）；
+    # 2026-09-03 实测 96 → 幂等层三函数补 rollback 后 93；v21.1：+4 众神殿写函数（create_hall/grant/revoke/deactivate，均单事务 commit，失败不 commit 且 conn 关闭即回滚，无需显式 rollback）；
     # 2026-09-09 v20.4.1a：wal_engine cascade_delete_memory(66)/cascade_delete_all(53)
     # 圈复杂度按层拆分（四方外审 Sonnet B2），同一段写 SQL 从 2 个巨型函数分散进
     # 按层辅助函数，本守卫按函数计数故 93 → 102 —— **写入路径与事务归属未变**

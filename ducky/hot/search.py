@@ -273,6 +273,25 @@ def compute_recall_verdict(
 
 
 def register_search_routes(app: FastAPI) -> None:
+    def _req_session_id(req) -> str:
+        """v21.2 M2：从请求面取本次会话 id。
+
+        顶层 session_id 优先，其次 metadata / extra 里的同名片段 —— 口径
+        与写入侧 origin_context.extract_origin_fields 完全一致，否则写进去的
+        session 和查出来的对不上，回声抑制会静默失效（本仓最怕的那种「改了
+        等于没改」）。读不到一律空串 = 不过滤。"""
+        sid = str(getattr(req, "session_id", "") or "")
+        if sid:
+            return sid
+        try:
+            from ducky.origin_context import extract_origin_fields
+            _agent, sid2, _turn = extract_origin_fields(
+                getattr(req, "__pydantic_extra__", None) or {},
+                getattr(req, "metadata", None))
+            return sid2
+        except Exception:
+            return ""
+
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
         """搜索记忆 — Workspace 优先 → 混合召回（Hybrid）→ Salience boost"""
@@ -343,6 +362,7 @@ def register_search_routes(app: FastAPI) -> None:
                     mem, req.query, uid, effective_limit,
                     before=req.before, after=req.after,
                     bank_id=bank_id,
+                    session_id=_req_session_id(req),   # v21.2 M2 回声抑制
                 )
                 logger.info("🔍 hybrid 召回: query_len=%d query_fp=%s user_id=%s bank_id=%s → %d 条", len(req.query), _query_fingerprint(req.query), _normalize_user_id(req.user_id), req.bank_id, len(results))
             except Exception as e:
@@ -453,7 +473,7 @@ def register_search_routes(app: FastAPI) -> None:
             mem = get_memory()
             effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
             scope = make_scope(req.user_id, req.bank_id)
-            result = lazy_import_funnel()(mem, req.query, _normalize_user_id(scope.user_id), effective_limit, bank_id=scope.bank_id)
+            result = lazy_import_funnel()(mem, req.query, _normalize_user_id(scope.user_id), effective_limit, bank_id=scope.bank_id, session_id=_req_session_id(req))
             # P0-4：与 /search 保持一致的时间窗口过滤。funnel 若返回
             # results 列表，这里做一次客户端过滤，不改变 trace 结构。
             if req.before or req.after:
