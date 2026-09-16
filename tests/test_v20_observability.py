@@ -235,7 +235,7 @@ def _build_search_client(monkeypatch, hybrid_fn):
 def test_search_response_carries_recall_path_and_rerank(monkeypatch):
     hits = [{"id": "m1", "memory": "用户喜欢喝茶", "score": 0.8}]
 
-    def _hybrid(mem, query, uid, limit, before="", after="", bank_id="default"):
+    def _hybrid(mem, query, uid, limit, before="", after="", bank_id="default", session_id=""):
         return list(hits)
 
     client = _build_search_client(monkeypatch, _hybrid)
@@ -254,7 +254,7 @@ def test_search_response_carries_recall_path_and_rerank(monkeypatch):
 
 
 def test_search_degraded_path_marked(monkeypatch):
-    def _hybrid(mem, query, uid, limit, before="", after="", bank_id="default"):
+    def _hybrid(mem, query, uid, limit, before="", after="", bank_id="default", session_id=""):
         raise RuntimeError("hybrid broken")
 
     client = _build_search_client(monkeypatch, _hybrid)
@@ -279,7 +279,7 @@ def test_search_degraded_recall_path_when_mem0_survives(monkeypatch):
             return {"results": [{"id": "m9", "memory": "裸搜结果", "score": 0.5,
                                  "metadata": {}}]}
 
-    def _hybrid(mem, query, uid, limit, before="", after="", bank_id="default"):
+    def _hybrid(mem, query, uid, limit, before="", after="", bank_id="default", session_id=""):
         raise RuntimeError("hybrid broken")
 
     monkeypatch.setattr(hs, "get_memory", lambda: _FakeMem())
