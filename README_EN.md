@@ -37,15 +37,27 @@ The canon walks it through: environment check → install → gear selection →
 > python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # exit code 0 means wired
 > ```
 >
-> **Both wires ship as ready-made scripts** — copy and register them, don't write your own:
+> **All three wires ship as ready-made scripts** — copy and register them, don't write your own:
 >
-> | | Script | Hook |
-> |---|---|---|
-> | Read | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` |
-> | Write | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` |
-> | Write | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` |
+> | | Script | Hook | What it does automatically |
+> |---|---|---|---|
+> | Read | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` | Feeds relevant memories to the model **before** each turn |
+> | Write | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` | Stores the turn **after** it finishes |
+> | Write | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` | Same |
+> | Distill | `integrations/aidumem-distill.sh` | Hermes `session_end` | On session close, distills "what this stretch was about" into its own memory |
 >
-> Both carry `--selftest` (the write one really writes a memory and reads it back). But a passing selftest only proves the script runs — **it does not prove the host is calling it**. In the incident above the scripts were fine the whole time; nobody had hooked the write one. That is why `check_ingest_wiring.py` is the only acceptance criterion. Full wiring and yaml in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+> **"Automatic" means that once these three are wired you never touch memory again** —
+> no manual saves, no reminding the model to remember, no periodic cleanup. The three
+> hooks fire themselves at three moments: before you speak, after you speak, after you
+> are done. Your only job is to attach them correctly and then run the check below once.
+>
+> The distill wire addresses a different kind of forgetting: per-turn writes store
+> *facts*, and facts cannot hold "what this stretch was about" — the offhand remark,
+> the problem solved together, the moment a decision was made. It uses its own slow
+> decay lane (`distill`), and its emotional weight counts hits against the emotion
+> keyword list this repo already ships, not an invented score.
+>
+> All three carry `--selftest` (the write one really writes a memory and reads it back). But a passing selftest only proves the script runs — **it does not prove the host is calling it**. In the incident above the scripts were fine the whole time; nobody had hooked the write one. That is why `check_ingest_wiring.py` is the only acceptance criterion. Full wiring and yaml in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 **No Agent? Five manual lines:**
 
@@ -144,8 +156,8 @@ The full registry lives in `ducky/env_registry.py` (code is the source of truth;
 
 | Dimension | Status |
 |---|---|
-| Total cases | **2130** (measured via `pytest --collect-only`, 2026-09-17, v21.2-dev tree) = **1924 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
-| Clean dev machine | 2118 passed · **12 skipped** — **measured 2026-09-17** (v21.2-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **2137** (measured via `pytest --collect-only`, 2026-09-17, v21.2-dev tree) = **1931 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
+| Clean dev machine | 2125 passed · **12 skipped** — **measured 2026-09-17** (v21.2-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09** (v20.5a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
@@ -161,7 +173,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2118 and 1821**: the first is the 2026-09-17 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
+> **Why report both 2125 and 1821**: the first is the 2026-09-17 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
 
 > **The 12 skips are falsifiable, reproduce them yourself**: all thirteen skip axes (host, tools, optional deps, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state controllable, reproducible in both directions:
 >
@@ -170,12 +182,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2118 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2130 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2118 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2125 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2137 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2125 passed, 12 skipped
 > ```
 >
-> `2130 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2137 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

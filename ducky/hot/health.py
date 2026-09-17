@@ -52,6 +52,8 @@ logger = logging.getLogger("aiduMEM.hot")
 from ducky.env_config import int_env as _int_env  # noqa: E402
 
 _INGEST_MIN_READS = _int_env("AIDUMEI_INGEST_MIN_READS", 5, minimum=1)
+# 会话数低于这个值不判精华活性：偶尔两三个会话看不出接没接线。
+_DISTILL_MIN_SESSIONS = _int_env("AIDUMEI_DISTILL_MIN_SESSIONS", 3, minimum=1)
 
 
 
@@ -712,6 +714,52 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as _ing_exc:
             probes["ingest_liveness_ok"] = None
             probes["ingest_liveness_error"] = str(_ing_exc)[:120]
+
+        # ══════════════════════════════════════════════════════════════
+        # v21.2.0 会话精华活性探针（distill_liveness）
+        #
+        # 第三条线（session_end → 会话精华）漏挂的代价比写线轻，但同样安静：
+        # 记忆照常进，只是永远没有「这一程」那一层，没有任何绿灯会因此变红。
+        # 判据与写入活性同构 —— 分子分母取同一类流量：
+        #   会话数   有多少个不同的 origin_session_id（排除精华自己写的那些）
+        #   精华数   origin_agent = 'session-distill' 的登记条数
+        # 会话够多却一条精华都没有 ＝ 第三条线没挂上。
+        # 会话数不够不判：没人用不是故障（与 ingest_liveness 同一口径）。
+        # ══════════════════════════════════════════════════════════════
+        try:
+            _dis_conn = _ing_conn_fn()
+            try:
+                _r = _dis_conn.execute(
+                    "SELECT COUNT(DISTINCT origin_session_id) FROM memory_epistemic "
+                    "WHERE created_at >= ? AND COALESCE(origin_session_id,'') <> '' "
+                    "AND COALESCE(origin_agent,'') <> 'session-distill'",
+                    (_ing_cut_iso,)).fetchone()
+                _dis_sessions = int((_r[0] if _r else 0) or 0)
+                _r2 = _dis_conn.execute(
+                    "SELECT COUNT(*) FROM memory_epistemic WHERE created_at >= ? "
+                    "AND COALESCE(origin_agent,'') = 'session-distill'",
+                    (_ing_cut_iso,)).fetchone()
+                _dis_made = int((_r2[0] if _r2 else 0) or 0)
+            finally:
+                _dis_conn.close()
+            probes["distill_sessions_24h"] = _dis_sessions
+            probes["distill_made_24h"] = _dis_made
+            _dis_bad = _dis_sessions >= _DISTILL_MIN_SESSIONS and _dis_made == 0
+            probes["distill_liveness_ok"] = not _dis_bad
+            if _dis_bad:
+                DegradationTracker.record_degradation(
+                    "distill_liveness",
+                    f"最近 {_ing_window_h}h 有 {_dis_sessions} 个会话写入过记忆，"
+                    "却一条会话精华都没产出 —— 宿主多半没挂 session_end 钩子。"
+                    "记忆照常进，只是永远没有「这一程最值得记住的是什么」那一层。"
+                    "现成脚本：integrations/aidumem-distill.sh，挂法见 "
+                    "docs/AGENT_INTEGRATION.md「三条线」。")
+        except (ImportError, sqlite3.Error, ValueError, TypeError) as _dis_exc:
+            # 收窄到探针自己可能出的错（模块缺 / 库读失败 / 列不在）。
+            # 读不到一律标 None + 写明原因 —— 不冒充「正常」。
+            probes["distill_liveness_ok"] = None
+            probes["distill_liveness_error"] = str(_dis_exc)[:120]
+
 
         # v21.2.0 审计整改轮（生产用户审计 🔴-2）：episode_ok —— 任务书 DoD 点名要的探针，
         # v21.2.0 漏做且实录未登记缺口。查的是「轨迹这条腿能不能用」：
