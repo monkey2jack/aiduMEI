@@ -555,7 +555,8 @@ def test_fetch_candidate_pool_none_falls_back_to_hybrid(monkeypatch):
     """mem.search 返回 None 是真实发生过的形态（BM25 内部失败）—— 降级 hybrid。"""
     import ducky.mem0_runtime as rt
     monkeypatch.setattr(rt, "lazy_import_hybrid",
-                        lambda: lambda memory, query, user_id, limit=10:
+                        lambda: lambda memory, query, user_id, limit=10,
+                        bank_id="default", session_id="":
                         [{"id": "h1", "memory": "hybrid 捞回"}])
     cands, stage = rf._fetch_candidate_pool(_SearchMem(None), "q", "u1", "default", 10)
     assert [c["id"] for c in cands] == ["h1"]
@@ -565,7 +566,7 @@ def test_fetch_candidate_pool_none_falls_back_to_hybrid(monkeypatch):
 def test_fetch_candidate_pool_hybrid_also_fails_degrades_empty(monkeypatch):
     import ducky.mem0_runtime as rt
 
-    def _boom_hybrid(memory, query, user_id, limit=10):
+    def _boom_hybrid(memory, query, user_id, limit=10, bank_id="default", session_id=""):
         raise RuntimeError("hybrid 也挂了")
 
     monkeypatch.setattr(rt, "lazy_import_hybrid", lambda: _boom_hybrid)

@@ -157,12 +157,34 @@ def build_dossier_data(user_id: str, bank_id: str) -> dict[str, Any]:
         data["sections"]["evolve"] = {}
 
     # v21.2 M8：当前生效的跨殿借阅（谁能看我的记忆，一目了然）
+    #
+    # v21.2.0 审计整改轮：这段原来读 `g.get("revoked_at")` —— 而
+    # `list_hall_grants` 返回的键是 `revoked`(bool)。取不存在的键恒得 None，
+    # `not None` 恒 True，于是**一条都滤不掉**：已撤销的借阅照样列在
+    # 「当前生效」下，而且没有任何异常或日志。同一段还漏了过期判据
+    # （`check_hall_access` 有，这条路没有），过期 grant 同样显示为生效。
+    # 「当前生效」这四个字必须真的等于当前生效，否则档案比没有更糟。
     try:
         from ducky.pantheon import list_hall_grants
+        from ducky.utils import parse_iso_timestamp
+        import time as _t
+
+        def _is_live(g: dict) -> bool:
+            if g.get("revoked"):
+                return False
+            exp = g.get("expires_at")
+            if exp:
+                ts = parse_iso_timestamp(str(exp))
+                # 解析不出来的过期时间按「已过期」处理：借阅是安全特性，
+                # 降级方向朝更严（与 grant_hall_access 创建时同一取向）。
+                if not ts or ts <= _t.time():
+                    return False
+            return True
+
         granted = [g for g in list_hall_grants(user_id, direction="granted")
-                   if not g.get("revoked_at")]
+                   if _is_live(g)]
         received = [g for g in list_hall_grants(user_id, direction="received")
-                    if not g.get("revoked_at")]
+                    if _is_live(g)]
         data["sections"]["grants"] = {"granted": granted, "received": received}
     except Exception as e:
         logger.debug("dossier grants 段跳过: %s", e)
@@ -271,11 +293,17 @@ def render_markdown(data: dict[str, Any]) -> str:
         out.append("- 无（没有任何殿能读这座殿的记忆，这座殿也没借阅别处）")
     else:
         out.append(f"- 我授权出去 {len(_granted)} 条 · 我获授权 {len(_received)} 条")
+        # actions 在 list_hall_grants 里已 split 成 list —— 直接插值会渲染出
+        # 「可 ['read']」这种给机器看的形状。档案是给人读的，拼回逗号串。
+        def _acts(g):
+            a = g.get("actions") or []
+            return ", ".join(a) if isinstance(a, (list, tuple)) else str(a)
+
         for g in _granted[:20]:
-            out.append(f"  - → `{g.get('grantee_user_id', '')}` 可 {g.get('actions', '')}"
+            out.append(f"  - → `{g.get('grantee_user_id', '')}` 可 {_acts(g)}"
                        f"（库 {g.get('bank_id', '*')}，到期 {g.get('expires_at') or '不限'}）")
         for g in _received[:20]:
-            out.append(f"  - ← 来自 `{g.get('grantor_user_id', '')}`：{g.get('actions', '')}"
+            out.append(f"  - ← 来自 `{g.get('grantor_user_id', '')}`：{_acts(g)}"
                        f"（库 {g.get('bank_id', '*')}，到期 {g.get('expires_at') or '不限'}）")
     out.append("")
 
