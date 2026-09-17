@@ -7,7 +7,8 @@
 第 6 步：配配置。cp mem0_config_local.json.example mem0_config_local.json 并填入 LLM 与 Embedding 的 API Key 及 Base URL。同时 cp .env.example .env 并编辑 AIDUMEM_ENTITY_KEYWORDS（填入用户的人名/项目代号）和 AIDUMEM_API_TOKEN。Key 向我索要，不要自己编造。
 第 7 步：起服务。运行 python api_server.py 启动服务（默认监听 http://127.0.0.1:8767）。确认 curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health 返回 health_status=ok 且 probes.runtime_paths.data_dir_writable=true（第 6 步配了 token 后，完整探针需要带上它；不带凭据时 probes 会被脱敏并附 _redacted 说明，但 data_dir_writable 仍可读）。
 第 8 步：验证生效。运行 python scripts/e2e_smoke.py --json，确认输出 status=PASS 且 0 failures。这不是只看 /health=ok——e2e 会写入唯一 nonce、跨新会话召回、查看 trace、清理临时租户。WARN 不是 PASS，必须修复到 0 warnings 才算通过。
-第 9 步：接入宿主。按 docs/AGENT_INTEGRATION.md 把 aiduMEI 接到我正在用的 AI 宿主（Hermes Agent、Claude Code 等）上，并做一次真实对话验证记忆能被读写。运行 python scripts/agent_integration_check.py 确认全部通过。
+第 9 步：接入宿主——**必须接两条线，不是一条**。按 docs/AGENT_INTEGRATION.md 把 aiduMEI 接到我正在用的 AI 宿主（Hermes Agent、Claude Code 等）上：①读线：每轮对话**之前**调 /search 注入记忆；②写线：每轮对话**之后**调 /add 把这轮内容记下来（Hermes 挂 post_llm_call，Claude Code 挂 Stop 钩子），写入时 metadata 必须带 _origin_session_id 与 _origin_turn。只接读线不接写线时，检索有结果、/health 全绿、一切看起来都正常，但用户说的每句新话都不会被记住——这是本项目最贵的一次事故，别重蹈覆辙。接好后运行 python scripts/agent_integration_check.py 确认全部通过。
+第 9.5 步：验证写线真的在工作。先用宿主跟我**真实对话至少 5 轮**（不是脚本造的，要走你刚接的钩子），然后运行 python scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"。退出码 0 才算接线成功；若报「你在读但没在写」，说明写钩子没挂对位置，回第 9 步修好再继续，不要跳过。
 第 10 步：初始化维护。运行 bash scripts/update_crontab.sh install 安装 8 项定时任务，然后用 crontab -l 数一遍 —— 实文 8 条才算装上（--list 只报意图清单）。运行 bash scripts/backup_gate.sh create initial 创建首次备份并用 bash scripts/backup_gate.sh verify latest 验证。
 第 11 步：生成报告。运行 python scripts/report.py --json，把输出原文发给我。报告应包含版本、挡位、健康状态、水位、记忆数量、备份状态和下一步建议。
 遇到报错先查 TROUBLESHOOTING.md 和 docs/HEALTH.md；连续两次修不好就停下来把完整报错和日志发给我。

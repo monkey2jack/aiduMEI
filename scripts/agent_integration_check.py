@@ -61,6 +61,15 @@ def check(name: str, ok: bool, data):
         raise AssertionError(f"{name} failed: {data}")
 
 
+# 与 /health 的 ingest_liveness 探针同一口径（两处判据必须同源，
+# 否则「脚本说通过、探针说降级」会让人无所适从）。
+try:
+    from ducky.env_config import int_env as _int_env
+    _INGEST_MIN_READS = _int_env("AIDUMEI_INGEST_MIN_READS", 5, minimum=1)
+except Exception:
+    _INGEST_MIN_READS = 5  # 脱离仓库单跑时的兜底
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tenant", default=f"agent-integration-{int(time.time())}-{secrets.token_hex(4)}")
@@ -110,6 +119,42 @@ def main() -> int:
         check("no-duplicate-injection", dup_count <= 1, {"values": values[:10], "dup_count": dup_count})
         status, cleanup = request("POST", "/delete_all", {"user_id": tenant, "bank_id": "default", "confirm": True})
         check("cleanup", status in (200, 207) and cleanup.get("status") == "committed", cleanup)
+
+        # ── 宿主接线（v21.2.0：这一段是一次真实事故的产物）──────────────
+        #
+        # 上面每一项检查的都是「aiduMEI 的 API 能不能用」—— 本脚本自己调
+        # /add、自己调 /search，当然全绿。但它们**从不回答**真正要紧的那个
+        # 问题：**宿主到底有没有在调这些接口。**
+        #
+        # 2026-09-17 我们在自己的生产部署上吃了这个亏：读钩子挂着、写钩子
+        # 从没挂过，这个脚本照样 pass，/health 照样全绿，持续一个月无人察觉
+        # —— 因为判据测的是被集成方，不是集成本身。
+        #
+        # 判据用真实流量（不是本脚本造的临时租户）：在读、却完全不在写，
+        # 是接线错误的铁证；没有读，说明还没真用起来，如实说「还判断不了」。
+        _probes = (health or {}).get("probes") or {}
+        _reads = _probes.get("ingest_reads_24h")
+        _writes = _probes.get("ingest_writes_24h")
+        if _reads is None:
+            check("host-wiring", True,
+                  {"verdict": "unknown",
+                   "why": "服务端无写入活性探针（旧版本）",
+                   "next": "升级后运行 scripts/check_ingest_wiring.py"})
+        elif _reads < _INGEST_MIN_READS:
+            # 刚部署没有流量是正常的 —— 不许拿假红灯挡住新用户，
+            # 但必须把「这件事还没验」明明白白说出来，不许沉默放行。
+            check("host-wiring", True,
+                  {"verdict": "not_yet_verifiable",
+                   "reads_24h": _reads, "writes_24h": _writes,
+                   "next": "⚠️ 真实用过几轮对话后，务必运行 "
+                           "scripts/check_ingest_wiring.py 确认写入钩子真的在工作 —— "
+                           "只挂读钩子不挂写钩子时，一切看起来都正常，但新对话一句都不会被记住"})
+        else:
+            check("host-wiring", (_writes or 0) > 0,
+                  {"verdict": "wired" if (_writes or 0) > 0 else "READ_ONLY",
+                   "reads_24h": _reads, "writes_24h": _writes,
+                   "fix": "宿主只在读不在写：把写入钩子挂到「本轮回答结束」那个时机"
+                          "（Hermes=post_llm_call，Claude Code=Stop），见 docs/AGENT_INTEGRATION.md"})
     except AssertionError as exc:
         print(json.dumps({"status": "fail", "steps": STEPS, "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1

@@ -25,9 +25,19 @@
 
 Send this to your AI Agent:
 
-> You are the deployment engineer. Deploy aiduMEI on this machine by following <https://github.com/monkey2jack/aiduMEI> `prompts/install.txt` verbatim (the 13-line canon). Verify each step yourself; never fake success.
+> You are the deployment engineer. Deploy aiduMEI on this machine by following <https://github.com/monkey2jack/aiduMEI> `prompts/install.txt` verbatim (the 14-line canon). Verify each step yourself; never fake success.
 
 The canon walks it through: environment check → install → gear selection → keys (it asks you; never invents) → service up → **real write/recall verification** (not just `/health`) → host integration → cron & backups → final report.
+
+> ⚠️ **Wiring the host means wiring two hooks, not one.** The *read* hook injects memories *before* each turn — miss it and you notice immediately. The *write* hook persists the turn *afterwards* — **miss it and you will not notice for weeks**: retrieval still returns results and `/health` stays green, because the *old* memories really are healthy, while everything new you say is thrown away.
+>
+> We paid for this lesson on our own production deployment (2026-09-17: read hook live for a month, write hook never wired, every probe green). Hence `/health` now carries an `ingest_liveness_ok` probe for "reading but not writing", and after a few real turns you should run:
+>
+> ```bash
+> python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # exit code 0 means wired
+> ```
+>
+> See [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md): Hermes uses `post_llm_call`, Claude Code uses `Stop`.
 
 **No Agent? Five manual lines:**
 
@@ -126,8 +136,8 @@ The full registry lives in `ducky/env_registry.py` (code is the source of truth;
 
 | Dimension | Status |
 |---|---|
-| Total cases | **2104** (measured via `pytest --collect-only`, 2026-09-17, v21.2-dev tree) = **1898 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
-| Clean dev machine | 2092 passed · **12 skipped** — **measured 2026-09-17** (v21.2-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **2110** (measured via `pytest --collect-only`, 2026-09-17, v21.2-dev tree) = **1904 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
+| Clean dev machine | 2098 passed · **12 skipped** — **measured 2026-09-17** (v21.2-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09** (v20.5a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
@@ -143,7 +153,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2092 and 1821**: the first is the 2026-09-17 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
+> **Why report both 2098 and 1821**: the first is the 2026-09-17 measurement of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
 
 > **The 12 skips are falsifiable, reproduce them yourself**: all thirteen skip axes (host, tools, optional deps, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state controllable, reproducible in both directions:
 >
@@ -152,12 +162,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2092 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2104 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2092 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2098 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2110 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2098 passed, 12 skipped
 > ```
 >
-> `2104 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2110 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

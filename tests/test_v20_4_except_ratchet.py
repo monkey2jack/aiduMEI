@@ -44,7 +44,10 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 682  # v21.2.0 审计整改轮：+3（两个新探针的读库容错 +
+_BASELINE = 685  # v21.2.0 写入活性探针：+3（探针自身读两个库的容错 +
+# 自查脚本脱离仓库单跑时的凭据兜底 —— 一个「告诉你有没有在写」的探针
+# 绝不能自己把 /health 打炸；底层 sqlite/import 错误形态各异收窄不掉）；
+# 原 v21.2.0 审计整改轮：+3（两个新探针的读库容错 +
 # episode rollup 的降级捕获——rollup 会改变返回条数，失败必须留 warning
 # 而不是静默不聚合）；原 +2 记为（/health 新增 epistemic_session_coverage 与
 # episode_ok 两个探针的读库容错 —— 探针本身绝不许把 /health 打炸，

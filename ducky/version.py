@@ -19,7 +19,7 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        任务反馈按轨迹位置回传；**credit 维度默认权重 0** —— 装上不生效，等本仓
        自己的 /evolve/report 数据说话再开（上游参数不盲信）。
     5. M7 episode rollup（默认关）· M8 借阅留痕进事件账本 + 档案第八节「当前生效借阅」。
-       用例总数 2048 → 2104（+56 条验收与整改守卫，全部红→绿）。
+       用例总数 2048 → 2110（+62 条验收与整改守卫，全部红→绿）。
     6. 审计整改轮（2026-09-17）：溯源打标改走显式 metadata（不再依赖 contextvar
        隐式通道）；补 episode_ok 与 epistemic_session_coverage（7 天窗口）两个探针；
        回声抑制降级升 warning；AGENTS.md 良性判据前置。根因判定：生产 sidecar
@@ -35,6 +35,11 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        收了 caller_user_id 却不校验）；四处授权拒绝统一转 403 并收窄到 HallError
        ——此前被兜成 status:error，无权限与服务端故障混成一件事。空 caller 照旧
        放行，存量调用方零破坏。
+    9. 写入活性探针（2026-09-17）：/health 新增 ingest_liveness_ok（读写比判据）、
+       新增 scripts/check_ingest_wiring.py 自查、agent_integration_check 补 host-wiring
+       判据。由来：一个部署只挂了注入钩子没挂写入钩子，指标全绿却在持续失忆 ——
+       本仓所有探针都在看「库里的记忆好不好」，没有一个在看「该进来的进来了吗」。
+       文档侧把「两条线」与各宿主挂点写进 AGENT_INTEGRATION.md / 正典 / 双语 README。
     落位纠正两处（指导书按公开认知写，实测生产代码后修正）：回声/MMR 落在
     scoring 单一真源而非仅 recall_funnel（主 /search 走 RecallEngine，两路都经打分出口）；
     episode 表进 evolve 库的 ensure_evolve_schema 而非 facts.db 迁移流。
