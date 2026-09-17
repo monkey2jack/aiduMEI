@@ -135,6 +135,13 @@ def main() -> int:
         _probes = (health or {}).get("probes") or {}
         _reads = _probes.get("ingest_reads_24h")
         _writes = _probes.get("ingest_writes_24h")
+        # 判据用「来自对话的写入」，不是写入总数：总数里混着 cron 整合器与
+        # MEMORY.md 同步引擎等后台通路，实测那台出事的机器每天有 6~18 条
+        # 后台写入、对话写入恒为 0 —— 拿总数判会在真事故上恒绿。
+        # 旧服务端没有这个键时退回总数（宁可少报，不假红）。
+        _turn_writes = _probes.get("ingest_turn_writes_24h")
+        if _turn_writes is None:
+            _turn_writes = _writes
         if _reads is None:
             check("host-wiring", True,
                   {"verdict": "unknown",
@@ -146,15 +153,19 @@ def main() -> int:
             check("host-wiring", True,
                   {"verdict": "not_yet_verifiable",
                    "reads_24h": _reads, "writes_24h": _writes,
+                   "turn_writes_24h": _turn_writes,
                    "next": "⚠️ 真实用过几轮对话后，务必运行 "
                            "scripts/check_ingest_wiring.py 确认写入钩子真的在工作 —— "
                            "只挂读钩子不挂写钩子时，一切看起来都正常，但新对话一句都不会被记住"})
         else:
-            check("host-wiring", (_writes or 0) > 0,
-                  {"verdict": "wired" if (_writes or 0) > 0 else "READ_ONLY",
+            check("host-wiring", (_turn_writes or 0) > 0,
+                  {"verdict": "wired" if (_turn_writes or 0) > 0 else "READ_ONLY",
                    "reads_24h": _reads, "writes_24h": _writes,
-                   "fix": "宿主只在读不在写：把写入钩子挂到「本轮回答结束」那个时机"
-                          "（Hermes=post_llm_call，Claude Code=Stop），见 docs/AGENT_INTEGRATION.md"})
+                   "turn_writes_24h": _turn_writes,
+                   "fix": "宿主在读，但没有一条来自对话的写入。现成脚本："
+                          "integrations/aidumem-ingest.sh（Hermes post_llm_call）或 "
+                          "integrations/cursor-hook/claude-code-stop-hook.py（Claude Code Stop）；"
+                          "已挂上还红就是没透传 _origin_session_id。见 docs/AGENT_INTEGRATION.md"})
     except AssertionError as exc:
         print(json.dumps({"status": "fail", "steps": STEPS, "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1
