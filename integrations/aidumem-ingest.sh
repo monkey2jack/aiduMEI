@@ -172,6 +172,7 @@ try:
     _call("/add", {
         "messages": [{"role": "user", "content": marker}],
         "user_id": uid,
+        "async_mode": True,
         "metadata": {"_origin_agent": "aidumem-ingest-selftest",
                      "_origin_session_id": sid,
                      "_origin_turn": 1,
@@ -196,7 +197,7 @@ except Exception as exc:
 # 写完必须回读。只看 /add 返回 200 是不够的：历史上出过「请求收下了、
 # 落库没发生」的形态，而那正是本 hook 要防的那类静默。
 found = False
-for _ in range(3):
+for _ in range(8):          # 异步落库，回读要给足耐心
     try:
         res = _call("/search", {"query": marker, "user_id": uid, "limit": 5,
                                 "metadata": {}})
@@ -281,6 +282,11 @@ messages = [
 print(json.dumps({
     "messages": messages,
     "user_id": os.environ["_INGEST_UID_PIPE"],
+    # async_mode 不是优化，是正确性：同步 /add 要跑完整抽取管线（生产实测
+    # p50 约 4 秒，长尾未知），而宿主给 hook 的超时通常是个位数秒。超时被杀
+    # 的钩子 = 静默不写，正是本文件要防的那件事。异步下服务端先收下再后台
+    # 落库，溯源三件套在入口就已归一进 metadata，不受影响。
+    "async_mode": True,
     "metadata": {
         "_origin_agent": agent[:256],
         "_origin_session_id": session_id[:256],
