@@ -123,8 +123,15 @@ def test_recall_chain_cross_hall_gated(monkeypatch):
     client = TestClient(app)
 
     # athena 跨殿搜 zeus，无借阅 → 被借阅门挡下
+    #
+    # v21.2.0 审计整改轮**设计变更**：拒绝从 `{"status":"error"}`（HTTP 200）
+    # 改为 **HTTP 403**。原来的形态把「你没有借阅」和「服务端出故障」混成
+    # 同一个响应 —— 调用方的重试逻辑会一直重试一个永远不会成功的请求。
     r = client.post("/recall_chain", json={"query": "x", "user_id": "zeus", "caller_user_id": "athena"})
-    assert r.json()["status"] == "error" and "借阅" in r.json()["detail"]
+    assert r.status_code == 403, f"授权拒绝必须是 403，实得 {r.status_code}"
+    assert "借阅" in r.json()["detail"]
+    # 负向对照：故障仍走 200 + status:error，两者不许再混为一谈
+    assert "status" not in r.json(), "403 响应体不该再带业务态 status 字段"
     # 建借阅后 → 放行
     from ducky import pantheon as p
     p.grant_hall_access("zeus", "athena", actions="read")

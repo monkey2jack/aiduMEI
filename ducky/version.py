@@ -19,7 +19,7 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        任务反馈按轨迹位置回传；**credit 维度默认权重 0** —— 装上不生效，等本仓
        自己的 /evolve/report 数据说话再开（上游参数不盲信）。
     5. M7 episode rollup（默认关）· M8 借阅留痕进事件账本 + 档案第八节「当前生效借阅」。
-       用例总数 2048 → 2101（+53 条验收与整改守卫，全部红→绿）。
+       用例总数 2048 → 2104（+56 条验收与整改守卫，全部红→绿）。
     6. 审计整改轮（2026-09-17）：溯源打标改走显式 metadata（不再依赖 contextvar
        隐式通道）；补 episode_ok 与 epistemic_session_coverage（7 天窗口）两个探针；
        回声抑制降级升 warning；AGENTS.md 良性判据前置。根因判定：生产 sidecar
@@ -30,6 +30,11 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        快路绕开回声抑制；MCP 不传 session；conversation_id 键名两侧不等；降级腿丢
        bank_id/session_id；verbatim 元数据回填静默失败；errsig 正则两份拷贝。
        全部修复并补守卫，生效证据（errsig_hits/credit_applied/echo_suppressed）进遥测。
+    8. 范围外缺口收口（2026-09-17）：/search 与 /search_trace 补跨殿借阅校验
+       （v21.1 只织入了 recall_chain/session_search/dossier，最主要那条读路径
+       收了 caller_user_id 却不校验）；四处授权拒绝统一转 403 并收窄到 HallError
+       ——此前被兜成 status:error，无权限与服务端故障混成一件事。空 caller 照旧
+       放行，存量调用方零破坏。
     落位纠正两处（指导书按公开认知写，实测生产代码后修正）：回声/MMR 落在
     scoring 单一真源而非仅 recall_funnel（主 /search 走 RecallEngine，两路都经打分出口）；
     episode 表进 evolve 库的 ensure_evolve_schema 而非 facts.db 迁移流。

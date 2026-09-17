@@ -798,3 +798,78 @@ def test_gate_telemetry_actually_reaches_the_caller():
     assert "reset_gate_telemetry" in src, (
         "没有每请求重置 —— 线程复用时上一请求的残留会被读成本次的")
     assert '"_gate": gate_telem' in src, "遥测没有进响应体"
+
+
+# ══════ 范围外缺口收口：跨殿借阅在 /search 上真生效 ══════
+
+
+def test_search_routes_enforce_cross_hall_grant():
+    """`/search` 与 `/search_trace` 必须校验借阅。
+
+    v21.1 把借阅织进了 recall_chain / session_search / dossier，但 `/search`
+    —— 最主要的那条 core 读路径 —— 收了 `caller_user_id` 却从不校验：声明
+    被 Pydantic 安静收下然后丢弃，「声明了」与「没声明」行为逐字节相同。
+    """
+    import inspect
+    from ducky.hot import search as hs
+    src = inspect.getsource(hs.register_search_routes)
+    i = src.find('@app.post("/search"')
+    j = src.find('@app.post("/search_trace"')
+    k = src.find('@app.get("/gate"')
+    assert i != -1 and j > i, "路由段找不到 —— 守卫失去着力点"
+    for name, seg in (("/search", src[i:j]), ("/search_trace", src[j:k if k > j else len(src)])):
+        assert "authorize_cross_hall" in seg, f"{name} 未校验跨殿借阅"
+        assert "status_code=403" in seg, f"{name} 的授权拒绝没转 403"
+
+
+def test_hall_denial_is_403_not_swallowed_into_error_body():
+    """授权拒绝必须以 403 出去，不能被通用 except 吞成 {"status":"error"}。
+
+    P1-4 的老教训：`raise HTTPException` 写在 try 里，下面一个裸
+    `except Exception` 就能把它吞掉再包成成功体——「无权限」与「服务端
+    故障」混成一件事，调用方的重试逻辑会一直重试一个永远不会成功的请求。
+    """
+    import inspect
+    import re
+    from ducky.hot import search as hs
+    from ducky import routes_v8
+    for mod_fn in (hs.register_search_routes, routes_v8.register_v8_routes):
+        src = inspect.getsource(mod_fn)
+        # 判据按**路由体**切分，不用固定行窗口 —— /search 的函数体比任何
+        # 固定窗口都长，窗口式判据会把「保护在更远处」误判成「没保护」
+        # （假红灯与假绿灯一样害人）。
+        starts = [m.start() for m in re.finditer(r"^    @app\.(post|get)\(", src, re.M)]
+        for a, b in zip(starts, starts[1:] + [len(src)]):
+            body = src[a:b]
+            if "status_code=403" not in body:
+                continue
+            route = body.splitlines()[0].strip()
+            lines = body.splitlines()
+            i403_ln = next(n for n, ln in enumerate(lines) if "status_code=403" in ln)
+            # 只看**路由级**（缩进 8）的 handler —— 内层 try 的 except（缩进 12）
+            # 接的是它自己那几行，不会接到 403。按缩进判层级，否则第一个内层
+            # except Exception 就会让判据误判成「没保护」。
+            level = [ln.strip() for n, ln in enumerate(lines)
+                     if n > i403_ln and re.match(r"^ {8}except ", ln)]
+            assert level, f"{mod_fn.__name__} 的 {route}：403 之后没有路由级 except"
+            # 只有**宽捕获**（except Exception / 裸 except）才会吞 HTTPException；
+            # except ImportError 这类窄捕获接不到它，路过无害。判据只要求：
+            # 在第一个宽捕获**之前**必须已经放行过 HTTPException。
+            broad = next((i for i, ln in enumerate(level)
+                          if ln.startswith("except Exception") or ln == "except:"), None)
+            passthru = next((i for i, ln in enumerate(level)
+                             if ln.startswith("except HTTPException")), None)
+            assert broad is None or (passthru is not None and passthru < broad), (
+                f"{mod_fn.__name__} 的 {route}：403 之后的宽捕获前没有"
+                "「except HTTPException: raise」—— 403 会被吞成成功体")
+
+
+def test_empty_caller_still_passes_zero_breakage():
+    """空 caller / caller==user_id 一律放行 —— 存量调用方零破坏。
+
+    这是加校验能安全上线的前提：宿主、MCP、控制台都不传 caller。
+    """
+    from ducky.pantheon import authorize_cross_hall
+    assert authorize_cross_hall("dudu", "") is True
+    assert authorize_cross_hall("dudu", "   ") is True
+    assert authorize_cross_hall("dudu", "dudu") is True
