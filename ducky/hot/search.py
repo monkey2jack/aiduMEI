@@ -326,6 +326,23 @@ def register_search_routes(app: FastAPI) -> None:
             # 线程复用时上一请求的腿断残留不许被读成本次的。
             from ducky.engine import last_recall_telemetry, reset_recall_telemetry
             reset_recall_telemetry()
+            # v21.2.0 审计整改轮（范围外缺口收口）：跨殿检索须持借阅。
+            # v21.1 把借阅织进了 recall_chain / session_search / dossier，
+            # 但 /search —— 最主要的那条 core 读路径 —— 收了 caller_user_id
+            # 却从不校验：调用方声明了自己是哪座殿，声明被 Pydantic 安静收下
+            # 然后丢弃，「声明了」与「没声明」行为逐字节相同，无 403 无日志。
+            # 空 caller / caller==user_id 照旧放行（主人直连），故存量调用方零破坏。
+            from ducky.pantheon import authorize_cross_hall, HallError
+            try:
+                authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
+                                     bank_id=req.bank_id, action="read")
+            except HallError as _hall_err:
+                # 只收窄到 HallError —— DB / 导入故障不是「你没有借阅」，
+                # 它们该落到通用 except 变成故障响应。
+                # 403 而不是 500/status:error —— 「你没有这个殿的借阅」是一次
+                # 明确的拒绝，与「服务端出故障」必须分得开（dossier 那处已是
+                # 这个写法，这里对齐）。
+                raise HTTPException(status_code=403, detail=str(_hall_err))
             recall_path = "hybrid"
             mem = get_memory()
             scope = make_scope(req.user_id, req.bank_id)
@@ -501,6 +518,11 @@ def register_search_routes(app: FastAPI) -> None:
                 resp["engine_mode_reason"] = _gs.get("last_shift_reason")
                 resp["confidence_scale"] = "local-bge-small-zh"
             return resp
+        except HTTPException:
+            # P1-4 教训：HTTPException 必须先放行 —— 否则上面跨殿借阅拒绝
+            # 刚 raise 的 403 会被这里吞掉再包成 {"status":"error"}，
+            # 「无权限」与「服务端故障」又混成一件事。
+            raise
         except Exception as e:
             logger.error(f"search 失败: {e}")
             return {"status": "error", "results": [], **error_envelope(e)}
@@ -509,6 +531,12 @@ def register_search_routes(app: FastAPI) -> None:
     def search_trace(req: SearchRequest):
         """搜索记忆 + Recall Funnel trace（带分阶段耗时）"""
         try:
+            from ducky.pantheon import authorize_cross_hall, HallError
+            try:
+                authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
+                                     bank_id=req.bank_id, action="read")
+            except HallError as _hall_err:
+                raise HTTPException(status_code=403, detail=str(_hall_err))
             mem = get_memory()
             effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
             scope = make_scope(req.user_id, req.bank_id)
