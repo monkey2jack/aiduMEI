@@ -2,15 +2,95 @@
 
 aiduMEI is the durable memory layer. The host's native memory remains the short-term conversation layer. Do not copy the same memory into both systems: the host handles current turns and working context; aiduMEI stores facts, raw records, core memory, traces, and long-term evolution.
 
+## The two wires (read this before anything else)
+
+aiduMEI needs **two** independent hooks in your host. Wiring only one of them is
+the single most expensive mistake you can make with this system, because the
+failure is completely silent:
+
+| Wire | When | What it does | If you skip it |
+|---|---|---|---|
+| **READ** | *before* the model answers | `/search` → inject relevant memories | The agent has amnesia — obvious immediately, you will fix it in minutes |
+| **WRITE** | *after* the model answered | `/add` → persist what was just said | **Everything still looks fine.** Retrieval returns results, `/health` is green, dashboards are healthy — because the *old* memories really are healthy. Meanwhile every new thing you say is discarded. You notice weeks later, as a vague feeling that "it never remembers anything recent" |
+
+We learned this the hard way on our own production deployment on 2026-09-17:
+the read hook had been live for a month, the write hook had **never** been
+wired. Every probe was green the whole time. It took a human auditing the
+database by hand to find it.
+
+So, before you trust this system with anything:
+
+```bash
+python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"
+```
+
+It asks exactly one question — *you are reading; are you also writing?* —
+and exits non-zero if the answer is no. Run it after deploying, and keep it
+in your periodic checks. `/health` carries the same verdict as
+`probes.ingest_liveness_ok`, and reports a `degraded` entry when a deployment
+has been searching but not writing.
+
 ## Lifecycle
 
-| Host moment | aiduMEI action |
+| Host moment | aiduMEI action | Wire |
+|---|---|---|
+| Before turn | Call `/gate`; if relevant, search or request context and inject once | READ |
+| **After turn** | **Write user facts or durable decisions with `/add` — this is the WRITE wire; it is not optional** | **WRITE** |
+| Before compression | Save at-risk raw dialogue with `/add/raw` | WRITE |
+| Session end | Call `/session/end` to archive/report the session | — |
+| Restore or migration | Import only durable facts and raw records, not transient working state | — |
+
+### Where the write hook goes
+
+Hook it to whatever your host calls "the turn just finished" — the moment the
+assistant's reply is complete. Host-specific names differ; the shape does not:
+
+| Host | Hook to use |
 |---|---|
-| Before turn | Call `/gate`; if relevant, search or request context and inject once |
-| After turn | Write user facts or durable decisions with `/add` |
-| Before compression | Save at-risk raw dialogue with `/add/raw` |
-| Session end | Call `/session/end` to archive/report the session |
-| Restore or migration | Import only durable facts and raw records, not transient working state |
+| Hermes | `post_llm_call` (fires once per turn, after the tool loop) |
+| Claude Code | `Stop` hook |
+| Anything else | The last callback in your turn pipeline, or a wrapper around your send-reply function |
+
+Do **not** put the write on the pre-turn hook. That hook runs *before* the
+answer exists, so you would be recording half a conversation.
+
+### Always pass `session_id` and `turn`
+
+Include them in the write payload's `metadata`:
+
+```json
+{
+  "messages": [{"role": "user", "content": "..."},
+               {"role": "assistant", "content": "..."}],
+  "user_id": "alice", "bank_id": "default", "infer": true,
+  "metadata": {
+    "_origin_session_id": "<your host's session id>",
+    "_origin_agent": "<your agent name>",
+    "_origin_turn": 7
+  }
+}
+```
+
+Memories are **not** scoped to a session — retrieval always searches the whole
+bank, so starting a new session (`/new`, `/clear`, a fresh process) never loses
+anything. `session_id` is used for two other things:
+
+- **echo suppression** — a memory written in this very session is not fed back
+  to you as "something you remembered" two turns later;
+- **trajectory credit** — feedback on a task is distributed across the steps
+  that led to it.
+
+Omit it and both features sit there doing nothing, silently. `/health` reports
+the coverage as `probes.epistemic_session_coverage`; a deployment that writes
+memories but never attaches a session id will see that stay at `0`.
+
+### Belt and braces: a periodic sweep
+
+A hook can be misconfigured, disabled during an upgrade, or silently throw.
+For anything you actually care about remembering, add a scheduled job as a
+second line of defence — it re-reads recent conversations from your host's own
+store and writes anything the hook missed, **and it alerts when it finds a gap**.
+Catching the gap is the point; back-filling is the bonus.
 
 ## Scope model
 
