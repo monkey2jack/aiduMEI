@@ -712,7 +712,11 @@ def test_workspace_fastpath_applies_echo_suppression_and_declares_bypass():
 def test_mcp_search_carries_session_id():
     """M2：MCP 通路必须能传 session_id，否则整条 MCP 上回声抑制不存在。"""
     import inspect
-    import mcp_server
+    # mcp 是可选依赖（`aidumei[mcp]`）。缺它是「没装可选轴」而不是缺陷 ——
+    # 与本仓 ruff/nltk/regex 同一待遇：诚实跳过。跳过判据与既有 mcp_extra 轴
+    # 同一口径（importorskip("mcp_server")），这样它直接落进已登记的那条轴，
+    # 不新造一条没人知道的跳过轴。
+    mcp_server = pytest.importorskip("mcp_server")
     assert "session_id" in inspect.signature(mcp_server.mem_search).parameters
     src = inspect.getsource(mcp_server.mem_search)
     assert '_payload["session_id"] = session_id' in src, "收了 session_id 却不发送"
