@@ -318,6 +318,10 @@ def register_search_routes(app: FastAPI) -> None:
             # 会被误读成本次的重排序结局。
             from ducky.mem0_runtime import last_rerank_telemetry, reset_rerank_telemetry
             reset_rerank_telemetry()
+            # v21.2.0 审计整改轮：闸门/生效遥测同样每请求重置 —— 线程复用时
+            # 上一请求的残留会被读成本次的（与 rerank 同一条教训）。
+            from ducky.scoring import last_gate_telemetry, reset_gate_telemetry
+            reset_gate_telemetry()
             # v20.1 WP-C：召回腿遥测与 rerank 同规矩——每请求重置，
             # 线程复用时上一请求的腿断残留不许被读成本次的。
             from ducky.engine import last_recall_telemetry, reset_recall_telemetry
@@ -432,6 +436,10 @@ def register_search_routes(app: FastAPI) -> None:
             # v20 P0-4：召回路径与 rerank 三态随响应返回——「降级裸搜」和
             # 「重排序其实没生效」此前只活在服务端日志里，调用方无从察觉。
             rerank_telem = last_rerank_telemetry() or {"status": "not_invoked"}
+            # v21.2.0 审计整改轮：`last_gate_telemetry()` 此前**全仓零消费** ——
+            # 闸门拦了多少、M2/M4/M6/M1 到底生没生效，全写进了一条死路。
+            # 本轮审计的结论是「要有数据面旁证」，那就得先让证据到得了调用方。
+            gate_telem = last_gate_telemetry()
             # v20：召回强度随响应下发。整改前「5 条 0.66」和「5 条 0.42」
             # 在响应里长得一模一样，调用方无从判断这批东西值不值得信。
             strength = annotate_recall_strength(results)
@@ -481,6 +489,7 @@ def register_search_routes(app: FastAPI) -> None:
                 "status": "ok", "results": results,
                 "_recall_path": recall_path,
                 "_rerank": rerank_telem,
+                "_gate": gate_telem,
                 "_recall_strength": strength,
                 "_recall_legs": recall_telem,
                 "recall_verdict": verdict,
