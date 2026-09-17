@@ -37,7 +37,15 @@ The canon walks it through: environment check → install → gear selection →
 > python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # exit code 0 means wired
 > ```
 >
-> See [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md): Hermes uses `post_llm_call`, Claude Code uses `Stop`.
+> **Both wires ship as ready-made scripts** — copy and register them, don't write your own:
+>
+> | | Script | Hook |
+> |---|---|---|
+> | Read | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` |
+> | Write | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` |
+> | Write | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` |
+>
+> Both carry `--selftest` (the write one really writes a memory and reads it back). But a passing selftest only proves the script runs — **it does not prove the host is calling it**. In the incident above the scripts were fine the whole time; nobody had hooked the write one. That is why `check_ingest_wiring.py` is the only acceptance criterion. Full wiring and yaml in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 **No Agent? Five manual lines:**
 
