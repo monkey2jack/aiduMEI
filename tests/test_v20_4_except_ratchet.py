@@ -44,7 +44,12 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 685  # v21.2.0 写入活性探针：+3（探针自身读两个库的容错 +
+_BASELINE = 686  # v21.2.0 会话精华：+1 —— /session/distill 路由层的兜底。
+# routes_v8.py 里 30 多个路由一律是 `except Exception: return {"status":"error"}`，
+# 路由层的契约就是「任何异常都变成 JSON，不让 500 裸奔」；单独给这一个收窄，
+# 换来的是漏网异常在这条路上变成 500，与同文件其余路由行为不一致。
+# 模块自身（ducky/session_distill.py）零宽捕获，四处都按错误形态收窄了。
+# v21.2.0 写入活性探针：+3（探针自身读两个库的容错 +
 # 自查脚本脱离仓库单跑时的凭据兜底 —— 一个「告诉你有没有在写」的探针
 # 绝不能自己把 /health 打炸；底层 sqlite/import 错误形态各异收窄不掉）；
 # 原 v21.2.0 审计整改轮：+3（两个新探针的读库容错 +

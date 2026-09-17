@@ -52,6 +52,42 @@ assistant's reply is complete. Host-specific names differ; the shape does not:
 | Claude Code | `Stop` hook | `integrations/cursor-hook/claude-code-stop-hook.py` |
 | Anything else | The last callback in your turn pipeline, or a wrapper around your send-reply function | — |
 
+### There is a third wire: session distill
+
+Per-turn writes store *facts*. They cannot store **"what this whole stretch was
+about"** — the offhand remark, the problem you solved together, the moment a
+decision got made. Those end up scattered across a dozen extracted facts and
+never surface again.
+
+So a third hook, fired once when a session ends, distills the session into one
+or two sentences and stores that as its own memory:
+
+| Host | Hook | Ready-made script |
+|---|---|---|
+| Hermes | `session_end` | `integrations/aidumem-distill.sh` |
+| Anything else | Whatever fires when a conversation closes | call `POST /session/distill`, then `POST /add` with what it returns |
+
+Three properties worth knowing before you wire it:
+
+- **It lives in its own decay lane** (`distill`, 0.3 — slower than ordinary
+  memories). It deliberately does *not* reuse the `emotion` lane: that one decays
+  at 150% because day-to-day mood swings *should* fade, and a session's takeaway
+  fading faster than an ordinary fact would be absurd.
+- **The "emotional weight" is not an invented score.** It counts hits against the
+  emotion keyword list this repo already ships (`ducky/salience/config.py`), and
+  that count nudges the initial salience within a bounded range. Every number
+  traces back to a list you can read.
+- **`/session/distill` only extracts; it does not store.** The hook does the
+  second step (`POST /add`). That split is on purpose: the distilled line has to
+  go through the full `/add` pipeline to reach the vector store — otherwise it
+  cannot be recalled, which would defeat the whole point — and a pure extract
+  endpoint is safe to re-run while debugging.
+
+Missing this wire is quieter than missing the write wire: memories still arrive,
+you just never get the "this stretch" layer. `/health` watches for it with
+`distill_liveness_ok` — sessions arriving but zero distills means the hook is not
+attached.
+
 Do **not** put the write on the pre-turn hook. That hook runs *before* the
 answer exists, so you would be recording half a conversation.
 
@@ -65,6 +101,9 @@ hooks:
   post_llm_call:                                   # write wire — the one people forget
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
+  session_end:                                     # distill wire — "what this stretch was about"
+    - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
+      timeout: 40
 hooks_auto_accept: true
 ```
 
@@ -73,6 +112,7 @@ Then prove both ends work, in this order:
 ```bash
 ~/.hermes/agent-hooks/aidumem-inject.sh --selftest   # read wire
 ~/.hermes/agent-hooks/aidumem-ingest.sh --selftest   # write wire: writes one memory, reads it back
+~/.hermes/agent-hooks/aidumem-distill.sh --selftest  # distill wire: endpoint present, verdict working
 # ...have 5 real conversation turns, then:
 python3 scripts/check_ingest_wiring.py               # non-zero exit = still not wired
 ```

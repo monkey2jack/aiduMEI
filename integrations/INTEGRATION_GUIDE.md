@@ -80,6 +80,7 @@ aiduMEI 默认仅监听回环；设置 API token 或 UI 口令后接口会强制
 |---|---|---|---|
 | **读线** | `aidumem-inject.sh` | `pre_llm_call` | 几分钟内就发现：模型明显不记事 |
 | **写线** | `aidumem-ingest.sh` | `post_llm_call` | **所有指标都正常**，几周后才发现新记忆一条没进 |
+| **萃取线** | `aidumem-distill.sh` | `session_end` | 记忆照常进，只是永远没有「这一程最值得记住的是什么」那一层 |
 
 v21.2.0 之前，本文件这一段**只写了 `pre_llm_call`**，于是照它装的部署
 每轮都在读、从来没写过，持续了很久才被人工审计翻数据库发现。
@@ -120,8 +121,9 @@ aiduMEI 落库 → 下一次 pre_llm_call 就能搜到
 
 ```bash
 mkdir -p ~/.hermes/agent-hooks
-cp integrations/aidumem-inject.sh integrations/aidumem-ingest.sh ~/.hermes/agent-hooks/
-chmod +x ~/.hermes/agent-hooks/aidumem-inject.sh ~/.hermes/agent-hooks/aidumem-ingest.sh
+cp integrations/aidumem-inject.sh integrations/aidumem-ingest.sh \
+   integrations/aidumem-distill.sh ~/.hermes/agent-hooks/
+chmod +x ~/.hermes/agent-hooks/aidumem-{inject,ingest,distill}.sh
 ```
 
 `~/.hermes/config.yaml` 追加（改前先备份）：
@@ -134,6 +136,9 @@ hooks:
   post_llm_call:                                   # 写线 —— 别漏
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
+  session_end:                                     # 萃取线 —— 这一程的精华
+    - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
+      timeout: 40
 
 hooks_auto_accept: true
 ```
@@ -145,6 +150,7 @@ hooks_auto_accept: true
 ```bash
 ~/.hermes/agent-hooks/aidumem-inject.sh --selftest    # 读线：真打一次 /search
 ~/.hermes/agent-hooks/aidumem-ingest.sh --selftest    # 写线：真写一条再回读
+~/.hermes/agent-hooks/aidumem-distill.sh --selftest   # 萃取线：端点在场
 # 然后真聊 5 轮，再问一次接线：
 python3 scripts/check_ingest_wiring.py                # 退出码非 0 即接线有问题
 ```
@@ -203,8 +209,8 @@ rm -rf ~/.hermes/plugins/aidumem
 Shell Hook 方案：
 
 ```bash
-rm ~/.hermes/agent-hooks/aidumem-inject.sh ~/.hermes/agent-hooks/aidumem-ingest.sh
-# 手动删掉 config.yaml 里的 hooks: pre_llm_call 与 post_llm_call 两段
+rm ~/.hermes/agent-hooks/aidumem-{inject,ingest,distill}.sh
+# 手动删掉 config.yaml 里 hooks 下的 pre_llm_call / post_llm_call / session_end 三段
 systemctl restart hermes-gateway     # 若以 gateway 方式运行
 ```
 
