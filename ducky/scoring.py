@@ -513,7 +513,10 @@ def _score_one_candidate(
 # ── M6 错误签名通道（v21.2 · 借鉴 Memmy structural channel 的设计思想）──
 # 写入侧由 pattern_extract 抽成 errsig 类硬事实；这里是检索侧的另一半：
 # 查询里带报错标识符时，正文真含同一签名的候选拿一个有界 bonus。
-_ERRSIG_QUERY_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,60}(?:Error|Exception|Warning))\b")
+# v21.2.0 审计整改轮：**复用**写入侧那一份，不再各写一份字面量拷贝。
+# 两侧口径必须相等 —— 检索侧认出的签名，写入侧没抽过就是白加权；
+# 各留一份拷贝时它们当下相等，但任一侧演化就会静默错位，而且不报错。
+from ducky.pattern_extract import _ERRSIG_RE as _ERRSIG_QUERY_RE  # noqa: E402
 ERRSIG_BONUS_DEFAULT = 0.10
 
 
@@ -653,7 +656,8 @@ def credit_dimension_weight() -> float:
     return val
 
 
-def _load_credit_map(candidates: List[dict]) -> Dict[str, float]:
+def _load_credit_map(candidates: List[dict], user_id: str = "",
+                     bank_id: str = "") -> Dict[str, float]:
     """批量取轨迹信用（v21.2 M1）。权重为 0 时**直接空表返回**——
     不生效的维度不该白花一次数据库往返。"""
     if credit_dimension_weight() <= 0.0:
@@ -662,7 +666,7 @@ def _load_credit_map(candidates: List[dict]) -> Dict[str, float]:
         from ducky.memory_types import memory_type_ref
         from ducky.evolve_mem import get_credit_map
         refs = [r for r in (memory_type_ref(it) for it in candidates) if r]
-        return get_credit_map(refs) if refs else {}
+        return get_credit_map(refs, user_id=user_id, bank_id=bank_id) if refs else {}
     except Exception as e:
         logger.debug(f"批量查询轨迹信用跳过: {e}")
         return {}
@@ -695,7 +699,16 @@ def _load_echo_refs(candidates: List[dict], session_id: str,
     与 _load_epi_map / _load_type_map 同一纪律：单次批量 SQL、零 N+1、
     走 scope_clause 正规入口、表不在或未迁移库如实返回空集（= 不过滤，
     存量库行为逐字不变）。session_id 为空一律不过滤 —— 空不是「匹配空串」，
-    是「无从判断」，宁可不滤也不误杀。"""
+    是「无从判断」，宁可不滤也不误杀。
+
+    **射程边界（v21.2.0 审计整改轮如实登记，不假装覆盖）**：本函数查的是
+    sidecar `memory_epistemic`，而该表只收 mem0 的 UUID ref。带
+    `metadata.fact_id` 的 facts 类候选，其 `memory_type_ref` 是 `fact:{id}`，
+    在 sidecar 里永不存在 —— 即 pattern_extract 写的硬事实（含 M6 的 errsig
+    事实）不会被回声抑制。这是设计取向而非遗漏：回声指的是「刚说的原话被当
+    历史记忆再注入」，而硬事实是从对话里**抽取**出来的结构化结论，它再次
+    出现是检索命中，不是回声。要覆盖它需要给 facts 表也加 session 列，
+    属另一轮的事，不在本版射程内。"""
     echo: set = set()
     if not session_id or not candidates:
         return echo
@@ -723,7 +736,13 @@ def _load_echo_refs(candidates: List[dict], session_id: str,
         finally:
             conn.close()
     except Exception as e:
-        logger.debug(f"回声抑制查询跳过（按不过滤降级）: {e}")
+        # v21.2.0 审计整改轮（生产用户审计 🟢-1）：降级说出来。回声抑制是本版核心卖点，
+        # 它悄悄退回「不过滤」时，用户看到的只是「刚说的话又被翻出来」，
+        # 查不到任何线索 —— 与仓内「silent failure 终结」纪律对齐：
+        # 仍然不炸主链路（照旧返回空集=不过滤），但留下带上下文的 warning。
+        logger.warning(
+            "回声抑制查询降级为不过滤（session=%s user=%s bank=%s）: %s: %s",
+            session_id[:24], user_id, bank_id, type(e).__name__, str(e)[:160])
     return echo
 
 
@@ -783,14 +802,24 @@ def _redundancy(item: dict, chosen: List[dict]) -> float:
     return worst
 
 
-def mmr_select(scored: List[dict], limit: int) -> List[dict]:
+def mmr_select(scored: List[dict], limit: int,
+               *, protect_ignited: bool = False) -> List[dict]:
     """v21.2 M4：MMR 多样性选择 —— mmr = λ·relevance − (1−λ)·redundancy。
 
     借鉴 Memmy 的 mmrLambda 0.7 语义（思路级借鉴，本函数为独立实现）。
     开关关闭、候选不足或 limit 非正时**逐条退回按分截断**，与改前行为
     一字不差（零回归铁律）。
 
-    点火条（_ignited）豁免：点火即直达是本仓既有铁律，不参与多样性淘汰。
+    点火条（_ignited）豁免的是**冗余惩罚**，不是排序本身 —— 让它无条件
+    占位会把分更高的非点火条挤掉（点火是「不因近义被淘汰」，不是「压过
+    所有人」）。
+
+    ``protect_ignited``（v21.2.0 审计整改轮）：点火条**额外豁免截断**。
+    只有在打分出口这一刀上才该开 —— 与 ``_apply_score_floor`` 完全同一条
+    推理：`recall_funnel` 在打分出口返回**之后**才乘 `IGNITION_BOOST`，
+    所以这一刀看到的是 boost 前的分，它无权替一条 boost 后本该进榜的
+    点火条做淘汰裁决。funnel 自己那一刀（boost 已应用、分是终态）不开，
+    点火条照常按真实分竞争。
     """
     if limit <= 0:
         return []
@@ -798,10 +827,20 @@ def mmr_select(scored: List[dict], limit: int) -> List[dict]:
         return scored[:limit]
     enabled, lam = _mmr_config()
     if not enabled:
+        if protect_ignited:
+            # 关掉 MMR 也不能让这一刀误杀点火条（豁免与多样性无关）
+            _ig = [it for it in scored if it.get("_ignited")]
+            _rest = [it for it in scored if not it.get("_ignited")]
+            return (_ig + _rest)[:limit] if _ig else scored[:limit]
         return scored[:limit]
 
     pool = list(scored)
     chosen: List[dict] = []
+    if protect_ignited:
+        for it in list(pool):
+            if it.get("_ignited"):
+                chosen.append(it)
+                pool.remove(it)
     while pool and len(chosen) < limit:
         best = None
         best_score = None
@@ -916,6 +955,27 @@ def _report_gate_telemetry(
         logger.debug("召回闸门遥测回写失败，响应里看不到过滤条数: %s", exc)
 
 
+def _report_v212_telemetry(scored: List[dict], echo_dropped: int,
+                           err_sigs: tuple, credit_w: float) -> None:
+    """v21.2.0 审计整改轮：把 M2/M4/M6/M1 的**生效证据**下发给调用方。
+
+    由来：`_errsig_hit` / `_credit` 此前写进候选却全仓无人读取 —— 加权到底
+    有没有命中过，线上无从观测。而本版审计的核心结论正是「单测绿 + 冒烟绿
+    都不够，必须有数据面旁证才算闭环」。同 rerank / 闸门遥测的既有纪律：
+    回写自身失败只记 debug，绝不把主查询带崩。
+    """
+    try:
+        _set_gate_telemetry(
+            echo_suppressed=echo_dropped,
+            errsig_query=list(err_sigs),
+            errsig_hits=sum(1 for it in scored if it.get("_errsig_hit")),
+            credit_weight=credit_w,
+            credit_applied=sum(1 for it in scored if it.get("_credit")),
+        )
+    except Exception as exc:
+        logger.debug("v21.2 生效遥测回写失败，响应里看不到 M2/M4/M6 是否生效: %s", exc)
+
+
 def score_and_rank_candidates(
     query: str,
     candidates: List[dict],
@@ -948,10 +1008,14 @@ def score_and_rank_candidates(
 
     # v21.2 M2：回声抑制放在打分之前 —— 本 session 自己刚写入的条目
     # 连分都不必算（省掉它们在 salience/type/epistemic 批量查询里的份额）。
+    _echo_dropped = 0
     if session_id and echo_suppress_enabled():
+        _before_echo = len(candidates)
         candidates = _drop_echo(
             candidates, _load_echo_refs(candidates, session_id, user_id, bank_id))
+        _echo_dropped = _before_echo - len(candidates)
         if not candidates:
+            _report_v212_telemetry([], _echo_dropped, (), 0.0)
             return []
 
     w = weights or DEFAULT_WEIGHTS
@@ -978,7 +1042,7 @@ def score_and_rank_candidates(
     type_map = _load_type_map(candidates, user_id, bank_id)
     # v21.0 收口：sidecar 出身同纪律批量加载（mem0 主链路腿）
     epi_map = _load_epi_map(candidates, user_id, bank_id)
-    credit_map = _load_credit_map(candidates)
+    credit_map = _load_credit_map(candidates, user_id, bank_id)
 
     scored: List[dict] = []
     _gate_on = _evidence_gate_on()
@@ -1018,8 +1082,12 @@ def score_and_rank_candidates(
 
     _report_gate_telemetry(_evidence_filtered, _score_filtered, _gate_on, _hist)
 
-    # v21.2 M4：最终截断走 MMR 多样性选择（开关关时逐条等价于 scored[:limit]）
-    final = mmr_select(scored, limit)
+    # v21.2 M4：最终截断走 MMR 多样性选择（开关关时逐条等价于 scored[:limit]）。
+    # protect_ignited=True：本函数看到的是 IGNITION_BOOST **之前**的分，
+    # 无权替点火条做淘汰裁决（与 _apply_score_floor 同一条推理）。
+    final = mmr_select(scored, limit, protect_ignited=True)
+
+    _report_v212_telemetry(final, _echo_dropped, _err_sigs, _credit_w)
 
     return final
 

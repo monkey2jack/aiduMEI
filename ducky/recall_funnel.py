@@ -33,7 +33,8 @@ IGNITION_BOOST = 1.5
 # 顺序、stage 遥测键、返回值结构逐行未动。
 
 
-def _fetch_candidate_pool(memory, query: str, user_id: str, bank_id: str, limit: int):
+def _fetch_candidate_pool(memory, query: str, user_id: str, bank_id: str, limit: int,
+                          session_id: str = ""):
     """Stage 1: 候选池 — 扩大搜索。返回 (candidates, stage)。"""
     t0 = time.time()
     try:
@@ -46,7 +47,13 @@ def _fetch_candidate_pool(memory, query: str, user_id: str, bank_id: str, limit:
             logger.warning("候选池: mem.search 返回 None，降级到 hybrid_search")
             try:
                 from ducky.mem0_runtime import lazy_import_hybrid
-                candidates_raw = lazy_import_hybrid()(memory, query, user_id, limit * MAX_CANDIDATE_MULT) or []
+                # v21.2.0 审计整改轮：降级腿此前既没传 bank_id 也没传 session_id
+                # —— 命名域下打分会用 default 去查类型/出身/信用三张账本（一条
+                # 都查不到，六型加权与出身乘数在这条腿上静默失效，正是 v20.2.4
+                # F-15 修过的病在降级路径复发），回声抑制同样不生效。
+                candidates_raw = lazy_import_hybrid()(
+                    memory, query, user_id, limit * MAX_CANDIDATE_MULT,
+                    bank_id=bank_id, session_id=session_id) or []
             except Exception as e:
                 logger.warning(f"候选池: hybrid_search 降级也失败: {e}")
                 candidates_raw = []
@@ -168,11 +175,22 @@ ROLLUP_MAX_STEPS = 6
 ROLLUP_LINE_CHARS = 200
 
 
-def _apply_episode_rollup(final: list, limit: int) -> tuple:
+def _apply_episode_rollup(final: list, limit: int, spare: list | None = None) -> tuple:
     """同 episode 命中 ≥2 条时，拼一个「轨迹摘要」块替代其中的低分单条。
 
     借鉴 Memmy 的 episode rollup 设计（≤6 步、与单条去重）；**拼接式摘要，
     零 LLM**。返回 (结果列表, 本次生成的 rollup 数)。
+
+    v21.2.0 审计整改轮，修掉两处「默认关掩盖着的空转」：
+
+    1. **`limit` 原本从未被使用**。同组成员被折叠掉之后没有回填，而调用点
+       在此之前已经按 limit 截断过了 —— 于是一开开关，请求 10 条、命中 3 条
+       同 episode 就只回 8 条：聚合本该「换一种呈现」，却变成了「少给你两条」。
+       现在用 ``spare``（落榜候选，按分降序）回填到 limit。
+    2. **去重只覆盖了前 6 条**。`members[:ROLLUP_MAX_STEPS]` 先截到 6，
+       drop 集只从这 6 条里取，第 7 条及以后既不进摘要、也不被移除 ——
+       结果里「轨迹摘要」和原始单条同时出现，与 docstring 说的「与单条去重」
+       正好相反。现在摘要仍只展示前 6 步（避免注入预算爆掉），但**整组**去重。
     """
     if not _rollup_enabled() or len(final) < 2:
         return final, 0
@@ -192,21 +210,35 @@ def _apply_episode_rollup(final: list, limit: int) -> tuple:
             if len(members) < 2:
                 continue
             members.sort(key=lambda x: x[0])
-            members = members[:ROLLUP_MAX_STEPS]
+            shown = members[:ROLLUP_MAX_STEPS]          # 摘要只展示前 6 步
             lines = [f"{idx}. {str(it.get('memory', ''))[:ROLLUP_LINE_CHARS]}"
-                     for idx, it in members]
-            member_items = [it for _idx, it in members]
+                     for idx, it in shown]
+            all_items = [it for _idx, it in members]    # 去重覆盖**整组**
             # 用组内最高分那条的位置承载 rollup，其余同组条目移除（去重）
-            member_items.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
-            host = member_items[0]
+            ranked = sorted(all_items, key=lambda x: x.get("_hybrid_score", 0),
+                            reverse=True)
+            host = ranked[0]
             host["memory"] = "【轨迹摘要】\n" + "\n".join(lines)
-            host["_rollup"] = {"episode_id": ep_id, "steps": len(members)}
-            drop = {id(x) for x in member_items[1:]}
+            host["_rollup"] = {"episode_id": ep_id, "steps": len(shown),
+                               "folded": len(all_items)}
+            drop = {id(x) for x in ranked[1:]}
             final = [x for x in final if id(x) not in drop]
             made += 1
+
+        # 折叠腾出的名额用落榜候选回填 —— 聚合是换一种呈现，不是少给结果。
+        if made and limit and len(final) < limit:
+            _seen = {id(x) for x in final}
+            for cand in (spare or []):
+                if len(final) >= limit:
+                    break
+                if id(cand) in _seen:
+                    continue
+                final.append(cand)
+                _seen.add(id(cand))
         return final, made
     except Exception as e:
-        logger.debug(f"episode rollup 跳过: {e}")
+        logger.warning("episode rollup 降级为不聚合: %s: %s",
+                       type(e).__name__, str(e)[:160])
         return final, 0
 
 
@@ -229,8 +261,14 @@ def _finalize_ranking(ranked_candidates: list, limit: int):
         item.pop("_decay", None)
         item.pop("_composite", None)
 
-    # v21.2 M7：同 episode 多条命中聚合为轨迹摘要（默认关）
-    final, _rollups = _apply_episode_rollup(final, limit)
+    # v21.2 M7：同 episode 多条命中聚合为轨迹摘要（默认关）。
+    # 落榜候选按分降序交给它做回填 —— 折叠不该让返回条数变少。
+    _chosen_ids = {id(x) for x in final}
+    _spare = [x for x in ranked_candidates if id(x) not in _chosen_ids]
+    final, _rollups = _apply_episode_rollup(final, limit, _spare)
+    for item in final:            # 回填进来的条目同样要清内部字段
+        item.pop("_decay", None)
+        item.pop("_composite", None)
 
     stage = {"name": "final", "count": len(final), "from_ignition": sum(1 for f in final if f.get("_ignited")), "rollups": _rollups, "ms": int((time.time()-t0)*1000)}
     return final, stage
@@ -248,7 +286,8 @@ def funnel_search(memory, query: str, user_id: str, limit: int = 10,
     stages = []
 
     # Stage 1: 候选池 — 扩大搜索
-    candidates, stage = _fetch_candidate_pool(memory, query, user_id, bank_id, limit)
+    candidates, stage = _fetch_candidate_pool(memory, query, user_id, bank_id, limit,
+                                             session_id=session_id)
     stages.append(stage)
 
     if not candidates:

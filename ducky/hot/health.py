@@ -503,6 +503,91 @@ def register_health_routes(app: FastAPI) -> None:
             probes["epistemic_ok"] = False
             probes["epistemic_error"] = str(_epi_exc)[:120]
 
+        # v21.2.0 审计整改轮（生产用户审计 🔴-1）：溯源覆盖率探针。
+        #
+        # 由来：v21.2 上线后 sidecar 33 行里 origin_session_id 非空 = 0 行，
+        # 回声抑制（M2）的向量腿从上线起就在空转 —— 而 epistemic_ok 是绿的
+        # （出身档合法），单测也是绿的（单线程内语义正确）。**合法 ≠ 在工作**，
+        # 这个缺口是靠用户审计翻生产库才发现的。探针的职责就是把这种
+        # 「绿着的空转」当场变成红字，不必再等下一次人工审计。
+        #
+        # 判据刻意分两层，避免「没流量也报警」的告警疲劳：
+        #   · 永远如实报 coverage 与样本量（数字本身就是证据）
+        #   · 只有「窗口内确实有足量新写入、却一条都没带 session」才记降级
+        #
+        # 窗口取 **7 天**而不是 24h：本仓典型日增只有个位数 sidecar 行，
+        # 用 24h + 阈值 10 的组合，探针会几乎永不触发 —— 那就又造了一块
+        # 白护栏（守卫的经典坏死法之一：判据的射程盖不住缺陷的分布）。
+        # 7 天窗口下同一个阈值才真的有射程。24h 的数字照报，只做观测不做判据。
+        try:
+            from ducky.utils import get_facts_conn as _cov_conn_fn
+            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+            _cov_conn = _cov_conn_fn()
+            try:
+                _cov_cols = {r[1] for r in _cov_conn.execute(
+                    "PRAGMA table_info(memory_epistemic)")}
+                if "origin_session_id" not in _cov_cols:
+                    probes["epistemic_session_coverage"] = None
+                    probes["epistemic_session_coverage_note"] = "sidecar 未迁到 schema v9"
+                else:
+                    def _cov_window(hours):
+                        _cut = (_dt.now(_tz.utc) - _td(hours=hours)).isoformat()
+                        _r = _cov_conn.execute(
+                            "SELECT COUNT(*), SUM(CASE WHEN origin_session_id != '' "
+                            "THEN 1 ELSE 0 END) FROM memory_epistemic WHERE created_at >= ?",
+                            (_cut,)).fetchone()
+                        return int((_r[0] if _r else 0) or 0), int((_r[1] if _r else 0) or 0)
+
+                    _d_total, _d_with = _cov_window(24)
+                    _w_total, _w_with = _cov_window(24 * 7)
+                    probes["epistemic_session_fresh_24h"] = _d_total
+                    probes["epistemic_session_fresh_7d"] = _w_total
+                    probes["epistemic_session_coverage"] = (
+                        round(_w_with / _w_total, 4) if _w_total else None)
+                    probes["epistemic_session_coverage_window"] = "7d"
+                    # 样本不足不判 —— 没流量不是故障。
+                    if _w_total >= 10 and _w_with == 0:
+                        DegradationTracker.record_degradation(
+                            "epistemic_session_coverage",
+                            f"最近 7 天的 {_w_total} 条 sidecar 登记**没有一条带 session**"
+                            " —— 回声抑制(M2)的向量腿与轨迹登记(M1)在空转；"
+                            "查两处：调用方是否透传 _origin_session_id、"
+                            "写入链路是否把 metadata 传到了 _index_after_add")
+            finally:
+                _cov_conn.close()
+        except Exception as _cov_exc:
+            probes["epistemic_session_coverage"] = None
+            probes["epistemic_session_coverage_error"] = str(_cov_exc)[:120]
+
+        # v21.2.0 审计整改轮（生产用户审计 🔴-2）：episode_ok —— 任务书 DoD 点名要的探针，
+        # v21.2.0 漏做且实录未登记缺口。查的是「轨迹这条腿能不能用」：
+        # evolve 库连得上、两张表在、以及（有数据时）最近一次登记的时间。
+        try:
+            from ducky.evolve_mem import get_evolve_conn as _ep_conn_fn
+            _ep_conn = _ep_conn_fn()
+            try:
+                _ep_tables = {r[0] for r in _ep_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                _ep_ready = {"evolve_episodes", "evolve_episode_steps"} <= _ep_tables
+                probes["episode_ok"] = _ep_ready
+                if _ep_ready:
+                    _ep_row = _ep_conn.execute(
+                        "SELECT COUNT(*), MAX(last_step_at) FROM evolve_episodes").fetchone()
+                    probes["episode_count"] = int((_ep_row[0] if _ep_row else 0) or 0)
+                    probes["episode_last_step_at"] = (_ep_row[1] if _ep_row else None)
+                    _st_row = _ep_conn.execute(
+                        "SELECT COUNT(*) FROM evolve_episode_steps").fetchone()
+                    probes["episode_step_count"] = int((_st_row[0] if _st_row else 0) or 0)
+                else:
+                    DegradationTracker.record_degradation(
+                        "episode", "evolve 库缺 evolve_episodes / evolve_episode_steps 表"
+                                   " —— M1 轨迹级奖励无处落账")
+            finally:
+                _ep_conn.close()
+        except Exception as _ep_exc:
+            probes["episode_ok"] = False
+            probes["episode_error"] = str(_ep_exc)[:120]
+
         try:
             from ducky.vector_backend import backend_health
             _backend = backend_health()
