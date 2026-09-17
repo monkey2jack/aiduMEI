@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import sqlite3
 import time
 
 from fastapi import FastAPI, Request
@@ -599,8 +600,16 @@ def register_health_routes(app: FastAPI) -> None:
             _ing_cut_iso = (_idt.now(_itz.utc) - _itd(hours=_ing_window_h)).isoformat()
             _ing_cut_ts = (_idt.now(_itz.utc) - _itd(hours=_ing_window_h)).timestamp()
 
-            # 写入侧：facts 新增 + sidecar 新增（两条腿任一有值即算「写过」）
+            # 写入侧要分两个数，缺一不可：
+            #   _ing_writes      —— 任何来源的新增（含 cron 整合器、MEMORY.md
+            #                       同步引擎等后台通路），只作参考，**不作判据**
+            #   _ing_turn_writes —— 带 origin_session_id 的新增，即「一轮对话
+            #                       结束后写回来的那一条」
+            # 只数前者会造白护栏：本探针第一版就是这么写的，而实测那台出事的
+            # 机器每天有 6~18 条后台通路写入、带 session 的**恒为 0** —— 探针
+            # 在它本该抓住的那次事故上永远是绿的。判据必须落在对话这条腿上。
             _ing_writes = 0
+            _ing_turn_writes = 0
             _ing_conn = _ing_conn_fn()
             try:
                 for _sql in (
@@ -612,6 +621,17 @@ def register_health_routes(app: FastAPI) -> None:
                         _ing_writes += int((_r[0] if _r else 0) or 0)
                     except Exception:
                         continue  # 表不在（未迁移库）不算故障
+                try:
+                    _r = _ing_conn.execute(
+                        "SELECT COUNT(*) FROM memory_epistemic "
+                        "WHERE created_at >= ? AND COALESCE(origin_session_id, '') <> ''",
+                        (_ing_cut_iso,)).fetchone()
+                    _ing_turn_writes = int((_r[0] if _r else 0) or 0)
+                except sqlite3.Error:
+                    # 只收窄到 sqlite 侧的错（表/列不在＝未迁移库）。判据无从
+                    # 谈起时退回全量写入口径，宁可少报也不假红 —— 老库上这条
+                    # 探针只当参考。别的异常照旧往外抛给下面的兜底。
+                    _ing_turn_writes = _ing_writes
             finally:
                 _ing_conn.close()
 
@@ -631,14 +651,18 @@ def register_health_routes(app: FastAPI) -> None:
                 _ing_reads = 0
 
             probes["ingest_writes_24h"] = _ing_writes
+            probes["ingest_turn_writes_24h"] = _ing_turn_writes
             probes["ingest_reads_24h"] = _ing_reads
-            probes["ingest_liveness_ok"] = not (_ing_reads >= _INGEST_MIN_READS and _ing_writes == 0)
-            if _ing_reads >= _INGEST_MIN_READS and _ing_writes == 0:
+            _ing_bad = _ing_reads >= _INGEST_MIN_READS and _ing_turn_writes == 0
+            probes["ingest_liveness_ok"] = not _ing_bad
+            if _ing_bad:
                 DegradationTracker.record_degradation(
                     "ingest_liveness",
-                    f"最近 {_ing_window_h}h 有 {_ing_reads} 次检索但**一条记忆都没写进来** —— "
-                    "宿主极可能只挂了注入钩子、没挂写入钩子（记忆只出不进＝在失忆）。"
-                    "对照 docs/INTEGRATION.md「三个钩子分别挂什么」自查，"
+                    f"最近 {_ing_window_h}h 有 {_ing_reads} 次检索，却**没有一条带会话来源的写入**"
+                    f"（同期任何来源的写入共 {_ing_writes} 条，多为后台通路）。两种可能，"
+                    "都要查：① 宿主只挂了注入钩子、没挂写入钩子 —— 记忆只出不进＝在失忆；"
+                    "② 挂了但没透传 session，回声抑制与轨迹信用会静默失效。"
+                    "对照 docs/AGENT_INTEGRATION.md「两条线」自查，"
                     "或运行 scripts/check_ingest_wiring.py")
         except Exception as _ing_exc:
             probes["ingest_liveness_ok"] = None
