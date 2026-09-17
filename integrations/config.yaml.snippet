@@ -41,6 +41,7 @@ hermes tools | grep aidumem            # 应看到 aidumem_search / remember / s
 |---|---|---|---|
 | **读线** | `aidumem-inject.sh` | `pre_llm_call` | 几分钟内就发现——模型明显不记事 |
 | **写线** | `aidumem-ingest.sh` | `post_llm_call` | **一切看起来都正常**，几周后才发现新记忆一条没进 |
+| **萃取线** | `aidumem-distill.sh` | `session_end` | 记忆照常进，只是永远没有「这一程」那一层 |
 
 写线漏装是本项目出过的真实事故，而且是照着旧版本这份文档装出来的
 （v21.2.0 之前这里只写了 `pre_llm_call`）。它之所以难发现，是因为
@@ -52,8 +53,9 @@ v21.2.0 起 `/health` 新增 `ingest_liveness_ok` 探针专门盯这件事：
 有检索却零写入即判降级。
 
 ```bash
-cp integrations/aidumem-inject.sh integrations/aidumem-ingest.sh ~/.hermes/agent-hooks/
-chmod +x ~/.hermes/agent-hooks/aidumem-inject.sh ~/.hermes/agent-hooks/aidumem-ingest.sh
+cp integrations/aidumem-inject.sh integrations/aidumem-ingest.sh \
+   integrations/aidumem-distill.sh ~/.hermes/agent-hooks/
+chmod +x ~/.hermes/agent-hooks/aidumem-{inject,ingest,distill}.sh
 ```
 
 加到 `~/.hermes/config.yaml`：
@@ -66,6 +68,9 @@ hooks:
   post_llm_call:                                   # 写线：把这一轮写回记忆库
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
+  session_end:                                     # 萃取线：把这一程提炼成一条
+    - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
+      timeout: 40
 
 hooks_auto_accept: true
 ```
@@ -75,6 +80,7 @@ hooks_auto_accept: true
 ```bash
 ~/.hermes/agent-hooks/aidumem-inject.sh --selftest   # 读线
 ~/.hermes/agent-hooks/aidumem-ingest.sh --selftest   # 写线：真写一条再回读
+~/.hermes/agent-hooks/aidumem-distill.sh --selftest  # 萃取线：端点在场且判据在工作
 ```
 
 真聊 5 轮之后，再确认写线活着：

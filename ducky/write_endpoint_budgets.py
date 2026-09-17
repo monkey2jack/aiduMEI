@@ -82,6 +82,8 @@ WRITE_ROUTE_MODELS: Dict[str, str] = {
 
 # 无 JSON body 模型的写路由（标量/query/form 参数，受 URL 长度天然约束）。
 WRITE_ROUTES_SCALAR = {
+    # v21.2.0 会话精华：纯提炼端点，入参只有三个标量 id，无自由文本载荷
+    "/session/distill",
     "/add/coalesce/flush",
     "/api/autodream/trigger",
     "/api/checkpoint/cleanup",

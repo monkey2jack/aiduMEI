@@ -59,6 +59,12 @@ LANE_DECAY_MULTIPLIER = {
     "evidence":    0.7,    # 证据 70% 衰减
     "knowledge":   1.0,    # 知识正常衰减
     "emotion":     1.5,    # 情绪 150% 快衰减
+    # v21.2.0 会话精华（session distill）。**故意不复用 emotion 泳道**：
+    # emotion 是给「今天有点烦」这类日常情绪波动用的，快衰减是对的；而会话
+    # 精华是「这一程最值得记住的事」，让它比普通记忆忘得还快就荒谬了。
+    # 也不用 preference 的 0.0（永不衰减）—— 精华每会话产一条，积累几百条
+    # 之后会淹没检索。0.3 与 procedural 同级：留得比普通记忆久，但仍会淡。
+    "distill":     0.3,
     "general":     1.0,
 }
 DEFAULT_LANE = "general"

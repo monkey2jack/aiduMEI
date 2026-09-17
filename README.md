@@ -37,15 +37,25 @@
 > python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # 退出码 0 才算接线成功
 > ```
 >
-> **两条线各有现成脚本，拷过去注册上即可**（别自己写）：
+> **三条线各有现成脚本，拷过去注册上即可**（别自己写）：
 >
-> | | 脚本 | 挂点 |
-> |---|---|---|
-> | 读线 | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` |
-> | 写线 | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` |
-> | 写线 | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` |
+> | | 脚本 | 挂点 | 自动做什么 |
+> |---|---|---|---|
+> | 读线 | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` | 每轮**之前**自动把相关记忆喂给模型 |
+> | 写线 | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` | 每轮**之后**自动把这一轮存回去 |
+> | 写线 | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` | 同上 |
+> | 萃取线 | `integrations/aidumem-distill.sh` | Hermes `session_end` | 会话结束时自动提炼「这一程最值得记住的事」，单独存一条 |
 >
-> 两个脚本都带 `--selftest`（写线会真写一条再回读）。但**自检通过只证明脚本能跑，不证明宿主在调它**——那次事故里脚本一直是好的，没被挂上而已。所以上面那条 `check_ingest_wiring.py` 才是唯一的验收判据。完整挂法与 yaml 写法见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
+> **「自动」是指这三条线接上之后，你不需要再对记忆做任何事**——不用手动保存、
+> 不用提醒模型去记、不用定期整理。三条钩子分别在「说话前」「说话后」「聊完」
+> 三个时机自己触发。你唯一要做的是把它们挂对位置，然后用下面那条命令验一次。
+>
+> 萃取线解决的是另一类遗忘：每轮写入存的是**事实**，存不下「这一程是怎么回事」——
+> 随口说的一句话、一起解决的一个难题、某个决定的瞬间，会散成十几条事实再也浮不上来。
+> 它走独立的慢衰减泳道（`distill`，比普通记忆留得久），情感权重取自本仓既有的
+> 情绪词表，不是新造的分数。
+>
+> 三个脚本都带 `--selftest`（写线会真写一条再回读）。但**自检通过只证明脚本能跑，不证明宿主在调它**——那次事故里脚本一直是好的，没被挂上而已。所以上面那条 `check_ingest_wiring.py` 才是唯一的验收判据。完整挂法与 yaml 写法见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
 
 **不用 Agent？手动五行：**
 
@@ -144,8 +154,8 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **2130**（`pytest --collect-only` 实测，2026-09-17，v21.2-dev 本树）＝ **行为用例 1924（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
-| 独立开发机 | 2118 通过 · **12 跳过** —— **2026-09-17 实测**（v21.2-dev 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 用例总数 | **2137**（`pytest --collect-only` 实测，2026-09-17，v21.2-dev 本树）＝ **行为用例 1931（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
+| 独立开发机 | 2125 通过 · **12 跳过** —— **2026-09-17 实测**（v21.2-dev 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，v20.5a 本树，Python 3.12） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（v20.5.1 本树 de09794，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（v20.5a 本树，独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
@@ -161,7 +171,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **为什么要把 2118 和 1967 都写出来**：2118 是本树开发环境 2026-09-17 实测（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
+> **为什么要把 2125 和 1967 都写出来**：2125 是本树开发环境 2026-09-17 实测（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
 
 > **这 12 条不是玄学，自己就能验**：十三条跳过轴（宿主、工具、可选依赖、模型文件）全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
@@ -170,12 +180,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：2118 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2130 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2118 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：2125 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2137 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2125 passed, 12 skipped
 > ```
 >
-> 上面代码块里的 `有宿主：2130 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
+> 上面代码块里的 `有宿主：2137 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
 
 > **跳过轴全量登记**（门控条数与实测逐行对账，改一条这里就红）：
 >
