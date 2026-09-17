@@ -928,22 +928,37 @@ def test_wiring_checker_verdicts():
 
     # ① 只读不写 —— 必须 fail（这是事故的形状）
     code, lines, _ = mod.diagnose({"probes": {
-        "ingest_reads_24h": 24, "ingest_writes_24h": 0, "ingest_liveness_ok": False}})
-    assert code == 1 and any("没接上" in ln for ln in lines)
+        "ingest_reads_24h": 24, "ingest_writes_24h": 0,
+        "ingest_turn_writes_24h": 0, "ingest_liveness_ok": False}})
+    assert code == 1 and any("没在写" in ln for ln in lines)
+
+    # ①b 真实事故的形状：后台通路一直在写（cron 整合器 / MEMORY.md 同步），
+    #     对话一条没写。第一版探针数写入总数，在这个形状上恒绿 —— 必须红，
+    #     而且结论里要说清「那是后台在写」，否则人会拿写入总数反驳这条告警。
+    code, lines, _ = mod.diagnose({"probes": {
+        "ingest_reads_24h": 24, "ingest_writes_24h": 18,
+        "ingest_turn_writes_24h": 0, "ingest_liveness_ok": False}})
+    assert code == 1, "后台在写、对话没写 —— 这正是那次事故，必须红"
+    joined = " ".join(lines)
+    assert "其中来自对话的 0 条" in joined, "没把对话写入单独报出来，人只会看到 18"
+    assert "后台" in joined or "同步引擎" in joined, "没解释那 18 条是谁写的"
 
     # ② 读写都有 —— 通过
     code, lines, _ = mod.diagnose({"probes": {
-        "ingest_reads_24h": 24, "ingest_writes_24h": 9, "ingest_liveness_ok": True}})
+        "ingest_reads_24h": 24, "ingest_writes_24h": 9,
+        "ingest_turn_writes_24h": 9, "ingest_liveness_ok": True}})
     assert code == 0 and any("都在工作" in ln for ln in lines)
 
     # ③ 样本不足 —— 不许假红灯挡住刚部署的人
     code, _, _ = mod.diagnose({"probes": {
-        "ingest_reads_24h": 1, "ingest_writes_24h": 0, "ingest_liveness_ok": True}})
+        "ingest_reads_24h": 1, "ingest_writes_24h": 0,
+        "ingest_turn_writes_24h": 0, "ingest_liveness_ok": True}})
     assert code == 0
 
     # ④ 写了但没带 session —— 通过但要提醒（两功能在空转）
     code, lines, _ = mod.diagnose({"probes": {
-        "ingest_reads_24h": 24, "ingest_writes_24h": 9, "ingest_liveness_ok": True,
+        "ingest_reads_24h": 24, "ingest_writes_24h": 9,
+        "ingest_turn_writes_24h": 9, "ingest_liveness_ok": True,
         "epistemic_session_coverage": 0}})
     assert code == 0 and any("session" in ln for ln in lines)
 
@@ -1354,3 +1369,25 @@ def test_write_wire_hooks_use_async_mode_so_the_host_never_waits():
     plugin = (root / "integrations" / "hermes-plugin" / "aidumem" / "__init__.py") \
         .read_text(encoding="utf-8")
     assert "async_mode" in plugin, "插件路径与 shell hook 路径写入口径不一致"
+
+
+def test_ingest_probe_judges_conversation_writes_not_background_ones():
+    """写入活性判据必须落在「带会话来源的写入」上，不是写入总数。
+
+    本探针第一版数的是全部新增（facts + sidecar）。而实测那台出事的机器上，
+    cron 整合器与 MEMORY.md 同步引擎每天写 6~18 条，带 session 的**恒为 0**
+    —— 探针在它本该抓住的那次事故上永远是绿的。射程没盖住缺陷分布，
+    白护栏一条。判据改数 origin_session_id 非空的那部分。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "ducky" / "hot" / "health.py") \
+        .read_text(encoding="utf-8")
+    assert "ingest_turn_writes_24h" in src, "探针没暴露对话写入这个数"
+    assert "origin_session_id" in src and "COALESCE" in src.upper(), \
+        "没有按 origin_session_id 过滤，数的还是写入总数"
+    assert "_ing_turn_writes == 0" in src, "判据没落在对话写入上"
+    assert "_ing_writes == 0" not in src, "判据里还留着「写入总数为零」的旧口径"
+    # 下游两个消费者必须同源，否则三处判决会各说各话
+    for rel in ("scripts/check_ingest_wiring.py", "scripts/agent_integration_check.py"):
+        text = (Path(__file__).resolve().parent.parent / rel).read_text(encoding="utf-8")
+        assert "ingest_turn_writes_24h" in text, f"{rel} 判据与探针不同源"
