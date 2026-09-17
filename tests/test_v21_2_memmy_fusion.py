@@ -782,3 +782,19 @@ def test_echo_suppression_documents_its_range_honestly():
     from ducky.scoring import _load_echo_refs
     doc = inspect.getdoc(_load_echo_refs) or ""
     assert "射程边界" in doc and "fact:" in doc
+
+
+def test_gate_telemetry_actually_reaches_the_caller():
+    """遥测必须真的下发 —— 否则「有数据面旁证」只是自我安慰。
+
+    整改期自查发现：`last_gate_telemetry()` **全仓零消费**。闸门拦了多少、
+    M2/M4/M6/M1 生没生效，全写进了一条死路 —— 连既有的 evidence_filtered
+    也一样。把生效证据挂进死路，正是本轮批评的那种「绿着的空转」。
+    """
+    import inspect
+    from ducky.hot import search as hs
+    src = inspect.getsource(hs.register_search_routes)
+    assert "last_gate_telemetry" in src, "遥测无人读取 —— 写了等于没写"
+    assert "reset_gate_telemetry" in src, (
+        "没有每请求重置 —— 线程复用时上一请求的残留会被读成本次的")
+    assert '"_gate": gate_telem' in src, "遥测没有进响应体"
