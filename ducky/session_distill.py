@@ -72,7 +72,7 @@ def collect_session_memories(session_id: str, *, user_id: str = "",
         _scope, _params = scope_clause(make_scope(uid, bid), flavor="canonical")
         cur = conn.execute(
             "SELECT memory_ref, origin_turn, created_at FROM memory_epistemic "
-            f"WHERE origin_session_id = ? AND {_scope} "
+            f"WHERE origin_session_id = ?{_scope} "
             "ORDER BY origin_turn ASC, created_at ASC LIMIT ?",
             (session_id, *_params, MAX_SOURCE))
         refs = [(r[0], r[1], r[2]) for r in cur.fetchall()]
