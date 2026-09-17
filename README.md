@@ -37,7 +37,15 @@
 > python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # 退出码 0 才算接线成功
 > ```
 >
-> 接法见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)：Hermes 挂 `post_llm_call`、Claude Code 挂 `Stop`。
+> **两条线各有现成脚本，拷过去注册上即可**（别自己写）：
+>
+> | | 脚本 | 挂点 |
+> |---|---|---|
+> | 读线 | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` |
+> | 写线 | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` |
+> | 写线 | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` |
+>
+> 两个脚本都带 `--selftest`（写线会真写一条再回读）。但**自检通过只证明脚本能跑，不证明宿主在调它**——那次事故里脚本一直是好的，没被挂上而已。所以上面那条 `check_ingest_wiring.py` 才是唯一的验收判据。完整挂法与 yaml 写法见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
 
 **不用 Agent？手动五行：**
 
