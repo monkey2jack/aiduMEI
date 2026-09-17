@@ -1071,7 +1071,7 @@ def test_shipped_config_snippets_register_both_wires():
         assert hooks, f"{rel} 里没有一段可解析的 hooks 配置"
         for event, script in (("pre_llm_call", "aidumem-inject.sh"),
                               ("post_llm_call", "aidumem-ingest.sh"),
-                              ("session_end", "aidumem-distill.sh")):
+                              ("on_session_end", "aidumem-distill.sh")):
             entries = hooks.get(event)
             assert entries, (
                 f"{rel} 的 yaml 没注册 {event}——"
