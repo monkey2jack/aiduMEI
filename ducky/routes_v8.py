@@ -108,14 +108,25 @@ def register_v8_routes(app: FastAPI) -> None:
         """记忆广播链：从一条查询出发，发现关联记忆（3 层传播）"""
         try:
             # v21.1 众神殿：跨殿检索须持借阅（caller 空/==user_id 放行=读自己殿）
-            from ducky.pantheon import authorize_cross_hall
-            authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
-                                 bank_id=req.bank_id, action="read")
+            from ducky.pantheon import authorize_cross_hall, HallError
+            try:
+                authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
+                                     bank_id=req.bank_id, action="read")
+            except HallError as _hall_err:
+                # v21.2.0 审计整改轮：此前授权失败落进下方的通用 except，
+                # 被兜成 {"status":"error"} —— 「无权限」与「服务端故障」
+                # 在调用方看来一模一样，重试逻辑会一直重试一个永远不会成功
+                # 的请求。转 403（与 dossier 那处对齐）。
+                raise HTTPException(status_code=403, detail=str(_hall_err))
             mem = get_memory()
             from ducky.memory_broadcast import broadcast_chain
             result = broadcast_chain(mem, req.query, req.user_id,
                                      max_depth=max_depth, bank_id=req.bank_id)
             return {"status": "ok", **result}
+        except HTTPException:
+            # P1-4 教训：HTTPException 必须先放行 —— 否则上面刚 raise 的 403
+            # 会被下面的通用 except 吞掉再包成 {"status":"error"}，等于白转。
+            raise
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
@@ -183,13 +194,24 @@ def register_v8_routes(app: FastAPI) -> None:
             return {"status": "error", "detail": "需要 session_id"}
         try:
             # v21.1 众神殿：会话内跨殿检索同样须持借阅（caller 空/==user_id 放行）
-            from ducky.pantheon import authorize_cross_hall
-            authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
-                                 bank_id=req.bank_id, action="read")
+            from ducky.pantheon import authorize_cross_hall, HallError
+            try:
+                authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),
+                                     bank_id=req.bank_id, action="read")
+            except HallError as _hall_err:
+                # v21.2.0 审计整改轮：此前授权失败落进下方的通用 except，
+                # 被兜成 {"status":"error"} —— 「无权限」与「服务端故障」
+                # 在调用方看来一模一样，重试逻辑会一直重试一个永远不会成功
+                # 的请求。转 403（与 dossier 那处对齐）。
+                raise HTTPException(status_code=403, detail=str(_hall_err))
             mem = get_memory()
             from ducky.memory_persistence import session_search as _session_search
             return _session_search(mem, session_id, req.query, req.limit, use_context,
                                    user_id=req.user_id, bank_id=req.bank_id)
+        except HTTPException:
+            # P1-4 教训：HTTPException 必须先放行 —— 否则上面刚 raise 的 403
+            # 会被下面的通用 except 吞掉再包成 {"status":"error"}，等于白转。
+            raise
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
