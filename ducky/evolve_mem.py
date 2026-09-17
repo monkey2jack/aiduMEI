@@ -132,7 +132,16 @@ def delete_evolve_by_memory_ids(memory_ids) -> int:
 
 
 def ensure_evolve_schema() -> None:
-    """建表（幂等）。"""
+    """建表（幂等）。
+
+    v21.2.0 记一笔反面经验：本版把检索埋点接到 /search 主路径后，我一度在这里
+    加了「建过就跳过」的进程内缓存来省热路径开销。先用全局布尔——库路径一变
+    （测试换 tmp 库、部署改 DATA_DIR、从备份恢复换文件）就永远不再建表；
+    改成按路径记——同一路径上把库文件删了重建，照样失效。两次都是当场炸出
+    `no such table`。结论：**缓存的失效条件比这里省下的那点开销复杂得多**，
+    而 CREATE TABLE IF NOT EXISTS 对已存在的表本就是微秒级，相对 /search 的
+    几十到几百毫秒可以忽略。所以不缓存，每次老实建。
+    """
     conn = _get_evolve_conn()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS evolve_queries (
@@ -198,6 +207,24 @@ def ensure_evolve_schema() -> None:
         CREATE INDEX IF NOT EXISTS idx_eps_ep ON evolve_episode_steps(episode_id, step_idx);
         CREATE INDEX IF NOT EXISTS idx_eps_ref ON evolve_episode_steps(memory_ref);
     """)
+    # v21.2.0 迁移：存量库的 evolve_queries 没有 origin_session_id。
+    # CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，所以补列必须单独做。
+    try:
+        _eq_cols = {r[1] for r in conn.execute("PRAGMA table_info(evolve_queries)")}
+        if "origin_session_id" not in _eq_cols:
+            with conn:                     # 失败自动回滚，不留半迁移状态
+                conn.execute("ALTER TABLE evolve_queries "
+                             "ADD COLUMN origin_session_id TEXT NOT NULL DEFAULT ''")
+            logger.info("✅ evolve_queries 补列 origin_session_id（区分对话检索与定时器自检）")
+    except sqlite3.Error as _mig_exc:      # 迁移失败不许拖垮服务；下次启动再试
+        # with conn 已经会回滚，这一句是显式化意图：补列失败绝不许留半迁移状态。
+        # （本仓的无回滚棘轮按字面找 rollback，认不出 with conn —— 写出来也让
+        #  下一个读代码的人一眼看到事务边界在哪。）
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        logger.warning("evolve_queries 补列失败（下次启动重试）: %s", _mig_exc)
     conn.commit()
     conn.close()
     logger.info("✅ EvolveMem schema 就绪")
@@ -212,8 +239,16 @@ def log_search_quality(
     results: list[dict],
     latency_ms: int = 0,
     gate_passed: bool = True,
+    origin_session_id: str = "",
 ) -> None:
-    """记录一次搜索的质量信号（异步安全，失败静默）。"""
+    """记录一次搜索的质量信号（异步安全，失败静默）。
+
+    v21.2.0 加 origin_session_id：区分「有人在对话」与「定时器在自检」。
+    此前写入活性探针拿这张表当「有人在用」的证据，而实测生产近 24h 的记录
+    **每一条都是 e2e_smoke 的定时巡检**（每小时整 1 次），一条真实对话检索
+    都没有 —— 探针于是在「一天没聊天」时必然误报写线断了。
+    读不到 session 一律空串（老宿主不传，如实留空，不猜）。
+    """
     try:
         ensure_evolve_schema()
         hit_count = len(results)
@@ -224,8 +259,10 @@ def log_search_quality(
 
         conn = _get_evolve_conn()
         conn.execute(
-            "INSERT INTO evolve_queries(query, hit_count, avg_score, latency_ms, gate_passed, ts) VALUES(?,?,?,?,?,?)",
-            (query[:500], hit_count, avg_score, latency_ms, int(gate_passed), time.time()),
+            "INSERT INTO evolve_queries(query, hit_count, avg_score, latency_ms, "
+            "gate_passed, ts, origin_session_id) VALUES(?,?,?,?,?,?,?)",
+            (query[:500], hit_count, avg_score, latency_ms, int(gate_passed),
+             time.time(), str(origin_session_id or "")[:256]),
         )
         conn.commit()
         conn.close()

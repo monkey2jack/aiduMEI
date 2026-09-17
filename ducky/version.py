@@ -19,7 +19,7 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        任务反馈按轨迹位置回传；**credit 维度默认权重 0** —— 装上不生效，等本仓
        自己的 /evolve/report 数据说话再开（上游参数不盲信）。
     5. M7 episode rollup（默认关）· M8 借阅留痕进事件账本 + 档案第八节「当前生效借阅」。
-       用例总数 2048 → 2123（+75 条验收与整改守卫，全部红→绿）。
+       用例总数 2048 → 2130（+82 条验收与整改守卫，全部红→绿）。
     6. 审计整改轮（2026-09-17）：溯源打标改走显式 metadata（不再依赖 contextvar
        隐式通道）；补 episode_ok 与 epistemic_session_coverage（7 天窗口）两个探针；
        回声抑制降级升 warning；AGENTS.md 良性判据前置。根因判定：生产 sidecar
@@ -51,6 +51,20 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
         health_status/degraded（全仓降级探针对定时哨兵一律不可见，新探针的唯一
         自动消费者是瞎的）；scripts/report.py 装齐门槛写死 < 8，清单一加任务就把「少装
         了新哨兵」判成装齐 —— 两者都改为跟着真实清单现算。
+    11. 用户审计整改第二轮（2026-09-17）：写线接上后审计出 5 条、自查又挖出
+        2 条更深的。最要命的是检索埋点根本不在主路径上 —— log_search_quality
+        只在 recall_funnel 里调用，主 /search 走 mem.search 不经过它，于是
+        evolve_queries 里只有 e2e_smoke 每小时一次的巡检记录（生产实测近 24h
+        的 24 条全是 aidumei-smoke-*），而写入活性探针正拿这张表当「有人在用」
+        的证据 —— 读到的全是自己的心跳，只要一天没聊天就必报写线断了。
+        埋点已接到主路径并带 session，判据改用 ingest_conv_reads_24h。
+        其余六条：读线从不透传 session（M2 回声抑制在 shell hook 路上一直空转，
+        已透传并给探针加第三态）；origin_turn 恒 0（宿主 turn_id 是字符串，
+        int() 必然失败，改用会话内 user 轮数）；跳过某轮不留痕（解析段 stderr
+        被自己 2>/dev/null 掉了）；check_ingest_wiring.py 样本不足时沉默通过
+        （加 --require-judgment）；技术日志污染语义层（两个写线钩子加保守过滤）；
+        覆盖率分母混着后台通路会误导读数（分子分母一并报出）。
+        evolve_queries 补 origin_session_id，已进迁移总账。
     落位纠正两处（指导书按公开认知写，实测生产代码后修正）：回声/MMR 落在
     scoring 单一真源而非仅 recall_funnel（主 /search 走 RecallEngine，两路都经打分出口）；
     episode 表进 evolve 库的 ensure_evolve_schema 而非 facts.db 迁移流。
