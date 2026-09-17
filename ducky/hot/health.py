@@ -754,6 +754,8 @@ def register_health_routes(app: FastAPI) -> None:
                     "记忆照常进，只是永远没有「这一程最值得记住的是什么」那一层。"
                     "现成脚本：integrations/aidumem-distill.sh，挂法见 "
                     "docs/AGENT_INTEGRATION.md「三条线」。")
+            else:
+                DegradationTracker.clear_degradation("distill_liveness")
         except (ImportError, sqlite3.Error, ValueError, TypeError) as _dis_exc:
             # 收窄到探针自己可能出的错（模块缺 / 库读失败 / 列不在）。
             # 读不到一律标 None + 写明原因 —— 不冒充「正常」。
