@@ -68,6 +68,9 @@ def diagnose(health: dict) -> tuple[int, list[str], dict]:
     facts = {
         "reads_24h": probes.get("ingest_reads_24h"),
         "writes_24h": probes.get("ingest_writes_24h"),
+        # 判据落在这个数上：任何来源的写入里混着 cron 整合器、MEMORY.md
+        # 同步引擎等后台通路，它们不为零不代表对话在被记下来。
+        "turn_writes_24h": probes.get("ingest_turn_writes_24h"),
         "liveness_ok": probes.get("ingest_liveness_ok"),
         "session_coverage": probes.get("epistemic_session_coverage"),
     }
@@ -88,18 +91,28 @@ def diagnose(health: dict) -> tuple[int, list[str], dict]:
         return 2, lines, facts
 
     reads, writes = facts["reads_24h"] or 0, facts["writes_24h"] or 0
-    lines.append(f"最近 24 小时：检索 {reads} 次 · 写入 {writes} 条")
+    turn_w = facts["turn_writes_24h"]
+    if turn_w is None:
+        lines.append(f"最近 24 小时：检索 {reads} 次 · 写入 {writes} 条")
+    else:
+        lines.append(f"最近 24 小时：检索 {reads} 次 · 写入 {writes} 条"
+                     f"（其中来自对话的 {turn_w} 条）")
 
     if facts["liveness_ok"] is False:
         lines += [
             "",
-            "❌ 写入链路没接上 —— 你在读，但没在写。",
+            "❌ 对话没有被写进记忆库 —— 你在读，但这一路没在写。",
             "",
-            "   现象：检索有结果、/health 看着正常，但新对话一句都没记下来。",
-            "   原因：宿主多半只挂了「注入」钩子，没挂「写入」钩子。",
+            "   现象：检索有结果、/health 看着正常，连库里都还在新增记忆",
+            "   （那是 cron 整合器和同步引擎在写），但**新对话一句都没记下来**。",
             "",
-            "   怎么修：见 docs/INTEGRATION.md —— 每轮对话结束后必须调一次",
-            "   POST /add，并把 session_id / turn 一起带上。",
+            "   两种可能，都要查：",
+            "   ① 宿主只挂了注入钩子，没挂写入钩子 —— 记忆只出不进。",
+            "      现成脚本：integrations/aidumem-ingest.sh（Hermes post_llm_call）",
+            "      或 integrations/cursor-hook/claude-code-stop-hook.py（Claude Code Stop）",
+            "   ② 挂了，但写入时没带 _origin_session_id。",
+            "",
+            "   挂法与验收见 docs/AGENT_INTEGRATION.md「两条线」。",
         ]
         return 1, lines, facts
 
