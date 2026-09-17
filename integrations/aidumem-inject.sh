@@ -135,6 +135,7 @@ if [ "${1:-}" = "--selftest" ]; then
 import json, os
 print(json.dumps({'query': os.environ['AIDUMEM_MSG'],
                   'user_id': os.environ['AIDUMEM_USER_ID'],
+                  'session_id': 'inject-selftest',
                   'limit': 1, 'metadata': {}}, ensure_ascii=False))
 ") python3 -c "
 import json, os, sys, urllib.error, urllib.request
@@ -194,12 +195,20 @@ msgs = (ex.get('conversation_history')
         or ex.get('messages')
         or d.get('messages')
         or [])
+sid = d.get('session_id') or ex.get('session_id') or ''
 print(len(msgs) if isinstance(msgs, list) else 0)
+print(str(sid)[:256])
 print(msg.replace('\n', ' ') if isinstance(msg, str) else '')
-" 2>/dev/null) || PARSED=$'0\n'
+" 2>/dev/null) || PARSED=$'0\n\n'
 
 MSG_COUNT=$(printf '%s' "$PARSED" | sed -n '1p')
-USER_MESSAGE=$(printf '%s' "$PARSED" | sed -n '2,$p')
+# v21.2.0：把会话 id 透传给 /search。两件事都靠它：
+#   ① M2 回声抑制 —— 检索侧拿不到 session 就不做「排除本会话刚写入的」，
+#      这个功能在 shell hook 这条接入路上一直在空转（读线从来没传过）。
+#   ② 写入活性探针 —— 检索日志里带 session 的那部分才是「真有人在对话」，
+#      不带的全是 e2e_smoke 每小时一次的巡检心跳，拿它当用户会造成必然误报。
+export _INJECT_SESSION_PIPE=$(printf '%s' "$PARSED" | sed -n '2p')
+USER_MESSAGE=$(printf '%s' "$PARSED" | sed -n '3,$p')
 [ -z "$MSG_COUNT" ] && MSG_COUNT=0
 
 # 太短不注入
@@ -310,6 +319,9 @@ import json, os
 print(json.dumps({
     'query': os.environ['AIDUMEM_MSG'],
     'user_id': os.environ['AIDUMEM_USER_ID'],
+    # 顶层 session_id 是服务端的首选口径（_req_session_id 先看它）。
+    # 空串＝不过滤，与老行为一致，所以拿不到 session 的宿主零破坏。
+    'session_id': os.environ.get('_INJECT_SESSION_PIPE', ''),
     'limit': int(os.environ['AIDUMEM_SEARCH_LIMIT']),
     'metadata': {},
 }, ensure_ascii=False))

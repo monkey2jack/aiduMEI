@@ -258,16 +258,65 @@ def _pick(*names):
 
 user_msg = _pick("user_message", "prompt")
 reply = _pick("assistant_response", "response", "completion")
-if not isinstance(user_msg, str) or not isinstance(reply, str):
-    sys.exit(1)
-if len(user_msg.strip()) < int(os.environ["_INGEST_MIN_PIPE"]):
+
+
+def _skip(why):
+    """跳过也要留痕。
+
+    首版这里是裸 `sys.exit(1)` —— 静默跳过。那违反了本文件开头自己写的
+    「安静≠失声」：漏写和「按门槛正常跳过」在日志里长得一模一样，于是
+    「这一轮怎么没记住」永远查不出是哪种。用户审计当场点名（🔴-1）。
+    """
+    if not os.environ.get("AIDUMEM_HOOK_QUIET"):
+        sys.stderr.write("[aidumem-ingest] skipped: %s\n" % why)
     sys.exit(1)
 
+
+if not isinstance(user_msg, str) or not isinstance(reply, str):
+    _skip("payload 里取不到 user_message/assistant_response 的文本形态")
+if len(user_msg.strip()) < int(os.environ["_INGEST_MIN_PIPE"]):
+    _skip("user_message 只有 %d 字，低于门槛 %s（正常跳过，非故障）"
+          % (len(user_msg.strip()), os.environ["_INGEST_MIN_PIPE"]))
+
+# 机器输出占压倒多数的轮次不进语义层。
+# 由来（用户审计 🔵-4）：写线接上后，贴满 terminal 输出与脚本全文的轮次会
+# 被 LLM 抽取成「记忆」，后续搜「生日」可能召回一堆 bash 片段。判据**故意
+# 保守** —— 只拦极端情况（几乎整轮都是命令行/代码围栏），宁可放进去一些
+# 噪音，也不能把真内容judged成日志丢掉。跳过同样留痕，不静默。
+def _machine_ratio(text):
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 12:                 # 短内容一律不判，样本不足
+        return 0.0
+    marks = ("$ ", "# ", "  File \"", "Traceback", "    at ", "```",
+             "+++", "---", "|  ", "INFO ", "DEBUG ", "WARNING ", "ERROR ")
+    hit = sum(1 for ln in lines if ln.startswith(marks) or "\t" in ln)
+    return hit / len(lines)
+
+
+_combined = user_msg + "\n" + reply
+_ratio = _machine_ratio(_combined)
+if _ratio >= 0.8:
+    _skip("整轮 %.0f%% 是命令行/日志输出，不进语义层（避免污染召回）" % (_ratio * 100))
+
 session_id = str(_pick("session_id", "conversation_id") or "")
-try:
-    turn = int(_pick("turn_id", "turn") or 0)
-except (TypeError, ValueError):
-    turn = 0
+
+# turn 必须是**序号**，不是 id。
+# 宿主传的 turn_id 是字符串（Hermes 侧 `turn_id = str(...)`），首版直接
+# int() 它，必然 ValueError 落到 0 —— 实测生产真实写入的 origin_turn 全是 0，
+# M1 轨迹信用要的「这条记忆在轨迹里第几步」因此恒拿不到。
+# 改用本会话已有的 user 轮数：有序、单调、就在 payload 里现成有。
+_hist = _pick("conversation_history", "messages") or []
+turn = 0
+if isinstance(_hist, list):
+    turn = sum(1 for m in _hist
+               if isinstance(m, dict) and m.get("role") == "user")
+if turn <= 0:
+    # 退而求其次：turn_id 本身是数字形态时才用它，否则如实留 0（不编造）
+    _tid = _pick("turn_id", "turn")
+    if isinstance(_tid, int):
+        turn = _tid
+    elif isinstance(_tid, str) and _tid.strip().lstrip("-").isdigit():
+        turn = int(_tid.strip())
 agent = str(_pick("platform", "agent", "model") or "hermes")
 
 # 单条上限 50_000 字符、整体序列化 64 KiB（服务端 AddRequest 的硬约束）。
@@ -294,7 +343,10 @@ print(json.dumps({
         "channel": "hermes-post-llm",
     },
 }, ensure_ascii=False))
-' 2>/dev/null) || INGEST_BODY=""
+') || INGEST_BODY=""
+# 这一行故意**不带** 2>/dev/null：解析段的 stderr 是诊断通路，扔掉它等于把
+# 「安静≠失声」原则作废。首版扔了，于是 _skip() 写的每一行都进了黑洞 ——
+# 用户审计报「短消息跳过静默无痕」时，脚本里其实是写了的，被我自己捂住了。
 
 if [ -z "$INGEST_BODY" ]; then
     echo '{}'

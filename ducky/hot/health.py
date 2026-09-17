@@ -559,6 +559,16 @@ def register_health_routes(app: FastAPI) -> None:
                     probes["epistemic_session_coverage"] = (
                         round(_w_with / _w_total, 4) if _w_total else None)
                     probes["epistemic_session_coverage_window"] = "7d"
+                    # 分母说清楚（用户审计 🔵-5）：这个比例的分母是**全部**
+                    # sidecar 登记，里面混着 cron 整合器与 MEMORY.md 同步引擎
+                    # 等后台通路 —— 它们永远不带 session，会把比例长期压在很低
+                    # 的位置。判据本身不受影响（阈值是「一条都没有」不是比例），
+                    # 但读数的人会把 0.05 误读成「只有 5% 的对话带 session」。
+                    # 所以把两个数都摆出来，让比例可被正确解读。
+                    probes["epistemic_session_with_7d"] = _w_with
+                    probes["epistemic_session_coverage_note"] = (
+                        "分母含后台通路（cron/同步引擎），它们不带 session；"
+                        "判据看的是「7 天内带 session 的条数是否为 0」，不是这个比例")
                     # 样本不足不判 —— 没流量不是故障。
                     if _w_total >= 10 and _w_with == 0:
                         DegradationTracker.record_degradation(
@@ -635,8 +645,15 @@ def register_health_routes(app: FastAPI) -> None:
             finally:
                 _ing_conn.close()
 
-            # 读取侧：检索日志（evolve 独立库）
+            # 读取侧同样要分两个数，理由与写入侧一模一样：
+            #   _ing_reads      —— 任何来源的检索，含 e2e_smoke 每小时一次的
+            #                      巡检心跳，只作参考
+            #   _ing_conv_reads —— 带 origin_session_id 的检索，即「真有人在对话」
+            # 实测生产近 24h 的 24 条记录**每一条都是 `aidumei-smoke-*`**，
+            # 一条真实对话检索都没有。拿总数当「有人在用」的证据，等于把自己的
+            # 巡检心跳当成了用户 —— 那样只要一天没聊天，探针就必然误报写线断了。
             _ing_reads = 0
+            _ing_conv_reads = 0
             try:
                 from ducky.evolve_mem import get_evolve_conn as _ing_ev_fn
                 _ing_ev = _ing_ev_fn()
@@ -645,25 +662,53 @@ def register_health_routes(app: FastAPI) -> None:
                         "SELECT COUNT(*) FROM evolve_queries WHERE ts >= ?",
                         (_ing_cut_ts,)).fetchone()
                     _ing_reads = int((_r[0] if _r else 0) or 0)
+                    try:
+                        _r2 = _ing_ev.execute(
+                            "SELECT COUNT(*) FROM evolve_queries WHERE ts >= ? "
+                            "AND COALESCE(origin_session_id, '') <> ''",
+                            (_ing_cut_ts,)).fetchone()
+                        _ing_conv_reads = int((_r2[0] if _r2 else 0) or 0)
+                    except sqlite3.Error:
+                        # 列不在（未迁移库）：无从区分，两个数取同一口径。
+                        # 下面的判决会因此退回旧行为，如实标注而不假装精确。
+                        _ing_conv_reads = _ing_reads
                 finally:
                     _ing_ev.close()
             except Exception:
                 _ing_reads = 0
+                _ing_conv_reads = 0
 
             probes["ingest_writes_24h"] = _ing_writes
             probes["ingest_turn_writes_24h"] = _ing_turn_writes
             probes["ingest_reads_24h"] = _ing_reads
-            _ing_bad = _ing_reads >= _INGEST_MIN_READS and _ing_turn_writes == 0
+            probes["ingest_conv_reads_24h"] = _ing_conv_reads
+
+            # 三态，不是两态。少了中间那一态就会在两个方向上都撒谎：
+            #   红   有人在对话（conv_reads 够）却零对话写入 → 写线断了
+            #   提示 完全没有对话检索、但巡检说明服务活着 → 读线没透传 session，
+            #        既判不了写线，M2 回声抑制也在空转。这时报「写线断了」是
+            #        冤枉人，报「一切正常」是白护栏 —— 只能如实说「读线该升级」。
+            #   绿   其余（含样本不足：没人用不是故障）
+            _ing_bad = _ing_conv_reads >= _INGEST_MIN_READS and _ing_turn_writes == 0
+            _ing_blind = (_ing_conv_reads == 0 and _ing_reads >= _INGEST_MIN_READS
+                          and _ing_turn_writes == 0)
             probes["ingest_liveness_ok"] = not _ing_bad
             if _ing_bad:
                 DegradationTracker.record_degradation(
                     "ingest_liveness",
-                    f"最近 {_ing_window_h}h 有 {_ing_reads} 次检索，却**没有一条带会话来源的写入**"
-                    f"（同期任何来源的写入共 {_ing_writes} 条，多为后台通路）。两种可能，"
-                    "都要查：① 宿主只挂了注入钩子、没挂写入钩子 —— 记忆只出不进＝在失忆；"
-                    "② 挂了但没透传 session，回声抑制与轨迹信用会静默失效。"
-                    "对照 docs/AGENT_INTEGRATION.md「两条线」自查，"
+                    f"最近 {_ing_window_h}h 有 {_ing_conv_reads} 次**来自对话的检索**，"
+                    f"却没有一条带会话来源的写入（同期任何来源的写入共 {_ing_writes} 条，"
+                    "多为后台通路）。宿主多半只挂了注入钩子、没挂写入钩子 —— "
+                    "记忆只出不进＝在失忆。现成脚本见 docs/AGENT_INTEGRATION.md「两条线」，"
                     "或运行 scripts/check_ingest_wiring.py")
+            elif _ing_blind:
+                probes["ingest_liveness_note"] = (
+                    f"无法判断：{_ing_window_h}h 内 {_ing_reads} 次检索没有一次带 session，"
+                    "说明读线是不透传 session 的旧版本。升级 aidumem-inject.sh 后本探针才有射程；"
+                    "在那之前 M2 回声抑制也一直在空转（检索侧拿不到会话就不做排除）。")
+                DegradationTracker.record_degradation(
+                    "ingest_liveness",
+                    probes["ingest_liveness_note"], severity="warning")
         except Exception as _ing_exc:
             probes["ingest_liveness_ok"] = None
             probes["ingest_liveness_error"] = str(_ing_exc)[:120]

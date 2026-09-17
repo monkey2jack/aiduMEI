@@ -940,7 +940,7 @@ def test_wiring_checker_verdicts():
         "ingest_turn_writes_24h": 0, "ingest_liveness_ok": False}})
     assert code == 1, "后台在写、对话没写 —— 这正是那次事故，必须红"
     joined = " ".join(lines)
-    assert "其中来自对话的 0 条" in joined, "没把对话写入单独报出来，人只会看到 18"
+    assert "来自对话 0 条" in joined, "没把对话写入单独报出来，人只会看到 18"
     assert "后台" in joined or "同步引擎" in joined, "没解释那 18 条是谁写的"
 
     # ② 读写都有 —— 通过
@@ -1322,7 +1322,11 @@ def test_claude_code_stop_hook_writes_the_last_turn(tmp_path):
         f"没从 content blocks 里取出文本：{msgs.get('assistant')!r}"
     md = body.get("metadata") or {}
     assert md.get("_origin_session_id") == "cc-sess-1", "session 没传"
-    assert md.get("_origin_turn") == 3, "turn 没传"
+    # turn 从转录推导（payload 的 turn 字段 Claude Code 实际不给）。
+    # 这份转录里 role=user 的有 3 条，但其中一条是工具结果 —— 工具循环插入的
+    # user 消息不算一轮对话，所以正确答案是 2。数成 3 就说明把工具回执当人话了。
+    assert md.get("_origin_turn") == 2, (
+        f"轮次应为 2（工具结果那条 user 不算一轮），实得 {md.get('_origin_turn')!r}")
 
 
 
@@ -1391,3 +1395,203 @@ def test_ingest_probe_judges_conversation_writes_not_background_ones():
     for rel in ("scripts/check_ingest_wiring.py", "scripts/agent_integration_check.py"):
         text = (Path(__file__).resolve().parent.parent / rel).read_text(encoding="utf-8")
         assert "ingest_turn_writes_24h" in text, f"{rel} 判据与探针不同源"
+
+
+# ══════════════════════════════════════════════════════════════════
+# v21.2.0 用户审计整改（2026-09-17，外部用户审计 5 条 + 自查 2 条）
+# ══════════════════════════════════════════════════════════════════
+
+def test_search_logs_retrieval_on_the_main_path_not_only_the_funnel():
+    """检索埋点必须落在主 /search 上。
+
+    此前 log_search_quality 只在 recall_funnel 里调用，而主 /search 走
+    mem.search + 融合，根本不经过 funnel —— evolve_queries 里于是只有
+    e2e_smoke 每小时一次的巡检记录，真实对话的检索一次都没被记过。
+    写入活性探针拿这张表当「有人在用」的证据，读到的却全是自己的心跳。
+    （「挂钩必须落真实缝位」的第三次复发。）
+    """
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "ducky" / "hot" / "search.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    # 判据走 AST：注释里提到函数名不算数
+    called = {n.func.id for n in ast.walk(tree)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    imported = {a.asname or a.name for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) for a in n.names}
+    # 引入时可能带别名（as _log_sq），判据两边都认
+    assert {"log_search_quality", "_log_sq"} & imported, "主 /search 没引入检索埋点"
+    assert called & {"_log_sq", "log_search_quality"}, "引入了却没调用 = 空转"
+    assert "origin_session_id=" in src, "埋点没带 session，无法区分对话与巡检"
+
+
+def test_read_wire_passes_session_so_echo_suppression_can_work():
+    """读线必须透传 session_id。
+
+    服务端 _req_session_id 读不到 session 就返回空串 = 不过滤，于是 M2 回声
+    抑制在 shell hook 这条接入路上一直空转。同一个 session 还是写入活性探针
+    区分「真有人在对话」与「定时器在自检」的唯一依据。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "integrations"
+           / "aidumem-inject.sh").read_text(encoding="utf-8")
+    assert "_INJECT_SESSION_PIPE" in src, "读线没从 payload 取 session"
+    # 判据必须落在「正式检索那一处真的用了它」，不能只看有没有 session_id
+    # 这个词 —— selftest 里也写着一个固定值，会冒充正式路径把守卫骗过去
+    # （首版就是这么被自己的负向对照抓住的）。
+    assert "os.environ.get('_INJECT_SESSION_PIPE'" in src, \
+        "取到了 session 却没送进 /search body —— 取值与使用之间断了"
+    # 取值本身也要在：只有使用没有取值同样是空转
+    assert "export _INJECT_SESSION_PIPE=" in src, "没从 payload 解析出 session"
+
+
+def test_ingest_probe_uses_conversation_reads_not_heartbeat_reads():
+    """写入活性判据的「读」必须是对话检索，不是巡检心跳。
+
+    实测生产近 24h 的 evolve_queries 每一条都是 `aidumei-smoke-*`（e2e_smoke
+    每小时一次）。拿检索总数当「有人在用」，只要一天没聊天探针就必然误报
+    写线断了 —— 这是写入侧「数了后台通路」的同一个错，犯在读取侧。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "ducky" / "hot"
+           / "health.py").read_text(encoding="utf-8")
+    assert "ingest_conv_reads_24h" in src, "探针没暴露对话检索这个数"
+    assert "_ing_conv_reads >= _INGEST_MIN_READS" in src, "判据没落在对话检索上"
+    assert "_ing_reads >= _INGEST_MIN_READS and _ing_turn_writes == 0" not in src \
+        .replace("_ing_conv_reads", "X"), "判据里还留着「检索总数」的旧口径"
+    # 第三态：读线是旧版本时既不能判红也不能判绿
+    assert "_ing_blind" in src, "缺第三态：读线不传 session 时会在两个方向撒谎"
+    assert "ingest_liveness_note" in src, "第三态没有给出可执行的说明"
+
+
+def test_wiring_checker_refuses_silent_pass_when_asked():
+    """--require-judgment 下，「样本不足」与「读线旧版本」必须非 0 退出。
+
+    默认行为不挡刚部署的新系统；但同一个脚本里「未鉴权」「无探针」都返回 2，
+    唯独「样本不足」返回 0，口径不一致，而且一个刚装好就断线的系统会从 CI
+    门禁一路绿过去（用户审计 🟡-3）。
+    """
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "_wiring2", root / "scripts" / "check_ingest_wiring.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    thin = {"probes": {"ingest_reads_24h": 2, "ingest_conv_reads_24h": 2,
+                       "ingest_writes_24h": 0, "ingest_turn_writes_24h": 0,
+                       "ingest_liveness_ok": True}}
+    assert mod.diagnose(thin)[0] == 0, "默认不许挡住刚部署的人"
+    assert mod.diagnose(thin, require_judgment=True)[0] == 2, \
+        "要明确结论时，样本不足必须报「无法判断」而不是沉默通过"
+
+    # 读线旧版本：有检索但一次都不带 session
+    blind = {"probes": {"ingest_reads_24h": 24, "ingest_conv_reads_24h": 0,
+                        "ingest_writes_24h": 12, "ingest_turn_writes_24h": 0,
+                        "ingest_liveness_ok": True}}
+    code, lines, _ = mod.diagnose(blind)
+    joined = " ".join(lines)
+    assert "无法判断" in joined, "没说出「判不了」，会被当成一切正常"
+    assert "回声抑制" in joined, "没提 M2 同时也在空转"
+    assert mod.diagnose(blind, require_judgment=True)[0] == 1, \
+        "要明确结论时，读线旧版本必须非 0"
+
+
+def test_write_wire_leaves_a_trace_when_it_skips_a_turn(tmp_path):
+    """跳过某一轮必须留痕 —— 漏写和正常跳过在日志里要分得开。"""
+    import json
+    import subprocess
+    from pathlib import Path
+    hook = Path(__file__).resolve().parent.parent / "integrations" / "aidumem-ingest.sh"
+    env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/nonexistent",
+           "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+           "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+           "AIDUMEM_URL": "http://127.0.0.1:1", "AIDUMEM_HOOK_QUIET": ""}
+    # ① 太短
+    proc = subprocess.run(
+        ["bash", str(hook)], text=True, capture_output=True, timeout=30, env=env,
+        input=json.dumps({"hook_event_name": "post_llm_call",
+                          "extra": {"user_message": "嗯", "assistant_response": "好"}}))
+    assert proc.returncode == 0
+    assert "skipped" in proc.stderr and "门槛" in proc.stderr, \
+        f"短消息静默跳过 = 下一次「怎么没记住」查不出来：{proc.stderr!r}"
+    # ② 整轮都是终端输出
+    noise = "\n".join(f"$ command {i}" for i in range(30))
+    proc2 = subprocess.run(
+        ["bash", str(hook)], text=True, capture_output=True, timeout=30, env=env,
+        input=json.dumps({"hook_event_name": "post_llm_call",
+                          "extra": {"user_message": noise,
+                                    "assistant_response": noise}}))
+    assert "命令行/日志输出" in proc2.stderr, f"噪声轮次没被拦也没留痕：{proc2.stderr!r}"
+
+
+def test_write_wire_derives_turn_as_an_ordinal_not_from_a_string_id(tmp_path):
+    """turn 必须是序号。
+
+    宿主传的 turn_id 是字符串（Hermes 侧 `turn_id = str(...)`），首版直接
+    int() 它必然 ValueError 落到 0 —— 实测生产真实写入的 origin_turn 全是 0，
+    M1 轨迹信用要的「第几步」恒拿不到。改用会话内 user 轮数。
+    """
+    import json
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pathlib import Path
+
+    got: dict = {}
+
+    class _H(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            got["body"] = json.loads(self.rfile.read(n).decode("utf-8"))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            return
+
+    srv = HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.handle_request, daemon=True)
+    t.start()
+
+    hook = Path(__file__).resolve().parent.parent / "integrations" / "aidumem-ingest.sh"
+    payload = json.dumps({
+        "hook_event_name": "post_llm_call",
+        "session_id": "s-ord",
+        "extra": {
+            "user_message": "第三轮的问题，长度足够越过门槛",
+            "assistant_response": "回答",
+            "turn_id": "turn-8f3a-not-a-number",   # 宿主真实形态：字符串
+            "conversation_history": [
+                {"role": "user", "content": "一"}, {"role": "assistant", "content": "1"},
+                {"role": "user", "content": "二"}, {"role": "assistant", "content": "2"},
+                {"role": "user", "content": "三"},
+            ],
+        },
+    }, ensure_ascii=False)
+    subprocess.run(["bash", str(hook)], input=payload, text=True,
+                   capture_output=True, timeout=30,
+                   env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/nonexistent",
+                        "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+                        "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+                        "AIDUMEM_URL": f"http://127.0.0.1:{port}",
+                        "AIDUMEM_HOOK_QUIET": "1"})
+    t.join(timeout=10)
+    md = (got.get("body") or {}).get("metadata") or {}
+    assert md.get("_origin_turn") == 3, (
+        f"turn 应为会话内第 3 轮，实得 {md.get('_origin_turn')!r} —— "
+        "0 说明又去 int() 那个字符串 id 了")
+
+
+def test_session_coverage_reports_its_denominator():
+    """覆盖率必须说清分母含后台通路，否则读数会被误解。"""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "ducky" / "hot"
+           / "health.py").read_text(encoding="utf-8")
+    assert "epistemic_session_with_7d" in src, "只给了比例没给分子"
+    assert "epistemic_session_coverage_note" in src, "没说明分母的构成"

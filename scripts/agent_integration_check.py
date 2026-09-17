@@ -134,6 +134,11 @@ def main() -> int:
         # 是接线错误的铁证；没有读，说明还没真用起来，如实说「还判断不了」。
         _probes = (health or {}).get("probes") or {}
         _reads = _probes.get("ingest_reads_24h")
+        # 与 /health 同源：判据看「来自对话的检索」，不是检索总数。总数里
+        # 混着 e2e_smoke 每小时一次的巡检心跳，拿它当「有人在用」会必然误报。
+        _conv_reads = _probes.get("ingest_conv_reads_24h")
+        if _conv_reads is None:
+            _conv_reads = _reads
         _writes = _probes.get("ingest_writes_24h")
         # 判据用「来自对话的写入」，不是写入总数：总数里混着 cron 整合器与
         # MEMORY.md 同步引擎等后台通路，实测那台出事的机器每天有 6~18 条
@@ -147,21 +152,21 @@ def main() -> int:
                   {"verdict": "unknown",
                    "why": "服务端无写入活性探针（旧版本）",
                    "next": "升级后运行 scripts/check_ingest_wiring.py"})
-        elif _reads < _INGEST_MIN_READS:
+        elif _conv_reads < _INGEST_MIN_READS:
             # 刚部署没有流量是正常的 —— 不许拿假红灯挡住新用户，
             # 但必须把「这件事还没验」明明白白说出来，不许沉默放行。
             check("host-wiring", True,
                   {"verdict": "not_yet_verifiable",
-                   "reads_24h": _reads, "writes_24h": _writes,
-                   "turn_writes_24h": _turn_writes,
+                   "reads_24h": _reads, "conv_reads_24h": _conv_reads,
+                   "writes_24h": _writes, "turn_writes_24h": _turn_writes,
                    "next": "⚠️ 真实用过几轮对话后，务必运行 "
                            "scripts/check_ingest_wiring.py 确认写入钩子真的在工作 —— "
                            "只挂读钩子不挂写钩子时，一切看起来都正常，但新对话一句都不会被记住"})
         else:
             check("host-wiring", (_turn_writes or 0) > 0,
                   {"verdict": "wired" if (_turn_writes or 0) > 0 else "READ_ONLY",
-                   "reads_24h": _reads, "writes_24h": _writes,
-                   "turn_writes_24h": _turn_writes,
+                   "reads_24h": _reads, "conv_reads_24h": _conv_reads,
+                   "writes_24h": _writes, "turn_writes_24h": _turn_writes,
                    "fix": "宿主在读，但没有一条来自对话的写入。现成脚本："
                           "integrations/aidumem-ingest.sh（Hermes post_llm_call）或 "
                           "integrations/cursor-hook/claude-code-stop-hook.py（Claude Code Stop）；"

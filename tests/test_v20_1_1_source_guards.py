@@ -270,6 +270,9 @@ _MIGRATION_LEDGER = {
     ("ducky/schema_bootstrap.py", "ALTER", "memory_epistemic"),
     ("ducky/evolve_mem.py", "CREATE", "evolve_episodes"),
     ("ducky/evolve_mem.py", "CREATE", "evolve_episode_steps"),
+    # v21.2.0 用户审计整改：检索日志补 origin_session_id（additive），
+    # 用于区分「真有人在对话」与「e2e_smoke 每小时一次的巡检心跳」
+    ("ducky/evolve_mem.py", "ALTER", "evolve_queries"),
     # v20.4.0 P1 租户轴/去重：以下均 additive（ADD COLUMN / CREATE IF NOT EXISTS / 表重建）。
     ("ducky/checkpoint.py", "ALTER", "checkpoints"),
     ("ducky/federation/schema.py", "CREATE", "facts_dedup_quarantine"),
