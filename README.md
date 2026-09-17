@@ -175,7 +175,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` 已安装 | 20 | `tests/test_v20_mem0_patch_layer.py` 整份（补丁层疗法要真实基座在场；此前缺 mem0 是 20 条 ERROR 冒充真缺陷，现在诚实跳过） |
 > | `fastembed` 已安装 | 1 | `tests/test_v20_2_autoshift.py`（自动挡备胎真模型测试；缺依赖诚实跳过，模型未部署时用例内二次跳过） |
 > | `ruff` 已安装 | 3 | 静态规则守卫：F821/F811/F841；缺依赖时跳过，发布门禁仍会拦截 |
-> | `mcp` extra 已安装 | 7 | MCP 导入面守卫 + 鉴权行为 + SSE 传输用例 |
+> | `mcp` extra 已安装 | 8 | MCP 导入面守卫 + 鉴权行为 + SSE 传输用例 + 检索 session 透传（v21.2 M2） |
 >
 > 生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），实测跑出来是 1967 passed、26 skipped（2026-09-11，v20.5.1 本树 `de09794`）——跳过轴不同，数字必须与环境、日期和测试树一起读。
 

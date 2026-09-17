@@ -175,7 +175,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` installed | 20 | real patch-layer tests |
 > | `fastembed` installed | 1 | real local-model fallback test; the configured model cache must also be present |
 > | `ruff` installed | 3 | real-defect static rules |
-> | `mcp` extra installed | 7 | MCP import-surface guards + auth-behavior + SSE transport cases |
+> | `mcp` extra installed | 8 | MCP import-surface guards + auth-behavior + SSE transport cases + search session passthrough (v21.2 M2) |
 >
 > On the production box in an isolated sandbox (host source present, no `.env`), the bare command actually prints 1967 passed, 26 skipped (measured 2026-09-11, v20.5.1 tree `de09794`) — axes differ, so numbers only travel with their environment and date.
 
