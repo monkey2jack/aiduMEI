@@ -62,11 +62,15 @@ def _get(url: str, token: str, path: str) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def diagnose(health: dict) -> tuple[int, list[str], dict]:
+def diagnose(health: dict, *, require_judgment: bool = False) -> tuple[int, list[str], dict]:
     """返回 (退出码, 人类可读结论, 关键数字)。判据与 /health 探针同源。"""
     probes = health.get("probes") or {}
     facts = {
         "reads_24h": probes.get("ingest_reads_24h"),
+        # 判据用「来自对话的检索」：总数里混着 e2e_smoke 每小时一次的巡检
+        # 心跳，实测生产近 24h 的检索记录一条真实对话都没有，拿总数判会在
+        # 「今天没聊天」时必然误报写线断了。
+        "conv_reads_24h": probes.get("ingest_conv_reads_24h"),
         "writes_24h": probes.get("ingest_writes_24h"),
         # 判据落在这个数上：任何来源的写入里混着 cron 整合器、MEMORY.md
         # 同步引擎等后台通路，它们不为零不代表对话在被记下来。
@@ -92,11 +96,26 @@ def diagnose(health: dict) -> tuple[int, list[str], dict]:
 
     reads, writes = facts["reads_24h"] or 0, facts["writes_24h"] or 0
     turn_w = facts["turn_writes_24h"]
+    conv_r = facts["conv_reads_24h"]
     if turn_w is None:
         lines.append(f"最近 24 小时：检索 {reads} 次 · 写入 {writes} 条")
     else:
-        lines.append(f"最近 24 小时：检索 {reads} 次 · 写入 {writes} 条"
-                     f"（其中来自对话的 {turn_w} 条）")
+        _r = f"检索 {reads} 次" + (f"（来自对话 {conv_r} 次）" if conv_r is not None else "")
+        lines.append(f"最近 24 小时：{_r} · 写入 {writes} 条（来自对话 {turn_w} 条）")
+
+    # 读线是旧版本（不透传 session）时，既判不了写线、M2 也在空转 —— 必须
+    # 说出来，不许当成「一切正常」。判据与 /health 的第三态同源。
+    if (conv_r is not None and conv_r == 0 and reads >= 5
+            and facts["liveness_ok"] is not False):
+        lines += [
+            "",
+            "⚠️  无法判断写线：这 24 小时的检索没有一次带 session，",
+            "   说明读线是不透传 session 的旧版本（拿到的全是定时巡检心跳）。",
+            "   后果有两个：本检查失去射程，且 M2 回声抑制一直在空转",
+            "   （检索侧拿不到会话，就不会排除本会话刚写入的内容）。",
+            "   修法：升级 integrations/aidumem-inject.sh 后重启宿主网关。",
+        ]
+        return (1 if require_judgment else 0), lines, facts
 
     if facts["liveness_ok"] is False:
         lines += [
@@ -116,9 +135,14 @@ def diagnose(health: dict) -> tuple[int, list[str], dict]:
         ]
         return 1, lines, facts
 
-    if reads < 5:
+    if (conv_r if conv_r is not None else reads) < 5:
         lines += ["", "ℹ️  检索次数太少，还判断不了接线是否正常 —— 正常用一阵再来看。"]
-        return 0, lines, facts
+        # 「样本不足」是**无法判断**，不是「一切正常」。默认仍返回 0，
+        # 免得假红灯挡住刚部署的人；但用户审计点名（🟡-3）：同一个脚本里
+        # 「未鉴权」「无探针」都返回 2，唯独这里返回 0，口径不一致，而且
+        # 一个刚装好就断线的系统会从 CI 门禁一路绿过去。
+        # --require-judgment 让需要明确结论的场景（CI / 验收）拒绝沉默通过。
+        return (2 if require_judgment else 0), lines, facts
 
     lines.append("")
     lines.append("✅ 读写链路都在工作。")
@@ -139,6 +163,10 @@ def main() -> int:
     ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--token", default=DEFAULT_TOKEN)
     ap.add_argument("--json", action="store_true", help="输出 JSON")
+    ap.add_argument("--require-judgment", action="store_true",
+                    help="拒绝沉默通过：样本不足或读线旧版本时以非 0 退出。"
+                         "CI / 验收场景用它 —— 默认行为不挡刚部署的新系统，"
+                         "但那也意味着一个刚装好就断线的系统会一路绿过去。")
     args = ap.parse_args()
 
     try:
@@ -150,7 +178,7 @@ def main() -> int:
             print(f"连不上 {args.url}/health：{exc}")
         return 2
 
-    code, lines, facts = diagnose(health)
+    code, lines, facts = diagnose(health, require_judgment=args.require_judgment)
     if args.json:
         print(json.dumps({"ok": code == 0, "exit_code": code, **facts},
                          ensure_ascii=False))

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 
 from fastapi import FastAPI, HTTPException
 
@@ -295,6 +296,8 @@ def register_search_routes(app: FastAPI) -> None:
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
         """搜索记忆 — Workspace 优先 → 混合召回（Hybrid）→ Salience boost"""
+        import time as _t
+        _search_t0 = _t.time()
         # v20.2.5（用户实测 Y-NEW1）：空 query 不再返回随机记忆。
         #
         # 实测 `POST /search {"query":""}` → HTTP 200 + 1 条 score 0.496 的结果。
@@ -517,6 +520,24 @@ def register_search_routes(app: FastAPI) -> None:
             if _this_mode == "lite":
                 resp["engine_mode_reason"] = _gs.get("last_shift_reason")
                 resp["confidence_scale"] = "local-bge-small-zh"
+
+            # v21.2.0：检索埋点必须落在**主路径**上。
+            # 此前 log_search_quality 只在 recall_funnel 里调用，而主 /search
+            # 走的是 mem.search + 融合，根本不经过 funnel —— 于是 evolve_queries
+            # 里只有定时器自检的记录，真实对话的检索一次都没被记过。写入活性
+            # 探针拿这张表当「有人在用」的证据，读到的却全是自己的巡检心跳。
+            # （同一课第三次：挂钩要落在真实缝位上，不是看着像的那个地方。）
+            # 失败静默：观测不该拖垮被观测的东西。
+            try:
+                from ducky.evolve_mem import log_search_quality as _log_sq
+                _log_sq(req.query, results,
+                        latency_ms=int((_t.time() - _search_t0) * 1000),
+                        gate_passed=True,
+                        origin_session_id=_req_session_id(req))
+            except (ImportError, sqlite3.Error, OSError, ValueError, TypeError):
+                # 收窄到「埋点自己可能出的错」：模块缺失 / 库写失败 / 参数异常。
+                # 观测不该拖垮被观测的东西，但也不该拿宽捕获盖住真 bug。
+                pass
             return resp
         except HTTPException:
             # P1-4 教训：HTTPException 必须先放行 —— 否则上面跨殿借阅拒绝

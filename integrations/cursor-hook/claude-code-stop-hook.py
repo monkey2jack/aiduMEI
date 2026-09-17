@@ -157,7 +157,23 @@ def _diag(line: str) -> None:
         sys.stderr.write(line)
 
 
-def _last_turn(transcript_path: str) -> tuple[str, str]:
+def _machine_ratio(text: str) -> float:
+    """整轮里「机器输出」行的占比。
+
+    由来（用户审计 🔵-4）：写线接上后，贴满 terminal 输出与脚本全文的轮次会
+    被 LLM 抽取成「记忆」，后续搜「生日」可能召回一堆 bash 片段。判据**故意
+    保守**——只拦极端情况，宁可放进去一些噪音，也不能把真内容当日志丢掉。
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 12:                 # 短内容一律不判，样本不足
+        return 0.0
+    marks = ('$ ', '# ', '  File "', "Traceback", "    at ", "```",
+             "+++", "---", "|  ", "INFO ", "DEBUG ", "WARNING ", "ERROR ")
+    hit = sum(1 for ln in lines if ln.startswith(marks) or "\t" in ln)
+    return hit / len(lines)
+
+
+def _last_turn(transcript_path: str) -> tuple[str, str, int]:
     """从 Claude Code 的 JSONL 转录里取最后一轮的 user / assistant 文本。
 
     形状按「最后一条 user 之后的最后一条 assistant」取，而不是按行号倒数——
@@ -169,7 +185,7 @@ def _last_turn(transcript_path: str) -> tuple[str, str]:
             rows = [ln for ln in fh if ln.strip()]
     except OSError as exc:
         _diag("[aidumem-stop] transcript unreadable err=%s\n" % type(exc).__name__)
-        return "", ""
+        return "", "", 0
 
     def _text_of(msg: object) -> str:
         if isinstance(msg, str):
@@ -195,7 +211,20 @@ def _last_turn(transcript_path: str) -> tuple[str, str]:
         elif role == "user" and not user_text:
             user_text = content
             break            # user 之前的都是上一轮，停
-    return user_text, asst_text
+    # turn 要的是**序号**不是 id：宿主的 turn_id 是字符串，int() 它必然失败
+    # 落到 0，M1 轨迹信用就拿不到「这条记忆在轨迹里第几步」。用本会话已有的
+    # user 轮数——有序、单调、转录里现成有。
+    turn = 0
+    for line in rows:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        msg = rec.get("message") or {}
+        if (rec.get("type") or msg.get("role")) == "user" and _text_of(
+                msg.get("content")).strip():
+            turn += 1
+    return user_text, asst_text, turn
 
 
 def _write(user_text: str, asst_text: str, session_id: str, turn: int) -> bool:
@@ -288,15 +317,26 @@ def main() -> int:
         return 0
 
     transcript = payload.get("transcript_path") or ""
-    user_text, asst_text = _last_turn(transcript) if transcript else ("", "")
+    user_text, asst_text, turn = _last_turn(transcript) if transcript else ("", "", 0)
     if len(user_text.strip()) < MIN_CHARS:
+        # 跳过也要留痕：漏写和「按门槛正常跳过」在日志里必须分得开，
+        # 否则「这一轮怎么没记住」永远查不出是哪种（与 shell 侧同一课）。
+        _diag("[aidumem-stop] skipped: user 文本只有 %d 字，低于门槛 %d（正常跳过，非故障）\n"
+              % (len(user_text.strip()), MIN_CHARS))
         return 0
 
-    turn = 0
-    try:
-        turn = int(payload.get("turn") or payload.get("turn_id") or 0)
-    except (TypeError, ValueError):
-        turn = 0
+    _ratio = _machine_ratio(user_text + "\n" + asst_text)
+    if _ratio >= 0.8:
+        _diag("[aidumem-stop] skipped: 整轮 %.0f%% 是命令行/日志输出，"
+              "不进语义层（避免污染召回）\n" % (_ratio * 100))
+        return 0
+
+    if turn <= 0:
+        _tid = payload.get("turn") or payload.get("turn_id")
+        if isinstance(_tid, int):
+            turn = _tid
+        elif isinstance(_tid, str) and _tid.strip().lstrip("-").isdigit():
+            turn = int(_tid.strip())
 
     _write(user_text, asst_text, str(payload.get("session_id") or ""), turn)
     return 0                                       # 永远 0：写失败不许打断宿主
