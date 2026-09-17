@@ -40,6 +40,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_EPISTEMIC_MULT_FUZZY",
     # v21.2 Memmy 融改（M1 轨迹信用 / M2 回声抑制 / M4 MMR / M6 错误签名 / M7 rollup）
     "AIDUMEI_ECHO_SUPPRESS",
+    # v21.2.0 写入活性探针判据阈值（读写比）
+    "AIDUMEI_INGEST_MIN_READS",
     "AIDUMEI_MMR_ENABLED",
     "AIDUMEI_MMR_LAMBDA",
     "AIDUMEI_ERRSIG_BONUS",

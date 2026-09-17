@@ -40,6 +40,19 @@ _API_PORT_FALLBACK = 8767
 
 logger = logging.getLogger("aiduMEM.hot")
 
+# v21.2.0 写入活性探针的判据阈值。
+# 定阈依据（不是拍脑袋）：实测一个真实在用的部署 24h 检索量约 24 次、
+# 7 天约 169 次。取 5 —— 远低于真实使用量（不会漏报接线错误），
+# 又高于「装完点两下就走」的零星试用（不会对刚部署的空库误报）。
+# env 可覆盖：流量形态差异大的部署自己调，但调高就是调低灵敏度。
+# 走 env_config.int_env 统一入口：越界与不可解析同等处理（回默认 + 出声），
+# 裸 int() 会在 import 期 raise，把整个服务炸掉 —— 一个探针的阈值配错了，
+# 代价不该是服务起不来。
+from ducky.env_config import int_env as _int_env  # noqa: E402
+
+_INGEST_MIN_READS = _int_env("AIDUMEI_INGEST_MIN_READS", 5, minimum=1)
+
+
 
 def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
     """让 `degraded_details` 解释 `degraded` 里的**每一项**。
@@ -558,6 +571,78 @@ def register_health_routes(app: FastAPI) -> None:
         except Exception as _cov_exc:
             probes["epistemic_session_coverage"] = None
             probes["epistemic_session_coverage_error"] = str(_cov_exc)[:120]
+
+        # ══════════════════════════════════════════════════════════════
+        # v21.2.0 写入活性探针（ingest_liveness）
+        # ══════════════════════════════════════════════════════════════
+        #
+        # 由来（2026-09-17，本仓最贵的一课）：一个生产部署把 aiduMEI 的
+        # **注入钩子**挂上了、**写入钩子**却从没挂过 —— 宿主每天正常对话、
+        # 每轮都来检索，但没有任何一轮把内容写回记忆库。这个状态持续了很久
+        # 才被人工审计发现，而在此期间 /health 的每一项都是绿的。
+        #
+        # 根本原因不是某个功能坏了，是**观测方向错了**：本仓当时所有探针都在
+        # 回答「库里已有的记忆好不好」（schema、出身、衰减、检索延迟……），
+        # 没有一个在回答「今天该进来的进来了吗」。体检报告全绿的人，
+        # 可能已经三天没吃饭。
+        #
+        # 判据：把「读」和「写」放在一起比。只读不写是**接线错误**的铁证 ——
+        # 一个真在被使用的记忆系统不可能长期只出不进。
+        #   · 有检索、且窗口内写入为 0        → 降级（接线漏了写钩子）
+        #   · 没检索                          → 不判（没人用，不是故障）
+        #   · 有写入                          → 健康，如实报数
+        try:
+            from ducky.utils import get_facts_conn as _ing_conn_fn
+            from datetime import datetime as _idt, timedelta as _itd, timezone as _itz
+
+            _ing_window_h = 24
+            _ing_cut_iso = (_idt.now(_itz.utc) - _itd(hours=_ing_window_h)).isoformat()
+            _ing_cut_ts = (_idt.now(_itz.utc) - _itd(hours=_ing_window_h)).timestamp()
+
+            # 写入侧：facts 新增 + sidecar 新增（两条腿任一有值即算「写过」）
+            _ing_writes = 0
+            _ing_conn = _ing_conn_fn()
+            try:
+                for _sql in (
+                    "SELECT COUNT(*) FROM facts WHERE created_at >= ?",
+                    "SELECT COUNT(*) FROM memory_epistemic WHERE created_at >= ?",
+                ):
+                    try:
+                        _r = _ing_conn.execute(_sql, (_ing_cut_iso,)).fetchone()
+                        _ing_writes += int((_r[0] if _r else 0) or 0)
+                    except Exception:
+                        continue  # 表不在（未迁移库）不算故障
+            finally:
+                _ing_conn.close()
+
+            # 读取侧：检索日志（evolve 独立库）
+            _ing_reads = 0
+            try:
+                from ducky.evolve_mem import get_evolve_conn as _ing_ev_fn
+                _ing_ev = _ing_ev_fn()
+                try:
+                    _r = _ing_ev.execute(
+                        "SELECT COUNT(*) FROM evolve_queries WHERE ts >= ?",
+                        (_ing_cut_ts,)).fetchone()
+                    _ing_reads = int((_r[0] if _r else 0) or 0)
+                finally:
+                    _ing_ev.close()
+            except Exception:
+                _ing_reads = 0
+
+            probes["ingest_writes_24h"] = _ing_writes
+            probes["ingest_reads_24h"] = _ing_reads
+            probes["ingest_liveness_ok"] = not (_ing_reads >= _INGEST_MIN_READS and _ing_writes == 0)
+            if _ing_reads >= _INGEST_MIN_READS and _ing_writes == 0:
+                DegradationTracker.record_degradation(
+                    "ingest_liveness",
+                    f"最近 {_ing_window_h}h 有 {_ing_reads} 次检索但**一条记忆都没写进来** —— "
+                    "宿主极可能只挂了注入钩子、没挂写入钩子（记忆只出不进＝在失忆）。"
+                    "对照 docs/INTEGRATION.md「三个钩子分别挂什么」自查，"
+                    "或运行 scripts/check_ingest_wiring.py")
+        except Exception as _ing_exc:
+            probes["ingest_liveness_ok"] = None
+            probes["ingest_liveness_error"] = str(_ing_exc)[:120]
 
         # v21.2.0 审计整改轮（生产用户审计 🔴-2）：episode_ok —— 任务书 DoD 点名要的探针，
         # v21.2.0 漏做且实录未登记缺口。查的是「轨迹这条腿能不能用」：
