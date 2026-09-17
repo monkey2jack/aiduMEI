@@ -166,6 +166,9 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/core_memory.py", "_owner_first_order()"), ("ducky/core_memory.py", "column"),
     ("ducky/core_memory.py", "ddl"), ("ducky/core_memory.py", "guard"),
     ("ducky/core_memory.py", "table"), ("ducky/core_memory.py", "where"),
+    # v21.2.0 会话精华：_scope 是 scope_clause() 返回的结构性 where 片段，
+    # 值全部走 ? 参数（_params）。人眼核过来源：ducky/scope_sql.scope_clause。
+    ("ducky/session_distill.py", "_scope"),
     ("ducky/event_ledger.py", "placeholders"), ("ducky/event_ledger.py", "scope_sql"),
     ("ducky/evolve_mem.py", "placeholders"), ("ducky/evolve_mem.py", "table"),
     ("ducky/extended/routes.py", "clauses"), ("ducky/extended/routes.py", "placeholders"),

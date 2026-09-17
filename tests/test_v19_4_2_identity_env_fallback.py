@@ -243,6 +243,29 @@ def test_claude_code_stop_hook_resolves_identity_from_env_file(
     assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
 
 
+def test_distill_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
+    """`aidumem-distill.sh`（Hermes session_end）—— **萃取线**。
+
+    三条线必须解析出同一个租户：写进 A、读的是 B、精华落到 C，三边各自
+    「正常」，合起来是失忆。
+    """
+    url, handler = stub_server
+    hook = _INTEGRATIONS / "aidumem-distill.sh"
+    proc = subprocess.run(
+        ["bash", str(hook), "--selftest"],
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url),
+        capture_output=True, text=True, timeout=40,
+    )
+    assert handler.captured, "萃取线没有发出任何请求"
+    sent = handler.captured[-1]
+    assert "/session/distill" in sent["path"], f"打错端点：{sent['path']!r}"
+    # 该端点的身份走 query 参数，断言落在真正发出去的 URL 上
+    assert _ENV_USER in sent["path"], (
+        f"萃取线在空环境下按 {sent['path']!r} 提炼，而 .env 写的是 {_ENV_USER!r}")
+    assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
+    assert proc.returncode in (0, 6), f"自检异常退出：{proc.returncode} {proc.stderr[:200]}"
+
+
 def test_on_save_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
     """`aidumem-on-save.sh`（编辑器保存钩子）—— 写入侧。
 
@@ -498,6 +521,7 @@ _COVERED = {
     "aidumem-ingest.sh",                      # v21.2.0 写线（Hermes post_llm_call）
     "cursor-hook/aidumem-on-save.sh",
     "cursor-hook/claude-code-hook.py",
+    "aidumem-distill.sh",                     # v21.2.0 萃取线（Hermes session_end）
     "cursor-hook/claude-code-stop-hook.py",   # v21.2.0 写线（Claude Code Stop）
     "hermes-plugin/aidumem/__init__.py",
 }

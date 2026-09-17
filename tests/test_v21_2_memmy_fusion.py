@@ -1070,7 +1070,8 @@ def test_shipped_config_snippets_register_both_wires():
                 hooks.update(doc["hooks"])
         assert hooks, f"{rel} 里没有一段可解析的 hooks 配置"
         for event, script in (("pre_llm_call", "aidumem-inject.sh"),
-                              ("post_llm_call", "aidumem-ingest.sh")):
+                              ("post_llm_call", "aidumem-ingest.sh"),
+                              ("session_end", "aidumem-distill.sh")):
             entries = hooks.get(event)
             assert entries, (
                 f"{rel} 的 yaml 没注册 {event}——"
@@ -1595,3 +1596,157 @@ def test_session_coverage_reports_its_denominator():
            / "health.py").read_text(encoding="utf-8")
     assert "epistemic_session_with_7d" in src, "只给了比例没给分子"
     assert "epistemic_session_coverage_note" in src, "没说明分母的构成"
+
+
+# ══════════════════════════════════════════════════════════════════
+# v21.2.0 第三条线：会话精华萃取（session_end）
+# ══════════════════════════════════════════════════════════════════
+
+def test_distill_lane_is_slow_decay_not_the_emotion_lane():
+    """精华走独立慢衰减泳道，绝不能复用 emotion。
+
+    emotion 是 150% 快衰减 —— 那是给「今天有点烦」这类日常波动用的，设计没错；
+    但会话精华是「这一程最值得记住的」，让它比普通记忆忘得更快是荒谬的。
+    也不能用 preference 的 0.0（永不衰减）：每会话一条，几百条后会淹没检索。
+    """
+    from ducky.salience.config import LANE_DECAY_MULTIPLIER as M
+    assert "distill" in M, "没有独立的精华泳道"
+    assert M["distill"] < M["general"], "精华没比普通记忆留得久"
+    assert M["distill"] < M["emotion"], \
+        "精华掉进了 emotion 的快衰减，正好和它的用途相反"
+    assert M["distill"] > 0, "0 是 preference 的语义（永不衰减），精华不该永驻"
+
+
+def test_distill_emotion_weight_comes_from_the_existing_wordlist():
+    """情感权重必须回溯到既有词表，不许是拍脑袋的新分数。"""
+    import ducky.session_distill as sd
+    from ducky.salience.config import LANE_KEYWORDS
+    src = (sd.__file__ and open(sd.__file__, encoding="utf-8").read()) or ""
+    assert "LANE_KEYWORDS" in src, "情感命中没用既有词表，等于自造了一个新维度"
+    sample = "今天很开心，也有点难过"
+    hits = sd._emotion_hits(sample)
+    manual = sum(1 for kw in LANE_KEYWORDS["emotion"] if kw in sample)
+    assert hits == manual > 0, f"命中数与词表对不上：{hits} vs {manual}"
+    assert sd._emotion_hits("端口 8767 已启动") == 0, "纯技术内容不该算情感命中"
+
+
+def test_distill_endpoint_only_extracts_and_can_be_rerun():
+    """/session/distill 必须是纯提炼（不落库），否则排查时重跑会重复写入。"""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "ducky" / "routes_v8.py") \
+        .read_text(encoding="utf-8")
+    # 判据走 AST 并**剥掉 docstring**：端点的说明文字里就写着「由调用方再
+    # POST /add」，substring 会把这句解释当成代码，判成「端点内部落库了」。
+    # （本仓老账：注释冒充代码，一轮绊三次。）
+    import ast
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "session_distill")
+    body = fn.body[1:] if (fn.body and isinstance(fn.body[0], ast.Expr)
+                           and isinstance(fn.body[0].value, ast.Constant)) else fn.body
+    code = "\n".join(ast.get_source_segment(src, n) or "" for n in body)
+    assert "distill_session" in code, "端点没调萃取"
+    for forbidden in ("mem.add", '"/add"', "add_memory"):
+        assert forbidden not in code, f"端点内部落库了（{forbidden}），重跑会重复写入"
+
+
+def test_distill_hook_does_both_steps_and_targets_the_vector_path(tmp_path):
+    """精华钩子必须两步都做：先提炼、再走 /add 落库。
+
+    只提炼不落库 = 精华进不了向量库 = 召回不到 = 等于没做（这正是反思产物
+    落独立表的老问题）。
+    """
+    import subprocess
+    from pathlib import Path
+    hook = Path(__file__).resolve().parent.parent / "integrations" / "aidumem-distill.sh"
+    assert hook.is_file() and os.access(hook, os.X_OK), "第三条线的脚本不存在或不可执行"
+    subprocess.run(["bash", "-n", str(hook)], check=True, capture_output=True, timeout=10)
+    src = hook.read_text(encoding="utf-8")
+    assert "session_end" in src, "没声明挂在哪个事件"
+    assert "--selftest" in src, "缺少能吵起来的自检路径"
+    for key in ("AIDUMEM_API_TOKEN", "AIDUMEM_USER_ID", "_lookup_env_key"):
+        assert key in src, f"没走与另两条线同源的 {key}"
+
+    # 「两步都做了」必须用行为验 —— shell 没有 AST，源码里把落库那行注释掉，
+    # 任何 substring 判据都照样绿（首版被自己的负向对照抓住）。
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    seen: list = []
+
+    class _H(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n).decode("utf-8") if n else ""
+            seen.append({"path": self.path.split("?")[0],
+                         "body": json.loads(raw) if raw.strip() not in ("", "{}") else {}})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            if self.path.startswith("/session/distill"):
+                self.wfile.write(json.dumps({
+                    "status": "ok", "summary": "这一程的精华",
+                    "mode": "llm", "source_count": 9, "emotion_hits": 2,
+                    "user_id": "u1", "bank_id": "default",
+                    "metadata": {"kind": "session_distill", "lane": "distill",
+                                 "_origin_agent": "session-distill"},
+                }).encode("utf-8"))
+            else:
+                self.wfile.write(b'{"status":"ok"}')
+
+        def log_message(self, *a):
+            return
+
+    srv = HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+
+    def _serve():
+        for _ in range(2):
+            srv.handle_request()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    proc = subprocess.run(
+        ["bash", str(hook)], text=True, capture_output=True, timeout=40,
+        input=json.dumps({"hook_event_name": "session_end", "session_id": "s-9"}),
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent",
+             "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+             "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+             "AIDUMEM_URL": f"http://127.0.0.1:{port}",
+             "AIDUMEM_USER_ID": "u1", "AIDUMEM_HOOK_QUIET": "1"})
+    assert proc.returncode == 0, f"钩子非 0 退出会拖累宿主：{proc.stderr[:200]}"
+    t.join(timeout=15)
+    paths = [x["path"] for x in seen]
+    assert "/session/distill" in paths, f"第一步（提炼）没发生：{paths}"
+    assert "/add" in paths, (
+        f"第二步（落库）没发生：{paths} —— 精华进不了向量库就召回不到，等于没做")
+    add_body = next(x["body"] for x in seen if x["path"] == "/add")
+    assert add_body.get("messages") == "这一程的精华", "落库的不是提炼结果"
+    assert (add_body.get("metadata") or {}).get("_origin_agent") == "session-distill", \
+        "没带 session-distill 标记，探针数不到它"
+
+
+def test_distill_liveness_probe_watches_the_third_wire():
+    """第三条线也要有探针，否则又是一个绿着的空转。"""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "ducky" / "hot" / "health.py") \
+        .read_text(encoding="utf-8")
+    # 判「判决真的被赋值」，不是「这个词出现过」—— except 分支里的
+    # probes["distill_liveness_ok"] = None 会让 substring 判据恒绿（首版如此）。
+    assert 'probes["distill_liveness_ok"] = not _dis_bad' in src, \
+        "探针没有把判决落进 probes（只留了异常分支的 None = 恒绿）"
+    assert 'DegradationTracker.record_degradation(\n                    "distill_liveness"' in src, \
+        "判红了却不记降级 = 没人看得见"
+    assert "distill_sessions_24h" in src and "distill_made_24h" in src, \
+        "判据的分子分母没同时暴露"
+    assert "_DISTILL_MIN_SESSIONS" in src, "阈值没走 env_config（不可配置也不 fail-closed）"
+    assert "session-distill" in src, "没按 origin_agent 把精华自己排除出会话计数"
+
+
+def test_distill_skips_short_sessions_with_a_stated_reason():
+    """短会话跳过是正常的，但必须说出原因 —— 不许静默。"""
+    import ducky.session_distill as sd
+    out = sd.distill_session("__no_such_session__", user_id="nobody")
+    assert out["status"] == "skipped", f"不存在的会话应判 skipped，实得 {out}"
+    assert out.get("reason"), "跳过没有给原因，「这次怎么没精华」会查不出来"
+    assert "min_required" in out or "source_count" in out, "没给出判据数字"
