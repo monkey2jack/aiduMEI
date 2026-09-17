@@ -45,14 +45,41 @@ has been searching but not writing.
 Hook it to whatever your host calls "the turn just finished" — the moment the
 assistant's reply is complete. Host-specific names differ; the shape does not:
 
-| Host | Hook to use |
-|---|---|
-| Hermes | `post_llm_call` (fires once per turn, after the tool loop) |
-| Claude Code | `Stop` hook |
-| Anything else | The last callback in your turn pipeline, or a wrapper around your send-reply function |
+| Host | Hook to use | Ready-made script in this repo |
+|---|---|---|
+| Hermes | `post_llm_call` (fires once per turn, after the tool loop) | `integrations/aidumem-ingest.sh` |
+| Hermes (plugin route) | `MemoryProvider.sync_turn` — already wired | `integrations/hermes-plugin/aidumem/` |
+| Claude Code | `Stop` hook | `integrations/cursor-hook/claude-code-stop-hook.py` |
+| Anything else | The last callback in your turn pipeline, or a wrapper around your send-reply function | — |
 
 Do **not** put the write on the pre-turn hook. That hook runs *before* the
 answer exists, so you would be recording half a conversation.
+
+For Hermes, copying the script is not enough — it has to be **registered**:
+
+```yaml
+hooks:
+  pre_llm_call:                                    # read wire
+    - command: "~/.hermes/agent-hooks/aidumem-inject.sh"
+      timeout: 8
+  post_llm_call:                                   # write wire — the one people forget
+    - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
+      timeout: 10
+hooks_auto_accept: true
+```
+
+Then prove both ends work, in this order:
+
+```bash
+~/.hermes/agent-hooks/aidumem-inject.sh --selftest   # read wire
+~/.hermes/agent-hooks/aidumem-ingest.sh --selftest   # write wire: writes one memory, reads it back
+# ...have 5 real conversation turns, then:
+python3 scripts/check_ingest_wiring.py               # non-zero exit = still not wired
+```
+
+The third command is the only one that proves the *host* is calling the script.
+The first two only prove the script itself runs — in the incident that produced
+this section, the scripts were fine the whole time; nobody had hooked the write one.
 
 ### Always pass `session_id` and `turn`
 

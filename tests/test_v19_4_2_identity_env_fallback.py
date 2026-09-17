@@ -180,6 +180,69 @@ def test_inject_hook_selftest_always_reports_identity(env_file, tmp_path):
     )
 
 
+def test_ingest_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
+    """`aidumem-ingest.sh`（Hermes post_llm_call）—— **写线**。
+
+    身份读错在写线上比在读线上更毒：读线读错租户表现为「搜不到」，
+    还有人会去查；写线写错租户表现为「一切正常」，记忆安静地进了别人的库。
+    """
+    url, handler = stub_server
+    hook = _INTEGRATIONS / "aidumem-ingest.sh"
+    payload = json.dumps({
+        "hook_event_name": "post_llm_call",
+        "session_id": "sess-identity",
+        "extra": {"user_message": "一个足够长的用户问题用于越过最小字数门槛",
+                  "assistant_response": "助手的回答", "turn_id": 2,
+                  "platform": "hermes"},
+    }, ensure_ascii=False)
+    proc = subprocess.run(
+        ["bash", str(hook)], input=payload, text=True,
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url),
+        capture_output=True, timeout=30,
+    )
+    assert proc.returncode == 0, f"写线钩子非 0 退出会拖累宿主：{proc.stderr}"
+    assert handler.captured, "写线钩子没有发出任何请求"
+    sent = handler.captured[-1]
+    assert sent["path"] == "/add", f"打错端点：{sent['path']!r}"
+    assert sent["user_id"] == _ENV_USER, (
+        f"写线在空环境下把记忆写给了 {sent['user_id']!r}，而 .env 写的是 {_ENV_USER!r}。"
+        "写进 A 租户、读的是 B 租户 —— 两边各自「正常」，合起来就是失忆。"
+    )
+    assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
+
+
+def test_claude_code_stop_hook_resolves_identity_from_env_file(
+        env_file, tmp_path, stub_server):
+    """`cursor-hook/claude-code-stop-hook.py`（Claude Code Stop）—— 写线。"""
+    url, handler = stub_server
+    hook = _INTEGRATIONS / "cursor-hook" / "claude-code-stop-hook.py"
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "user", "message": {"role": "user",
+                    "content": "一个足够长的用户问题用于越过门槛"}},
+                   ensure_ascii=False) + "\n"
+        + json.dumps({"type": "assistant", "message": {"role": "assistant",
+                      "content": [{"type": "text", "text": "回答"}]}},
+                     ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    payload = json.dumps({"hook_event_name": "Stop", "session_id": "cc-identity",
+                          "transcript_path": str(transcript), "turn": 1,
+                          "stop_hook_active": False}, ensure_ascii=False)
+    proc = subprocess.run(
+        [sys.executable, str(hook)], input=payload, text=True,
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url),
+        capture_output=True, timeout=30,
+    )
+    assert proc.returncode == 0, f"Stop 钩子非 0 退出会打断宿主：{proc.stderr}"
+    assert handler.captured, "Stop 写线没有发出任何请求"
+    sent = handler.captured[-1]
+    assert sent["path"] == "/add", f"打错端点：{sent['path']!r}"
+    assert sent["user_id"] == _ENV_USER, (
+        f"Stop 写线在空环境下把记忆写给了 {sent['user_id']!r}，"
+        f"而 .env 写的是 {_ENV_USER!r}")
+    assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
+
+
 def test_on_save_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
     """`aidumem-on-save.sh`（编辑器保存钩子）—— 写入侧。
 
@@ -432,8 +495,10 @@ def test_legacy_deployment_behaviour_is_byte_identical(env_file, tmp_path):
 # 已被上面行为用例覆盖的入口（相对 integrations/ 的路径）
 _COVERED = {
     "aidumem-inject.sh",
+    "aidumem-ingest.sh",                      # v21.2.0 写线（Hermes post_llm_call）
     "cursor-hook/aidumem-on-save.sh",
     "cursor-hook/claude-code-hook.py",
+    "cursor-hook/claude-code-stop-hook.py",   # v21.2.0 写线（Claude Code Stop）
     "hermes-plugin/aidumem/__init__.py",
 }
 

@@ -998,3 +998,339 @@ def test_install_canon_line_count_matches_readme_claim():
     en = (root / "README_EN.md").read_text(encoding="utf-8")
     m2 = re.search(r"the (\d+)-line canon", en)
     assert m2 and int(m2.group(1)) == len(lines), "README_EN 行数宣称不一致"
+
+
+# ══════════════════════════════════════════════════════════════════
+# v21.2.0：仓库自己交付的接入物料必须两条线齐全
+#
+# 事故的真正源头不在部署方，在这里：本仓此前只提供 aidumem-inject.sh（读线），
+# config.yaml.snippet 与 INTEGRATION_GUIDE.md 也只教人注册 pre_llm_call。
+# 照着我们文档装出来的部署，每轮都在读、从来没写过。
+# 下面几条守卫盯住「别再只发一半电路」。
+# ══════════════════════════════════════════════════════════════════
+
+def test_repo_ships_a_write_wire_hook_not_just_a_read_one(tmp_path):
+    """写线脚本必须真实存在、可执行、且带能吵起来的自检路径。"""
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    hook = root / "integrations" / "aidumem-ingest.sh"
+    assert hook.is_file(), "仓库没有写线钩子——文档说的挂点指向空气"
+    assert os.access(hook, os.X_OK), "写线钩子没有可执行位，拷过去就用不了"
+    src = hook.read_text(encoding="utf-8")
+    # 语法必须真过，不是「文件在就算数」
+    subprocess.run(["bash", "-n", str(hook)], check=True, capture_output=True, timeout=10)
+    assert "post_llm_call" in src, "写线钩子没声明自己挂在哪个事件"
+    assert "--selftest" in src, "写线的静默失败最毒，必须有一条能吵起来的路径"
+    # 必带溯源三件套：不传不会报错，只会让回声抑制与轨迹信用静默失效
+    for key in ("_origin_session_id", "_origin_turn", "_origin_agent"):
+        assert key in src, f"写线钩子没传 {key}"
+    # 与读线共用同一条凭据/身份链：写进 A 租户、读的是 B 租户是最难查的故障
+    for token in ("AIDUMEM_API_TOKEN", "AIDUMEM_USER_ID", "_lookup_env_key"):
+        assert token in src, f"写线钩子没走与读线同源的 {token}"
+    # 兼容 extra 下沉的真实 payload 形状（顶层取不到就是恒静默不写）
+    assert "extra" in src and "assistant_response" in src, "没按真实 payload 形状解析"
+
+
+def test_shipped_config_snippets_register_both_wires():
+    """我们发给用户照抄的配置，必须两个挂点都**注册**在 yaml 里。
+
+    判据走真解析而不是字符串包含：`post_llm_call` 这个词在旁边的说明表格里
+    也会出现，substring 分不清「配置里注册了」和「正文里提过」——首次写这条
+    守卫时就是这么被自己的负向对照抓住的（删掉注册行，守卫照样绿）。
+    """
+    import re
+    from pathlib import Path
+    import yaml
+    root = Path(__file__).resolve().parent.parent
+    for rel in ("integrations/config.yaml.snippet", "integrations/INTEGRATION_GUIDE.md"):
+        text = (root / rel).read_text(encoding="utf-8")
+        hooks: dict = {}
+        for block in re.findall(r"```ya?ml\n(.*?)```", text, re.S):
+            try:
+                doc = yaml.safe_load(block)
+            except yaml.YAMLError:
+                continue
+            if isinstance(doc, dict) and isinstance(doc.get("hooks"), dict):
+                hooks.update(doc["hooks"])
+        assert hooks, f"{rel} 里没有一段可解析的 hooks 配置"
+        for event, script in (("pre_llm_call", "aidumem-inject.sh"),
+                              ("post_llm_call", "aidumem-ingest.sh")):
+            entries = hooks.get(event)
+            assert entries, (
+                f"{rel} 的 yaml 没注册 {event}——"
+                f"照抄的人会装出一条只有半边的电路")
+            cmds = " ".join(str((e or {}).get("command", "")) for e in entries)
+            assert script in cmds, f"{rel} 的 {event} 没指向 {script}，指向了 {cmds!r}"
+        assert "check_ingest_wiring" in text, f"{rel} 没给装完之后的验收办法"
+
+
+def test_five_minute_watchdog_reads_the_degradation_list():
+    """每 5 分钟的 health_check 必须读 health_status/degraded，不能只看 HTTP 200。
+
+    此前它只确认「/health 这个接口还活着」，于是服务端算出来的所有降级
+    对定时哨兵一律不可见 —— 探针再准也没有任何自动化通路会因此变红。
+    """
+    import ast
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "scripts" / "health_check.py") \
+        .read_text(encoding="utf-8")
+    tree = ast.parse(src)  # 判据走 AST，别让注释里的字眼冒充代码
+    literals = {n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert "health_status" in literals, "哨兵不读 health_status"
+    assert "degraded" in literals, "哨兵不读 degraded 清单"
+    assert "warming_up" in literals, "预热态未区分，重启后会假红"
+    # 降级必须真的影响判决，而不只是打印出来看看
+    assert "_api_ok = False" in src, "读了降级却不改判决 = 白读"
+
+
+def test_report_cron_threshold_tracks_the_task_list_not_a_literal():
+    """装齐判据必须跟着清单走。写死数字的话，清单一加任务就变成假绿灯。"""
+    import json
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    listed = json.loads(subprocess.run(
+        ["bash", str(root / "scripts" / "update_crontab.sh"), "--list"],
+        check=True, capture_output=True, text=True, timeout=15).stdout)
+    n = len(listed["tasks"])
+    src = (root / "scripts" / "report.py").read_text(encoding="utf-8")
+    assert "effective < _required" in src, "装齐门槛仍是字面量，会随清单漂移"
+    assert f"< {n}" not in src.replace("< _required", ""), "门槛里还留着写死的任务数"
+    # 写线哨兵必须在清单里，且指向真实脚本
+    names = {t["name"] for t in listed["tasks"]}
+    assert "ingest_wiring" in names, "定时任务清单里没有写线哨兵"
+    sentinel = next(t for t in listed["tasks"] if t["name"] == "ingest_wiring")
+    assert (root / "scripts" / "check_ingest_wiring.py").is_file(), "哨兵指向不存在的脚本"
+    assert "post_llm_call" in sentinel["failure_action"], "哨兵红了却没说该去挂什么"
+
+
+def test_ingest_degradation_gets_a_named_action_not_a_generic_one():
+    """「有组件降级」这句泛话对写线断裂是误导——问题不在召回质量。"""
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "_rpt_guard", root / "scripts" / "report.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    actions = mod._safe_next_actions(
+        {"health_status": "degraded", "degraded": ["ingest_liveness"], "warming_up": []},
+        {"crontab_task_count": 9, "crontab_installed_count": 9,
+         "latest_backup": {"verified": True}},
+    )
+    joined = " ".join(actions)
+    assert "check_ingest_wiring" in joined, "没告诉运维用什么命令确认"
+    assert "post_llm_call" in joined, "没点名该挂哪个钩子"
+    # 负向对照：没有这项降级时不许乱喊，否则告警疲劳
+    quiet = mod._safe_next_actions(
+        {"health_status": "ok", "degraded": [], "warming_up": []},
+        {"crontab_task_count": 9, "crontab_installed_count": 9,
+         "latest_backup": {"verified": True}},
+    )
+    assert "check_ingest_wiring" not in " ".join(quiet), "无故障时也喊 = 假红灯"
+
+
+def test_write_wire_hook_actually_posts_a_correct_add_request(tmp_path):
+    """写线钩子必须真发出一条形状正确的 /add ——「文件在」不等于「能用」。
+
+    用真监听器接住请求，验的是整条链（解析真实 payload 形状 → 拼 body →
+    带凭据 POST），不是脚本里有没有某个字眼。
+    """
+    import json
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pathlib import Path
+
+    got: dict = {}
+
+    class _H(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            got["path"] = self.path
+            got["body"] = json.loads(self.rfile.read(n).decode("utf-8"))
+            got["auth"] = self.headers.get("Authorization")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"results":[]}')
+
+        def log_message(self, *a):  # 静音，别污染用例输出
+            return
+
+    srv = HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.handle_request, daemon=True)
+    t.start()
+
+    payload = json.dumps({
+        "hook_event_name": "post_llm_call",
+        "session_id": "sess-abc",
+        "cwd": "/tmp",
+        "extra": {
+            "user_message": "一个足够长的用户问题，用于越过最小字数门槛",
+            "assistant_response": "助手的回答",
+            "turn_id": 7,
+            "platform": "hermes",
+            "conversation_history": [],
+        },
+    }, ensure_ascii=False)
+
+    hook = Path(__file__).resolve().parent.parent / "integrations" / "aidumem-ingest.sh"
+    proc = subprocess.run(
+        ["bash", str(hook)], input=payload, text=True, capture_output=True, timeout=30,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/nonexistent",
+             "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+             "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+             "AIDUMEM_URL": f"http://127.0.0.1:{port}",
+             "AIDUMEM_USER_ID": "guard-user",
+             "AIDUMEM_API_TOKEN": "tok-guard",
+             "AIDUMEM_HOOK_QUIET": "1"},
+    )
+    assert proc.stdout.strip() == "{}", f"钩子必须输出 {{}} 不改写任何东西，实得 {proc.stdout!r}"
+    t.join(timeout=10)
+
+    assert got.get("path") == "/add", f"打错了端点：{got.get('path')!r}"
+    body = got.get("body") or {}
+    roles = [m.get("role") for m in body.get("messages") or []]
+    assert roles == ["user", "assistant"], f"消息体形状不对：{roles}"
+    assert body.get("user_id") == "guard-user", "身份没透传"
+    md = body.get("metadata") or {}
+    # 溯源三件套是回声抑制与轨迹信用的输入；不传不报错，只会静默失效
+    assert md.get("_origin_session_id") == "sess-abc", "session 没传，回声抑制会静默失效"
+    assert md.get("_origin_turn") == 7, "turn 没传，轨迹信用归不了集"
+    assert md.get("_origin_agent"), "agent 没传"
+    assert got.get("auth") == "Bearer tok-guard", "凭据没带上，门禁开着就是 401 后静默"
+
+
+def test_write_wire_hook_stays_silent_when_service_is_down(tmp_path):
+    """服务打不通时必须安静退出 0 —— 记忆写不进去，绝不能连带拖垮对话。"""
+    import json
+    import subprocess
+    from pathlib import Path
+    hook = Path(__file__).resolve().parent.parent / "integrations" / "aidumem-ingest.sh"
+    payload = json.dumps({
+        "hook_event_name": "post_llm_call",
+        "extra": {"user_message": "一个足够长的用户问题用于越过门槛",
+                  "assistant_response": "答", "turn_id": 1},
+    }, ensure_ascii=False)
+    proc = subprocess.run(
+        ["bash", str(hook)], input=payload, text=True, capture_output=True, timeout=30,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/nonexistent",
+             "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+             "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+             "AIDUMEM_URL": "http://127.0.0.1:1",       # 必然打不通
+             "AIDUMEM_INGEST_TIMEOUT": "2.0",
+             "AIDUMEM_HOOK_QUIET": ""},                 # 故意开着诊断
+    )
+    assert proc.returncode == 0, "写入失败不许非 0 退出，会拖累宿主"
+    assert proc.stdout.strip() == "{}", "必须返回空对象"
+    # 安静≠失声：失败必须在 stderr 留痕，否则又是一次没人知道的静默
+    assert "aidumem-ingest" in proc.stderr, "失败时 stderr 一声不吭 = 下一次事故"
+
+
+def test_claude_code_stop_hook_writes_the_last_turn(tmp_path):
+    """Claude Code 的写线钩子必须从真转录里取出最后一轮并发出正确的 /add。
+
+    同目录的 claude-code-hook.py 是 pre_compact 存代码的手动工具，不是逐轮
+    写入；文档一度指向它，等于把用户指向空气。这条守卫盯住「指哪儿就得有
+    什么」，判据是服务端真正收到的请求。
+    """
+    import json
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pathlib import Path
+
+    got: dict = {}
+
+    class _H(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            got["path"] = self.path
+            got["body"] = json.loads(self.rfile.read(n).decode("utf-8"))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"results":[]}')
+
+        def log_message(self, *a):
+            return
+
+    srv = HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.handle_request, daemon=True)
+    t.start()
+
+    # 真转录：工具循环会在 user 与 assistant 之间插记录，所以不能按行号倒数
+    rows = [
+        {"type": "user", "message": {"role": "user", "content": "上一轮的老问题"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": "上一轮的老回答"}},
+        {"type": "user", "message": {"role": "user", "content": "这一轮真正的问题够长了"}},
+        {"type": "assistant", "message": {"role": "assistant",
+                                          "content": [{"type": "tool_use", "name": "x"}]}},
+        {"type": "user", "message": {"role": "user",
+                                     "content": [{"type": "tool_result", "content": "..."}]}},
+        {"type": "assistant", "message": {"role": "assistant",
+                                          "content": [{"type": "text", "text": "这一轮的回答"}]}},
+    ]
+    transcript = str(tmp_path / "transcript.jsonl")
+    with open(transcript, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    hook = (Path(__file__).resolve().parent.parent / "integrations" / "cursor-hook"
+            / "claude-code-stop-hook.py")
+    payload = json.dumps({"hook_event_name": "Stop", "session_id": "cc-sess-1",
+                          "transcript_path": transcript, "turn": 3,
+                          "stop_hook_active": False}, ensure_ascii=False)
+    proc = subprocess.run(
+        [sys.executable, str(hook)], input=payload, text=True,
+        capture_output=True, timeout=30,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent",
+             "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+             "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+             "AIDUMEM_URL": f"http://127.0.0.1:{port}",
+             "AIDUMEM_USER_ID": "cc-guard", "AIDUMEM_HOOK_QUIET": "1"},
+    )
+    assert proc.returncode == 0, f"Stop 钩子非 0 退出会打断宿主：{proc.stderr[:300]}"
+    t.join(timeout=10)
+
+    assert got.get("path") == "/add", f"打错端点：{got.get('path')!r}"
+    body = got.get("body") or {}
+    msgs = {m["role"]: m["content"] for m in body.get("messages") or []}
+    assert msgs.get("user") == "这一轮真正的问题够长了", \
+        f"没取到本轮 user（按行号倒数就会取错）：{msgs.get('user')!r}"
+    assert msgs.get("assistant") == "这一轮的回答", \
+        f"没从 content blocks 里取出文本：{msgs.get('assistant')!r}"
+    md = body.get("metadata") or {}
+    assert md.get("_origin_session_id") == "cc-sess-1", "session 没传"
+    assert md.get("_origin_turn") == 3, "turn 没传"
+
+
+
+def test_claude_code_stop_hook_respects_recursion_guard(tmp_path):
+    """stop_hook_active 时不许再写一遍，否则钩子自触发会把同一轮写进去两次。"""
+    import json
+    import subprocess
+    from pathlib import Path
+    hook = (Path(__file__).resolve().parent.parent / "integrations" / "cursor-hook"
+            / "claude-code-stop-hook.py")
+    proc = subprocess.run(
+        [sys.executable, str(hook)],
+        input=json.dumps({"hook_event_name": "Stop", "session_id": "s",
+                          "transcript_path": "/nonexistent.jsonl",
+                          "stop_hook_active": True}),
+        text=True, capture_output=True, timeout=30,
+        # 故意**不**设 AIDUMEM_HOOK_QUIET：诊断必须开着，否则守卫被绕过时
+        # stderr 照样是空的，这条断言就永远绿——首版就是这么白的。
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent",
+             "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
+             "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+             "AIDUMEM_URL": "http://127.0.0.1:1"},
+    )
+    assert proc.returncode == 0
+    # 递归守卫应在读转录之前就返回；转录根本不存在也不该有任何抱怨
+    assert not proc.stderr.strip(), f"递归守卫没生效，仍走了写入路径：{proc.stderr[:200]}"
