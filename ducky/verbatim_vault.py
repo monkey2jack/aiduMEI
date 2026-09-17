@@ -514,7 +514,14 @@ def verbatim_search(
             # sqlite3.Row 无 .get，统一转 dict 再回填
             meta_map = {mr["id"]: dict(mr) for mr in meta_rows}
         except Exception as meta_err:
-            logger.debug("verbatim 元数据回填跳过: %s", meta_err)
+            # v21.2.0 审计整改轮：这次回填失败 = 所有 verbatim 结果的
+            # session_id 变空 = /search 里的回声过滤一条都滤不掉（判据
+            # `!= _sid` 恒真）。v21.2.0 两次收口补上的「原文腿漏网」会跟着
+            # 一条 debug 悄悄回来 —— 降级必须说出来。
+            logger.warning(
+                "verbatim 元数据回填失败：本次结果的 role/session_id 将为空，"
+                "回声过滤在原文腿上失效（%s: %s）",
+                type(meta_err).__name__, str(meta_err)[:160])
 
         results = []
         for r in rows:

@@ -237,7 +237,8 @@ def mem_add_raw(content: str, source: str = "mcp", user_id: str = DEFAULT_USER_I
 
 
 @mcp.tool()
-def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_id: str = DEFAULT_BANK_ID) -> str:
+def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_id: str = DEFAULT_BANK_ID,
+               session_id: str = "") -> str:
     """语义搜索记忆（内置相关性闸门 + 显著性 boost）。
 
     响应带三态判语 `recall_verdict`（v20.1）：
@@ -252,8 +253,17 @@ def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_
         query:   搜索关键词或自然语言问题
         user_id: 用户标识
         top_k:   返回结果数量，默认 5
+        session_id: 可选，本轮会话标识。传了才启用回声抑制——本会话自己
+                    刚写入的记忆不会再被当作「历史记忆」召回（v21.2 M2）。
     """
-    result = _api_post("/search", {"query": query, "user_id": user_id, "top_k": top_k, "bank_id": bank_id})
+    # v21.2.0 审计整改轮：把 session_id 接上 —— 本模块早有完整的 session
+    # 生命周期工具（session_start / session_end / session_report），检索却
+    # 一直不带它，于是整条 MCP 通路上 v21.2 的回声抑制（M2）根本不存在：
+    # 服务端读不到 session 就整段跳过，不报错也无从察觉。不传仍是不过滤。
+    _payload = {"query": query, "user_id": user_id, "top_k": top_k, "bank_id": bank_id}
+    if session_id:
+        _payload["session_id"] = session_id
+    result = _api_post("/search", _payload)
     return _ok(result)
 
 

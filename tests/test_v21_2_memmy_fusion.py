@@ -388,3 +388,393 @@ def test_m8_dossier_has_grants_section():
     md = render_markdown({"user_id": "dudu", "bank_id": "default", "sections": {}})
     assert "## 八、当前生效借阅" in md
     assert "无（没有任何殿能读这座殿的记忆" in md
+
+
+# ══════════════ v21.2.0 审计整改轮守卫 ══════════════
+#
+# 由来：2026-09-17 用户审计翻生产库发现 —— v21.2.0 上线后
+# memory_epistemic 33 行里 origin_session_id 非空 = 0 行，M2 回声抑制的
+# 向量腿与 M1 轨迹登记从上线起就在空转，而 epistemic_ok 一直是绿的。
+# 下面每一条都是把「绿着的空转」钉成红字的判据。
+
+
+def test_origin_from_metadata_prefers_explicit_over_contextvar():
+    """显式 > 隐式：metadata 里的保留键优先于 contextvar。
+
+    这是 🔴-1 的加固核心 —— contextvar 只在「调用方先 set 过」且「同一执行
+    上下文」两个前提都成立时才对，而空值不报错。metadata 跟着数据走。
+    """
+    from ducky.origin_context import origin_from_metadata, set_origin, reset_origin
+    tok = set_origin(agent="ctx-agent", session_id="ctx-sess", turn=1)
+    try:
+        # 有 metadata → 用 metadata，不用 contextvar
+        assert origin_from_metadata(
+            {"_origin_agent": "md-agent", "_origin_session_id": "md-sess",
+             "_origin_turn": 5}) == ("md-agent", "md-sess", 5)
+        # 无 metadata → 回退 contextvar（不打断已在上下文里工作的调用方）
+        assert origin_from_metadata(None) == ("ctx-agent", "ctx-sess", 1)
+        assert origin_from_metadata({}) == ("ctx-agent", "ctx-sess", 1)
+    finally:
+        reset_origin(tok)
+
+
+def test_origin_from_metadata_tolerates_garbage_turn():
+    """turn 非法值不许炸写入主链路（fail-soft 回 0）。"""
+    from ducky.origin_context import origin_from_metadata
+    assert origin_from_metadata(
+        {"_origin_session_id": "s", "_origin_turn": "不是数字"}) == ("", "s", 0)
+
+
+def test_index_after_add_takes_origin_from_metadata_not_contextvar():
+    """`_index_after_add` 必须显式收 metadata 并据此取 origin。
+
+    钉死 🔴-1 的缝位：只要这里退回读 contextvar，任何一条没先 set 的通路
+    就会静默把三列写成空 —— 单测全绿、生产全空。
+    """
+    import inspect
+    from ducky import layer1_selfcheck as l1
+    sig = inspect.signature(l1._index_after_add)
+    assert "metadata" in sig.parameters, "_index_after_add 未接收 metadata"
+    src = inspect.getsource(l1._index_after_add)
+    assert "origin_from_metadata" in src, "未走显式 origin 解析"
+    assert "get_origin()" not in src, (
+        "仍在直接读 contextvar —— 隐式通道少一次 set 就静默变空")
+    # 调用点必须真的把 metadata 传进去（签名有、调用不传 = 白护栏）
+    mod_src = inspect.getsource(l1)
+    calls = [ln for ln in mod_src.splitlines() if "_index_after_add(" in ln
+             and "def _index_after_add" not in ln and "``" not in ln]
+    assert calls, "找不到 _index_after_add 调用点 —— 守卫失去着力点"
+    for ln in calls:
+        assert "metadata=metadata" in ln, f"调用点没传 metadata: {ln.strip()}"
+
+
+def test_track_knowledge_evolution_also_takes_explicit_origin():
+    """同型加固：演化关系的溯源也不许依赖隐式上下文。"""
+    import inspect
+    from ducky import layer1_selfcheck as l1
+    assert "metadata" in inspect.signature(l1.track_knowledge_evolution).parameters
+    src = inspect.getsource(l1.track_knowledge_evolution)
+    assert "origin_from_metadata" in src and "get_origin()" not in src
+
+
+def test_stamping_survives_a_fresh_thread(tmp_path, monkeypatch):
+    """跨线程实证（用户审计点名要的判据）：在**新线程**里打标，三列必须非空。
+
+    contextvar 不跨线程 —— 这条用例在改回 `get_origin()` 的实现上必红。
+    """
+    import threading
+    import ducky.utils as u
+    db = str(tmp_path / "facts.db")
+    monkeypatch.setattr(u, "FACTS_DB", db)
+    from ducky.schema_bootstrap import ensure_core_schema
+    ensure_core_schema(force=True)
+
+    from ducky.epistemic import stamp_memory_refs
+    from ducky.origin_context import origin_from_metadata
+    md = {"_origin_agent": "thr-agent", "_origin_session_id": "thr-sess",
+          "_origin_turn": 3}
+    box = {}
+
+    def _worker():
+        # 新线程里没有任何人 set 过 contextvar —— 只有 metadata 能救它
+        box["n"] = stamp_memory_refs(
+            ["ref-thread-1"], "user_provided", user_id="dudu", bank_id="default",
+            origin=origin_from_metadata(md))
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join(timeout=20)
+    assert box.get("n") == 1
+
+    conn = u.get_facts_conn()
+    try:
+        _r = conn.execute(
+            "SELECT origin_agent, origin_session_id, origin_turn FROM memory_epistemic "
+            "WHERE memory_ref=?", ("ref-thread-1",)).fetchone()
+        row = tuple(_r) if _r is not None else None
+    finally:
+        conn.close()
+    assert row == ("thr-agent", "thr-sess", 3), (
+        f"跨线程打标三列应非空，实得 {row} —— contextvar 不跨线程，必须走 metadata")
+
+
+def test_health_exposes_session_coverage_and_episode_probes():
+    """🔴-1/🔴-2：两个探针必须在源码里真的存在并记降级。
+
+    `episode_ok` 是任务书 DoD 点名要的，v21.2.0 漏做且实录没登记缺口 ——
+    以「报告写了自己没做的事」论，比单纯遗漏更伤诚实性铁律。
+    """
+    import inspect
+    from ducky.hot import health as h
+    src = inspect.getsource(h)
+    for key in ("epistemic_session_coverage", "epistemic_session_fresh_24h",
+                "epistemic_session_fresh_7d", "episode_ok", "episode_step_count"):
+        assert f'"{key}"' in src, f"/health 缺探针 {key}"
+    # 光有字段不够 —— 长期为 0 必须真的记降级，否则又是一块绿着的空转
+    assert "epistemic_session_coverage" in src and "record_degradation" in src
+    i = src.find('"epistemic_session_coverage"')
+    assert "record_degradation" in src[i:i + 3000], (
+        "覆盖率探针只报数不记降级 —— 静默失效照样不会发红")
+
+
+def test_session_coverage_window_is_wide_enough_to_have_range():
+    """判据的射程必须盖得住本仓的真实流量分布。
+
+    本仓典型日增只有个位数 sidecar 行。若用 24h 窗口配 ≥10 的阈值，
+    探针会几乎永不触发 —— 那就是把「守卫坏死法」里的白护栏又造了一遍：
+    看着有判据，实际一辈子不发红。窗口必须是 7 天。
+    """
+    import inspect
+    from ducky.hot import health as h
+    src = inspect.getsource(h)
+    i = src.find('"epistemic_session_coverage"')
+    seg = src[max(0, i - 3000):i + 3000]
+    assert "24 * 7" in seg or "168" in seg, "覆盖率判据没有 7 天窗口"
+    assert '"7d"' in seg, "未标注判据窗口，读数的人无从判断样本跨度"
+
+
+def test_echo_suppress_degradation_is_not_silent():
+    """🟢-1：回声抑制降级必须留 warning 并带上下文，不能只 debug。"""
+    import inspect
+    from ducky import scoring
+    src = inspect.getsource(scoring._load_echo_refs)
+    assert "logger.warning" in src, "降级只打 debug —— 用户看到回声却查不到线索"
+    assert "session" in src and "user" in src, "降级日志没带 session/user 上下文"
+
+
+def test_search_route_rejects_unauthenticated_instead_of_empty_success():
+    """🟡-1 复核：未鉴权检索必须走鉴权拒绝，不能返回「空成功体」。
+
+    实测生产已返回 401（审计中的「空 results」实为解析脚本 `.get("results", [])`
+    的默认值）。这条把语义钉死：`/search` 不许自己吞掉鉴权失败再回 200。
+    """
+    import inspect
+    from ducky.hot import search as hs
+    src = inspect.getsource(hs.register_search_routes)
+    i = src.find('@app.post("/search"')
+    j = src.find('@app.post("/search_trace"')
+    body = src[i:j if j > i else len(src)]
+    # 路由体内不许出现「鉴权失败 → 返回 200 空结果」的形态
+    assert "401" not in body or "raise" in body, (
+        "/search 路由自行处理 401 时必须抛出，不许包装成成功响应")
+    # 空 query 的判语路径仍在（这是业务语义，不是鉴权）
+    assert "empty_query" in body, "空 query 判语不该被改掉"
+
+
+# ══════ 自查轮：施工方复审翻出的「默认关掩盖着的空转」 ══════
+#
+# 用户审计只点了 2🔴3🟡2🟢；下面这批是整改期施工方自己回头复审 v21.2.0
+# 全部六项时翻出来的 —— 都是「代码在场、开关一开就不对」的形态，
+# 因为默认关 / 旁路 / 观测缺失而从未在冒烟里现形。
+
+
+def test_dossier_grants_filter_uses_the_key_that_actually_exists():
+    """M8：借阅过滤必须读 `revoked`（真实键），不是 `revoked_at`。
+
+    读一个不存在的键恒得 None、`not None` 恒 True —— 于是一条都滤不掉，
+    已撤销的借阅照样列在「当前生效」下，且无异常无日志。
+    """
+    import ast as _ast
+    import inspect
+    from ducky import dossier
+    src = inspect.getsource(dossier.build_dossier_data)
+    # 判据走 AST 而不是 grep —— 注释里正写着那个被删掉的错键名，
+    # 字符串判据分不清代码和注释（本仓老教训，一轮能绊三次）。
+    tree = _ast.parse(src.strip())
+    bad = [n for n in _ast.walk(tree)
+           if isinstance(n, _ast.Constant) and n.value == "revoked_at"]
+    assert not bad, "代码里仍在读不存在的键 revoked_at"
+    good = {n.value for n in _ast.walk(tree)
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)}
+    assert "revoked" in good, "没有读真实存在的 revoked 键"
+    assert "expires_at" in good, "漏了过期判据 —— 过期 grant 会显示为生效"
+    assert "_is_live" in {n.name for n in _ast.walk(tree)
+                          if isinstance(n, _ast.FunctionDef)}
+
+
+def test_dossier_grants_live_filter_semantics():
+    """三态判据：已撤销滤掉、已过期滤掉、解析不出的过期时间按已过期（fail-closed）。"""
+    import time
+    from ducky.dossier import render_markdown
+    future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 86400))
+    past = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 86400))
+    data = {"user_id": "dudu", "bank_id": "default", "sections": {"grants": {
+        "granted": [{"grantee_user_id": "a", "actions": ["read", "export"],
+                     "bank_id": "*", "expires_at": future, "revoked": False}],
+        "received": []}}}
+    md = render_markdown(data)
+    # actions 是 list —— 必须拼成人读的逗号串，不能渲染出 ['read']
+    assert "可 read, export" in md, md[md.find("## 八"):][:200]
+    assert "['read'" not in md
+
+    # 已撤销 / 已过期两态：build 侧的 _is_live 必须都滤掉。用真实调用验，
+    # 不只看源码 —— 光断言「代码里有 expires_at」是白护栏。
+    import ducky.pantheon as _pth
+    from ducky.dossier import build_dossier_data
+    _rows = [
+        {"grant_id": "g1", "grantor_user_id": "dudu", "grantee_user_id": "live",
+         "actions": ["read"], "bank_id": "*", "expires_at": future, "revoked": False},
+        {"grant_id": "g2", "grantor_user_id": "dudu", "grantee_user_id": "gone",
+         "actions": ["read"], "bank_id": "*", "expires_at": None, "revoked": True},
+        {"grant_id": "g3", "grantor_user_id": "dudu", "grantee_user_id": "stale",
+         "actions": ["read"], "bank_id": "*", "expires_at": past, "revoked": False},
+    ]
+    _orig = _pth.list_hall_grants
+    _pth.list_hall_grants = lambda uid, direction="granted": (
+        _rows if direction == "granted" else [])
+    try:
+        got = build_dossier_data("dudu", "default")["sections"]["grants"]["granted"]
+    finally:
+        _pth.list_hall_grants = _orig
+    assert [g["grantee_user_id"] for g in got] == ["live"], (
+        f"已撤销/已过期的借阅没被滤掉：{[g['grantee_user_id'] for g in got]}")
+    # 这三条是 build 侧 _is_live 的判据，用纯函数直验
+    from ducky import dossier as _d
+    import inspect
+    src = inspect.getsource(_d.build_dossier_data)
+    assert "if not ts or ts <= _t.time()" in src, "过期时间解析失败未按已过期处理"
+
+
+def test_mmr_protects_ignited_only_at_the_pre_boost_cut():
+    """M4：打分出口那一刀看到的是 IGNITION_BOOST 之前的分，无权淘汰点火条。
+
+    与 `_apply_score_floor` 完全同一条推理 —— 那里已为此显式豁免 ignited，
+    MMR 这一刀当初漏了同一条。判据要能分辨两种语义：
+      · 打分出口（protect_ignited=True）：点火条必留
+      · funnel 那一刀（boost 已应用、分是终态）：点火条按真实分竞争
+    """
+    from ducky.scoring import mmr_select
+    pool = [{"id": "hi", "memory": "高分非点火", "_hybrid_score": 0.90},
+            {"id": "mid", "memory": "次高非点火", "_hybrid_score": 0.85},
+            {"id": "ign", "memory": "低分点火", "_hybrid_score": 0.30, "_ignited": True}]
+    # 打分出口：点火条必须活着进 funnel（否则 boost 永远没机会发生）
+    kept = mmr_select([dict(x) for x in pool], 2, protect_ignited=True)
+    assert any(x.get("_ignited") for x in kept), "打分出口误杀了点火条"
+    # funnel 那一刀：不保护，低分点火条正常出局（不许压过高分条）
+    kept2 = mmr_select([dict(x) for x in pool], 2)
+    assert [x["id"] for x in kept2] == ["hi", "mid"]
+
+
+def test_mmr_protection_holds_even_when_switch_is_off():
+    """开关关掉也不许在这一刀误杀点火条 —— 豁免与多样性无关。"""
+    from ducky.scoring import mmr_select
+    os.environ["AIDUMEI_MMR_ENABLED"] = "0"
+    try:
+        pool = [{"id": "a", "_hybrid_score": 0.9}, {"id": "b", "_hybrid_score": 0.8},
+                {"id": "ign", "_hybrid_score": 0.1, "_ignited": True}]
+        assert any(x.get("_ignited") for x in mmr_select(pool, 2, protect_ignited=True))
+    finally:
+        os.environ.pop("AIDUMEI_MMR_ENABLED", None)
+
+
+def test_rollup_actually_uses_limit_and_dedups_the_whole_group():
+    """M7：`limit` 必须真被用上（回填），去重必须覆盖整组而非前 6 条。
+
+    原实现里 `limit` 形参出现 0 次：折叠掉的名额不回填，一开开关返回条数
+    就变少；而 `members[:6]` 之后只从这 6 条取 drop 集，第 7 条及以后既不
+    进摘要也不被移除 —— 与 docstring 说的「与单条去重」正好相反。
+    """
+    import ast as _ast
+    import inspect
+    from ducky import recall_funnel as rf
+    fn = _ast.parse(inspect.getsource(rf._apply_episode_rollup)).body[0]
+    names = {n.id for n in _ast.walk(fn) if isinstance(n, _ast.Name)}
+    assert "limit" in names, "limit 形参从未被使用 —— 折叠后不回填，结果会变少"
+    src = inspect.getsource(rf._apply_episode_rollup)
+    assert "all_items" in src and "ranked[1:]" in src, "去重仍只覆盖前 6 条"
+    assert "spare" in src, "没有回填来源"
+
+
+def test_rollup_degradation_is_not_silent():
+    """rollup 降级要留 warning（它会改变返回条数，静默不可接受）。"""
+    import inspect
+    from ducky import recall_funnel as rf
+    assert "logger.warning" in inspect.getsource(rf._apply_episode_rollup)
+
+
+def test_workspace_fastpath_applies_echo_suppression_and_declares_bypass():
+    """M2：workspace 热缓存正是回声最可能出现的地方，不能整条绕开。
+
+    这条快路提前 return，从不经过打分出口。不在这里补一刀，M2 在最常命中、
+    用户感知最强的那条路上等于不存在；同时必须如实声明它旁路了哪几项。
+    """
+    import inspect
+    from ducky.hot import search as hs
+    src = inspect.getsource(hs.register_search_routes)
+    i = src.find("ws_lookup(")
+    j = src.find('"_workspace_hit": True')
+    assert i != -1 and j > i, "workspace 分支找不到 —— 守卫失去着力点"
+    seg = src[i:j]
+    assert "_load_echo_refs" in seg and "_drop_echo" in seg, "快路没做回声抑制"
+    assert "_bypassed" in src[j:j + 1200], "旁路了打分出口却不声明，调用方无从得知"
+
+
+def test_mcp_search_carries_session_id():
+    """M2：MCP 通路必须能传 session_id，否则整条 MCP 上回声抑制不存在。"""
+    import inspect
+    import mcp_server
+    assert "session_id" in inspect.signature(mcp_server.mem_search).parameters
+    src = inspect.getsource(mcp_server.mem_search)
+    assert '_payload["session_id"] = session_id' in src, "收了 session_id 却不发送"
+
+
+def test_errsig_regex_is_a_single_source():
+    """M6：写入侧与检索侧必须复用同一份正则，不许各留一份字面量拷贝。
+
+    两份拷贝当下相等，但任一侧演化就静默错位：检索侧认出的签名写入侧没抽过
+    ＝ 白加权，而且不报错。
+    """
+    from ducky.pattern_extract import _ERRSIG_RE
+    from ducky.scoring import _ERRSIG_QUERY_RE
+    assert _ERRSIG_QUERY_RE is _ERRSIG_RE, "两侧不是同一个对象 —— 又成两份拷贝"
+
+
+def test_v212_effectiveness_lands_in_telemetry():
+    """生效证据必须可观测 —— 本轮审计的核心结论就是「要有数据面旁证」。
+
+    `_errsig_hit` / `_credit` 此前写进候选却全仓无人读取：加权到底命中过
+    没有，线上无从判断。
+    """
+    import inspect
+    from ducky import scoring
+    src = inspect.getsource(scoring)
+    assert "_report_v212_telemetry" in src
+    body = inspect.getsource(scoring._report_v212_telemetry)
+    for k in ("echo_suppressed", "errsig_hits", "credit_applied", "credit_weight"):
+        assert k in body, f"遥测缺 {k}"
+    # 必须真被调用，不能只定义（定义了不调用是最典型的白护栏）
+    assert "_report_v212_telemetry(final" in src
+
+
+def test_funnel_degraded_leg_keeps_scope_and_session():
+    """降级腿不许丢 bank_id / session_id。
+
+    丢了 bank_id，命名域下类型/出身/信用三张账本一条都查不到 —— 正是
+    v20.2.4 F-15 修过的病在降级路径复发，而且照样返回结果、没有告警。
+    """
+    import inspect
+    from ducky import recall_funnel as rf
+    src = inspect.getsource(rf._fetch_candidate_pool)
+    assert "session_id" in inspect.signature(rf._fetch_candidate_pool).parameters
+    i = src.find("lazy_import_hybrid()")
+    seg = src[i:i + 500]
+    assert "bank_id=bank_id" in seg and "session_id=session_id" in seg
+
+
+def test_credit_map_can_be_scoped():
+    """轨迹信用查询要能按域收窄（作用域棘轮不留新缺口）。"""
+    import inspect
+    from ducky.evolve_mem import get_credit_map
+    params = inspect.signature(get_credit_map).parameters
+    assert "user_id" in params and "bank_id" in params
+    src = inspect.getsource(get_credit_map)
+    assert "JOIN evolve_episodes" in src, "没 join 就拿不到域列"
+
+
+def test_echo_suppression_documents_its_range_honestly():
+    """射程边界必须写在代码里 —— facts 类候选不被回声抑制是设计取向，
+    不许靠沉默让人以为覆盖了。"""
+    import inspect
+    from ducky.scoring import _load_echo_refs
+    doc = inspect.getdoc(_load_echo_refs) or ""
+    assert "射程边界" in doc and "fact:" in doc
