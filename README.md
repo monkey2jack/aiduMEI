@@ -44,7 +44,7 @@
 > | 读线 | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` | 每轮**之前**自动把相关记忆喂给模型 |
 > | 写线 | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` | 每轮**之后**自动把这一轮存回去 |
 > | 写线 | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` | 同上 |
-> | 萃取线 | `integrations/aidumem-distill.sh` | Hermes `session_end` | 会话结束时自动提炼「这一程最值得记住的事」，单独存一条 |
+> | 萃取线 | `integrations/aidumem-distill.sh` | Hermes `on_session_end` | 会话结束时自动提炼「这一程最值得记住的事」，单独存一条 |
 >
 > **「自动」是指这三条线接上之后，你不需要再对记忆做任何事**——不用手动保存、
 > 不用提醒模型去记、不用定期整理。三条钩子分别在「说话前」「说话后」「聊完」

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# aidumem-distill.sh — Hermes Agent `session_end` shell hook
+# aidumem-distill.sh — Hermes Agent `on_session_end` shell hook
 # =====================================================================
 # 会话结束时，把「这一程最值得记住的事」提炼成一两句，单独存一条。
 #
 # **这是第三条线。** 前两条是：
 #   读线 aidumem-inject.sh  (pre_llm_call)  —— 把旧记忆喂给模型
 #   写线 aidumem-ingest.sh  (post_llm_call) —— 把这一轮存回去
-#   本条 aidumem-distill.sh (session_end)   —— 把这一程提炼成一条
+#   本条 aidumem-distill.sh (on_session_end) —— 把这一程提炼成一条
 #
 # 为什么需要它（用户原话）：
 #   「那些随口说的一句话、一起解决的一个难题、某个决定的瞬间，现在都淹没在
@@ -19,7 +19,7 @@
 #   那一层。`/health` 的 `distill_liveness_ok` 探针盯着这件事：有会话结束
 #   却一条精华都没有，即判降级。
 #
-# stdin  : Hermes session_end payload (JSON)
+# stdin  : Hermes on_session_end payload (JSON)
 # stdout : {}
 #
 # 配置（与另两条线共用同一套键，故意如此——三条线必须同租户同凭据）：
@@ -29,7 +29,7 @@
 # 安装：
 #   cp integrations/aidumem-distill.sh ~/.hermes/agent-hooks/
 #   chmod +x ~/.hermes/agent-hooks/aidumem-distill.sh
-#   # config.yaml 注册 hooks.session_end，见 config.yaml.snippet
+#   # config.yaml 注册 hooks.on_session_end，见 config.yaml.snippet
 #   ~/.hermes/agent-hooks/aidumem-distill.sh --selftest
 #
 # 设计原则（与另两条线同源）：

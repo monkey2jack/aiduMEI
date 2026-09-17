@@ -44,7 +44,7 @@ The canon walks it through: environment check → install → gear selection →
 > | Read | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` | Feeds relevant memories to the model **before** each turn |
 > | Write | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` | Stores the turn **after** it finishes |
 > | Write | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` | Same |
-> | Distill | `integrations/aidumem-distill.sh` | Hermes `session_end` | On session close, distills "what this stretch was about" into its own memory |
+> | Distill | `integrations/aidumem-distill.sh` | Hermes `on_session_end` | On session close, distills "what this stretch was about" into its own memory |
 >
 > **"Automatic" means that once these three are wired you never touch memory again** —
 > no manual saves, no reminding the model to remember, no periodic cleanup. The three

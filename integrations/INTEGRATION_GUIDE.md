@@ -80,7 +80,7 @@ aiduMEI 默认仅监听回环；设置 API token 或 UI 口令后接口会强制
 |---|---|---|---|
 | **读线** | `aidumem-inject.sh` | `pre_llm_call` | 几分钟内就发现：模型明显不记事 |
 | **写线** | `aidumem-ingest.sh` | `post_llm_call` | **所有指标都正常**，几周后才发现新记忆一条没进 |
-| **萃取线** | `aidumem-distill.sh` | `session_end` | 记忆照常进，只是永远没有「这一程最值得记住的是什么」那一层 |
+| **萃取线** | `aidumem-distill.sh` | `on_session_end` | 记忆照常进，只是永远没有「这一程最值得记住的是什么」那一层 |
 
 v21.2.0 之前，本文件这一段**只写了 `pre_llm_call`**，于是照它装的部署
 每轮都在读、从来没写过，持续了很久才被人工审计翻数据库发现。
@@ -136,7 +136,7 @@ hooks:
   post_llm_call:                                   # 写线 —— 别漏
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
-  session_end:                                     # 萃取线 —— 这一程的精华
+  on_session_end:                                     # 萃取线 —— 这一程的精华
     - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
       timeout: 40
 
@@ -210,7 +210,7 @@ Shell Hook 方案：
 
 ```bash
 rm ~/.hermes/agent-hooks/aidumem-{inject,ingest,distill}.sh
-# 手动删掉 config.yaml 里 hooks 下的 pre_llm_call / post_llm_call / session_end 三段
+# 手动删掉 config.yaml 里 hooks 下的 pre_llm_call / post_llm_call / on_session_end 三段
 systemctl restart hermes-gateway     # 若以 gateway 方式运行
 ```
 

@@ -64,7 +64,7 @@ or two sentences and stores that as its own memory:
 
 | Host | Hook | Ready-made script |
 |---|---|---|
-| Hermes | `session_end` | `integrations/aidumem-distill.sh` |
+| Hermes | `on_session_end` | `integrations/aidumem-distill.sh` |
 | Anything else | Whatever fires when a conversation closes | call `POST /session/distill`, then `POST /add` with what it returns |
 
 Three properties worth knowing before you wire it:
@@ -101,7 +101,7 @@ hooks:
   post_llm_call:                                   # write wire — the one people forget
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
-  session_end:                                     # distill wire — "what this stretch was about"
+  on_session_end:                                     # distill wire — "what this stretch was about"
     - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
       timeout: 40
 hooks_auto_accept: true
