@@ -59,6 +59,11 @@ TASKS=(
   "report|0 * * * *|\"${PY}\" scripts/report.py --json|report.log|operations|inspect report next_actions"
   "restore_gate_dry_run|30 3 * * 0|bash scripts/restore_gate.sh --dry-run latest|restore_gate.log|data|stop changes and run restore_gate"
   "dependency_audit|45 3 * * 0|\"${PY}\" scripts/dependency_audit.py|dependency_audit.log|platform|pin or update dependencies deliberately"
+  # v21.2.0：写线接线的兜底哨兵。宿主漏挂 post_llm_call 时，对话照常、
+  # 检索照常、库里的旧记忆也照常健康，唯独新记忆一条不进——这是本项目
+  # 真实出过的事故，人工审计翻数据库才发现。每 6 小时问一次
+  # 「你在读，那你在写吗」，非 0 退出码就是接线断了。
+  "ingest_wiring|25 */6 * * *|\"${PY}\" scripts/check_ingest_wiring.py|ingest_wiring.log|memory|写线未接：按 docs/AGENT_INTEGRATION.md 挂上 post_llm_call 钩子"
 )
 
 json_tasks() {

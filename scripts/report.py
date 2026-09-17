@@ -148,8 +148,18 @@ def _safe_next_actions(health: dict[str, Any], maintenance: dict[str, Any] | Non
     actions: list[str] = []
     if health.get("health_status") != "ok":
         actions.append("Inspect the authenticated /health response and resolve degraded components.")
-    if health.get("degraded"):
+    _degraded = health.get("degraded") or []
+    if _degraded:
         actions.append("Resolve degraded components before relying on semantic recall.")
+    # 泛泛一句「有组件降级」对 ingest_liveness 是误导：问题不在召回质量，
+    # 而在**新记忆压根没写进来**，且这件事不会自愈。建议必须点名要做什么。
+    if "ingest_liveness" in _degraded or "epistemic_session_coverage" in _degraded:
+        actions.append(
+            "WRITE WIRE LOOKS BROKEN: the host reads memories but never writes any. "
+            "Hook the write side (Hermes post_llm_call / Claude Code Stop) as described "
+            "in docs/AGENT_INTEGRATION.md, then verify with "
+            "python3 scripts/check_ingest_wiring.py (exit code must be 0)."
+        )
     if health.get("warming_up"):
         actions.append("Wait for warm-up components or trigger a normal request before deep diagnosis.")
     maintenance = maintenance or _maintenance_block()
@@ -158,7 +168,11 @@ def _safe_next_actions(health: dict[str, Any], maintenance: dict[str, Any] | Non
     # 实装数优先于意图数（v20.3.1）：装了 1 条报「9 条全在」是上一版被
     # 用户审计实锤的病。实装拿不到时才退回意图数，并如实说明。
     effective = installed if installed is not None else intended
-    if effective is None or effective < 8:
+    # 门槛跟着清单走，不写字面量。v21.2.0 把任务数 8 → 9 时，原来的
+    # `< 8` 会让「装了 8 条、少了写线哨兵」这种情况判成装齐——数字漂移
+    # 造的假绿灯，和探针不在场是同一种病。intended 读不到才退回 8 兜底。
+    _required = intended if isinstance(intended, int) and intended > 0 else 8
+    if effective is None or effective < _required:
         actions.append(
             "Run bash scripts/update_crontab.sh install to install maintenance jobs "
             "(maintenance is NOT fully installed; this is based on the real crontab)."
@@ -235,7 +249,11 @@ def _exit_code(report: dict[str, Any]) -> int:
     intended = maintenance.get("crontab_task_count")
     installed = maintenance.get("crontab_installed_count")
     effective = installed if installed is not None else intended
-    if effective is None or effective < 8:
+    # 门槛跟着清单走，不写字面量。v21.2.0 把任务数 8 → 9 时，原来的
+    # `< 8` 会让「装了 8 条、少了写线哨兵」这种情况判成装齐——数字漂移
+    # 造的假绿灯，和探针不在场是同一种病。intended 读不到才退回 8 兜底。
+    _required = intended if isinstance(intended, int) and intended > 0 else 8
+    if effective is None or effective < _required:
         return 2
     if not (maintenance.get("latest_backup") or {}).get("verified"):
         return 2

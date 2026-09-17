@@ -414,9 +414,24 @@ def test_report_exit_codes_prefer_installed_over_intended():
 # v20.3 用户审计 P0-D：crontab 必须真实可 list、dry-run、安装
 # ══════════════════════════════════════════════════════════════════
 
+
+def _expected_task_count() -> int:
+    """任务数从 --list 现算，不写字面量。
+
+    v21.2.0 教训：清单 8 → 9 时，三处硬编码的 8 同时变成假判据
+    （报告侧那个 `< 8` 更坏——它会把「少装了新哨兵」判成装齐）。
+    数字只该有一个来源。
+    """
+    import json as _json
+    import subprocess as _sp
+    out = _sp.run(["bash", str(_ROOT / "scripts" / "update_crontab.sh"), "--list"],
+                  check=True, capture_output=True, text=True, timeout=15).stdout
+    return len(_json.loads(out)["tasks"])
+
 def test_crontab_script_lists_eight_tasks_no_ghost():
     """v20.3.1（九份审计 P0-1）：9→8，facts_checkpoint 幽灵任务删除；
-    清单里每一项的目标脚本都必须真实存在——数量与存在性分开断言。"""
+    清单里每一项的目标脚本都必须真实存在——数量与存在性分开断言。
+    v21.2.0：8→9，新增 ingest_wiring 写线哨兵（真实事故的兜底）。"""
     import json
     import subprocess
     result = subprocess.run(
@@ -424,12 +439,12 @@ def test_crontab_script_lists_eight_tasks_no_ghost():
         check=True, capture_output=True, text=True, timeout=10,
     )
     data = json.loads(result.stdout)
-    assert len(data["tasks"]) == 8
+    assert len(data["tasks"]) == 9
     names = {task["name"] for task in data["tasks"]}
     assert names == {
         "health_check", "consolidator", "backup_create", "backup_verify",
         "e2e_smoke", "report", "restore_gate_dry_run",
-        "dependency_audit",
+        "dependency_audit", "ingest_wiring",
     }
     assert "facts_checkpoint" not in names
     # 清单内每条命令引用的脚本都真实存在（防止下一个幽灵任务混进来）
@@ -462,11 +477,12 @@ def test_crontab_install_writes_all_entries_and_is_idempotent(tmp_path):
     r1 = run()
     assert r1.returncode == 0, r1.stderr
     installed_1 = state.read_text().count("# aiduMEI:")
-    assert installed_1 == 8, f"first install wrote {installed_1}, expected 8 (dedup key bug back?)"
+    _n = _expected_task_count()
+    assert installed_1 == _n, f"first install wrote {installed_1}, expected {_n} (dedup key bug back?)"
     r2 = run()
     assert r2.returncode == 0, r2.stderr
     installed_2 = state.read_text().count("# aiduMEI:")
-    assert installed_2 == 8, "second install is not idempotent"
+    assert installed_2 == _n, "second install is not idempotent"
     # 删一条重跑必须精确补回
     lines = state.read_text().splitlines()
     out, skip = [], False
@@ -482,7 +498,7 @@ def test_crontab_install_writes_all_entries_and_is_idempotent(tmp_path):
     r3 = run()
     assert r3.returncode == 0, r3.stderr
     installed_3 = state.read_text().count("# aiduMEI:")
-    assert installed_3 == 8, f"repair install wrote {installed_3}, expected 8"
+    assert installed_3 == _n, f"repair install wrote {installed_3}, expected {_n}"
 
 def test_crontab_install_refuses_missing_target_script(tmp_path):
     """守卫射程负向对照：注册一个不存在的脚本必须红（用户审计 🟢-2）。"""
@@ -512,7 +528,7 @@ def test_crontab_dry_run_works_without_repo_venv(tmp_path, monkeypatch):
              "AIDUMEM_LOG_DIR": str(tmp_path / "logs")},
     )
     assert r.returncode == 0, r.stderr
-    assert "would install 8" in r.stdout
+    assert f"would install {_expected_task_count()}" in r.stdout
 
 def test_crontab_dry_run_does_not_mutate_crontab():
     import subprocess
@@ -523,7 +539,7 @@ def test_crontab_dry_run_does_not_mutate_crontab():
     )
     after = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
     assert result.returncode == 0
-    assert "would install 8" in result.stdout
+    assert f"would install {_expected_task_count()}" in result.stdout
     assert before == after
 
 def test_backup_gate_verify_resolves_latest(tmp_path):

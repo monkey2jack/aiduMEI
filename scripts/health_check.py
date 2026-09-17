@@ -132,11 +132,35 @@ try:
     r = requests.get(f"{API_BASE}/health", timeout=5, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
+        # v21.2.0：**必须读 health_status / degraded**。
+        # 此前这里只看 HTTP 200 就判 ok —— /health 把一整份降级清单交到手上，
+        # 这个每 5 分钟跑一次的哨兵却只确认了「这个接口还活着」。后果是全仓
+        # 所有降级探针（vector_backend / memory_types / ingest_liveness …）对
+        # 定时哨兵一律不可见：服务端算得再对，也没有任何一条自动化通路会因此变红。
+        # 那次「只读不写」的事故能藏那么久，这里是最后一道本该响而没响的铃。
+        _status = data.get("health_status")
+        _degraded = data.get("degraded") or []
+        _warming = data.get("warming_up") or []
+        if _status is None:
+            # 键不在：要么服务端是旧版（没这个字段），要么未鉴权被脱敏。
+            # 两种都是「读不到」，不是「没问题」——如实标未知，不冒充绿灯。
+            _api_ok, _verdict = True, "health_status=unknown(旧版或未鉴权)"
+        elif _status == "ok" and not _degraded:
+            _api_ok, _verdict = True, ""
+        else:
+            _api_ok = False
+            _verdict = "health_status=%s degraded=%s" % (
+                _status, ",".join(str(x) for x in _degraded) or "-")
+        if _warming:
+            # 预热中不算故障（会自愈），但要说出来，否则「刚重启就红」会被误判。
+            _verdict = (_verdict + " ").lstrip() + "warming_up=%s" % ",".join(
+                str(x) for x in _warming)
         checks["aidumem_api"] = {
-            "ok": True,
+            "ok": _api_ok,
             "service": data.get("service", "unknown"),
             "version": data.get("version", "unknown"),
             "modules": data.get("modules", {}),
+            "verdict": _verdict,
             "ms": int((time.time()-t0)*1000)
         }
     else:
@@ -186,6 +210,9 @@ for name, result in checks.items():
         mods = result["modules"]
         mod_status = " ".join(f"{k}={v}" for k,v in mods.items())
         extra += f" [模块: {mod_status}]"
+    # 降级判词单独印：运维读的是这一行，不能只留一个 ❌ 让人自己去猜哪儿坏了。
+    if result.get("verdict"):
+        extra += f" [{result['verdict']}]"
     print(f"  {icon} {name}: {detail}{extra} ({result['ms']}ms)")
 
 print(f"\n总计: {total_ms}ms | {'🟢 全部正常' if all_ok else '⚠️ 有异常'}")
