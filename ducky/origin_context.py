@@ -52,6 +52,30 @@ def set_origin_from_metadata(meta: dict | None) -> contextvars.Token:
     )
 
 
+def origin_from_metadata(meta: dict | None) -> tuple[str, str, int]:
+    """从透传 metadata 的保留键读出溯源三件套；读不到才回退 contextvar。
+
+    v21.2.0 审计整改轮（生产用户审计 🔴-1）：**显式 > 隐式**。contextvar 是个隐式通道
+    ——它只在「调用方先 set 过」且「同一执行上下文」两个前提同时成立时才对。
+    写入链路上任何一条通路忘了 set（或换了线程/任务），读到的就是空值，
+    而空值不会报错，只会让打标静默变空。metadata 里那三个保留键是**跟着
+    数据本身走**的，三条通路共享同一份 md，不依赖谁先 set 过什么。
+
+    回退保留 contextvar，是为了不打断已经在上下文里工作的调用方（如
+    reflect 那条自建上下文的路径）——但它只是兜底，不再是主通道。
+    """
+    md = meta if isinstance(meta, dict) else {}
+    agent = str(md.get("_origin_agent") or "")
+    session = str(md.get("_origin_session_id") or "")
+    try:
+        turn = int(md.get("_origin_turn") or 0)
+    except (TypeError, ValueError):
+        turn = 0
+    if agent or session or turn:
+        return agent, session, turn
+    return get_origin()
+
+
 def extract_origin_fields(extra: Any, metadata: dict | None) -> tuple[str, str, int]:
     """从请求面提取溯源三件套：顶层 extra 优先，其次 metadata 里的
     同名片段（agent / session_id / turn；兼容 hermes 风格的
@@ -69,7 +93,11 @@ def extract_origin_fields(extra: Any, metadata: dict | None) -> tuple[str, str, 
         return ""
 
     agent = _pick("agent", "origin_agent", "client", "source_agent")
-    session_id = _pick("session_id", "origin_session_id", "hermes_session_id", "session")
+    # v21.2.0 审计整改轮：补 conversation_id —— 写入侧（verbatim_vault）认它，
+    # 检索侧不认，于是只用 conversation_id 的宿主写进去有 session、查的时候
+    # 是空串，回声抑制两条腿同时静默失效。键名集合两侧必须相等。
+    session_id = _pick("session_id", "origin_session_id", "hermes_session_id",
+                       "conversation_id", "session")
     raw_turn = _pick("turn", "origin_turn", "turn_index")
     try:
         turn = int(raw_turn) if raw_turn else 0

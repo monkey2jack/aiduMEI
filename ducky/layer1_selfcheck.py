@@ -225,7 +225,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
     if existing_id:
         try:
             # Lethe v9.2.0: 触发演化追踪 (在更新前运行，便于捕获相似关系)
-            track_knowledge_evolution(memory, user_id, text, existing_id, bank_id=bank_id)
+            track_knowledge_evolution(memory, user_id, text, existing_id, bank_id=bank_id, metadata=metadata)
             memory.update(existing_id, text, metadata=metadata)
             action = "updated"
             details["existing_id"] = existing_id
@@ -247,7 +247,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
                 "error": f"{type(ue).__name__}: {str(ue)[:200]}",
             }
             add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
-            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id, infer=infer)
+            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id, infer=infer, metadata=metadata)
             action = "new"
     else:
         # Step 2: 容量检查
@@ -262,14 +262,14 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
         import hashlib
         try:
             new_id_placeholder = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-            track_knowledge_evolution(memory, user_id, text, new_id_placeholder, bank_id=bank_id)
+            track_knowledge_evolution(memory, user_id, text, new_id_placeholder, bank_id=bank_id, metadata=metadata)
         except Exception as e:
             logger.warning(f"写入前演化追踪失败: {e}")
 
         # Step 3: 写入
         # 🔴2：主链写入路径必须登记 salience + FTS 索引，否则新记忆全文搜不到、热度不累计。
         add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
-        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id, infer=infer)
+        _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id, infer=infer, metadata=metadata)
 
     elapsed_ms = int((time.time() - start) * 1000)
     details["ms"] = elapsed_ms
@@ -282,7 +282,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
 
 
 def _index_after_add(add_result, user_id: str, category: str | None = None, bank_id: str = "default",
-                     infer: bool = True) -> None:
+                     infer: bool = True, metadata: dict | None = None) -> None:
     """🔴2：mem0.add() 成功后登记 salience + 写 FTS 索引。
 
     正常新增路径此前只调 memory.add()，既不注册显著性、也不写全文索引，
@@ -297,29 +297,32 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
     # infer=False（确定性直写）→ user_provided。失败静默降级不阻断写入。
     try:
         from ducky.epistemic import stamp_memory_refs
+        from ducky.origin_context import origin_from_metadata
         _refs = [
             r.get("id") or r.get("memory_id")
             for r in (add_result if isinstance(add_result, list)
                       else (add_result.get("results") if isinstance(add_result, dict) else []))
             if isinstance(r, dict)
         ]
+        # v21.2.0 审计整改轮（生产用户审计 🔴-1）：origin 从**透传的 metadata** 显式取，
+        # contextvar 只兜底。此前这里读 contextvar，等于给整条主链路埋了个
+        # 「只要哪条通路没先 set 就静默变空」的隐式前提 —— 而空值不报错。
+        _origin = origin_from_metadata(metadata)
         stamp_memory_refs(
             [r for r in _refs if r],
             "reasoned" if infer else "user_provided",
             user_id=user_id, bank_id=bank_id, source="add:layer1",
+            origin=_origin,
         )
         # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。
-        # 打标缝位在这里（layer1 包装器吞掉 mem0 的 results，路由层拿不到
-        # ref）—— 轨迹登记必须跟着打标走同一个缝，钩在路由层会漏掉主链路
-        # （实机冒烟正是这么暴露的：sidecar 有 session、episode 表却是空的）。
-        # 无 session（cron / 后台作业）一律不记，不稀释轨迹统计。
+        # 轨迹登记跟着打标走同一个缝（layer1 包装器吞掉 mem0 的 results，
+        # 路由层拿不到 ref），并与打标共用同一份显式 origin。
+        # 无 session（cron / 后台作业 / 调用方未传）一律不记，不稀释统计。
         try:
             from ducky.evolve_mem import record_episode_step
-            from ducky.origin_context import get_origin
-            _oa, _osid, _ot = get_origin()
-            if _osid:
+            if _origin[1]:
                 record_episode_step([r for r in _refs if r], user_id=user_id,
-                                    bank_id=bank_id, session_id=_osid)
+                                    bank_id=bank_id, session_id=_origin[1])
         except Exception as _ee:
             logger.debug(f"episode step 登记跳过: {_ee}")
     except Exception as e:
@@ -397,7 +400,7 @@ def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: st
 
 
 def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str = "new_item",
-                              bank_id: str = DEFAULT_BANK_ID):
+                              bank_id: str = DEFAULT_BANK_ID, metadata: dict | None = None):
     """Lethe v9.2.0: 知识演化追踪 + 状态机流转
 
     v20 甲11 修复（跨库「标死」）
@@ -478,10 +481,12 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
             if has_replaces or is_polar_flip:
                 relation = "replaces"
 
-            # 4. 保存演化关系到 facts.db（v21 F2：随带溯源三件套——
-            #    读 origin_context；未迁移库（无列）如实退回旧五列写法）
-            from ducky.origin_context import get_origin
-            _oa, _os, _ot = get_origin()
+            # 4. 保存演化关系到 facts.db（v21 F2：随带溯源三件套。
+            #    v21.2.0 审计整改轮（🔴-1 同型加固）：从透传 metadata 显式取，
+            #    contextvar 只兜底——隐式通道少一次 set 就静默变空。
+            #    未迁移库（无列）如实退回旧五列写法。）
+            from ducky.origin_context import origin_from_metadata
+            _oa, _os, _ot = origin_from_metadata(metadata)
             conn = get_facts_conn()
             _ke_cols = {r[1] for r in conn.execute(
                 "PRAGMA table_info(knowledge_evolution)").fetchall()}

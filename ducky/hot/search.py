@@ -332,6 +332,21 @@ def register_search_routes(app: FastAPI) -> None:
             try:
                 from ducky.memory_workspace import ws_lookup, ws_feed_from_results
                 ws_hits = ws_lookup(uid, req.query, bank_id=bank_id)
+                # v21.2.0 审计整改轮：workspace 是「最近访问/刚写入」的热缓存
+                # —— 回声最可能出现的**正是**这里，而这条分支提前 return，
+                # 整条绕开了打分出口里的回声抑制。不在这里补一刀，M2 在热路径上
+                # 等于不存在（而且这条路最快、最常命中，用户感知最强）。
+                # 复用同一份判据与同一个 sidecar 查询，session 为空不过滤。
+                _ws_sid = _req_session_id(req)
+                _ws_echo_dropped = 0
+                if ws_hits and _ws_sid:
+                    from ducky.scoring import echo_suppress_enabled as _echo_on
+                    if _echo_on():
+                        from ducky.scoring import _load_echo_refs, _drop_echo
+                        _before = len(ws_hits)
+                        ws_hits = _drop_echo(
+                            ws_hits, _load_echo_refs(ws_hits, _ws_sid, uid, bank_id))
+                        _ws_echo_dropped = _before - len(ws_hits)
                 if ws_hits:
                     boost_salience_for_results(ws_hits)
                     # v20.1 整改轮（R-06 · 外审 z P2-04）：本分支的三态字段集
@@ -345,6 +360,11 @@ def register_search_routes(app: FastAPI) -> None:
                         "_rerank": {"status": "not_invoked"},
                         "_recall_strength": ws_strength,
                         "_recall_legs": {"workspace": "hit"},
+                        # 如实说明这条快路没走打分出口：MMR 多样性与错误签名
+                        # 加权在 workspace 命中时不生效（回声抑制已在上面补过）。
+                        "_bypassed": {"scoring": True, "mmr": True, "errsig": True,
+                                      "echo_suppress": False,
+                                      "echo_dropped": _ws_echo_dropped},
                         # workspace 命中 = 热缓存里真有 —— found，无歧义。
                         "recall_verdict": "found",
                         "verdict_basis": "workspace_hit",

@@ -44,7 +44,11 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 679  # v21.2 Memmy 融改：+19（M1 episode 轨迹写入与报表容错、layer1 打标缝位的轨迹登记降级、
+_BASELINE = 682  # v21.2.0 审计整改轮：+3（两个新探针的读库容错 +
+# episode rollup 的降级捕获——rollup 会改变返回条数，失败必须留 warning
+# 而不是静默不聚合）；原 +2 记为（/health 新增 epistemic_session_coverage 与
+# episode_ok 两个探针的读库容错 —— 探针本身绝不许把 /health 打炸，
+# 底层 sqlite/import 错误形态各异收窄不掉，如实抬基线）；v21.2 Memmy 融改：+19（M1 episode 轨迹写入与报表容错、layer1 打标缝位的轨迹登记降级、
 # M2 回声抑制查询与 sidecar 列探测降级、M4/M6 配置 fail-closed、M7 rollup 降级、
 # M8 借阅留痕降级）——全部是「统计/留痕失败绝不许打炸主链路」这一类，
 # 收窄异常类型做不到（底层 sqlite/import/属性错误形态各异），故如实抬基线；

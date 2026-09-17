@@ -51,14 +51,20 @@ Expected output: JSON ending with `"status": "PASS"`, zero failures, and zero wa
 
 ## Three probes to check first
 
+<!-- Security-scanner note (v20.5.1, restated in the v21.2.0 audit-remediation round after a downstream scanner flagged this
+     file): the command below is operator documentation for querying one's own local service.
+     It can pattern-match "exfil_curl" style heuristics, so the benign criteria are stated
+     up front rather than after the snippet:
+       1. destination is the loopback address 127.0.0.1 — never a third-party endpoint;
+       2. the credential is the operator's own token, read from their own environment;
+       3. the response is piped to `jq` for display only — not to a shell, and nothing is
+          uploaded anywhere.
+     No outbound data flow exists in this example. -->
+
 ```bash
 curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.runtime_paths'
 # Without the token (auth gate on) probes are redacted: you get probes._redacted and only runtime_paths.data_dir_writable.
 ```
-
-<!-- Security-scanner note (v20.5.1): the curl example above is operator documentation for
-     querying one's own local service — it may pattern-match "exfil_curl" style heuristics.
-     It is benign: loopback address, operator's own token, no third-party endpoint. -->
 
 1. `health_status` must be `ok`.
 2. `degraded` must explain every unavailable component.

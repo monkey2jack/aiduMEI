@@ -496,7 +496,7 @@ def record_episode_feedback(session_id: str, reward: float) -> dict:
     return settle_episode(row["episode_id"] if hasattr(row, "keys") else row[0], reward)
 
 
-def get_credit_map(memory_refs) -> dict:
+def get_credit_map(memory_refs, *, user_id: str = "", bank_id: str = "") -> dict:
     """批量取 credit_weight（供 scoring 第六维用）。
 
     与 _load_epi_map 同一纪律：单次批量 SQL、零 N+1、表不在如实空表。
@@ -516,9 +516,25 @@ def get_credit_map(memory_refs) -> dict:
             half_life = episode_params()["half_life_days"] * 86400.0
             now = _now()
             placeholders = ",".join("?" for _ in refs)
-            for row in conn.execute(
-                    f"SELECT memory_ref, step_reward, created_at FROM evolve_episode_steps "
-                    f"WHERE memory_ref IN ({placeholders})", refs):
+            # v21.2.0 审计整改轮：补域收窄。与同族的 _load_epi_map / _load_echo_refs
+            # 口径对齐 —— 作用域片段一律经 scope_clause() 正规入口，不手拼
+            # （手拼点是「作用域棘轮」上的新缺口，也是 f-string SQL 的来源）。
+            # evolve 是独立库、ref 为 UUID，碰撞概率低，但低不等于零。
+            # 未传域时保持全库语义（管理面查询/存量调用方零破坏）。
+            _scope_sql, _scope_args = "", []
+            if user_id or bank_id:
+                from ducky.scope_sql import scope_clause
+                from ducky.bank_contract import make_scope
+                _scope_sql, _scope_args = scope_clause(
+                    make_scope(user_id or "default", bank_id or "default"),
+                    alias="e", flavor="canonical")
+            _sql = (
+                "SELECT s.memory_ref, s.step_reward, s.created_at "
+                "FROM evolve_episode_steps s "
+                "JOIN evolve_episodes e ON e.episode_id = s.episode_id "
+                "WHERE s.memory_ref IN (" + placeholders + ")" + _scope_sql
+            )
+            for row in conn.execute(_sql, (*refs, *_scope_args)):
                 ref = row["memory_ref"] if hasattr(row, "keys") else row[0]
                 sr = float((row["step_reward"] if hasattr(row, "keys") else row[1]) or 0.0)
                 created = float((row["created_at"] if hasattr(row, "keys") else row[2]) or now)
