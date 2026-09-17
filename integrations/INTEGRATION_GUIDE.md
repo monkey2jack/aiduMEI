@@ -69,14 +69,35 @@ aiduMEI 默认仅监听回环；设置 API token 或 UI 口令后接口会强制
 
 ## B. Shell Hook（兜底方案）
 
-宿主 Hermes 不方便装插件时用。只有 turn 开头注入这一个能力。
+宿主 Hermes 不方便装插件时用。**两个脚本，两个挂点，缺一不可。**
+
+### ⚠️ 先读这段：装一半等于没装
+
+记忆是一条闭合电路：**读线**把旧记忆喂给模型，**写线**把新对话存回去。
+两条线的漏装代价完全不对称——
+
+| | 脚本 | 挂点 | 漏了会怎样 |
+|---|---|---|---|
+| **读线** | `aidumem-inject.sh` | `pre_llm_call` | 几分钟内就发现：模型明显不记事 |
+| **写线** | `aidumem-ingest.sh` | `post_llm_call` | **所有指标都正常**，几周后才发现新记忆一条没进 |
+
+v21.2.0 之前，本文件这一段**只写了 `pre_llm_call`**，于是照它装的部署
+每轮都在读、从来没写过，持续了很久才被人工审计翻数据库发现。
+它难发现是因为每个绿灯都还绿着：检索有结果（旧记忆还在）、`/health` 全绿
+（库里的记忆确实健康）、集成自检通过（它自己调 `/add` 自己调 `/search`，
+测的是被集成方不是集成本身）。唯一症状是「新记忆再也没进来过」，
+而当时没有任何一个探针在问这个问题。
+
+现在有了：`/health` 的 `ingest_liveness_ok` 把「读」和「写」放在一起比，
+**有检索却零写入即判降级**；`scripts/check_ingest_wiring.py` 可随时单独问一句
+「你在读，那你在写吗」。
 
 ### 数据流
 
 ```
 用户发消息
    ↓
-Hermes (pre_llm_call)
+Hermes (pre_llm_call)  ← 读线
    ↓ JSON payload via stdin
 [aidumem-inject.sh]
    ↓ HTTP POST（短超时）
@@ -85,28 +106,51 @@ aiduMEI /api/core-memory/inject + /search
 {"context": "..."} via stdout
    ↓
 Hermes 拼到 user message 后面 → LLM
+   ↓
+LLM 回答完，工具循环结束
+   ↓
+Hermes (post_llm_call)  ← 写线
+   ↓ JSON payload via stdin（含 user_message + assistant_response）
+[aidumem-ingest.sh]
+   ↓ HTTP POST /add（带 _origin_session_id / _origin_turn）
+aiduMEI 落库 → 下一次 pre_llm_call 就能搜到
 ```
 
 ### 安装
 
 ```bash
 mkdir -p ~/.hermes/agent-hooks
-cp integrations/aidumem-inject.sh ~/.hermes/agent-hooks/
-chmod +x ~/.hermes/agent-hooks/aidumem-inject.sh
+cp integrations/aidumem-inject.sh integrations/aidumem-ingest.sh ~/.hermes/agent-hooks/
+chmod +x ~/.hermes/agent-hooks/aidumem-inject.sh ~/.hermes/agent-hooks/aidumem-ingest.sh
 ```
 
 `~/.hermes/config.yaml` 追加（改前先备份）：
 
 ```yaml
 hooks:
-  pre_llm_call:
+  pre_llm_call:                                    # 读线
     - command: "~/.hermes/agent-hooks/aidumem-inject.sh"
       timeout: 8
+  post_llm_call:                                   # 写线 —— 别漏
+    - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
+      timeout: 10
 
 hooks_auto_accept: true
 ```
 
 `hooks_auto_accept: true` 是必须的，否则 shell hook 在启动时会被静默拒绝注册。
+
+### 装完必做的三步验收
+
+```bash
+~/.hermes/agent-hooks/aidumem-inject.sh --selftest    # 读线：真打一次 /search
+~/.hermes/agent-hooks/aidumem-ingest.sh --selftest    # 写线：真写一条再回读
+# 然后真聊 5 轮，再问一次接线：
+python3 scripts/check_ingest_wiring.py                # 退出码非 0 即接线有问题
+```
+
+第三步不能省。前两步证明的是「脚本能跑通」，只有第三步证明「宿主真的在调它」——
+v21.2.0 之前那次事故里，脚本一直是好的，没被挂上而已。
 
 ### 手动验证
 
@@ -134,6 +178,15 @@ echo '{"hook_event_name":"pre_llm_call","session_id":"s","cwd":"/tmp",
 | `AIDUMEM_SEARCH_LIMIT` | `5` | 检索条数 |
 | `AIDUMEM_TIMEOUT` | `4` | 单次 HTTP 超时（秒） |
 
+写线（`aidumem-ingest.sh`）额外认这几个，其余键与读线共用同一套
+（**故意共用**：两条线必须解析出同一个租户和同一份凭据，否则会出现
+「写进了 A、读的是 B」这种两边各自正常、合起来失忆的故障）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AIDUMEI_INGEST_TIMEOUT` | `6.0` | 写比读慢，超时给足 |
+| `AIDUMEI_INGEST_MIN_CHARS` | `8` | 用户消息短于这个字数不写 |
+
 改脚本内容后，Hermes 的 mtime 校验会要求重新批准 hook——这是设计如此，不是 bug。
 
 ---
@@ -150,8 +203,8 @@ rm -rf ~/.hermes/plugins/aidumem
 Shell Hook 方案：
 
 ```bash
-rm ~/.hermes/agent-hooks/aidumem-inject.sh
-# 手动删掉 config.yaml 里的 hooks: pre_llm_call 那一段
+rm ~/.hermes/agent-hooks/aidumem-inject.sh ~/.hermes/agent-hooks/aidumem-ingest.sh
+# 手动删掉 config.yaml 里的 hooks: pre_llm_call 与 post_llm_call 两段
 systemctl restart hermes-gateway     # 若以 gateway 方式运行
 ```
 
