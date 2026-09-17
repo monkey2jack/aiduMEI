@@ -873,3 +873,128 @@ def test_empty_caller_still_passes_zero_breakage():
     assert authorize_cross_hall("dudu", "") is True
     assert authorize_cross_hall("dudu", "   ") is True
     assert authorize_cross_hall("dudu", "dudu") is True
+
+
+# ══════════ 写入活性：观测盲区收口 ══════════
+#
+# 2026-09-17 的教训：本仓所有探针都在回答「库里已有的记忆好不好」，
+# 没有一个在回答「今天该进来的进来了吗」。于是一个只挂了读钩子、
+# 没挂写钩子的部署，可以在全绿指标下失忆一个月。
+# 下面这批把「读写比」这个判据焊死。
+
+
+def test_health_has_ingest_liveness_probe():
+    """/health 必须能回答「在读却不在写」。"""
+    import inspect
+    from ducky.hot import health as h
+    src = inspect.getsource(h)
+    for key in ("ingest_reads_24h", "ingest_writes_24h", "ingest_liveness_ok"):
+        assert f'"{key}"' in src, f"/health 缺写入活性字段 {key}"
+    i = src.find('"ingest_liveness_ok"')
+    assert "record_degradation" in src[i:i + 2500], (
+        "只报数不记降级 —— 那还是没人会发现失忆")
+
+
+def test_ingest_threshold_is_configurable_and_fail_closed():
+    """阈值可配、非法值回默认 —— 配置写错不许把探针关掉。"""
+    import importlib
+    from ducky.hot import health as h
+    assert h._INGEST_MIN_READS >= 1
+    old = os.environ.get("AIDUMEI_INGEST_MIN_READS")
+    try:
+        os.environ["AIDUMEI_INGEST_MIN_READS"] = "不是数字"
+        importlib.reload(h)
+        assert h._INGEST_MIN_READS == 5, "非法值没有 fail-closed 回默认"
+        os.environ["AIDUMEI_INGEST_MIN_READS"] = "20"
+        importlib.reload(h)
+        assert h._INGEST_MIN_READS == 20
+    finally:
+        if old is None:
+            os.environ.pop("AIDUMEI_INGEST_MIN_READS", None)
+        else:
+            os.environ["AIDUMEI_INGEST_MIN_READS"] = old
+        importlib.reload(h)
+
+
+def test_wiring_checker_verdicts():
+    """自查脚本的三态判决：只读不写 / 正常 / 样本不足，必须分得开。"""
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "_wiring", root / "scripts" / "check_ingest_wiring.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # ① 只读不写 —— 必须 fail（这是事故的形状）
+    code, lines, _ = mod.diagnose({"probes": {
+        "ingest_reads_24h": 24, "ingest_writes_24h": 0, "ingest_liveness_ok": False}})
+    assert code == 1 and any("没接上" in ln for ln in lines)
+
+    # ② 读写都有 —— 通过
+    code, lines, _ = mod.diagnose({"probes": {
+        "ingest_reads_24h": 24, "ingest_writes_24h": 9, "ingest_liveness_ok": True}})
+    assert code == 0 and any("都在工作" in ln for ln in lines)
+
+    # ③ 样本不足 —— 不许假红灯挡住刚部署的人
+    code, _, _ = mod.diagnose({"probes": {
+        "ingest_reads_24h": 1, "ingest_writes_24h": 0, "ingest_liveness_ok": True}})
+    assert code == 0
+
+    # ④ 写了但没带 session —— 通过但要提醒（两功能在空转）
+    code, lines, _ = mod.diagnose({"probes": {
+        "ingest_reads_24h": 24, "ingest_writes_24h": 9, "ingest_liveness_ok": True,
+        "epistemic_session_coverage": 0}})
+    assert code == 0 and any("session" in ln for ln in lines)
+
+    # ⑤ 旧服务端无探针 vs 未鉴权被脱敏 —— 两种「读不到」必须给不同指引
+    _, l_old, _ = mod.diagnose({"version": "20.0", "probes": {}})
+    _, l_red, _ = mod.diagnose({"probes": {"_redacted": "x"}})
+    assert any("还没有写入活性探针" in ln for ln in l_old)
+    assert any("--token" in ln for ln in l_red)
+
+
+def test_integration_check_verifies_host_wiring_not_just_api():
+    """集成检查必须验「宿主在不在调」，不能只验「API 能不能用」。
+
+    这是事故的根本成因：原脚本自己调 /add、自己调 /search，当然全绿 ——
+    它测的是被集成方，不是集成本身。
+    """
+    src = (__import__("pathlib").Path(__file__).resolve().parent.parent
+           / "scripts" / "agent_integration_check.py").read_text(encoding="utf-8")
+    assert 'check("host-wiring"' in src, "集成检查没有宿主接线判据"
+    assert "ingest_reads_24h" in src and "ingest_writes_24h" in src, "没用真实流量判据"
+    assert "_INGEST_MIN_READS" in src, "阈值未与 /health 探针同源"
+
+
+def test_docs_tell_agents_where_to_hook_the_write_wire():
+    """文档必须明确告诉宿主 Agent：写钩子挂在哪、漏了会怎样。"""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    doc = (root / "docs" / "AGENT_INTEGRATION.md").read_text(encoding="utf-8")
+    for token in ("post_llm_call", "Stop", "_origin_session_id", "check_ingest_wiring"):
+        assert token in doc, f"AGENT_INTEGRATION.md 没讲 {token}"
+    canon = (root / "prompts" / "install.txt").read_text(encoding="utf-8")
+    assert "check_ingest_wiring" in canon, "一键部署正典没让 Agent 验证写线"
+    assert "post_llm_call" in canon, "正典没说写钩子挂哪"
+    # README 双语都要有，否则只看 README 的人仍会踩
+    for name in ("README.md", "README_EN.md"):
+        assert "check_ingest_wiring" in (root / name).read_text(encoding="utf-8"), \
+            f"{name} 未提示接线自查"
+
+
+def test_install_canon_line_count_matches_readme_claim():
+    """正典行数与 README 宣称必须一致（宣称即承诺）。"""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    lines = [ln for ln in (root / "prompts" / "install.txt")
+             .read_text(encoding="utf-8").strip().splitlines() if ln.strip()]
+    zh = (root / "README.md").read_text(encoding="utf-8")
+    m = re.search(r"（(\d+) 行正典）", zh)
+    assert m, "README.md 缺少「N 行正典」宣称"
+    assert int(m.group(1)) == len(lines), (
+        f"README 宣称 {m.group(1)} 行，install.txt 实为 {len(lines)} 行")
+    en = (root / "README_EN.md").read_text(encoding="utf-8")
+    m2 = re.search(r"the (\d+)-line canon", en)
+    assert m2 and int(m2.group(1)) == len(lines), "README_EN 行数宣称不一致"
