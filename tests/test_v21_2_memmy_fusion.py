@@ -1334,3 +1334,23 @@ def test_claude_code_stop_hook_respects_recursion_guard(tmp_path):
     assert proc.returncode == 0
     # 递归守卫应在读转录之前就返回；转录根本不存在也不该有任何抱怨
     assert not proc.stderr.strip(), f"递归守卫没生效，仍走了写入路径：{proc.stderr[:200]}"
+
+
+def test_write_wire_hooks_use_async_mode_so_the_host_never_waits():
+    """写线必须走 async_mode。
+
+    生产实测同步 /add 的 p50 约 4 秒（要跑完整抽取管线），长尾未知；而宿主
+    给 hook 的超时通常是个位数秒。超时被杀的钩子 = 静默不写 —— 正好是这批
+    改动要根治的那个失败形态。异步下服务端先收下、后台落库，溯源三件套在
+    /add 入口就已归一进 metadata，不受影响。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    for rel in ("integrations/aidumem-ingest.sh",
+                "integrations/cursor-hook/claude-code-stop-hook.py"):
+        src = (root / rel).read_text(encoding="utf-8")
+        assert "async_mode" in src, f"{rel} 走同步写入，会被宿主超时杀掉"
+    # 仓库里发的插件那条路早就是异步的，口径必须一致
+    plugin = (root / "integrations" / "hermes-plugin" / "aidumem" / "__init__.py") \
+        .read_text(encoding="utf-8")
+    assert "async_mode" in plugin, "插件路径与 shell hook 路径写入口径不一致"

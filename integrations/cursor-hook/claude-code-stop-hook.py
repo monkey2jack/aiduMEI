@@ -204,6 +204,9 @@ def _write(user_text: str, asst_text: str, session_id: str, turn: int) -> bool:
             "messages": [{"role": "user", "content": user_text[:LIMIT]},
                          {"role": "assistant", "content": asst_text[:LIMIT]}],
             "user_id": _user_id(),
+            # 同 aidumem-ingest.sh：同步 /add 要跑完整抽取管线（生产实测 p50
+            # 约 4 秒），而 Stop 钩子卡住会让宿主等着。异步下服务端先收下。
+            "async_mode": True,
             "metadata": {"_origin_agent": "claude-code",
                          "_origin_session_id": session_id[:256],
                          "_origin_turn": turn,
@@ -230,7 +233,7 @@ def _selftest() -> int:
     uid = _user_id()
     try:
         _call("/add", {"messages": [{"role": "user", "content": marker}],
-                       "user_id": uid,
+                       "user_id": uid, "async_mode": True,
                        "metadata": {"_origin_agent": "claude-code-stop-selftest",
                                     "_origin_session_id": sid, "_origin_turn": 1,
                                     "channel": "selftest"}})
@@ -251,7 +254,7 @@ def _selftest() -> int:
 
     # 写完必须回读：只看 /add 返回 200 不够，历史上出过「请求收下了、落库
     # 没发生」的形态，而那正是本钩子要防的那类静默。
-    for _ in range(3):
+    for _ in range(8):      # 异步落库，回读要给足耐心
         try:
             res = _call("/search", {"query": marker, "user_id": uid,
                                     "limit": 5, "metadata": {}})
