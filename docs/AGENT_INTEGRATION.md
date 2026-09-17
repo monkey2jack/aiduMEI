@@ -81,6 +81,25 @@ The third command is the only one that proves the *host* is calling the script.
 The first two only prove the script itself runs — in the incident that produced
 this section, the scripts were fine the whole time; nobody had hooked the write one.
 
+In CI or a release gate, add `--require-judgment`. Without it the check returns 0
+when there is not enough traffic to judge — deliberately, so a brand-new install
+is not blocked by a false red. But that also means a freshly installed *broken*
+system sails straight through. `--require-judgment` turns "cannot tell" into a
+non-zero exit.
+
+### The read wire must pass `session_id` too
+
+`aidumem-inject.sh` sends `session_id` on its `/search` call, and a custom read
+wire should do the same. Two things depend on it:
+
+- **Echo suppression (M2)** — the server excludes memories written by the current
+  session. With no session it cannot tell which those are, so it excludes nothing.
+  The feature does not error; it just quietly does nothing.
+- **The write-wire probe** — retrieval logs distinguish "someone is actually
+  talking" from "the hourly smoke test ran" purely by whether a session is
+  attached. A read wire that omits it leaves `ingest_liveness` with no reach at
+  all, and `/health` will say so rather than pretend everything is fine.
+
 ### Always pass `session_id` and `turn`
 
 Include them in the write payload's `metadata`:
