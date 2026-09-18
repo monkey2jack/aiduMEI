@@ -1,0 +1,53 @@
+diff --git a/plugins/memory/mem0/__init__.py b/plugins/memory/mem0/__init__.py
+index 77f61647a2..781822bf48 100644
+--- a/plugins/memory/mem0/__init__.py
++++ b/plugins/memory/mem0/__init__.py
+@@ -130,6 +130,7 @@ class Mem0MemoryProvider(MemoryProvider):
+         self._config = self._backend = self._sync_thread = self._prefetch_thread = None
+         self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
+         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
++        self._turn_number = 0  # provenance: last turn seen, attached to memory writes
+         self._sync_max_chars = _SYNC_MSG_MAX_CHARS
+         self._prefetch_query = self._prefetch_result = ""
+         self._prefetch_done = self._atexit_registered = False
+@@ -246,8 +247,20 @@ class Mem0MemoryProvider(MemoryProvider):
+         # principal; writes attach agent_id and metadata.channel so narrower views remain possible at query time.
+         return (backend or self._backend).search(query, filters={"user_id": self._user_id}, top_k=top_k, rerank=rerank)
+ 
+-    def _add(self, messages: list, infer: bool):
++    def _add(self, messages: list, infer: bool, *, session_id: str = "", turn: int = 0):
++        # Provenance passthrough: aiduMEI keys every memory with where it came
++        # from (agent / session / turn). Without a session id its echo
++        # suppression and trajectory credit simply never engage -- silently,
++        # because an absent key is not an error. Callers that have a session id
++        # pass it; the rest behave exactly as before.
+         metadata = {"channel": self._channel} if self._channel else {}
++        if session_id:
++            metadata["_origin_session_id"] = str(session_id)
++            metadata["_origin_agent"] = str(self._agent_id or "")
++            try:
++                metadata["_origin_turn"] = int(turn or 0)
++            except (TypeError, ValueError):
++                metadata["_origin_turn"] = 0
+         return self._backend.add(messages, user_id=self._user_id, agent_id=self._agent_id, infer=infer, metadata=metadata)
+ 
+     def system_prompt_block(self) -> str:
+@@ -257,6 +270,7 @@ class Mem0MemoryProvider(MemoryProvider):
+         return f"# Mem0 Memory\nActive. Mode: {mode_label}. User: {self._user_id}.\n{_PROMPT_BODY}{rerank_note}"
+ 
+     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
++        self._turn_number = turn_number
+         self._start_prefetch(message)
+ 
+     def _consume_prefetch_result(self, query: str) -> str | None:
+@@ -310,7 +324,9 @@ class Mem0MemoryProvider(MemoryProvider):
+                     {"role": "user", "content": _truncate_for_sync(user_content, self._sync_max_chars)},
+                     {"role": "assistant", "content": _truncate_for_sync(assistant_content, self._sync_max_chars)},
+                 ]
+-                self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
++                self._try(lambda: self._add(messages, infer=True, session_id=session_id,
++                                            turn=self._turn_number),
++                          logger.warning, "Mem0 sync failed: %s")
+ 
+         with self._sync_lock:
+             prev = self._sync_thread
