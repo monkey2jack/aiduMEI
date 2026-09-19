@@ -1,5 +1,14 @@
 # aiduMEI 版本演进史
 
+## [基座升级] mem0ai 2.0.20 → 2.1.0（2026-09-19）
+
+> **性质：纯基座依赖小版本推进，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。
+
+- **升级内容**：`pyproject.toml` + `requirements.txt` 钉版 `mem0ai==2.0.20` → `==2.1.0`（PyPI 2026-09-18 发布）。
+- **上游改动评估**：2.1.0 全量 148 个 py 文件**只改 1 个** `mem0/client/main.py`——给云端 `MemoryClient` 加身份 header 管理（`X-Mem0-Source`/`X-Application`/`X-Mem0-Client` 堆栈的 set-once / append-only 语义 + telemetry 版本上报）。依赖树零变化。
+- **对 aiduMEI 影响：零**。本仓纯本地自托管（Qdrant + SQLite + ducky 层），代码零处引用 `MemoryClient`，走 `from mem0 import Memory` 本地模式；深度 patch 的 `mem0.memory.utils.parse_messages`/`remove_code_blocks` 上游一字节未动，patch 层安全。
+- **验证**：备份 freeze → pip 升级 → 双文件钉版同步 → `systemctl restart dudu-mem0-api + mem0-sync` → `/health` 全绿（status ok、degraded []、patch 层正常加载）→ `/search` 读链路 ✅ → `/add` 写链路潮浪并忆正常 ✅。
+
 ## v21.2.0（2026-09-16 Memmy 融改）：回声抑制 · MMR 多样性 · 错误签名通道 · 轨迹级奖励
 
 > **性质：中型功能版（Phase A+B 一次到位）。** 六项中五项纯增量；唯二改变默认检索行为的 M2/M4 均带开关，M1 的 credit 维度默认权重 0（装上不生效）。小仓 Tag/Release `v21.2.0`；公开仓按两段式惯例 `v21.2`。
