@@ -12,10 +12,11 @@ import tempfile
 import threading
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 
 from ducky.speed.config import _CFG_PATH, load_speed_cfg
+from ducky.utils import DEFAULT_AGENT_ID, DEFAULT_USER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,11 @@ def _build_config_view() -> dict:
     vc = vis.get("config") or {} if isinstance(vis, dict) else {}
     vsc = vs.get("config") or {} if isinstance(vs, dict) else {}
     return {
+        # The console must use the server's configured identity when it calls
+        # identity-protected federation endpoints.  Never make the browser
+        # guess this from a profile or a hard-coded demo value.
+        "agent_id": DEFAULT_AGENT_ID,
+        "user_id": DEFAULT_USER_ID,
         "llm": {
             "provider": llm.get("provider"),
             "config": {
@@ -206,6 +212,45 @@ def _build_config_view() -> dict:
 
 
 def register_config_routes(app: FastAPI) -> None:
+    @app.get("/domains")
+    def list_all_domains(limit: int = Query(default=100, ge=1, le=500)) -> dict:
+        """列出可供控制台选择的**真实活动记忆域**。
+
+        The identity of a domain is the storage pair ``(user_id, bank_id)``.
+        Federation ``profile`` is a presentation/grouping attribute, not a
+        tenant key.  In particular, this endpoint deliberately has no
+        synthetic ``all`` entry: a UI "all domains" mode would silently drop
+        the scope parameters on data requests and turn into the service's
+        default domain.
+        """
+        from ducky.bank_contract import DEFAULT_BANK_ID, ensure_memory_banks_schema
+        from ducky.utils import get_facts_conn
+        conn = get_facts_conn()
+        try:
+            ensure_memory_banks_schema(conn)
+            rows = conn.execute(
+                "SELECT user_id, bank_id, display_name, status FROM memory_banks "
+                "WHERE status='active' ORDER BY user_id, bank_id LIMIT ?", (limit,)
+            ).fetchall()
+            domains = []
+            for row in rows:
+                item = dict(row)
+                item["label"] = item.get("display_name") or (
+                    f"{item['user_id']} / {item['bank_id']}"
+                )
+                domains.append(item)
+            return {
+                "status": "ok",
+                "domains": domains,
+                "default_domain": {
+                    "user_id": DEFAULT_USER_ID,
+                    "bank_id": DEFAULT_BANK_ID,
+                },
+                "limit": limit,
+            }
+        finally:
+            conn.close()
+
     @app.get("/config")
     def get_config() -> dict:
         return _build_config_view()

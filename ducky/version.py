@@ -19,7 +19,7 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        任务反馈按轨迹位置回传；**credit 维度默认权重 0** —— 装上不生效，等本仓
        自己的 /evolve/report 数据说话再开（上游参数不盲信）。
     5. M7 episode rollup（默认关）· M8 借阅留痕进事件账本 + 档案第八节「当前生效借阅」。
-       用例总数 2048 → 2137（+89 条验收与整改守卫，全部红→绿）。
+       用例总数 2048 → 2143（+95 条验收与整改守卫，全部红→绿）。
     6. 审计整改轮（2026-09-17）：溯源打标改走显式 metadata（不再依赖 contextvar
        隐式通道）；补 episode_ok 与 epistemic_session_coverage（7 天窗口）两个探针；
        回声抑制降级升 warning；AGENTS.md 良性判据前置。根因判定：生产 sidecar
@@ -76,6 +76,12 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
         探针 distill_liveness_ok 盯第三条线（有会话却零精华＝没挂）。
         README 双语讲清「自动」自动在哪：三条钩子在说话前/说话后/聊完三个
         时机自己触发，接上之后不需要再对记忆做任何事。
+    13. 宿主 mem0 内置插件 provenance 补丁归档（2026-09-18）：补齐宿主侧
+        session/turn 三件套透传物料；服务端版本不变。
+    14. PR #15 思路吸收与安全重做（2026-09-19）：按真实 `(user_id, bank_id)`
+        域契约独立重做 active 域目录、当前域 Markdown dossier 导出与 profile
+        联邦展示分组；移除伪 `all` 域、静态 demo 身份、硬编码 caller 与 CSP
+        inline style。版本与 Release 不变，仅推 commit。
     落位纠正两处（指导书按公开认知写，实测生产代码后修正）：回声/MMR 落在
     scoring 单一真源而非仅 recall_funnel（主 /search 走 RecallEngine，两路都经打分出口）；
     episode 表进 evolve 库的 ensure_evolve_schema 而非 facts.db 迁移流。
