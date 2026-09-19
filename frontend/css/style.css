@@ -130,6 +130,52 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   white-space: nowrap;
 }
 
+.domain-badge-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  padding: 1px 4px 1px 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.domain-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--blue);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.domain-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--navy, #1f4e79);
+  cursor: pointer;
+  padding: 2px 14px 2px 2px;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231f4e79' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 0 center;
+  background-size: 10px;
+}
+.domain-select:hover {
+  color: var(--blue, #2a75d3);
+}
+.domain-select:disabled {
+  cursor: not-allowed;
+  color: var(--gray-faint);
+  opacity: 0.8;
+}
+.chip-user {
+  color: var(--blue);
+  font-weight: 700;
+}
+
 .foot-right {
   display: flex;
   align-items: center;
@@ -1318,4 +1364,49 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   }
   .slogan-en { right: 20px; }
   .slogan-cn { left: 20px; }
+}
+
+/* ---------- 联邦成员按域分组样式 ---------- */
+.fed-groups-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.fed-group {
+  border: 1px solid var(--gray-line);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.45);
+  transition: all 0.25s var(--ease);
+}
+.fed-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--gray-line);
+}
+.fed-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--navy);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.fed-group-title small {
+  color: var(--gray-faint);
+  font-size: 10px;
+  font-weight: 500;
+}
+.fed-group-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.fed-group-count {
+  font-size: 11px;
+  color: var(--gray-soft);
+  font-weight: 600;
 }
