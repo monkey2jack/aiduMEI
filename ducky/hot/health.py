@@ -745,11 +745,26 @@ def register_health_routes(app: FastAPI) -> None:
             probes["distill_sessions_24h"] = _dis_sessions
             probes["distill_made_24h"] = _dis_made
             _dis_bad = _dis_sessions >= _DISTILL_MIN_SESSIONS and _dis_made == 0
+            # 探针语义修正：「有会话却零精华」的判据不该把「条数太少、本就萃取不出」的
+            # 短会话算进分母。一个 1~2 条的会话走完正常生命周期也产生不了精华，
+            # 把它算进「有会话」等于把正常行为判成故障。
+            # 所以分母只数「够得着萃取门槛的会话」——那些本来就该有精华产出的。
+            _dis_effective = 0
+            if _dis_sessions > 0:
+                _r3 = _dis_conn.execute(
+                    "SELECT origin_session_id, COUNT(*) as cnt FROM memory_epistemic "
+                    "WHERE created_at >= ? AND COALESCE(origin_session_id,'') <> '' "
+                    "AND COALESCE(origin_agent,'') <> 'session-distill' "
+                    "GROUP BY origin_session_id HAVING cnt >= ?",
+                    (_ing_cut_iso, 3)).fetchall()
+                _dis_effective = len(_r3)
+            probes["distill_sessions_effective_24h"] = _dis_effective
+            _dis_bad = _dis_effective >= _DISTILL_MIN_SESSIONS and _dis_made == 0
             probes["distill_liveness_ok"] = not _dis_bad
             if _dis_bad:
                 DegradationTracker.record_degradation(
                     "distill_liveness",
-                    f"最近 {_ing_window_h}h 有 {_dis_sessions} 个会话写入过记忆，"
+                    f"最近 {_ing_window_h}h 有 {_dis_effective} 个会话够得着萃取门槛（≥3条），"
                     "却一条会话精华都没产出 —— 宿主多半没挂 session_end 钩子。"
                     "记忆照常进，只是永远没有「这一程最值得记住的是什么」那一层。"
                     "现成脚本：integrations/aidumem-distill.sh，挂法见 "
