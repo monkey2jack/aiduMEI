@@ -12,6 +12,39 @@
 
 const API = {
   base: '/api',
+  domainCatalog: null,
+  defaultDomain: null,
+  domainReady: Promise.resolve(),
+  resolveDomainReady: null,
+
+  /* The browser never invents a tenant.  The catalog is populated from
+     GET /domains during boot; until then no data request receives a guessed
+     scope. */
+  getActiveDomain() {
+    try {
+      const v = localStorage.getItem('aidumei_active_domain');
+      if (v) return v;
+    } catch (e) {}
+    return this.defaultDomain ? this.domainKey(this.defaultDomain) : '';
+  },
+
+  setActiveDomain(domainStr) {
+    try {
+      localStorage.setItem('aidumei_active_domain', domainStr);
+    } catch (e) {}
+  },
+
+  parseDomain(domainStr) {
+    const s = domainStr || this.getActiveDomain();
+    if (!s || !this.domainCatalog) return null;
+    const hit = this.domainCatalog.find(function (d) { return API.domainKey(d) === s; });
+    return hit ? { user_id: hit.user_id, bank_id: hit.bank_id } : null;
+  },
+
+  domainKey(domain) {
+    if (!domain) return '';
+    return String(domain.user_id || '') + ':' + String(domain.bank_id || '');
+  },
 
   /* v19.4.1 P0-1: every request carries the HttpOnly session cookie issued by
      /api/login. Without credentials the backend's unified gate returns 401 —
@@ -19,8 +52,21 @@ const API = {
      broke every panel. */
   async get(path, params) {
     let url = this.base + path;
-    if (params) {
-      const q = new URLSearchParams(params).toString();
+    const p = Object.assign({}, params);
+
+    // 自动为数据面请求附加选中的域过滤 (全局系统与运维接口不受域过滤影响)
+    const isSystemPath = /^(\/login|\/config(?:$|\/)|\/domains|\/health|\/livez|\/readyz|\/evolve\/(?:report|cycle)$|\/federation)/.test(path);
+    if (!isSystemPath && this.domainCatalog === null) await this.domainReady;
+    if (!isSystemPath) {
+      const dom = this.parseDomain();
+      if (dom) {
+        if (p.user_id === undefined && dom.user_id) p.user_id = dom.user_id;
+        if (p.bank_id === undefined && dom.bank_id) p.bank_id = dom.bank_id;
+      }
+    }
+
+    if (Object.keys(p).length > 0) {
+      const q = new URLSearchParams(p).toString();
       if (q) url += '?' + q;
     }
     const r = await fetch(url, {
@@ -36,18 +82,31 @@ const API = {
   },
 
   async post(path, payload) {
+    const body = Object.assign({}, payload);
+
+    // 自动为数据面 POST 请求附加选中的域过滤 (全局系统与运维接口不受域过滤影响)
+    const isSystemPath = /^(\/login|\/config(?:$|\/)|\/domains|\/health|\/livez|\/readyz|\/evolve\/(?:report|cycle)$|\/federation)/.test(path);
+    if (!isSystemPath && this.domainCatalog === null) await this.domainReady;
+    if (!isSystemPath) {
+      const dom = this.parseDomain();
+      if (dom) {
+        if (body.user_id === undefined && dom.user_id) body.user_id = dom.user_id;
+        if (body.bank_id === undefined && dom.bank_id) body.bank_id = dom.bank_id;
+      }
+    }
+
     const r = await fetch(this.base + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify(payload || {}),
+      body: JSON.stringify(body),
     });
-    const body = await r.json().catch(() => ({}));
+    const resBody = await r.json().catch(() => ({}));
     if (!r.ok) {
       handleAuthFailure(r.status);
-      throw new ApiError(r.status, body, path);
+      throw new ApiError(r.status, resBody, path);
     }
-    return body;
+    return resBody;
   },
 };
 
@@ -105,7 +164,8 @@ function readRecord(raw) {
     factId: meta.fact_id != null ? meta.fact_id : null,
     createdAt: raw.created_at || '',
     updatedAt: raw.updated_at || '',
-    userId: raw.user_id || '',
+    userId: raw.user_id || meta.user_id || '',
+    bankId: raw.bank_id || meta.bank_id || '',
     score: raw.score != null ? raw.score : null,
     rerank: raw._rerank_score != null ? raw._rerank_score : null,
     mediaUrl: meta.media_url || null,
@@ -121,6 +181,8 @@ function readFact(raw) {
     value: raw.fact_value || '',
     summary: raw.summary || '',
     source: raw.source || '',
+    userId: raw.user_id || (raw.metadata && raw.metadata.user_id) || '',
+    bankId: raw.bank_id || (raw.metadata && raw.metadata.bank_id) || '',
     confidence: raw.confidence != null ? raw.confidence : null,
     trust: raw.trust_score != null ? raw.trust_score : null,
     helpful: raw.helpful_count || 0,
