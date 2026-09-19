@@ -43,7 +43,13 @@ def test_domains_are_active_scoped_and_bounded(tmp_path, monkeypatch):
     assert len(body["domains"]) == 1
     assert body["domains"][0]["status"] == "active"
     assert "label" in body["domains"][0]
-    assert body["default_domain"] == {"user_id": "default", "bank_id": "default"}
+    from ducky.bank_contract import DEFAULT_BANK_ID
+    from ducky.utils import DEFAULT_USER_ID
+
+    assert body["default_domain"] == {
+        "user_id": DEFAULT_USER_ID,
+        "bank_id": DEFAULT_BANK_ID,
+    }
 
 
 def test_domains_reject_unbounded_limit(tmp_path, monkeypatch):
