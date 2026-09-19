@@ -79,6 +79,7 @@ def diagnose(health: dict, *, require_judgment: bool = False) -> tuple[int, list
         "session_coverage": probes.get("epistemic_session_coverage"),
         "distill_sessions_24h": probes.get("distill_sessions_24h"),
         "distill_made_24h": probes.get("distill_made_24h"),
+        "distill_sessions_effective_24h": probes.get("distill_sessions_effective_24h"),
         "distill_liveness_ok": probes.get("distill_liveness_ok"),
     }
     lines: list[str] = []
@@ -154,13 +155,16 @@ def diagnose(health: dict, *, require_judgment: bool = False) -> tuple[int, list
     dis_ok = facts["distill_liveness_ok"]
     dis_sess = facts["distill_sessions_24h"]
     dis_made = facts["distill_made_24h"]
+    dis_eff = facts.get("distill_sessions_effective_24h")
     if dis_sess is not None and dis_made is not None:
         lines.append(f"会话精华萃取：最近 24 小时经历 {dis_sess} 个会话 · 产出 {dis_made} 条精华")
+        if dis_eff is not None:
+            lines.append(f"   （其中 {dis_eff} 个够得着萃取门槛（≥3条））")
         if dis_ok is False:
             lines += [
                 "",
                 "⚠️  第三条线（会话精华萃取）疑似未触发或挂载异常：",
-                f"   最近 24h 有 {dis_sess} 个会话写入过记忆，却一条精华都没产出。",
+                f"   最近 24h 有 {dis_eff or dis_sess} 个会话够得着萃取门槛，却一条精华都没产出。",
                 "   请检查 Hermes config.yaml 的 on_session_end 钩子，",
                 "   确认 integrations/aidumem-distill.sh 是否配置并有可执行权限。",
             ]
