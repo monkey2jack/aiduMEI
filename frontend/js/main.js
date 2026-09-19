@@ -142,7 +142,19 @@ async function openPanel(key) {
 
   // title: EN (gray) then CN (blue)
   panelEn.textContent = def.en;
-  panelTitle.textContent = def.cn;
+  // 设定面板(settings)与成真面板(evolve)属于系统级全局运维监控，不绑定单个域；数据面板(vault/pulse/map/recall)展示当前域
+  let domSuffix = '';
+  if (key !== 'settings' && key !== 'evolve') {
+    const activeDom = API.getActiveDomain();
+    if (activeDom) {
+      const domUser = activeDom.split(':')[0];
+      let icon = '⚙️';
+      if (domUser === 'hermes') icon = '🐎';
+      else if (domUser === 'openclaw') icon = '🦞';
+      domSuffix = ' · ' + icon + ' ' + domUser;
+    }
+  }
+  panelTitle.textContent = def.cn + domSuffix;
 
   // footer: the hover tooltip text (EN + CN)
   var btn = document.getElementById(def.hex);
@@ -247,12 +259,76 @@ document.addEventListener('keydown', function (e) {
 })();
 
 /* ---------------------------------------------------------------------------
-   boot
+   boot & domain switcher
    --------------------------------------------------------------------------- */
 createHexBackground('#hexBg', 666, BRAND_COLORS, 0.3);
 
+async function initDomainSwitcher() {
+  const sel = document.getElementById('domainSelect');
+  if (!sel) return;
+
+  try {
+    const res = await API.get('/domains');
+    const domains = (res && res.domains) || [];
+    API.domainCatalog = domains.filter(function (d) {
+      return d && d.status === 'active' && d.user_id && d.bank_id;
+    });
+    API.defaultDomain = (res && res.default_domain) || null;
+    sel.innerHTML = '';
+
+    API.domainCatalog.forEach(function (d) {
+      const opt = document.createElement('option');
+      opt.value = API.domainKey(d);
+      let icon = '⚙️';
+      if (d.user_id === 'hermes') icon = '🐎';
+      else if (d.user_id === 'openclaw') icon = '🦞';
+      else if (d.user_id === 'default') icon = '📌';
+      opt.textContent = icon + ' ' + (d.label || API.domainKey(d));
+      sel.appendChild(opt);
+    });
+
+    if (!API.domainCatalog.length) {
+      sel.disabled = true;
+      sel.title = '没有可用的活动记忆域 / No active memory domain';
+      if (API.resolveDomainReady) API.resolveDomainReady();
+      return;
+    }
+  } catch (e) {
+    // Do not fall back to static demo identities.  A visible disabled state
+    // is safer than showing a selector that points at the wrong tenant.
+    API.domainCatalog = [];
+    sel.innerHTML = '<option value="">域目录加载失败 / unavailable</option>';
+    sel.disabled = true;
+    sel.title = '域目录加载失败，未发送域数据请求 / domain catalog unavailable';
+    if (API.resolveDomainReady) API.resolveDomainReady();
+    return;
+  }
+
+  // Restore only a domain that the server still advertises as active.
+  const stored = (function () {
+    try { return localStorage.getItem('aidumei_active_domain') || ''; } catch (e) { return ''; }
+  })();
+  const serverDefault = API.defaultDomain && API.domainCatalog.some(function (d) {
+    return API.domainKey(d) === API.domainKey(API.defaultDomain);
+  }) ? API.domainKey(API.defaultDomain) : '';
+  const fallback = serverDefault || API.domainKey(API.domainCatalog[0]);
+  const active = API.domainCatalog.some(function (d) { return API.domainKey(d) === stored; }) ? stored : fallback;
+  API.setActiveDomain(active);
+  sel.value = active;
+
+  sel.addEventListener('change', function () {
+    API.setActiveDomain(sel.value);
+    // 如果当前有打开的面板，重新渲染当前面板以展示新域数据
+    if (openKey && PANELS[openKey]) {
+      openPanel(openKey);
+    }
+  });
+  if (API.resolveDomainReady) API.resolveDomainReady();
+}
+
 // Kick off health check to get deployed version
 (async function boot() {
+  API.domainReady = new Promise(function (resolve) { API.resolveDomainReady = resolve; });
   try {
     const h = await API.get('/health');
     setDeployedVersion(h.version || '');
@@ -260,6 +336,7 @@ createHexBackground('#hexBg', 666, BRAND_COLORS, 0.3);
     setDeployedVersion('—');
   }
   if (ENABLE_UPDATE_CHECK) checkLatestVersion();
+  await initDomainSwitcher();
 })();
 
 // deep link
