@@ -1,5 +1,13 @@
 # aiduMEI 版本演进史
 
+## [探针修复] distill_liveness 分母误报根治（2026-09-19）
+
+> **性质：健康检查探针语义修正，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。
+
+- **症状**：`/health` 报 `degraded=distill_liveness`——「24h 有 3 个会话却 0 条精华」。实际其中 2 个会话只有 1~2 条写入（打招呼级短会话），本就低于萃取门槛（`AIDUMEI_DISTILL_MIN_MEMORIES` 默认 3），永远产不出精华，把它们算进分母等于把正常行为判成故障。
+- **修复**：`ducky/hot/health.py` 的 `distill_liveness` 判据改用「够得着萃取门槛的会话数」（新增 `distill_sessions_effective_24h` 探针字段）替代原始会话数做分母；降级文案同步改为「够得着萃取门槛（≥3条）」。`scripts/check_ingest_wiring.py` 同步展示有效会话数，避免读数的人误解。
+- **验证**：生产实测修复前 `sessions=3, made=0 → bad=True` 误报；修复后 `sessions=3, effective=1, made=0 → bad=False` 正确判绿。同时对那个真实达标的 7 条会话手动补萃取（走 `/session/distill` 提炼 + `/add` 完整管线落库），链路验证通过。
+
 ## [基座升级] mem0ai 2.0.20 → 2.1.0（2026-09-19）
 
 > **性质：纯基座依赖小版本推进，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。
