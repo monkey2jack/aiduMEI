@@ -90,6 +90,7 @@ def test_authorize_cross_hall_four_states():
 
 
 def test_pantheon_endpoints():
+    """v22.0：grant 空 caller 被拒（管理面零匿名）。带 caller 才走通。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.routes_pantheon import register_pantheon_routes
@@ -99,10 +100,36 @@ def test_pantheon_endpoints():
     assert client.post("/pantheon/hall", params={"user_id": "athena", "display_name": "雅典娜"}).json()["status"] == "ok"
     client.post("/pantheon/hall", params={"user_id": "zeus"})
     assert any(h["user_id"] == "athena" for h in client.get("/pantheon/halls").json()["halls"])
+    # v22.0：grant 空 caller → 403；带 caller=zeus（本人）→ ok
     r = client.post("/pantheon/grant", params={"grantor_user_id": "zeus", "grantee_user_id": "athena", "actions": "read"})
+    assert r.json()["status"] == "error", "空 caller 必须被拒"
+    r = client.post("/pantheon/grant", params={"grantor_user_id": "zeus", "grantee_user_id": "athena", "actions": "read", "caller": "zeus"})
     assert r.json()["status"] == "ok"
     # 自借阅经端点也被拦成 error dict（不 500）
     assert client.post("/pantheon/grant", params={"grantor_user_id": "x", "grantee_user_id": "x"}).json()["status"] == "error"
+
+
+def test_pantheon_grant_negative_controls():
+    """v22.0 负向对照：陌生人不能给他人发借阅。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from ducky.routes_pantheon import register_pantheon_routes
+    app = FastAPI()
+    register_pantheon_routes(app)
+    client = TestClient(app)
+    client.post("/pantheon/hall", params={"user_id": "zeus"})
+    client.post("/pantheon/hall", params={"user_id": "athena"})
+    # 非本人非 admin 给他人发借阅 → 拒
+    r = client.post("/pantheon/grant", params={"grantor_user_id": "zeus", "grantee_user_id": "athena", "caller": "stranger"})
+    assert r.json()["status"] == "error", "陌生人不能代他人签发"
+    # revoke 非 admin → 拒
+    r = client.post("/pantheon/grant", params={"grantor_user_id": "zeus", "grantee_user_id": "athena", "caller": "zeus"})
+    gid = r.json()["grant"]["grant_id"]
+    r = client.post(f"/pantheon/grant/{gid}/revoke", params={"caller": "athena"})
+    assert r.json()["status"] == "error", "非 admin 不能 revoke"
+    # list_grants 越域 → 拒
+    r = client.get("/pantheon/grants", params={"user_id": "zeus", "caller": "athena"})
+    assert r.json()["status"] == "error"
 
 
 def test_recall_chain_cross_hall_gated(monkeypatch):
