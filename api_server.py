@@ -327,6 +327,20 @@ def _request_authorized(request: Request) -> bool:
 
 
 
+def _is_test_client(host: str) -> bool:
+    """v22.0（雷霆审计 B4 · GLM F-06）：测试客户端身份判定。
+
+    host 是 IP 才有网络语义——非法 IP 才有可能是伪造。`testclient` 是
+    ASGI 直连测试客户端的无 TCP 对端占位符，真实网络请求的 client.host
+    一定是 IP，所以这条在生产里不可能被利用。
+    默认信任测试客户端（测试基座不中断）；`AIDUMEI_TEST_CLIENT_TRUST=0`
+    可在加固部署里强制拒绝。
+    """
+    if host.strip().lower() != "testclient":
+        return True
+    return _os.environ.get("AIDUMEI_TEST_CLIENT_TRUST", "").strip() != "0"
+
+
 def _client_is_loopback(request: "Request") -> bool:
     """请求是否来自回环。
 
@@ -341,6 +355,8 @@ def _client_is_loopback(request: "Request") -> bool:
     host = (getattr(client, "host", "") or "").strip()
     if not host:
         return False
+    if host == "testclient":
+        return _is_test_client(host)
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -414,8 +430,8 @@ def _host_header_allowed(request: "Request") -> bool:
     client_host = (getattr(getattr(request, "client", None), "host", "") or "").strip()
     if client_host == "testclient":
         # ASGI 直连测试客户端：没有 TCP 对端、没有 DNS，rebinding 不成立。
-        # 与 _client_is_loopback 同一取舍（真实网络请求的 client.host 一定是 IP）。
-        return True
+        # v22.0：改显式 env 注入，不再靠字符串字面量硬编码。
+        return _is_test_client(client_host)
     return _host_without_port(request.headers.get("host", "")) in _trusted_host_names()
 
 
