@@ -622,11 +622,26 @@ def _load_epi_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[st
             from ducky.bank_contract import make_scope
             frag, sparams = scope_clause(make_scope(user_id, bank_id), flavor="canonical")
             placeholders = ",".join("?" for _ in refs)
-            for ref, mode in conn.execute(
-                    f"SELECT memory_ref, epistemic_mode FROM memory_epistemic "
-                    f"WHERE memory_ref IN ({placeholders}){frag}",
-                    (*refs, *sparams)):
-                epi_map[ref] = mode
+            has_agent_col = "origin_agent" in {
+                r[1] for r in conn.execute("PRAGMA table_info(memory_epistemic)").fetchall()
+            }
+            if has_agent_col:
+                for ref, mode, o_agent in conn.execute(
+                        f"SELECT memory_ref, epistemic_mode, COALESCE(origin_agent, '') "
+                        f"FROM memory_epistemic "
+                        f"WHERE memory_ref IN ({placeholders}){frag}",
+                        (*refs, *sparams)):
+                    # 如果记录来源于 cron / 定时任务等非主对话链路，打标为 cron_lesson 或降权模式
+                    if o_agent.startswith("cron") and mode not in ("user_provided", "hard_fact"):
+                        epi_map[ref] = "cron_lesson"
+                    else:
+                        epi_map[ref] = mode
+            else:
+                for ref, mode in conn.execute(
+                        f"SELECT memory_ref, epistemic_mode FROM memory_epistemic "
+                        f"WHERE memory_ref IN ({placeholders}){frag}",
+                        (*refs, *sparams)):
+                    epi_map[ref] = mode
         finally:
             conn.close()
     except Exception as e:
