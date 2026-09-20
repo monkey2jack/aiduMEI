@@ -715,6 +715,28 @@ def register_health_routes(app: FastAPI) -> None:
             probes["ingest_liveness_ok"] = None
             probes["ingest_liveness_error"] = str(_ing_exc)[:120]
 
+        # v22.0（雷霆审计 B12 · Kimi Y-1）：谱系完整性探针。
+        # verify_lineage_integrity 存在但无探针消费——「链断了」没人知道。
+        # 降级为「可检测」：不追求不可篡改（HMAC 整行进 v21.3 排期），
+        # 但让「链断裂/幽灵链/空 hash 碰撞」在 /health 可见。
+        try:
+            from ducky.memory_lineage import verify_lineage_integrity as _verify_lineage
+            _lin = _verify_lineage()
+            _lin_broken = _lin.get("broken", 0) or 0
+            _lin_total = _lin.get("total", 0) or 0
+            probes["lineage_integrity_ok"] = _lin_broken == 0
+            probes["lineage_integrity_broken"] = _lin_broken
+            probes["lineage_integrity_total"] = _lin_total
+            if _lin_broken > 0:
+                DegradationTracker.record_degradation(
+                    "lineage_integrity",
+                    f"谱系链 {_lin_broken}/{_lin_total} 条断裂——"
+                    "可能是 lastrowid 缺陷、空 hash 碰撞或手动篡改。",
+                    severity="warning")
+        except Exception as _lin_exc:
+            probes["lineage_integrity_ok"] = None
+            probes["lineage_integrity_error"] = str(_lin_exc)[:120]
+
         # ══════════════════════════════════════════════════════════════
         # v21.2.0 会话精华活性探针（distill_liveness）
         #
