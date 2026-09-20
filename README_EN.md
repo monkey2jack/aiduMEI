@@ -9,7 +9,7 @@
 > Let your AI Agent **actually remember you**: hybrid retrieval + governance + a visual console + dual-engine autoshift. A **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **v22.0 (in development)** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, Pantheon multi-bot memory personas, first of its kind.** v21.2 adds the Memmy fusion set: echo suppression, MMR diversity, an error-signature channel, and trajectory-level reward credit assignment (weight defaults to 0 — installed but inert until our own data says otherwise). v21.1 lays the Pantheon foundation: multiple bots/profiles each in their own hall with independent memory personas and cross-hall isolation by default; includes v21.0 cognitive governance (epistemic origin tagging, knowledge provenance, one-click dossier export). See [CHANGELOG](CHANGELOG.md).
+> The current public release is **v22.0 (formal)** — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, Pantheon multi-bot memory personas, first of its kind.** v21.2 adds the Memmy fusion set: echo suppression, MMR diversity, an error-signature channel, and trajectory-level reward credit assignment (weight defaults to 0 — installed but inert until our own data says otherwise). v21.1 lays the Pantheon foundation: multiple bots/profiles each in their own hall with independent memory personas and cross-hall isolation by default; includes v21.0 cognitive governance (epistemic origin tagging, knowledge provenance, one-click dossier export). See [CHANGELOG](CHANGELOG.md).
 
 ---
 
