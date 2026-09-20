@@ -1153,6 +1153,18 @@ def register_health_routes(app: FastAPI) -> None:
                 if probe_comp not in degraded:
                     degraded.append(probe_comp)
 
+        # v22.0（雷霆审计 B1 · Step P1-1）：非 `_ok` 键的失败也进降级——
+        # `*_error` / `*_degraded` 键里的非空错误信息是探针失败的另一种形态。
+        for p_key, p_val in probes.items():
+            if p_key.endswith("_ok") or p_key in ("degraded_details", "warming_up"):
+                continue
+            if p_val in (False, 0, "", None, []):
+                continue
+            if p_key.endswith("_error") or p_key.endswith("_degraded"):
+                probe_comp = p_key.rsplit("_", 1)[0]
+                if probe_comp not in degraded and probe_comp not in warming_up:
+                    degraded.append(probe_comp)
+
         # 合并动态降级追踪器记录的事件
         for active_deg in DegradationTracker.get_degraded_summary():
             if active_deg not in degraded:
