@@ -8,6 +8,28 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v22.0.0 (雷霆审计整改 · 默认从严 · 2026-09-20)
+    主题：**身份派生，越权默认拒。**
+    11 份雷霆审计（10 外部模型 + 嘟嘟）合并后 12 条 P0 全实锤整改：
+    1. 众神殿管理面鉴权（grant/revoke/deactivate 须本人或 admin，空 caller 403）。
+    2. caller↔凭据绑定第三态（strict/permissive/off），消灭「新 token 未登记即裸奔」。
+    3. 众神殿空 caller 收紧：bearer 必须声明身份，session/回环保留主人直连。
+    4. 注入边界跨语言一致性（shell 读线前缀同源 + /add 落库前中和）+ NFKC 归一化。
+    5. 逃逸门组合闸（INSECURE_PUBLIC∧TRUST_PROXY∧无凭据 → 拒绝启动）。
+    6. 治理引擎多语言注入防御（英文高危词表 + CJK 占比乱码检测 + nonce 边界）。
+    7. 依赖合一（pyproject 下限对齐 requirements）+ echarts sha256 清单。
+    8. 哨兵补全：health 聚合键名盲区 / cron 哨兵 flag / testclient 显式信任 /
+       push_gate 装 hook / 三态纪律 / CC 棘轮 / MCP error 三态 / routes_config admin /
+       PBKDF2 600k / auto_memory 禁 fallback / 谱系完整性探针。
+    9. 哨兵补全：health 聚合键名盲区 / cron 哨兵 flag / testclient 显式信任 /
+       push_gate 装 hook / 三态纪律 / CC 棘轮。
+    10. B 面收口：MCP error 三态 / routes_config admin / chunked 文档边界 /
+        PBKDF2 600k / auto_memory 禁 fallback / 谱系完整性探针。
+    11. 产品面 + 元修复：README 卖点证据状态标注 / CHANGELOG Scope Rulings 表 /
+        双前缀冻结 / README 状态标签 / 鉴权面普查守卫 / 三态纪律规范 /
+        CC 棘轮守卫 / 鉴权负向对照模板。
+    用例总数 2143 → 2203（+60，全部红→绿）。
+
 v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
     主题：**记忆不再自己回声，也不再让同一件事占满名额。**
     调研 MemTensor/memmy-agent（MIT · 1.9k⭐）后只取设计不搬代码，六项一次落地：
@@ -285,7 +307,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "21.2.0"
+SERVICE_VERSION = "22.0.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -299,6 +321,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("22.0.0", "", "v22.0", "雷霆审计整改 · 众神殿鉴权/绑定 strict/注入边界/逃逸门组合闸/治理多语言/有界评估池/依赖合一/产品面收口 · 2026-09-20"),
     ("21.2.0", "", "v21.2.0", "Memmy 融改 · 回声抑制/MMR/错误签名/轨迹级奖励 · 2026-09-16"),
     ("21.1.1", "", "v21.1.1", "文档补丁 · 内存挡位选择指导 + 冷备 v21.2 roadmap · 2026-09-15"),
     ("21.1.0", "", "v21.1", "众神殿地基版 · 多 bot/多 profile 域隔离（读侧补域/evolution 跨殿脱敏）+ v21.0.1 会话补丁收口 · 2026-09-15"),

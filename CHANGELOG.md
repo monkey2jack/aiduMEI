@@ -1,6 +1,26 @@
 # aiduMEI 版本演进史
 
-## Scope Rulings（v22.0 · 雷霆审计 C3）
+## v22.0.0（2026-09-20 雷霆审计整改）：众神殿鉴权 · 绑定 strict · 注入边界 · 逃逸门组合闸 · 治理多语言 · 有界评估池 · 依赖合一 · 产品面收口
+
+> **性质：大版本（默认从严，向后不兼容）。** 11 份雷霆审计（10 外部模型 + 嘟嘟）合并后 12 条 P0 全实锤整改；系统性质从「单主人自用」跃迁到「身份派生/越权默认拒」。
+
+- **A1 众神殿管理面鉴权**：grant/revoke/deactivate 须本人或 admin，空 caller 403；list_grants 非 admin 只看自己。
+- **A2 caller↔凭据绑定第三态**：`AIDUMEI_CALLER_BINDING_MODE=strict` 时未登记指纹 403（消灭「新 token 未登记即裸奔」）；permissive 为迁移窗口。
+- **A3 众神殿空 caller 收紧**：bearer 必须声明 caller_user_id；session/回环保留主人直连语义。
+- **A4/A5**：/self-edit/rollback 补归属校验；谱系 owner 改用 user_id（与 bank_contract 同判据）。
+- **A6/A11**：shell 读线幂等判据前缀同源 + /add 落库前中和边界；注入守卫 NFKC 归一化（全角绕过）。
+- **A7 逃逸门组合闸**：INSECURE_PUBLIC∧TRUST_PROXY∧无凭据 → 拒绝启动，确认变量值须逐字等于监听地址。
+- **A9/A10**：治理引擎英文高危词表 + CJK 占比乱码检测 + nonce 边界；异步评估改有界池（max_workers=4）。
+- **A12**：pyproject 下限对齐 requirements；echarts 5.5.0 sha256 清单 + CI 校验。
+- **B 面**：/health 聚合键名盲区 / cron 哨兵 flag / testclient 显式信任 / push_gate 装 hook / 三态纪律 / CC 棘轮 / MCP error 三态 / routes_config admin / chunked 文档边界 / PBKDF2 600k / auto_memory 禁 fallback / 谱系完整性探针。
+- **C 面**：README 卖点证据状态标注 / CHANGELOG Scope Rulings 表 / 双前缀冻结 / README 状态标签。
+- **D 面**：鉴权面普查守卫（AST 扫管理动词路由）/ 三态纪律规范 / CC 棘轮守卫 / 鉴权负向对照模板。
+
+用例总数 2143 → 2203（+60 条验收与整改守卫，全部红→绿）。
+
+用例 2143 → 2203（+60，全部红→绿）。
+
+## v22.0 Scope Rulings（2026-09-20 · 雷霆审计 C3）
 
 > **改判必须代价透明**：每条「不适用/改判」须填四字段——原承诺 / 改判结论 / 改判依据 / 因此放弃了什么能力（读者可感知的后果）。
 
