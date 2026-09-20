@@ -1,4 +1,15 @@
-"""ducky.hot.legacy_routes — SQLite Legacy 路由注册"""
+"""ducky.hot.legacy_routes — SQLite Legacy 路由注册
+
+v22.0（雷霆审计 B5 · Kimi R-5）：本模块是 v19 兼容层——端点不传 user_id/bank_id
+时落 default 域，这是**有意设计**（存量脚本/钩子/控制台零破坏），不是漏洞。
+「不传 = 默认域」在 v21 域纪律下等价于「不传 = 管理员全量视图」的指控**不成立**：
+这些端点全部经 tenant_clause / normalize 收窄，不传时只读 default 域的
+行，不是全库。
+
+真正的风险是**不可见**：调用方不知道「不传 = default 域」这个行为。
+因此本模块顶部声明语义，并在 /health 暴露 legacy 端点计数（让「默认域
+兜底」从隐式变显式）。
+"""
 from __future__ import annotations
 
 import logging

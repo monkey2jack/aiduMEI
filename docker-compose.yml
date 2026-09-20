@@ -26,7 +26,9 @@ services:
     ports:
       - "127.0.0.1:8767:8767"
     environment:
-      - AIDUMEM_HOST=127.0.0.1
+      # v22.0（雷霆审计 A8 · GLM F-05）：容器内回环绑定 + 宿主端口映射 = 宿主不可达。
+      # 改为 0.0.0.0（容器内全网卡），安全边界由「宿主只发布回环」+ token 门禁承担。
+      - AIDUMEM_HOST=0.0.0.0
       - AIDUMEM_API_PORT=8767
       - MEM0_API_PORT=8767
       - MEM0_TELEMETRY=false
@@ -46,6 +48,14 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # v22.0（雷霆审计 A8）：宿主视角 healthcheck——验证「宿主 curl 通」，
+    # 与容器内 HEALTHCHECK（探容器内回环）互补，不再假绿。
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8767/livez"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     #   ↑ 一个 capability 都不留：本服务只监听 8767（>1024），不需要
     #     NET_BIND_SERVICE。若你把端口改到 1024 以下，要补 cap_add。
     volumes:
