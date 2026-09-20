@@ -871,6 +871,25 @@ def _format_conversation(messages: list) -> str:
     return "\n\n".join(parts)
 
 
+def _resolve_session_owner(session_id: str) -> str:
+    """v22.0（雷霆审计 B11 · GPT-5.6 P1-02）：从宿主会话元数据推导 owner。
+
+    此前固定写 DEFAULT_USER_ID——owner 不明确时静默写错租户，比报错更糟。
+    从 state.db 的 session 行读 user_id；读不到或为空 → 返回空串，调用方拒写。
+    """
+    try:
+        conn = sqlite3.connect(STATE_DB)
+        try:
+            row = conn.execute(
+                "SELECT user_id FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+            return (row[0] or "").strip() if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+
+
 def run_auto_memory() -> None:
     """执行一次自动记忆提取（通过 HTTP 调用 /add 端点）。"""
     last_id = _read_last_id()
@@ -880,22 +899,33 @@ def run_auto_memory() -> None:
 
     sessions = _group_by_session(messages)
     stored_total = 0
+    skipped = 0
     for sid, msgs in sessions.items():
         if len(msgs) < 2:
             continue
+        owner = _resolve_session_owner(sid)
+        if not owner:
+            # v22.0（B11）：owner 不可判定 → 拒写并记 degraded，不 fallback 到 default
+            logger.warning(
+                "🛑 [auto-memory] 会话 %s 的 owner 无法从 state.db 推导，拒写"
+                "（不再静默 fallback 到 default 域）", sid[:8])
+            skipped += 1
+            continue
         conversation = _format_conversation(msgs)
         msg_list = [{"role": "user", "content": conversation}]
-        resp = _api_post("/add", {"messages": msg_list, "user_id": DEFAULT_USER_ID}, timeout=60)
+        resp = _api_post("/add", {"messages": msg_list, "user_id": owner}, timeout=60)
         if "error" not in resp:
             n = len(resp.get("results", []))
             stored_total += n
-            logger.info(f"[auto-memory] 会话 {sid[:8]}… → {n} 条记忆")
+            logger.info(f"[auto-memory] 会话 {sid[:8]}… → {n} 条记忆（owner={owner}）")
         else:
             logger.warning(f"[auto-memory] 会话 {sid[:8]}… 存入失败: {resp.get('error')}")
 
     _write_last_id(max_id)
-    if stored_total:
-        logger.info(f"[auto-memory] 本轮共存入 {stored_total} 条记忆（游标→{max_id}）")
+    if stored_total or skipped:
+        logger.info(
+            f"[auto-memory] 本轮存入 {stored_total} 条"
+            f"（游标→{max_id}），拒写 {skipped} 条（owner 不明）")
 
 
 def auto_memory_loop() -> None:
