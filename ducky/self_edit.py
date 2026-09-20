@@ -344,8 +344,13 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
     }
 
 
-def rollback_edit(edit_id: int, memory=None) -> dict:
-    """回滚一次自编辑：把记忆恢复到编辑前内容（用户可回滚合并）。"""
+def rollback_edit(edit_id: int, memory=None, caller_user_id: str = "") -> dict:
+    """回滚一次自编辑：把记忆恢复到编辑前内容（用户可回滚合并）。
+
+    v22.0（雷霆审计 A4）：caller_user_id 非空时校验归属——caller 必须与
+    该次编辑的 user_id 一致，否则返回 error（不越权回滚他人的记忆）。
+    空 caller 按 v21.x 兼容语义放行（存量管理脚本/控制台不传 caller）。
+    """
     ensure_self_edit_schema()
     conn = get_facts_conn()
     row = conn.execute(
@@ -354,6 +359,11 @@ def rollback_edit(edit_id: int, memory=None) -> dict:
     if not row:
         conn.close()
         return {"status": "error", "detail": f"edit_id={edit_id} 不存在或已回滚"}
+
+    # v22.0：越权回滚闸
+    if caller_user_id and caller_user_id != row["user_id"]:
+        conn.close()
+        return {"status": "error", "detail": f"edit_id={edit_id} 不归 caller({caller_user_id}) 所有（owner={row['user_id']}）"}
 
     old_content = row["old_content"]
     memory_id = row["memory_id"]
