@@ -32,6 +32,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CALLER_BINDINGS",
     # v22.0（雷霆审计 A2）：caller↔凭据绑定第三态（strict/permissive/off）
     "AIDUMEI_CALLER_BINDING_MODE",
+    # v22.0（雷霆审计 B4）：testclient 显式信任开关（默认信任，设 0 拒）
+    "AIDUMEI_TEST_CLIENT_TRUST",
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",
