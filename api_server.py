@@ -572,7 +572,32 @@ def _enforce_public_binding_policy() -> None:
     if _auth_enabled():
         return
     if os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}:
-        logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
+        # v22.0（雷霆审计 A7 · GLM F-04）：逃逸门组合闸。
+        # INSECURE_PUBLIC=1 ∧ TRUST_PROXY=1 ∧ 无凭据 = 公网裸奔且三道防线
+        # （反代痕迹 503 / Host 校验 / 跨站写拒绝）全部旁路——单个逃生舱是
+        # 部署方的知情选择，**组合态**此前只剩一行 WARNING，没有任何机制
+        # 阻止「顺手多开一个开关」把实例推上公网。组合态必须二次显式确认：
+        # 确认变量的值必须逐字等于实际监听地址（防复制粘贴的 1/true 蒙混）。
+        if _trust_proxy_enabled():
+            confirm = os.environ.get("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", "").strip()
+            if confirm != host:
+                logger.critical(
+                    "🛑 [Security Fatal] 拒绝启动：AIDUMEM_ALLOW_INSECURE_PUBLIC=1 与 "
+                    "AIDUMEI_TRUST_PROXY=1 同时开启且未配置任何凭据——公网监听 '%s' "
+                    "且全部请求期防线让渡给反代。若确属知情部署，请设 "
+                    "AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s（值必须逐字等于监听地址）；"
+                    "否则请配置 AIDUMEM_API_TOKEN 或关掉其中一个开关。", host, host,
+                )
+                raise RuntimeError(
+                    "Fatal Security Policy: INSECURE_PUBLIC + TRUST_PROXY without any "
+                    f"credential on '{host}' requires AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH='{host}'."
+                )
+            logger.critical(
+                "🛑 [Security] 组合逃逸门已二次确认（AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s）："
+                "公网裸奔 + 三道请求期防线全部让渡给反代，后果自负。", host,
+            )
+        else:
+            logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
         return
     logger.critical(
         "🛑 [Security Fatal] 拒绝启动：监听地址为公网/非回环 '%s' 且未配置任何凭据"

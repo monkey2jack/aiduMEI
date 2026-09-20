@@ -777,6 +777,34 @@ def register_health_routes(app: FastAPI) -> None:
             probes["distill_liveness_ok"] = None
             probes["distill_liveness_error"] = str(_dis_exc)[:120]
 
+        # v22.0（雷霆审计 A7）：unsafe_combo —— 安全逃逸门组合态探针。
+        # 单个逃生舱是知情选择，组合态（INSECURE_PUBLIC ∧ TRUST_PROXY ∧ 无凭据
+        # ∧ ALLOW_IMPLICIT_CALLER）必须可见：即使部署方二次确认过，/health 也
+        # 要如实报告「本实例处于组合逃逸形态」，让运维巡检一眼看到。
+        try:
+            import os as _os_sc
+            _insecure_pub = _os_sc.environ.get(
+                "AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
+            _trust_proxy = _os_sc.environ.get(
+                "AIDUMEI_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes"}
+            _implicit = _os_sc.environ.get(
+                "AIDUMEI_ALLOW_IMPLICIT_CALLER", "").strip() == "1"
+            _combo: list[str] = []
+            if _insecure_pub:
+                _combo.append("insecure_public")
+            if _trust_proxy:
+                _combo.append("trust_proxy")
+            if _implicit:
+                _combo.append("implicit_caller")
+            if not _auth_gate_enabled():
+                _combo.append("no_credential")
+            # 两个以上逃生门同开（或任一个 + 无凭据）即报告组合态
+            probes["unsafe_combo"] = _combo if len(_combo) >= 2 else []
+            probes["unsafe_combo_ok"] = len(_combo) < 2
+        except Exception as _sc_exc:
+            probes["unsafe_combo_ok"] = None
+            probes["unsafe_combo_error"] = str(_sc_exc)[:120]
+
 
         # v21.2.0 审计整改轮（生产用户审计 🔴-2）：episode_ok —— 任务书 DoD 点名要的探针，
         # v21.2.0 漏做且实录未登记缺口。查的是「轨迹这条腿能不能用」：
