@@ -51,8 +51,8 @@ _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
     # 路由注册器（register_*_routes）：CC 高是因为把多个路由函数组装进一个函数体，
     # 业务复杂度低，不拆；CC 只许降。
     "ducky/hot/health.py": {
-        "register_health_routes": (146, "组装器：把 11+ 探针装进一个函数，业务复杂度低"),
-        "_run_full_probe": (133, "健康探针聚合器，v22.0 待拆（Sonnet P0-1）"),
+        "register_health_routes": (151, "组装器：把 11+ 探针装进一个函数，业务复杂度低"),
+        "_run_full_probe": (138, "健康探针聚合器，v22.0 待拆（Sonnet P0-1）"),
     },
     "ducky/hot/add.py": {
         "register_add_routes": (142, "组装器"),

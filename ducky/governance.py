@@ -194,10 +194,12 @@ def _is_random_mash(text: str) -> bool:
     v22.0（雷霆审计 A9 · Gemini P0-03）：「含任何 CJK 即放行」是粗暴豁免——
     攻击载荷掺一个「好」字就能带着整段英文垃圾直通。改为按占比判定：
     - 剔除含 CJK 的 token 后，其余 token 全部是垃圾，
-      且这些垃圾 token 占全体 token ≥ 一半 → 判噪声；
+      且这些垃圾 token 占全体 token **超过一半**（> 50%）→ 判噪声；
     - 中文为主体（CJK token 占多数）→ 照旧放行交 LLM 评估。
     典型样本：asdfgh jkl 12345 xxxxx qqqq zzzz（纯垃圾）、
     asdfgh jkl 12345 好（掺一个字救不回，v22.0 起判噪声）。
+    「asdf 是真的吗」（2 token 各半）按宁窄勿宽不判噪声——单一垃圾 token
+    不构成噪声载荷，与「掺一个字救不回整段垃圾」区分。
     """
     s = text.strip()
     tokens = s.split()
@@ -206,8 +208,8 @@ def _is_random_mash(text: str) -> bool:
     non_cjk = [t for t in tokens if not re.search(r"[一-鿿]", t)]
     if not non_cjk:
         return False  # 纯中文：交 LLM 评估
-    if len(non_cjk) < len(tokens) * 0.5:
-        return False  # 中文为主体：不判噪声（宁窄勿宽）
+    if len(non_cjk) <= len(tokens) * 0.5:
+        return False  # 中文为主体或各半：不判噪声（宁窄勿宽）
     return all(_is_junk_token(t) for t in non_cjk)
 
 
