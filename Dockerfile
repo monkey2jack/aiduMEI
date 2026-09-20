@@ -91,6 +91,8 @@ ENV HOME="/app/data"
 
 # v20.5.0 正式版（Sonnet 外审 P1-8）：容器原生健康检查，编排系统可直接探活。
 # 打 /livez（O(1) 存活探针），不打 /health（完整探针贵，不适合高频轮询）。
+# v22.0（雷霆审计 A8 · GLM F-05）：与实际绑定解耦——容器内回环探测容器内服务，
+# 宿主可达性由 compose 的 healthcheck 承担（见 docker-compose.yml）。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8767/livez', timeout=4).status == 200 else 1)"
 
