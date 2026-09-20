@@ -199,8 +199,8 @@ except Exception as exc:
 found = False
 for _ in range(8):          # 异步落库，回读要给足耐心
     try:
-        res = _call("/search", {"query": marker, "user_id": uid, "limit": 5,
-                                "metadata": {}})
+        res = _call("/search", {"query": marker, "user_id": uid, "caller_user_id": uid,
+                                "limit": 5, "metadata": {}})
     except Exception:
         break
     for r in (res.get("results") or []):

@@ -46,6 +46,7 @@ class RollbackRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     edit_id: int
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 def register_p0_routes(app: FastAPI) -> None:
@@ -119,11 +120,15 @@ def register_p0_routes(app: FastAPI) -> None:
 
     @app.post("/self-edit/rollback")
     def self_edit_rollback(req: RollbackRequest):
-        """回滚一次自编辑：把记忆恢复到编辑前内容。"""
+        """回滚一次自编辑：把记忆恢复到编辑前内容。
+
+        v22.0（雷霆审计 A4）：caller_user_id 非空时做归属校验，
+        空 caller 按 v21.x 兼容语义放行（管理面口径由 routes_pantheon 管）。
+        """
         from ducky.self_edit import rollback_edit
 
         try:
-            return rollback_edit(req.edit_id)
+            return rollback_edit(req.edit_id, caller_user_id=req.caller_user_id)
         except Exception as e:
             logger.error(f"/self-edit/rollback 失败: {e}")
             return {"status": "error", "detail": str(e)}
