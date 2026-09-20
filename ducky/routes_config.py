@@ -256,13 +256,23 @@ def register_config_routes(app: FastAPI) -> None:
         return _build_config_view()
 
     @app.put("/config/{section}")
-    def update_config(section: str, body: dict) -> dict:
+    def update_config(section: str, body: dict, caller: str = "") -> dict:
         """UI 保存模型配置：PUT /config/llm|embedder|rerank|vector_store。
 
         body 与 GET /config 同构（provider + config）。合并语义：
         api_key 传空视为不修改；rerank 未显式给 enabled 时按是否填了
         model/base_url 自动判断。写回 mem0_config_local.json 后热生效。
+
+        v22.0（雷霆审计 B7）：配置面是权限升级面——任何持普通 API 凭据者
+        都能改模型配置/口令。加 admin 校验：caller 须在 AIDUMEI_FEDERATION_ADMINS
+        名单内，否则 403。
         """
+        from ducky.federation.routes import _is_admin_caller
+        if not _is_admin_caller(caller):
+            return JSONResponse(
+                {"status": "error", "detail": "配置修改须 admin（AIDUMEI_FEDERATION_ADMINS）"},
+                status_code=403,
+            )
         if os.environ.get("AIDUMEM_CONFIG_READONLY", "0").lower() in {"1", "true", "yes"}:
             return JSONResponse(
                 {"status": "error", "detail": "当前为只读演示模式：配置不可在线修改"},
@@ -316,8 +326,14 @@ def register_config_routes(app: FastAPI) -> None:
         return load_speed_cfg()
 
     @app.post("/config/_speed")
-    def update_speed(body: dict) -> dict:
-        """在线微调 _speed 参数。body: {key, value} 或 {updates: {k:v,...}}。"""
+    def update_speed(body: dict, caller: str = "") -> dict:
+        """在线微调 _speed 参数。body: {key, value} 或 {updates: {k:v,...}}。
+
+        v22.0（雷霆审计 B7）：须 admin。
+        """
+        from ducky.federation.routes import _is_admin_caller
+        if not _is_admin_caller(caller):
+            return {"status": "error", "detail": "配置修改须 admin（AIDUMEI_FEDERATION_ADMINS）"}
         if os.environ.get("AIDUMEM_CONFIG_READONLY", "0").lower() in {"1", "true", "yes"}:
             return {"status": "error", "detail": "当前为只读演示模式：配置不可在线修改"}
         key = body.get("key")
@@ -343,7 +359,7 @@ def register_config_routes(app: FastAPI) -> None:
     # 修改登录密码（v18.3）
     # ═══════════════════════════════════════════════════════════════════
     @app.post("/config/password")
-    def change_password(body: dict) -> dict:
+    def change_password(body: dict, caller: str = "") -> dict:
         """修改 UI 登录口令。
 
         v19.4.1（P2-2 / P0-1）：
@@ -351,7 +367,12 @@ def register_config_routes(app: FastAPI) -> None:
             旧格式 `salt:sha256hex` 校验通过后自动升级，存量部署无感；
           · 改密成功后**撤销全部既有会话**，强制所有端重新登录 ——
             否则老会话仍能用旧凭据继续访问，改密等于没改。
+
+        v22.0（雷霆审计 B7）：须 admin。
         """
+        from ducky.federation.routes import _is_admin_caller
+        if not _is_admin_caller(caller):
+            return {"status": "error", "detail": "口令修改须 admin（AIDUMEI_FEDERATION_ADMINS）"}
         from ducky.security.auth import (
             check_ui_password,
             hash_password,

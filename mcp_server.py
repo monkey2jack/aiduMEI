@@ -145,17 +145,19 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool):
 
 
 def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
-    """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
+    """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。
+
+    v22.0（雷霆审计 B6 · Step P1-8）：传输错误（连接失败/超时）抛异常，
+    让 MCP 框架标 isError=True；业务错误（4xx）保留 error dict 形态。
+    此前传输错误与业务错误同态，Agent 把「服务挂了」当成「查无此忆」。
+    """
     # v20.4.1a(C 面整改):urllib → httpx,与全仓 HTTP 客户端统一
     # (连接池/超时语义一致,少一套排障分支)。query 编码交给 httpx。
-    try:
-        resp = httpx.get(f"{API_BASE}{path}", params=params,
-                         headers=_api_headers(), timeout=timeout)
-        if resp.status_code >= 400:
-            return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
-        return resp.json()
-    except Exception as e:  # 传输错误与 JSON 解析失败同态:error dict
-        return {"error": str(e)}
+    resp = httpx.get(f"{API_BASE}{path}", params=params,
+                     headers=_api_headers(), timeout=timeout)
+    if resp.status_code >= 400:
+        return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
+    return resp.json()
 
 
 def _api_post(path: str, body: dict | None = None, timeout: int = 30,
@@ -166,21 +168,20 @@ def _api_post(path: str, body: dict | None = None, timeout: int = 30,
     而不是 Pydantic 模型，FastAPI 会从 query 读它们，把同名键塞进 JSON body
     是**静默无效**的 —— 请求 200、参数全丢。哪个端点该用哪种，由
     tests/test_v20_2_4_mcp_contract.py 逐工具对表钉住。
+
+    v22.0（雷霆审计 B6）：传输错误抛异常（isError=True），业务错误保留 dict。
     """
     clean_params = (
         {k: v for k, v in params.items() if v is not None and v != ""}
         if params else None
     )
-    try:
-        resp = httpx.post(f"{API_BASE}{path}", params=clean_params,
-                          json=body or {},
-                          headers=_api_headers({"Content-Type": "application/json"}),
-                          timeout=timeout)
-        if resp.status_code >= 400:
-            return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
-        return resp.json()
-    except Exception as e:  # 同上:传输错误与 JSON 解析失败同态
-        return {"error": str(e)}
+    resp = httpx.post(f"{API_BASE}{path}", params=clean_params,
+                      json=body or {},
+                      headers=_api_headers({"Content-Type": "application/json"}),
+                      timeout=timeout)
+    if resp.status_code >= 400:
+        return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
+    return resp.json()
 
 
 def _ok(data: Any) -> str:
