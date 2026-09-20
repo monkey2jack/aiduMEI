@@ -10,7 +10,7 @@ v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 �
 
 v22.0.0 (雷霆审计整改 · 默认从严 · 2026-09-20)
     主题：**身份派生，越权默认拒。**
-    11 份雷霆审计（10 外部模型 + 嘟嘟）合并后 12 条 P0 全实锤整改：
+    11 份雷霆审计（10 外部模型 + 用户）合并后 12 条 P0 全实锤整改：
     1. 众神殿管理面鉴权（grant/revoke/deactivate 须本人或 admin，空 caller 403）。
     2. caller↔凭据绑定第三态（strict/permissive/off），消灭「新 token 未登记即裸奔」。
     3. 众神殿空 caller 收紧：bearer 必须声明身份，session/回环保留主人直连。
