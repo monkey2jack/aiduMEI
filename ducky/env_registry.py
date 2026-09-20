@@ -30,6 +30,8 @@ _PREFIX_RE = re.compile(r"^AIDUME[IM]_[A-Z0-9_]+$")
 KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_ALLOW_IMPLICIT_CALLER",
     "AIDUMEI_CALLER_BINDINGS",
+    # v22.0（雷霆审计 A2）：caller↔凭据绑定第三态（strict/permissive/off）
+    "AIDUMEI_CALLER_BINDING_MODE",
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",
