@@ -143,8 +143,9 @@ try:
         _warming = data.get("warming_up") or []
         if _status is None:
             # 键不在：要么服务端是旧版（没这个字段），要么未鉴权被脱敏。
-            # 两种都是「读不到」，不是「没问题」——如实标未知，不冒充绿灯。
-            _api_ok, _verdict = True, "health_status=unknown(旧版或未鉴权)"
+            # v22.0（雷霆审计 D2 三态纪律）：「读不到」不是「没问题」，
+            # 如实标 None（未知），all_ok 判否——哨兵不得把「不知道」说成「绿」。
+            _api_ok, _verdict = None, "health_status=unknown(旧版或未鉴权)"
         elif _status == "ok" and not _degraded:
             _api_ok, _verdict = True, ""
         else:
@@ -191,6 +192,8 @@ except Exception as e:
 
 # ═══════════ 汇总 ═══════════
 total_ms = int((time.time() - start) * 1000)
+# v22.0（雷霆审计 D2）：三态判据——ok=None（读不到）不算通过。
+# all() 里 None 是 falsy → 自动判否，无需改本行；但要在 verdict 里让 None 可见。
 all_ok = bool(checks) and all(v.get("ok") for v in checks.values())
 
 # 这一行是运维直接读的输出，属用户可见门面，用当前品牌名。
