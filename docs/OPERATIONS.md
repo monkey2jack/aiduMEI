@@ -40,3 +40,11 @@ aiduMEI patches its base library at import time (`ducky/mem0_patches.py`). A bas
 3. Run `pytest tests/test_v20_3_2b_p2_batch.py tests/test_mem0_patches*.py` — the patch ledger must report every patch as `applied`, none as `skipped`.
 4. Check `/health` → `probes.mem0_patches` on the upgraded instance; a patch reported `skipped` means upstream moved the seam and the patch silently no longer applies.
 5. Run `scripts/e2e_smoke.py --json` and the drill before declaring the upgrade done. Record base version, patch ledger and test numbers in the CHANGELOG entry.
+
+## 请求体防御边界（v22.0 · 雷霆审计 B8）
+
+`_payload_too_large_guard` 只拦有 Content-Length 的请求（硬顶 1 MiB）。**无 Content-Length 的 chunked 请求不拦**——拦它就得先读完整 body 再转发，读爆的内存和没拦一样。
+
+那一层的职责属于反向代理（nginx `client_max_body_size`）或应用层流式上限。**直暴端口的部署**（无反代）需自行承担 chunked 超大请求的风险；Docker/compose 路径默认绑回环，不直暴公网。
+
+若需服务端流式上限（不依赖反代），可自行加 ASGI 中间件按接收字节数累计，超限即断连。本项目不内置，因为单进程自托管场景下反代是标配。

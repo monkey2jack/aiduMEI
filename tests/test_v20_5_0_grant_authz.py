@@ -234,7 +234,7 @@ def test_create_grant_rejects_unknown_scope_dimension():
 def test_lineage_query_enforces_ownership():
     """alice 可查自己事实的谱系；bob 查 → 403；无 caller → 403。"""
     from ducky.federation.writer import write_fact
-    r = write_fact("private", "pin", "alice 的秘密", agent_id="alice", dedup=False)
+    r = write_fact("private", "pin", "alice 的秘密", agent_id="alice", user_id="alice", dedup=False)
     mid = f"fact:{r['fact_id']}"
     client = _http_client()
 
@@ -251,7 +251,7 @@ def test_lineage_query_enforces_ownership():
 def test_lineage_verify_scope_rules():
     """单链 verify 走归属校验；全库 verify 仅 admin。"""
     from ducky.federation.writer import write_fact
-    r = write_fact("private", "pin", "alice 的秘密", agent_id="alice", dedup=False)
+    r = write_fact("private", "pin", "alice 的秘密", agent_id="alice", user_id="alice", dedup=False)
     mid = f"fact:{r['fact_id']}"
     client = _http_client()
 

@@ -1,5 +1,34 @@
 # aiduMEI 版本演进史
 
+## v22.0.0（2026-09-20 雷霆审计整改）：众神殿鉴权 · 绑定 strict · 注入边界 · 逃逸门组合闸 · 治理多语言 · 有界评估池 · 依赖合一 · 产品面收口
+
+> **性质：大版本（默认从严，向后不兼容）。** 11 份雷霆审计（10 外部模型 + 用户）合并后 12 条 P0 全实锤整改；系统性质从「单主人自用」跃迁到「身份派生/越权默认拒」。
+
+- **A1 众神殿管理面鉴权**：grant/revoke/deactivate 须本人或 admin，空 caller 403；list_grants 非 admin 只看自己。
+- **A2 caller↔凭据绑定第三态**：`AIDUMEI_CALLER_BINDING_MODE=strict` 时未登记指纹 403（消灭「新 token 未登记即裸奔」）；permissive 为迁移窗口。
+- **A3 众神殿空 caller 收紧**：bearer 必须声明 caller_user_id；session/回环保留主人直连语义。
+- **A4/A5**：/self-edit/rollback 补归属校验；谱系 owner 改用 user_id（与 bank_contract 同判据）。
+- **A6/A11**：shell 读线幂等判据前缀同源 + /add 落库前中和边界；注入守卫 NFKC 归一化（全角绕过）。
+- **A7 逃逸门组合闸**：INSECURE_PUBLIC∧TRUST_PROXY∧无凭据 → 拒绝启动，确认变量值须逐字等于监听地址。
+- **A9/A10**：治理引擎英文高危词表 + CJK 占比乱码检测 + nonce 边界；异步评估改有界池（max_workers=4）。
+- **A12**：pyproject 下限对齐 requirements；echarts 5.5.0 sha256 清单 + CI 校验。
+- **B 面**：/health 聚合键名盲区 / cron 哨兵 flag / testclient 显式信任 / push_gate 装 hook / 三态纪律 / CC 棘轮 / MCP error 三态 / routes_config admin / chunked 文档边界 / PBKDF2 600k / auto_memory 禁 fallback / 谱系完整性探针。
+- **C 面**：README 卖点证据状态标注 / CHANGELOG Scope Rulings 表 / 双前缀冻结 / README 状态标签。
+- **D 面**：鉴权面普查守卫（AST 扫管理动词路由）/ 三态纪律规范 / CC 棘轮守卫 / 鉴权负向对照模板。
+
+用例总数 2143 → 2203（+60 条验收与整改守卫，全部红→绿）。
+
+## v22.0 Scope Rulings（2026-09-20 · 雷霆审计 C3）
+
+> **改判必须代价透明**：每条「不适用/改判」须填四字段——原承诺 / 改判结论 / 改判依据 / 因此放弃了什么能力（读者可感知的后果）。
+
+| 原承诺 | 改判结论 | 改判依据 | 放弃了什么 |
+|---|---|---|---|
+| mTLS / WORM / 调用方密码学绑定 | 不适用（v21.1 改判） | 定位①单主人多分身，同一宿主内互可信 | 互不信任多租户下的防冒用（caller 校验 + 空 caller 403 保留） |
+| 正式基准成绩（LoCoMo / LongMemEval） | 协议已冻结，成绩待跑 | 「宣称即承诺」纪律：先冻协议后跑分，不跑完不定规则 | 三大卖点当前**无实测排名证据**（README 已标注「功能组合独一份」） |
+| 谱系链不可篡改 | 可检测篡改（v20.5 改措辞） | 持库写者可重算链哈希（只绑 content） | 不可篡改承诺；v22.0 起 /health 暴露 lineage_integrity 探针（可检测） |
+| 回声抑制覆盖全部召回路径 | 仅覆盖带 session 的调用方 | 旧读线不传 session 时 M2 空转（v21.2 自审发现） | 无 session 的调用方不受回声抑制保护 |
+
 ## [探针修复] distill_liveness 分母误报根治（2026-09-19）
 
 > **性质：健康检查探针语义修正，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。
@@ -53,7 +82,7 @@
   - **探针** `distill_liveness_ok`：24h 内有会话写入却零精华产出即判降级（判据把精华自己按 `origin_agent` 排除出会话计数，分子分母同源）。漏挂第三条线比漏挂写线安静——记忆照常进，只是永远没有「这一程」那一层，本版之前没有任何绿灯会因此变红。
   - README 双语把「两条线」升级为「三条线」，并写清**「自动」到底自动在哪**：三条钩子分别在「说话前 / 说话后 / 聊完」自己触发，接上之后不需要再对记忆做任何事。正典、`config.yaml.snippet`、`INTEGRATION_GUIDE.md` 同步。
 
-- **M7 episode rollup（默认关）+ M8 借阅对齐**：同 episode 多条命中聚合为 ≤6 步轨迹摘要（拼接式零 LLM）；`grant_hall_access` / `revoke_hall_grant` 进事件账本留痕（撤销只在**真撤到了**时记账），记忆档案新增「## 八、当前生效借阅」。用例总数 2048 → 2143（+95 条验收与整改守卫，全部红→绿）；env 新键 13 个全走 `AIDUMEI_` 前缀并三处登记。施工期被本仓守卫拦下 32 次并逐条收口，其中四次是真缺陷：函数内 `import os` 遮蔽模块级绑定（P0-2 同类）、MMR 点火豁免语义写错（低分点火条会压过高分条），以及下面「写线」一节里的两处。
+- **M7 episode rollup（默认关）+ M8 借阅对齐**：同 episode 多条命中聚合为 ≤6 步轨迹摘要（拼接式零 LLM）；`grant_hall_access` / `revoke_hall_grant` 进事件账本留痕（撤销只在**真撤到了**时记账），记忆档案新增「## 八、当前生效借阅」。用例总数 2048 → 2203（+95 条验收与整改守卫，全部红→绿）；env 新键 13 个全走 `AIDUMEI_` 前缀并三处登记。施工期被本仓守卫拦下 32 次并逐条收口，其中四次是真缺陷：函数内 `import os` 遮蔽模块级绑定（P0-2 同类）、MMR 点火豁免语义写错（低分点火条会压过高分条），以及下面「写线」一节里的两处。
 - **审计整改轮（2026-09-17，用户审计 2🔴 3🟡 2🟢）**：🔴-1 溯源打标改走**显式 metadata**（`origin_from_metadata`），`_index_after_add` / `track_knowledge_evolution` 都不再依赖 contextvar 这个隐式通道 —— 生产 sidecar 33 行 `origin_session_id` 全空、M2 向量腿与 M1 轨迹登记从上线起空转，而 `epistemic_ok` 一直是绿的；根因经三路实验判定为**调用方未透传 session**（宿主 Hermes 插件 `_add` 只传 `channel`），服务端加固是为了让「少一次 set 就静默变空」这件事不再可能。🔴-2 补上任务书 DoD 点名却漏做的 `episode_ok` 探针，并新增 `epistemic_session_coverage`（7 天窗口，长期为 0 即记降级）——窗口刻意不用 24h：本仓日增只有个位数 sidecar 行，24h 配阈值 10 会让探针永不触发，那是又造一块白护栏。🟡-1 经实测不成立（未鉴权 `/search` 本就返回 401，审计中的「空 results」是解析脚本默认值），补守卫锁死该语义。🟢-1 回声抑制降级从 `debug` 升 `warning` 并带 session/user 上下文。🟢-2 `AGENTS.md` 的 curl 示例经核为扫描器启发式假阳性（loopback + 自有 token + 管道到 `jq` 而非 shell），把良性判据前置到示例之前。用例 2078 → 2087（+9 条整改守卫，含**跨线程打标实证**与负向对照）。
 - **自查轮（2026-09-17，施工方回头复审六项）**：整改期把 v21.2.0 全部六项重走一遍，翻出 9 处「代码在场、开关一开就不对」的空转 —— 它们都因默认关 / 旁路 / 观测缺失而从未在冒烟里现形。**M8**：dossier 借阅过滤读的是 `revoked_at` 而真实键是 `revoked`（取不存在的键恒 `None`，于是一条都滤不掉），且漏了过期判据、`actions` 是 list 被当字符串渲染成 `['read']`。**M7**：`_apply_episode_rollup` 的 `limit` 形参从未被使用（折叠掉的名额不回填，一开开关返回条数就变少），去重只覆盖前 6 条（第 7 条起摘要与单条并存，与「与单条去重」正相反）。**M4**：打分出口那一刀看到的是 `IGNITION_BOOST` **之前**的分，却会淘汰点火条 —— `_apply_score_floor` 早为同一条推理显式豁免过，MMR 漏了；新增 `protect_ignited` 只在那一刀生效，funnel 那一刀（分已是终态）照常竞争。**M2**：workspace 热缓存快路提前 return、整条绕开打分出口，而那里正是回声最可能出现的地方（已补同款过滤，并用 `_bypassed` 如实声明这条路旁路了 MMR/errsig）；MCP `mem_search` 不传 `session_id`，整条 MCP 通路上回声抑制等于不存在；`conversation_id` 只被写入侧认、检索侧不认，键名集合两侧不等；funnel 降级腿丢了 `bank_id`/`session_id`（v20.2.4 F-15 的病在降级路径复发）；verbatim 元数据回填失败只 `debug`，一失败就让原文腿的回声过滤全线失效。**M6**：写入侧与检索侧各留一份正则字面量拷贝，已收成单一真源。**M1**：`get_credit_map` 无域收窄，已走 `scope_clause()` 正规入口。另把 `_errsig_hit`/`_credit` 这两个「写了没人读」的生效证据下发进遥测 —— 本轮审计的核心结论正是「单测绿 + 冒烟绿都不够，要有数据面旁证」。回声抑制对 facts 类候选的射程边界在 docstring 如实登记，不靠沉默让人以为覆盖了。
 - **范围外缺口收口（2026-09-17）**：v21.1 把跨殿借阅织进了 `recall_chain` / `session_search` / `dossier`，但 **`/search` 这条最主要的 core 读路径收了 `caller_user_id` 却从不校验** —— 调用方声明了自己是哪座殿，声明被安静收下然后丢弃，「声明了」与「没声明」行为逐字节相同，无 403 无日志。现给 `/search` 与 `/search_trace` 补上 `authorize_cross_hall`；空 caller / caller==user_id 照旧放行，**存量调用方零破坏**（宿主、MCP、控制台都不传 caller）。**顺带修掉一处语义混淆**：`recall_chain` / `session_search` 的授权拒绝原本落进通用 `except` 被兜成 `{"status":"error"}`（HTTP 200）—— 「无权限」和「服务端故障」长得一模一样，调用方的重试逻辑会一直重试一个永远不会成功的请求。四处统一转 **403**，异常类型收窄到 `HallError`（DB/导入故障不是拒绝，仍走故障响应），并按 P1-4 教训在通用 `except` 之前放行 `HTTPException`（否则刚 raise 的 403 会被自己吞掉）。
@@ -118,7 +147,7 @@
 - **F1 认知出身标签（首部落地）**：新增 `ducky/epistemic.py`——`resolve_epistemic(source, has_external_ref)` 唯一判定纯函数，零 LLM 成本（用户直述→`user_provided` / 外部引用→`referenced` / LLM 推断→`reasoned` / 兜底→`fuzzy`；映射表按本仓真实 source 值核定：pattern_extract/reflect/autodream/self_edit/cron_lesson 等在册）；检索乘数默认 ×1.15/×1.05/×1.00/×0.85，`AIDUMEI_EPISTEMIC_MULT_*` env 可配、非法 fail-closed 回默认（env 注册表 +4）。写入路径接入、检索落地、`/health` 探针随本版后续提交。
 - **删除链矩阵**（`ducky/wal_engine.py`）：两张 v21 新表补显式 clean 裁决并接线 §16 级联清理（(user_id,bank_id) 谓词删除）——被拒的认知草稿与学到的偏好画像同样在擦除承诺内。
 - **守卫同步**：mkdtemp 基线 54→55（新测试文件独立临时库）；except 棘轮 632→636（v6 迁移 4 处容错，与 v5「迁移失败不阻塞启动」同型纪律）；`tests/test_v20_5_0_backfill.py` 版本断言放宽为 `>=5`（历史迁移守卫不清账）。
-- **用例总数 1993 → 2034**（--collect-only；新增 41 条全部红→绿对照）。独立开发机 **2022 通过 · 12 跳过**（2026-09-14 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）。
+- **用例总数 1997 → 2034**（--collect-only；新增 41 条全部红→绿对照）。独立开发机 **2022 通过 · 12 跳过**（2026-09-14 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）。
 - **在途登记**（本段随施工推进持续更新，分项验收标准以任务书为准）：F1 写入路径/检索乘数/探针；F2 provenance 填充与 `GET /knowledge/{id}/evolution`；F3 `GET /dossier` 档案导出 + 控制台按钮；F4 生命周期派生态 / F5 反思质量门 / F6 纠正即时反思 / F7 CJK 新颖度预筛 / F8 健康面板 / F9 检索权重学习（全部影子起步）。
 
 ### v21.0 收口（2026-09-14 · 生产用户视角审计整改全闭环）
@@ -138,9 +167,9 @@
 - **复杂度回吐（Sonnet P1-3）**：`run_add_pipeline` CC 53→7、`write_fact` 44→10、`funnel_search` 41→8（radon 复测）；拆出的子步骤配单测（tests/test_v20_5_1_cc_refactor.py）；行为逐字不变。无 rollback 写函数棘轮 103→104（拆分的 update 分支函数，事务纪律同前，基线注释在案）。
 - **WAL 崩溃/重放幂等矩阵（Luna F-05 采纳）**：tests/test_v20_5_1_wal_replay.py——append 未 commit 崩溃、部分写入、重复 replay、终态防复活；不变量「同一逻辑 job 重放 N 次 == 重放 1 次」。
 - **打分正确性**：`scoring.py` 三处 `or` 吞显式 0（reliability/access_count/bm25_score）修正为「缺失才兜底」（维护者新发现-2，v20.2.4 NaN 闸门的同型残留）；`mem0_sync.py` md5→sha256 截断（Sonnet B324）；`/health` 新增 mem0 路径一致性探针：`AIDUMEM_DATA_DIR` 与 mem0 配置里 qdrant `path`/`history_db_path` 脱钩时 WARNING（dsv4f M-5，DEPLOY_DOCKHOLD 记录在案的坑；绝对路径只进授权视图）。
-- **文档归真**：README 头条拆分 **行为 1787 + 脚本/钩子行为 70 + 守卫 136 = 1993**（dsv4f C-1；口径脚本 `scripts/count_test_kinds.py` 可复算）；`docs/archive/` 建立，v14 时代 `ARCHITECTURE.md` 与 v10 Synapse / viking-fs / osaurus 三份历史设计稿移入（dsv4f M-3 / Luna F-13）；`docs/POSITIONING.md` 租户行加脚注指向三类不在轴上的存储、「10–20 分」标注「行业惯例值非本引擎实测」（dsv4f M-1/C-3）；`ONE_LINE_INSTALL.md` 收敛子项**经复核驳回**——它与 `prompts/install.txt` 的逐字相等由 test_first_run_experience 钉死，漂移面不存在（判据在案）；结案陈词勘误：v20.5.0 段「前端零触碰」表述不确，4632e4e 实为 8 前端文件 +977/-118（用户审计 🟡-3，在此更正）；`frontend/css/style.css` 残留第三方组件名清除（用户审计 🔴-2）。
+- **文档归真**：README 头条拆分 **行为 1787 + 脚本/钩子行为 70 + 守卫 136 = 1997**（dsv4f C-1；口径脚本 `scripts/count_test_kinds.py` 可复算）；`docs/archive/` 建立，v14 时代 `ARCHITECTURE.md` 与 v10 Synapse / viking-fs / osaurus 三份历史设计稿移入（dsv4f M-3 / Luna F-13）；`docs/POSITIONING.md` 租户行加脚注指向三类不在轴上的存储、「10–20 分」标注「行业惯例值非本引擎实测」（dsv4f M-1/C-3）；`ONE_LINE_INSTALL.md` 收敛子项**经复核驳回**——它与 `prompts/install.txt` 的逐字相等由 test_first_run_experience 钉死，漂移面不存在（判据在案）；结案陈词勘误：v20.5.0 段「前端零触碰」表述不确，4632e4e 实为 8 前端文件 +977/-118（用户审计 🟡-3，在此更正）；`frontend/css/style.css` 残留第三方组件名清除（用户审计 🔴-2）。
 - **生产侧（运维面，随本版部署执行）**：潮浪 cron prompt 两处 curl 补 `Authorization: Bearer`（用户审计 🔴-1：鉴权中间件对 /add 强制 401，按模板原样执行会静默失败）；生产 facts.db 清理 3 条 smoke_sandbox 测试 grants 残留（用户审计 🔴-2，先备份后清理）。
-- **用例总数 1888 → 1993**（`pytest --collect-only`；本轮新增 105 条：caller 绑定/list_agents 门槛/联邦管理面/评分零语义/scope 构建器与棘轮/复杂度子步骤/WAL 重放/路径一致性/哈希，全部红→绿对照）。四环实测：① 独立开发机 **1981 通过 · 12 跳过**（2026-09-11 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）；② 生产机独立沙箱 **1967 通过 · 26 跳过**（2026-09-11，本树 `de09794`，宿主源码在场、不带 `.env`、多项可选轴缺席）；③ 生产实机部署后 **1983 通过 · 10 跳过**（2026-09-11 同树实测，宿主轴齐备）。跑分裁决：**本轮不跑**（维护者 2026-09-11 拍板，T-15 撤销，跑分管线维持 frozen 待召）。
+- **用例总数 1888 → 1997**（`pytest --collect-only`；本轮新增 105 条：caller 绑定/list_agents 门槛/联邦管理面/评分零语义/scope 构建器与棘轮/复杂度子步骤/WAL 重放/路径一致性/哈希，全部红→绿对照）。四环实测：① 独立开发机 **1981 通过 · 12 跳过**（2026-09-11 本树，Python 3.12，完整 extras + 模型缓存，只缺 Hermes 宿主）；② 生产机独立沙箱 **1967 通过 · 26 跳过**（2026-09-11，本树 `de09794`，宿主源码在场、不带 `.env`、多项可选轴缺席）；③ 生产实机部署后 **1983 通过 · 10 跳过**（2026-09-11 同树实测，宿主轴齐备）。跑分裁决：**本轮不跑**（维护者 2026-09-11 拍板，T-15 撤销，跑分管线维持 frozen 待召）。
 - **已知瑕疵如实登记**：tests 子集选择（-k）下 test_jia13_verbatim 存在顺序依赖（全量套件不受影响，本版不修，随 T-23 测试重组一并治理）。
 
 ## v20.5.0（2026-09-10 正式版）：三方评审整改收口 —— 说出口的承诺，必须实测成立

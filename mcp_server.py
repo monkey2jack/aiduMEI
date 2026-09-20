@@ -145,17 +145,19 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool):
 
 
 def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
-    """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。"""
+    """GET 请求 api_server。返回解析后的 JSON dict 或 error dict。
+
+    v22.0（雷霆审计 B6 · Step P1-8）：传输错误（连接失败/超时）抛异常，
+    让 MCP 框架标 isError=True；业务错误（4xx）保留 error dict 形态。
+    此前传输错误与业务错误同态，Agent 把「服务挂了」当成「查无此忆」。
+    """
     # v20.4.1a(C 面整改):urllib → httpx,与全仓 HTTP 客户端统一
     # (连接池/超时语义一致,少一套排障分支)。query 编码交给 httpx。
-    try:
-        resp = httpx.get(f"{API_BASE}{path}", params=params,
-                         headers=_api_headers(), timeout=timeout)
-        if resp.status_code >= 400:
-            return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
-        return resp.json()
-    except Exception as e:  # 传输错误与 JSON 解析失败同态:error dict
-        return {"error": str(e)}
+    resp = httpx.get(f"{API_BASE}{path}", params=params,
+                     headers=_api_headers(), timeout=timeout)
+    if resp.status_code >= 400:
+        return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
+    return resp.json()
 
 
 def _api_post(path: str, body: dict | None = None, timeout: int = 30,
@@ -166,21 +168,20 @@ def _api_post(path: str, body: dict | None = None, timeout: int = 30,
     而不是 Pydantic 模型，FastAPI 会从 query 读它们，把同名键塞进 JSON body
     是**静默无效**的 —— 请求 200、参数全丢。哪个端点该用哪种，由
     tests/test_v20_2_4_mcp_contract.py 逐工具对表钉住。
+
+    v22.0（雷霆审计 B6）：传输错误抛异常（isError=True），业务错误保留 dict。
     """
     clean_params = (
         {k: v for k, v in params.items() if v is not None and v != ""}
         if params else None
     )
-    try:
-        resp = httpx.post(f"{API_BASE}{path}", params=clean_params,
-                          json=body or {},
-                          headers=_api_headers({"Content-Type": "application/json"}),
-                          timeout=timeout)
-        if resp.status_code >= 400:
-            return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
-        return resp.json()
-    except Exception as e:  # 同上:传输错误与 JSON 解析失败同态
-        return {"error": str(e)}
+    resp = httpx.post(f"{API_BASE}{path}", params=clean_params,
+                      json=body or {},
+                      headers=_api_headers({"Content-Type": "application/json"}),
+                      timeout=timeout)
+    if resp.status_code >= 400:
+        return {"error": f"HTTP {resp.status_code}", "detail": resp.text[:500]}
+    return resp.json()
 
 
 def _ok(data: Any) -> str:
@@ -260,7 +261,11 @@ def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_
     # 生命周期工具（session_start / session_end / session_report），检索却
     # 一直不带它，于是整条 MCP 通路上 v21.2 的回声抑制（M2）根本不存在：
     # 服务端读不到 session 就整段跳过，不报错也无从察觉。不传仍是不过滤。
-    _payload = {"query": query, "user_id": user_id, "top_k": top_k, "bank_id": bank_id}
+    # v22.0（雷霆审计 A3）：MCP 经 API token 调用，空 caller 不再放行。
+    # 工具语义是「查这个 user_id 的记忆」，caller 声明为同一 user_id
+    # 即「读自己殿」，与收紧前行为逐字一致。
+    _payload = {"query": query, "user_id": user_id, "caller_user_id": user_id,
+                "top_k": top_k, "bank_id": bank_id}
     if session_id:
         _payload["session_id"] = session_id
     result = _api_post("/search", _payload)
@@ -866,6 +871,25 @@ def _format_conversation(messages: list) -> str:
     return "\n\n".join(parts)
 
 
+def _resolve_session_owner(session_id: str) -> str:
+    """v22.0（雷霆审计 B11 · GPT-5.6 P1-02）：从宿主会话元数据推导 owner。
+
+    此前固定写 DEFAULT_USER_ID——owner 不明确时静默写错租户，比报错更糟。
+    从 state.db 的 session 行读 user_id；读不到或为空 → 返回空串，调用方拒写。
+    """
+    try:
+        conn = sqlite3.connect(STATE_DB)
+        try:
+            row = conn.execute(
+                "SELECT user_id FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+            return (row[0] or "").strip() if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+
+
 def run_auto_memory() -> None:
     """执行一次自动记忆提取（通过 HTTP 调用 /add 端点）。"""
     last_id = _read_last_id()
@@ -875,22 +899,33 @@ def run_auto_memory() -> None:
 
     sessions = _group_by_session(messages)
     stored_total = 0
+    skipped = 0
     for sid, msgs in sessions.items():
         if len(msgs) < 2:
             continue
+        owner = _resolve_session_owner(sid)
+        if not owner:
+            # v22.0（B11）：owner 不可判定 → 拒写并记 degraded，不 fallback 到 default
+            logger.warning(
+                "🛑 [auto-memory] 会话 %s 的 owner 无法从 state.db 推导，拒写"
+                "（不再静默 fallback 到 default 域）", sid[:8])
+            skipped += 1
+            continue
         conversation = _format_conversation(msgs)
         msg_list = [{"role": "user", "content": conversation}]
-        resp = _api_post("/add", {"messages": msg_list, "user_id": DEFAULT_USER_ID}, timeout=60)
+        resp = _api_post("/add", {"messages": msg_list, "user_id": owner}, timeout=60)
         if "error" not in resp:
             n = len(resp.get("results", []))
             stored_total += n
-            logger.info(f"[auto-memory] 会话 {sid[:8]}… → {n} 条记忆")
+            logger.info(f"[auto-memory] 会话 {sid[:8]}… → {n} 条记忆（owner={owner}）")
         else:
             logger.warning(f"[auto-memory] 会话 {sid[:8]}… 存入失败: {resp.get('error')}")
 
     _write_last_id(max_id)
-    if stored_total:
-        logger.info(f"[auto-memory] 本轮共存入 {stored_total} 条记忆（游标→{max_id}）")
+    if stored_total or skipped:
+        logger.info(
+            f"[auto-memory] 本轮存入 {stored_total} 条"
+            f"（游标→{max_id}），拒写 {skipped} 条（owner 不明）")
 
 
 def auto_memory_loop() -> None:

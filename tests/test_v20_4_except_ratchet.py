@@ -44,7 +44,7 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 686  # v21.2.0 会话精华：+1 —— /session/distill 路由层的兜底。
+_BASELINE = 688  # v22.0 雷霆审计 B1：+2 —— health.py 非 _ok 键降级探针的兜底。
 # routes_v8.py 里 30 多个路由一律是 `except Exception: return {"status":"error"}`，
 # 路由层的契约就是「任何异常都变成 JSON，不让 500 裸奔」；单独给这一个收窄，
 # 换来的是漏网异常在这条路上变成 500，与同文件其余路由行为不一致。

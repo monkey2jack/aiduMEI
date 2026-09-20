@@ -102,6 +102,8 @@ def test_backend_candidate_fanout_is_capped():
 def cfg_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path / "d"))
     monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "l"))
+    # v22.0（雷霆审计 B7）：配置写面须 admin
+    monkeypatch.setenv("AIDUMEI_FEDERATION_ADMINS", "admin")
     import ducky.routes_config as rc
     cfg = tmp_path / "mem0_config_local.json"
     monkeypatch.setattr(rc, "_CFG_PATH", str(cfg), raising=True)
@@ -138,7 +140,7 @@ def test_put_on_corrupted_config_leaves_the_file_byte_identical(cfg_env):
     app = FastAPI()
     rc.register_config_routes(app)
     c = TestClient(app, raise_server_exceptions=False)
-    r = c.put("/config/llm", json={"config": {"model": "x"}})
+    r = c.put("/config/llm", json={"config": {"model": "x"}}, params={"caller": "admin"})
     assert r.status_code in (409, 500), f"损坏配置上 PUT 回了 {r.status_code}，应拒绝"
     assert cfg.read_bytes() == garbage, "PUT 在损坏配置上覆盖了原文件 —— 数据丢失"
 
@@ -151,7 +153,7 @@ def test_put_on_missing_config_still_creates_it(cfg_env):
     app = FastAPI()
     rc.register_config_routes(app)
     c = TestClient(app, raise_server_exceptions=False)
-    r = c.put("/config/llm", json={"provider": "openai", "config": {"model": "x", "api_key": "k"}})
+    r = c.put("/config/llm", json={"provider": "openai", "config": {"model": "x", "api_key": "k"}}, params={"caller": "admin"})
     assert r.status_code == 200, r.text
     assert json.loads(cfg.read_text(encoding="utf-8"))["llm"]["config"]["model"] == "x"
 

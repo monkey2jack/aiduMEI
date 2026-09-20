@@ -121,7 +121,11 @@ def check_prompt_injection(content: str) -> Tuple[bool, str]:
         return True, f"Layer 1 direct pattern matched: '{matched_str[:40]}'"
 
     # 2. 归一化正则匹配（抹除空格、标点、控制字符）
-    normalized = _NORMALIZE_CLEAN_RE.sub("", content).lower()
+    # v22.0（雷霆审计 A11 · Kimi R-4）：先 NFKC 归一化——全角字母整段删除
+    # 会让 `ｉｇｎｏｒｅ ｐｒｅｖｉｏｕｓ` 蒸发成空串而绕过第一层；NFKC 把
+    # 全角折回半角，第二层正则才能命中。
+    import unicodedata
+    normalized = _NORMALIZE_CLEAN_RE.sub("", unicodedata.normalize("NFKC", content)).lower()
     if len(normalized) >= 4:
         norm_match = _NORMALIZED_INJECTION_PATTERNS.search(normalized)
         if norm_match:
@@ -211,6 +215,26 @@ def sanitize_messages_struct(messages):
         return out
     if isinstance(messages, list):
         return [sanitize_messages_struct(m) for m in messages]
+    return messages
+
+
+def neutralize_messages_struct(messages):
+    """v22.0（雷霆审计 A6）：对 /add 的结构化 messages 做边界记号中和。
+
+    落库前把正文里一切能伪装成 <memory> 边界的字面量打断（零宽字符），
+    与 core_memory.py:528 / checkpoint.py:113 同一判据——主写入口此前
+    不做中和，召回侧 shell 读线可把含 <memory> 的内容当「已包装」直接透传，
+    防御被它保护的内容自己关掉。
+    """
+    if isinstance(messages, str):
+        return neutralize_boundary_markers(messages)
+    if isinstance(messages, dict):
+        out = dict(messages)
+        if isinstance(out.get("content"), str):
+            out["content"] = neutralize_boundary_markers(out["content"])
+        return out
+    if isinstance(messages, list):
+        return [neutralize_messages_struct(m) for m in messages]
     return messages
 
 

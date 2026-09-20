@@ -326,7 +326,9 @@ class AiduMemProvider(MemoryProvider):
             hits = self._client.try_request(
                 "POST",
                 "/search",
-                body={"query": query.strip()[:2000], "user_id": self._client.user_id, "limit": 5},
+                body={"query": query.strip()[:2000], "user_id": self._client.user_id,
+                      # v22.0（A3）：读自己殿，caller==user_id
+                      "caller_user_id": self._client.user_id, "limit": 5},
                 timeout=_QUERY_TIMEOUT,
             )
             lines = self._format_hits(hits)
@@ -508,6 +510,8 @@ class AiduMemProvider(MemoryProvider):
                 body={
                     "query": query[:2000],
                     "user_id": self._client.user_id,
+                    # v22.0（A3）：读自己殿，caller==user_id
+                    "caller_user_id": self._client.user_id,
                     "limit": int(limit) if isinstance(limit, (int, str)) and str(limit).isdigit() else 5,
                 },
                 timeout=_QUERY_TIMEOUT,

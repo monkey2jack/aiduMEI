@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "updated": "2026-09-20",
+  "vendored": {
+    "frontend/js/vendor/echarts.min.js": {
+      "sha256": "42f8329d989b6f6539dd2b15bbdf0d82025762ac112fbb60dc57b27d7bcf3946",
+      "name": "echarts",
+      "version": "5.5.0",
+      "upstream": "https://github.com/apache/echarts",
+      "license": "Apache-2.0",
+      "note": "v22.0 雷霆审计 A12：供应链补全。本地嵌入模型有 sha256 清单，前端 vendored JS 此前无任何完整性凭证——1MB 压缩 JS，恶意 PR 改一个字符肉眼与门禁都看不出。"
+    }
+  }
+}
