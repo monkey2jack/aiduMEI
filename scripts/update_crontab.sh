@@ -63,7 +63,9 @@ TASKS=(
   # 检索照常、库里的旧记忆也照常健康，唯独新记忆一条不进——这是本项目
   # 真实出过的事故，人工审计翻数据库才发现。每 6 小时问一次
   # 「你在读，那你在写吗」，非 0 退出码就是接线断了。
-  "ingest_wiring|25 */6 * * *|\"${PY}\" scripts/check_ingest_wiring.py|ingest_wiring.log|memory|写线未接：按 docs/AGENT_INTEGRATION.md 挂上 post_llm_call 钩子"
+  # v22.0（雷霆审计 B3 · DeepSeek AUD-08）：加 --require-judgment——
+  # 「无法判断」在无人值守路径上也不得静默通过（样本不足返回 0 是假绿灯）。
+  "ingest_wiring|25 */6 * * *|\"${PY}\" scripts/check_ingest_wiring.py --require-judgment|ingest_wiring.log|memory|写线未接：按 docs/AGENT_INTEGRATION.md 挂上 post_llm_call 钩子"
 )
 
 json_tasks() {
