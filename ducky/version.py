@@ -8,6 +8,28 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v22.0.0 (雷霆审计整改 · 默认从严 · 2026-09-20)
+    主题：**身份派生，越权默认拒。**
+    11 份雷霆审计（10 外部模型 + 用户）合并后 12 条 P0 全实锤整改：
+    1. 众神殿管理面鉴权（grant/revoke/deactivate 须本人或 admin，空 caller 403）。
+    2. caller↔凭据绑定第三态（strict/permissive/off），消灭「新 token 未登记即裸奔」。
+    3. 众神殿空 caller 收紧：bearer 必须声明身份，session/回环保留主人直连。
+    4. 注入边界跨语言一致性（shell 读线前缀同源 + /add 落库前中和）+ NFKC 归一化。
+    5. 逃逸门组合闸（INSECURE_PUBLIC∧TRUST_PROXY∧无凭据 → 拒绝启动）。
+    6. 治理引擎多语言注入防御（英文高危词表 + CJK 占比乱码检测 + nonce 边界）。
+    7. 依赖合一（pyproject 下限对齐 requirements）+ echarts sha256 清单。
+    8. 哨兵补全：health 聚合键名盲区 / cron 哨兵 flag / testclient 显式信任 /
+       push_gate 装 hook / 三态纪律 / CC 棘轮 / MCP error 三态 / routes_config admin /
+       PBKDF2 600k / auto_memory 禁 fallback / 谱系完整性探针。
+    9. 哨兵补全：health 聚合键名盲区 / cron 哨兵 flag / testclient 显式信任 /
+       push_gate 装 hook / 三态纪律 / CC 棘轮。
+    10. B 面收口：MCP error 三态 / routes_config admin / chunked 文档边界 /
+        PBKDF2 600k / auto_memory 禁 fallback / 谱系完整性探针。
+    11. 产品面 + 元修复：README 卖点证据状态标注 / CHANGELOG Scope Rulings 表 /
+        双前缀冻结 / README 状态标签 / 鉴权面普查守卫 / 三态纪律规范 /
+        CC 棘轮守卫 / 鉴权负向对照模板。
+    用例总数 2143 → 2203（+60，全部红→绿）。
+
 v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
     主题：**记忆不再自己回声，也不再让同一件事占满名额。**
     调研 MemTensor/memmy-agent（MIT · 1.9k⭐）后只取设计不搬代码，六项一次落地：
@@ -19,7 +41,7 @@ v21.2.0 (Memmy 融改 · 检索层与轨迹学习一次到位 · 2026-09-16)
        任务反馈按轨迹位置回传；**credit 维度默认权重 0** —— 装上不生效，等本仓
        自己的 /evolve/report 数据说话再开（上游参数不盲信）。
     5. M7 episode rollup（默认关）· M8 借阅留痕进事件账本 + 档案第八节「当前生效借阅」。
-       用例总数 2048 → 2143（+95 条验收与整改守卫，全部红→绿）。
+       用例总数 2048 → 2203（+95 条验收与整改守卫，全部红→绿）。
     6. 审计整改轮（2026-09-17）：溯源打标改走显式 metadata（不再依赖 contextvar
        隐式通道）；补 episode_ok 与 epistemic_session_coverage（7 天窗口）两个探针；
        回声抑制降级升 warning；AGENTS.md 良性判据前置。根因判定：生产 sidecar
@@ -164,7 +186,7 @@ v21.0 (正式版 · EchoMind 融改：认知治理全量版 · 2026-09-13 开工
        候选草稿与偏好画像同样在擦除承诺内。
     4. 守卫同步：mkdtemp 基线 54→55；except 棘轮 632→636
        （v6 迁移 4 处容错，与 v5 同型纪律）。
-    5. 用例总数 1993 → 2034（--collect-only），新增 41 条全部红→绿对照；
+    5. 用例总数 1997 → 2034（--collect-only），新增 41 条全部红→绿对照；
        独立开发机 2022 通过 · 12 跳过（2026-09-14 本树）。
     6. 在途（本段随施工推进持续更新，分项验收以任务书为准）：
        F1 写入路径/检索乘数/探针；F2 provenance 填充与审计端点；
@@ -206,7 +228,7 @@ v20.5.1 (维护版 · 四份审计整合收口 + 发布工程修复 · 2026-09-1
        结案陈词「前端零触碰」勘误（4632e4e 实为 8 文件 +977/-118）。
     9. 生产侧随部署执行：潮浪 cron prompt 两处 curl 补 Bearer（用户审计 🔴-1）；
        生产 facts.db 清理 3 条 smoke_sandbox grants 残留（用户审计 🔴-2，先备份）。
-    10. 用例总数 1888 → 1993（--collect-only），新增用例全部红→绿对照；
+    10. 用例总数 1888 → 1997（--collect-only），新增用例全部红→绿对照；
        独立开发机 1981 通过 · 12 跳过（2026-09-11 本树）。
     11. 已知瑕疵如实登记：tests 子集选择（-k）下 test_jia13_verbatim 存在
        顺序依赖（全量套件不受影响，随测试重组一并治理）。
@@ -285,7 +307,7 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "21.2.0"
+SERVICE_VERSION = "22.0.0"
 FULL_VERSION = f"v{SERVICE_VERSION}"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -299,6 +321,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("22.0.0", "", "v22.0", "雷霆审计整改 · 众神殿鉴权/绑定 strict/注入边界/逃逸门组合闸/治理多语言/有界评估池/依赖合一/产品面收口 · 2026-09-20"),
     ("21.2.0", "", "v21.2.0", "Memmy 融改 · 回声抑制/MMR/错误签名/轨迹级奖励 · 2026-09-16"),
     ("21.1.1", "", "v21.1.1", "文档补丁 · 内存挡位选择指导 + 冷备 v21.2 roadmap · 2026-09-15"),
     ("21.1.0", "", "v21.1", "众神殿地基版 · 多 bot/多 profile 域隔离（读侧补域/evolution 跨殿脱敏）+ v21.0.1 会话补丁收口 · 2026-09-15"),
