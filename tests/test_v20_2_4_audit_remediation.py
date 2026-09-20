@@ -417,7 +417,7 @@ def test_ci_has_the_three_new_acceptance_jobs():
 # 临时目录登记制（2026-08-28 生产机清理战场时触发）
 # ════════════════════════════════════════════════════════════════════
 
-_MKDTEMP_BASELINE = 60  # v21.2：+1（test_v21_2_memmy_fusion 沿用 v21 同族 sidecar 测试的 FACTS_DB 重定向写法，需模块级临时目录）          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改（v21：+4 epistemic/provenance/dossier/sidecar 独立临时库；v21.1：+1 众神殿 pantheon 独立临时库）
+_MKDTEMP_BASELINE = 61  # v21.2：+1（test_v21_2_memmy_fusion 沿用 v21 同族 sidecar 测试的 FACTS_DB 重定向写法，需模块级临时目录）          # 实测位点数（只数 tests/test_*.py）；新增请连同这个数字一起改（v21：+4 epistemic/provenance/dossier/sidecar 独立临时库；v21.1：+1 众神殿 pantheon 独立临时库；v22：+1 A3 跨殿空 caller 守卫独立临时库）
                                 # 2026-09-10 v20.5.0：+4（test_v20_5_0_lineage_identity / grant_authz /
                                 # backfill / crud_update 四个新模块的模块级测试库——模块顶层覆盖
                                 # utils.FACTS_DB 必须用持久目录，tmp_path 函数级作用域做不到）

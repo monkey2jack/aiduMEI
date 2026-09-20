@@ -135,6 +135,7 @@ if [ "${1:-}" = "--selftest" ]; then
 import json, os
 print(json.dumps({'query': os.environ['AIDUMEM_MSG'],
                   'user_id': os.environ['AIDUMEM_USER_ID'],
+                  'caller_user_id': os.environ['AIDUMEM_USER_ID'],
                   'session_id': 'inject-selftest',
                   'limit': 1, 'metadata': {}}, ensure_ascii=False))
 ") python3 -c "
@@ -320,6 +321,9 @@ import json, os
 print(json.dumps({
     'query': os.environ['AIDUMEM_MSG'],
     'user_id': os.environ['AIDUMEM_USER_ID'],
+    # v22.0（雷霆审计 A3）：钩子经 API token 调用，空 caller 不再放行。
+    # 本钩子只读自己殿，caller==user_id 即「读自己」，语义与收紧前逐字一致。
+    'caller_user_id': os.environ['AIDUMEM_USER_ID'],
     # 顶层 session_id 是服务端的首选口径（_req_session_id 先看它）。
     # 空串＝不过滤，与老行为一致，所以拿不到 session 的宿主零破坏。
     'session_id': os.environ.get('_INJECT_SESSION_PIPE', ''),

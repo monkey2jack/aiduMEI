@@ -300,12 +300,15 @@ def _request_authorized(request: Request) -> bool:
     """钥匙 A（session cookie）∨ 钥匙 B（Bearer token），任一有效即放行。"""
     from ducky.security.auth import (
         SESSION_COOKIE_NAME,
+        set_request_auth_kind,
         set_request_token_fingerprint,
         validate_session,
     )
 
     session_token = request.cookies.get(SESSION_COOKIE_NAME, "")
     if session_token and validate_session(session_token):
+        # v22.0（雷霆审计 A3）：UI 会话 = 主人直连，跨殿授权可免 caller
+        set_request_auth_kind("session")
         return True
 
     token = _api_token()
@@ -316,11 +319,14 @@ def _request_authorized(request: Request) -> bool:
             # 供联邦层 _require_caller 做 caller↔凭据轻量绑定
             # （AIDUMEI_CALLER_BINDINGS 未配置时该指纹无人读取，零行为变化）。
             set_request_token_fingerprint(token)
+            # v22.0（雷霆审计 A3）：API token = agent/集成，跨殿授权必须带 caller
+            set_request_auth_kind("bearer")
             return True
         # 兼容以 X-API-Token 头传递的调用方
         alt = request.headers.get("X-API-Token", "")
         if alt and hmac.compare_digest(alt, token):
             set_request_token_fingerprint(token)
+            set_request_auth_kind("bearer")
             return True
     return False
 

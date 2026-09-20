@@ -253,16 +253,30 @@ def authorize_cross_hall(target_user_id: str, caller_user_id: str,
                          bank_id: str | None = None, action: str = "read") -> bool:
     """跨殿读授权（core 读路径的织入点）：caller 想 action 读 target 的殿。
 
-    - caller 为空 或 caller==target → 放行（读自己殿，或主人未声明分身身份的直连）。
-    - caller != target → 须持 target 殿的有效借阅，否则抛 HallError（默认隔离，人格独立）。
+    v22.0（雷霆审计 A3）收紧：空 caller 不再对所有人放行——
+    - caller==target → 放行（读自己殿）；
+    - caller 为空 且 凭据是 UI 会话（主人直连）或未过鉴权中间件（回环单主人
+      自用）→ 放行（①定位语义保留）；
+    - caller 为空 但凭据是 API token（agent/集成）→ 拒绝：持 token 的调用方
+      必须声明自己是哪座殿，「不声明身份」不再是绕行通道。
 
-    ①（单主人多分身）语义：不带 caller = 主人直接指定殿（放行）；bot 各自带上
-    自己的 caller_user_id 后，跨殿即被借阅门槛挡住——「谁能看谁」有据可查。
+    此前空 caller 一律放行，意味着任何持共享 token 的参与者只要**省略**
+    caller_user_id 就能读任意殿——v21.1「跨殿默认隔离」的承诺被一个缺省
+    参数拆掉。收紧后：省略 caller 只对主人（session/回环）成立。
     """
     tgt = str(target_user_id or "").strip()
     clr = str(caller_user_id or "").strip()
-    if not clr or clr == tgt:
+    if clr == tgt:
         return True
+    if not clr:
+        from ducky.security.auth import current_request_auth_kind
+        kind = current_request_auth_kind()
+        if kind == "bearer":
+            raise HallError(
+                "API token 调用方必须声明 caller_user_id——"
+                "空 caller 仅对主人直连（UI 会话/回环）放行"
+            )
+        return True  # session 或未经鉴权中间件（回环单主人）：①定位语义
     if check_hall_access(tgt, clr, action=action, bank_id=bank_id):
         return True
     raise HallError(f"殿「{clr}」未获殿「{tgt}」的 {action} 借阅——跨殿访问默认隔离，请先取得借阅")
