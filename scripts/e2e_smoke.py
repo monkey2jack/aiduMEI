@@ -199,6 +199,8 @@ class Smoke:
             response = self.request("POST", "/search", json={
                 "query": nonce,
                 "user_id": self.tenant,
+                # v22.0（A3）：smoke 经 API token 调用，声明自己是谁（读自己殿）
+                "caller_user_id": self.tenant,
                 "bank_id": "default",
                 "limit": 5,
             })
