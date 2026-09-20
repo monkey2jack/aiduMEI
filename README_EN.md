@@ -156,7 +156,7 @@ The full registry lives in `ducky/env_registry.py` (code is the source of truth;
 
 | Dimension | Status |
 |---|---|
-| Total cases | **2143** (measured via `pytest --collect-only`, 2026-09-19, v21.2-dev tree) = **1931 behavior + 70 script/hook + 142 guard** (split口径 `scripts/count_test_kinds.py`) |
+| Total cases | **2144** (measured via `pytest --collect-only`, 2026-09-19, v21.2-dev tree) = **1931 behavior + 70 script/hook + 142 guard** (split口径 `scripts/count_test_kinds.py`) |
 | Clean dev machine | 2131 passed · **12 skipped** — **collected 2026-09-19** (v21.2-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
@@ -183,11 +183,11 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
 > pytest tests/ -q -rs | tail -1                                 # no host: 2131 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2143 passed
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2144 passed
 > HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2131 passed, 12 skipped
 > ```
 >
-> `2143 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2144 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >
