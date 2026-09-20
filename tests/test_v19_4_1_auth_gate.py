@@ -54,6 +54,8 @@ def env(monkeypatch, tmp_path):
 
     monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
     monkeypatch.delenv("AIDUMEM_UI_PASSWORD", raising=False)
+    # v22.0（雷霆审计 B7）：配置写面须 admin——测试环境登记 admin 名单
+    monkeypatch.setenv("AIDUMEI_FEDERATION_ADMINS", "admin")
 
     hash_file = tmp_path / ".ui_password_hash"
     monkeypatch.setattr(auth_mod, "password_hash_path", lambda: str(hash_file))
@@ -230,6 +232,9 @@ def test_changing_password_enables_gate_and_revokes_sessions(env):
             "new_password": "brandnewpassword",
             "confirm_password": "brandnewpassword",
         },
+        # v22.0（雷霆审计 B7）：口令修改须 admin——测试设 AIDUMEI_FEDERATION_ADMINS
+        # 为 "admin"，caller 传 "admin" 走通；空 caller 被拒（另测）。
+        params={"caller": "admin"},
     )
     body = resp.json()
     assert body["status"] == "ok"

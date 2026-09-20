@@ -270,6 +270,31 @@ jobs:
           fi
           echo "✅ 假密钥未进入镜像"
 
+  # ── v22.0（雷霆审计 A12）：前端 vendored JS 完整性校验 ─────────────
+  # 本地嵌入模型有 sha256 清单，1MB 的 echarts 此前无任何完整性凭证——
+  # 恶意 PR 改一个字符，肉眼与现有门禁都看不出。照抄 local_embed_model_sha256 模式。
+  frontend-vendor-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: vendored JS 必须与 sha256 清单一致
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, sys
+          manifest = json.loads(pathlib.Path("scripts/frontend_vendor_sha256.json").read_text())
+          for rel, meta in manifest["vendored"].items():
+              path = pathlib.Path(rel)
+              if not path.exists():
+                  print(f"❌ 文件缺失: {rel}")
+                  sys.exit(1)
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              if actual != meta["sha256"]:
+                  print(f"❌ {rel} sha256 不匹配: {actual[:16]}... ≠ {meta['sha256'][:16]}...")
+                  sys.exit(1)
+              print(f"✅ {rel} ({meta['name']} {meta['version']}) sha256 一致")
+          print("✅ 全部 vendored JS 完整性校验通过")
+          PY
+
   # ── v20.2.5（外审 F-01，P0）：wheel 安装形态的运行目录 ─────────────
   # 源码运行时 BASE_DIR 恰好是仓库根，路径问题看不出来；按 wheel 安装后包在
   # site-packages 里，DATA_DIR 就落进 site-packages/data —— 而 Docker

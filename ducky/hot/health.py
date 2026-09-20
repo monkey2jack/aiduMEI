@@ -715,6 +715,28 @@ def register_health_routes(app: FastAPI) -> None:
             probes["ingest_liveness_ok"] = None
             probes["ingest_liveness_error"] = str(_ing_exc)[:120]
 
+        # v22.0（雷霆审计 B12 · Kimi Y-1）：谱系完整性探针。
+        # verify_lineage_integrity 存在但无探针消费——「链断了」没人知道。
+        # 降级为「可检测」：不追求不可篡改（HMAC 整行进 v21.3 排期），
+        # 但让「链断裂/幽灵链/空 hash 碰撞」在 /health 可见。
+        try:
+            from ducky.memory_lineage import verify_lineage_integrity as _verify_lineage
+            _lin = _verify_lineage()
+            _lin_broken = _lin.get("broken", 0) or 0
+            _lin_total = _lin.get("total", 0) or 0
+            probes["lineage_integrity_ok"] = _lin_broken == 0
+            probes["lineage_integrity_broken"] = _lin_broken
+            probes["lineage_integrity_total"] = _lin_total
+            if _lin_broken > 0:
+                DegradationTracker.record_degradation(
+                    "lineage_integrity",
+                    f"谱系链 {_lin_broken}/{_lin_total} 条断裂——"
+                    "可能是 lastrowid 缺陷、空 hash 碰撞或手动篡改。",
+                    severity="warning")
+        except Exception as _lin_exc:
+            probes["lineage_integrity_ok"] = None
+            probes["lineage_integrity_error"] = str(_lin_exc)[:120]
+
         # ══════════════════════════════════════════════════════════════
         # v21.2.0 会话精华活性探针（distill_liveness）
         #
@@ -776,6 +798,34 @@ def register_health_routes(app: FastAPI) -> None:
             # 读不到一律标 None + 写明原因 —— 不冒充「正常」。
             probes["distill_liveness_ok"] = None
             probes["distill_liveness_error"] = str(_dis_exc)[:120]
+
+        # v22.0（雷霆审计 A7）：unsafe_combo —— 安全逃逸门组合态探针。
+        # 单个逃生舱是知情选择，组合态（INSECURE_PUBLIC ∧ TRUST_PROXY ∧ 无凭据
+        # ∧ ALLOW_IMPLICIT_CALLER）必须可见：即使部署方二次确认过，/health 也
+        # 要如实报告「本实例处于组合逃逸形态」，让运维巡检一眼看到。
+        try:
+            import os as _os_sc
+            _insecure_pub = _os_sc.environ.get(
+                "AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
+            _trust_proxy = _os_sc.environ.get(
+                "AIDUMEI_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes"}
+            _implicit = _os_sc.environ.get(
+                "AIDUMEI_ALLOW_IMPLICIT_CALLER", "").strip() == "1"
+            _combo: list[str] = []
+            if _insecure_pub:
+                _combo.append("insecure_public")
+            if _trust_proxy:
+                _combo.append("trust_proxy")
+            if _implicit:
+                _combo.append("implicit_caller")
+            if not _auth_gate_enabled():
+                _combo.append("no_credential")
+            # 两个以上逃生门同开（或任一个 + 无凭据）即报告组合态
+            probes["unsafe_combo"] = _combo if len(_combo) >= 2 else []
+            probes["unsafe_combo_ok"] = len(_combo) < 2
+        except Exception as _sc_exc:
+            probes["unsafe_combo_ok"] = None
+            probes["unsafe_combo_error"] = str(_sc_exc)[:120]
 
 
         # v21.2.0 审计整改轮（生产用户审计 🔴-2）：episode_ok —— 任务书 DoD 点名要的探针，
@@ -1151,6 +1201,18 @@ def register_health_routes(app: FastAPI) -> None:
                         warming_up.append(probe_comp)
                     continue
                 if probe_comp not in degraded:
+                    degraded.append(probe_comp)
+
+        # v22.0（雷霆审计 B1 · Step P1-1）：非 `_ok` 键的失败也进降级——
+        # `*_error` / `*_degraded` 键里的非空错误信息是探针失败的另一种形态。
+        for p_key, p_val in probes.items():
+            if p_key.endswith("_ok") or p_key in ("degraded_details", "warming_up"):
+                continue
+            if p_val in (False, 0, "", None, []):
+                continue
+            if p_key.endswith("_error") or p_key.endswith("_degraded"):
+                probe_comp = p_key.rsplit("_", 1)[0]
+                if probe_comp not in degraded and probe_comp not in warming_up:
                     degraded.append(probe_comp)
 
         # 合并动态降级追踪器记录的事件
