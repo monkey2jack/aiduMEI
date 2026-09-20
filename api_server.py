@@ -300,12 +300,15 @@ def _request_authorized(request: Request) -> bool:
     """钥匙 A（session cookie）∨ 钥匙 B（Bearer token），任一有效即放行。"""
     from ducky.security.auth import (
         SESSION_COOKIE_NAME,
+        set_request_auth_kind,
         set_request_token_fingerprint,
         validate_session,
     )
 
     session_token = request.cookies.get(SESSION_COOKIE_NAME, "")
     if session_token and validate_session(session_token):
+        # v22.0（雷霆审计 A3）：UI 会话 = 主人直连，跨殿授权可免 caller
+        set_request_auth_kind("session")
         return True
 
     token = _api_token()
@@ -316,15 +319,32 @@ def _request_authorized(request: Request) -> bool:
             # 供联邦层 _require_caller 做 caller↔凭据轻量绑定
             # （AIDUMEI_CALLER_BINDINGS 未配置时该指纹无人读取，零行为变化）。
             set_request_token_fingerprint(token)
+            # v22.0（雷霆审计 A3）：API token = agent/集成，跨殿授权必须带 caller
+            set_request_auth_kind("bearer")
             return True
         # 兼容以 X-API-Token 头传递的调用方
         alt = request.headers.get("X-API-Token", "")
         if alt and hmac.compare_digest(alt, token):
             set_request_token_fingerprint(token)
+            set_request_auth_kind("bearer")
             return True
     return False
 
 
+
+
+def _is_test_client(host: str) -> bool:
+    """v22.0（雷霆审计 B4 · GLM F-06）：测试客户端身份判定。
+
+    host 是 IP 才有网络语义——非法 IP 才有可能是伪造。`testclient` 是
+    ASGI 直连测试客户端的无 TCP 对端占位符，真实网络请求的 client.host
+    一定是 IP，所以这条在生产里不可能被利用。
+    默认信任测试客户端（测试基座不中断）；`AIDUMEI_TEST_CLIENT_TRUST=0`
+    可在加固部署里强制拒绝。
+    """
+    if host.strip().lower() != "testclient":
+        return True
+    return _os.environ.get("AIDUMEI_TEST_CLIENT_TRUST", "").strip() != "0"
 
 
 def _client_is_loopback(request: "Request") -> bool:
@@ -341,6 +361,8 @@ def _client_is_loopback(request: "Request") -> bool:
     host = (getattr(client, "host", "") or "").strip()
     if not host:
         return False
+    if host == "testclient":
+        return _is_test_client(host)
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -414,8 +436,8 @@ def _host_header_allowed(request: "Request") -> bool:
     client_host = (getattr(getattr(request, "client", None), "host", "") or "").strip()
     if client_host == "testclient":
         # ASGI 直连测试客户端：没有 TCP 对端、没有 DNS，rebinding 不成立。
-        # 与 _client_is_loopback 同一取舍（真实网络请求的 client.host 一定是 IP）。
-        return True
+        # v22.0：改显式 env 注入，不再靠字符串字面量硬编码。
+        return _is_test_client(client_host)
     return _host_without_port(request.headers.get("host", "")) in _trusted_host_names()
 
 
@@ -550,7 +572,32 @@ def _enforce_public_binding_policy() -> None:
     if _auth_enabled():
         return
     if os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}:
-        logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
+        # v22.0（雷霆审计 A7 · GLM F-04）：逃逸门组合闸。
+        # INSECURE_PUBLIC=1 ∧ TRUST_PROXY=1 ∧ 无凭据 = 公网裸奔且三道防线
+        # （反代痕迹 503 / Host 校验 / 跨站写拒绝）全部旁路——单个逃生舱是
+        # 部署方的知情选择，**组合态**此前只剩一行 WARNING，没有任何机制
+        # 阻止「顺手多开一个开关」把实例推上公网。组合态必须二次显式确认：
+        # 确认变量的值必须逐字等于实际监听地址（防复制粘贴的 1/true 蒙混）。
+        if _trust_proxy_enabled():
+            confirm = os.environ.get("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", "").strip()
+            if confirm != host:
+                logger.critical(
+                    "🛑 [Security Fatal] 拒绝启动：AIDUMEM_ALLOW_INSECURE_PUBLIC=1 与 "
+                    "AIDUMEI_TRUST_PROXY=1 同时开启且未配置任何凭据——公网监听 '%s' "
+                    "且全部请求期防线让渡给反代。若确属知情部署，请设 "
+                    "AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s（值必须逐字等于监听地址）；"
+                    "否则请配置 AIDUMEM_API_TOKEN 或关掉其中一个开关。", host, host,
+                )
+                raise RuntimeError(
+                    "Fatal Security Policy: INSECURE_PUBLIC + TRUST_PROXY without any "
+                    f"credential on '{host}' requires AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH='{host}'."
+                )
+            logger.critical(
+                "🛑 [Security] 组合逃逸门已二次确认（AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s）："
+                "公网裸奔 + 三道请求期防线全部让渡给反代，后果自负。", host,
+            )
+        else:
+            logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
         return
     logger.critical(
         "🛑 [Security Fatal] 拒绝启动：监听地址为公网/非回环 '%s' 且未配置任何凭据"

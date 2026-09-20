@@ -339,10 +339,21 @@ def test_p02b_cross_tenant_overwrite_is_prevented():
 def test_p22_pbkdf2_roundtrip():
     from ducky.security import auth
     hashed = auth.hash_password("a-strong-password")
-    assert hashed.startswith("pbkdf2_sha256$200000$")
+    # v22.0（雷霆审计 B10）：OWASP 推荐 600k 轮
+    assert hashed.startswith("pbkdf2_sha256$600000$")
     ok, needs_upgrade = auth.verify_password("a-strong-password", hashed)
     assert ok is True and needs_upgrade is False
     assert auth.verify_password("wrong", hashed)[0] is False
+
+
+def test_p22_legacy_200k_upgrades_to_600k():
+    """v22.0：旧 200k 轮哈希验证通过时提示升级。"""
+    from ducky.security import auth
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", b"old-password", salt, 200_000)
+    legacy = f"pbkdf2_sha256$200000${salt.hex()}${dk.hex()}"
+    ok, needs_upgrade = auth.verify_password("old-password", legacy)
+    assert ok is True and needs_upgrade is True, "旧 200k 轮必须提示升级"
 
 
 def test_p22_legacy_sha256_verifies_and_flags_upgrade():

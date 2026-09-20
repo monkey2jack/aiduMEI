@@ -104,6 +104,20 @@ def _caller_bindings() -> dict[str, Any] | None:
     return table
 
 
+def _binding_mode() -> str:
+    """第三态（v22.0 · 雷霆审计 A2）：strict | permissive | off。
+
+    - strict     未登记的 Bearer 凭据 → 403（迁移窗口的"拒"端）
+    - permissive 未登记的 Bearer 凭据 → WARN 放行（迁移窗口的"放"端）
+    - off/非法值 → 逐字 v21.x 行为（兼容红线，未登记即放行）
+    """
+    import os
+    val = os.environ.get("AIDUMEI_CALLER_BINDING_MODE", "").strip().lower()
+    if val in ("strict", "permissive"):
+        return val
+    return "off"
+
+
 def _enforce_caller_binding(caller: str, operation: str) -> None:
     """🛡️ caller↔凭据轻量绑定（v20.5.1 · T-07）：token 可代表的 agent_id 白名单。
 
@@ -112,6 +126,10 @@ def _enforce_caller_binding(caller: str, operation: str) -> None:
       ② 本请求经 Bearer / X-API-Token 过闸，且其指纹已登记在 bindings。
     未配置 env 时本函数逐字等价于不存在 —— 这是兼容红线。
     session cookie（控制台）与无凭据回环请求不带指纹，不参与绑定。
+
+    v22.0（雷霆审计 A2）：`AIDUMEI_CALLER_BINDING_MODE` 第三态——
+    strict 时未登记的 Bearer 凭据一律 403（消灭「BINDINGS 已配但新 token
+    未登记指纹即裸奔」）；permissive 时 WARN 放行（迁移窗口）。
     """
     table = _caller_bindings()
     if table is None:
@@ -119,6 +137,24 @@ def _enforce_caller_binding(caller: str, operation: str) -> None:
     from ducky.security.auth import current_request_token_fingerprint
     fp = current_request_token_fingerprint()
     if not fp or fp not in table:
+        if fp:  # 未登记的 Bearer/X-API-Token 凭据（非 session cookie / 回环）
+            mode = _binding_mode()
+            if mode == "strict":
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "token_fingerprint_unregistered",
+                        "operation": operation,
+                        "hint": "本凭据的指纹未登记在 AIDUMEI_CALLER_BINDINGS；"
+                                "v22.0 起 strict 模式下未登记即拒绝——"
+                                "请先登记，或显式设 AIDUMEI_CALLER_BINDING_MODE=permissive 过渡",
+                    },
+                )
+            if mode == "permissive":
+                logger.warning(
+                    "⚠️ [Security] caller_binding_mode=permissive：指纹 %s 未登记，放行 %s", fp, operation
+                )
         return
     allowed = table[fp]
     if not isinstance(allowed, list):
@@ -232,8 +268,10 @@ def _enforce_lineage_read(memory_id: str, caller: str) -> None:
     if mid.startswith("fact:") and mid.split(":", 1)[1].isdigit():
         conn = get_facts_conn()
         try:
+            # v22.0（雷霆审计 A5）：owner 只认 user_id——agent_id 是渠道标记，
+            # 不是所有权（与 bank_contract 同一判据）。
             row = conn.execute(
-                "SELECT agent_id FROM facts WHERE id=?", (int(mid.split(":", 1)[1]),)
+                "SELECT user_id FROM facts WHERE id=?", (int(mid.split(":", 1)[1]),)
             ).fetchone()
             owner = (row[0] or "") if row else ""
         finally:

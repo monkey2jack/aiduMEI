@@ -30,6 +30,12 @@ _PREFIX_RE = re.compile(r"^AIDUME[IM]_[A-Z0-9_]+$")
 KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_ALLOW_IMPLICIT_CALLER",
     "AIDUMEI_CALLER_BINDINGS",
+    # v22.0（雷霆审计 A2）：caller↔凭据绑定第三态（strict/permissive/off）
+    "AIDUMEI_CALLER_BINDING_MODE",
+    # v22.0（雷霆审计 B4）：testclient 显式信任开关（默认信任，设 0 拒）
+    "AIDUMEI_TEST_CLIENT_TRUST",
+    # v22.0（雷霆审计 A7）：组合逃逸门二次确认（值须逐字等于监听地址）
+    "AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH",
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",

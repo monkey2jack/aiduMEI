@@ -54,7 +54,11 @@ logger = logging.getLogger("aiduMEM.security.auth")
 # ── 口令哈希 ────────────────────────────────────────────────────────────
 
 _PBKDF2_ALGO = "pbkdf2_sha256"
-_PBKDF2_ROUNDS = 200_000
+# v22.0（雷霆审计 B10 · GLM F-07）：OWASP 现行推荐 600,000 轮。
+# 旧哈希（200k）验证通过时调用方就地升级；从不登录的账号提供
+# --force-rehash 一次性脚本消除「永驻弱哈希」窗口。
+_PBKDF2_ROUNDS = 600_000
+_PBKDF2_LEGACY_ROUNDS = 200_000  # 旧格式轮数，验证时识别
 
 # 会话默认有效期 12 小时；可由部署方按需调整。
 # v20.2.3（外审 M-2）：此处原是裸 int()，非法值让 auth 模块 **import 即崩**
@@ -87,11 +91,15 @@ def verify_password(password: str, stored: str) -> tuple[bool, bool]:
     try:
         if stored.startswith(_PBKDF2_ALGO + "$"):
             _, rounds_s, salt_hex, expected = stored.split("$", 3)
+            rounds = int(rounds_s)
             dk = hashlib.pbkdf2_hmac(
                 "sha256", password.encode("utf-8"),
-                bytes.fromhex(salt_hex), int(rounds_s),
+                bytes.fromhex(salt_hex), rounds,
             )
-            return hmac.compare_digest(dk.hex(), expected), False
+            ok = hmac.compare_digest(dk.hex(), expected)
+            # v22.0（雷霆审计 B10）：旧轮数（200k）验证通过时提示升级——
+            # 第二个返回值 True 表示「该用新轮数重哈希」。
+            return ok, (ok and rounds < _PBKDF2_ROUNDS)
 
         if ":" in stored:
             salt, expected = stored.split(":", 1)
@@ -338,6 +346,29 @@ def active_session_count() -> int:
 _REQUEST_TOKEN_FP: contextvars.ContextVar[str] = contextvars.ContextVar(
     "aidumei_request_token_fp", default=""
 )
+
+# v22.0（雷霆审计 A3）：本请求的凭据类型。""=未经鉴权中间件（回环无凭据部署，
+# 单主人自用）；"session"=UI 口令登录（主人直连）；"bearer"=API token（agent/集成）。
+# 众神殿跨殿授权用它区分「主人直连」与「agent 调用」：只有前者可以不带
+# caller_user_id——空 caller 不再是任何人可用的绕行通道。
+_REQUEST_AUTH_KIND: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "aidumei_request_auth_kind", default=""
+)
+
+
+def set_request_auth_kind(kind: str) -> None:
+    """鉴权中间件在凭据验证通过时调用。kind ∈ {"session","bearer"}。"""
+    if kind in ("session", "bearer"):
+        _REQUEST_AUTH_KIND.set(kind)
+
+
+def clear_request_auth_kind() -> None:
+    _REQUEST_AUTH_KIND.set("")
+
+
+def current_request_auth_kind() -> str:
+    """本请求的凭据类型；未经鉴权中间件（门禁关闭/回环）时为空串。"""
+    return _REQUEST_AUTH_KIND.get()
 
 #: 指纹 = sha256(token) 的前 16 位十六进制（64 bit）。它只是 bindings 表的
 #: 查表键，不是抗碰撞凭证 —— 64 bit 对「同一张配置表内的键」绰绰有余。

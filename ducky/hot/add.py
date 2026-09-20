@@ -278,6 +278,7 @@ def register_add_routes(app: FastAPI) -> None:
                     async_flag = True
 
             from ducky.security.injection_guard import (
+                neutralize_messages_struct,
                 sanitize_messages_struct,
                 validate_and_sanitize_memory_content,
             )
@@ -298,6 +299,11 @@ def register_add_routes(app: FastAPI) -> None:
             # 消费同一份净化字节 —— 与 /add/raw 落库 sanitized 的语义对齐。
             # （换行/回车/制表符保留；结构化 messages 只洗 content 字段。）
             messages_json = sanitize_messages_struct(messages_json)
+
+            # v22.0（雷霆审计 A6）：控制字符清洗后，把正文里一切能伪装成
+            # <memory> 边界的字面量中和（零宽字符打断）——落库前必须做，
+            # 否则召回侧 shell 读线一看到 <memory> 就当「已包装」直接透传。
+            messages_json = neutralize_messages_struct(messages_json)
             _full_text = messages_to_text(messages_json)
             text_preview = _full_text[:120]
 
