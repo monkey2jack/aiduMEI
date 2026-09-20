@@ -54,7 +54,11 @@ logger = logging.getLogger("aiduMEM.security.auth")
 # ── 口令哈希 ────────────────────────────────────────────────────────────
 
 _PBKDF2_ALGO = "pbkdf2_sha256"
-_PBKDF2_ROUNDS = 200_000
+# v22.0（雷霆审计 B10 · GLM F-07）：OWASP 现行推荐 600,000 轮。
+# 旧哈希（200k）验证通过时调用方就地升级；从不登录的账号提供
+# --force-rehash 一次性脚本消除「永驻弱哈希」窗口。
+_PBKDF2_ROUNDS = 600_000
+_PBKDF2_LEGACY_ROUNDS = 200_000  # 旧格式轮数，验证时识别
 
 # 会话默认有效期 12 小时；可由部署方按需调整。
 # v20.2.3（外审 M-2）：此处原是裸 int()，非法值让 auth 模块 **import 即崩**
@@ -87,11 +91,15 @@ def verify_password(password: str, stored: str) -> tuple[bool, bool]:
     try:
         if stored.startswith(_PBKDF2_ALGO + "$"):
             _, rounds_s, salt_hex, expected = stored.split("$", 3)
+            rounds = int(rounds_s)
             dk = hashlib.pbkdf2_hmac(
                 "sha256", password.encode("utf-8"),
-                bytes.fromhex(salt_hex), int(rounds_s),
+                bytes.fromhex(salt_hex), rounds,
             )
-            return hmac.compare_digest(dk.hex(), expected), False
+            ok = hmac.compare_digest(dk.hex(), expected)
+            # v22.0（雷霆审计 B10）：旧轮数（200k）验证通过时提示升级——
+            # 第二个返回值 True 表示「该用新轮数重哈希」。
+            return ok, (ok and rounds < _PBKDF2_ROUNDS)
 
         if ":" in stored:
             salt, expected = stored.split(":", 1)
