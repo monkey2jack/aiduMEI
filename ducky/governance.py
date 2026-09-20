@@ -50,7 +50,6 @@ import json
 import secrets
 import logging
 import re
-import threading
 from datetime import datetime, timezone
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
