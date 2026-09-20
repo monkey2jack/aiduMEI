@@ -260,7 +260,11 @@ def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_
     # 生命周期工具（session_start / session_end / session_report），检索却
     # 一直不带它，于是整条 MCP 通路上 v21.2 的回声抑制（M2）根本不存在：
     # 服务端读不到 session 就整段跳过，不报错也无从察觉。不传仍是不过滤。
-    _payload = {"query": query, "user_id": user_id, "top_k": top_k, "bank_id": bank_id}
+    # v22.0（雷霆审计 A3）：MCP 经 API token 调用，空 caller 不再放行。
+    # 工具语义是「查这个 user_id 的记忆」，caller 声明为同一 user_id
+    # 即「读自己殿」，与收紧前行为逐字一致。
+    _payload = {"query": query, "user_id": user_id, "caller_user_id": user_id,
+                "top_k": top_k, "bank_id": bank_id}
     if session_id:
         _payload["session_id"] = session_id
     result = _api_post("/search", _payload)
