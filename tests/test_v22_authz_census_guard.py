@@ -52,10 +52,10 @@ _EXEMPT_ROUTES = {
     ("ducky/routes_pantheon.py", "get_hall"),    # 查单个殿
     ("ducky/routes_pantheon.py", "list_halls"),  # 列殿（v21.1 兼容红线：主人互注册常态）
     # 中间件拦全局鉴权：routes_config 三条写面由 api_server._request_authorized 兜底，
-    # B7 待修项是函数级二次防御（caller 归属校验）——登记在案，不是豁免。
-    ("ducky/routes_config.py", "update_config"),   # B7 待修
-    ("ducky/routes_config.py", "update_speed"),    # B7 待修
-    ("ducky/routes_config.py", "change_password"), # B7 待修
+    # B7 已修（函数级 admin 校验）——从豁免表移除，走函数级判据。
+    # ("ducky/routes_config.py", "update_config"),   # B7 已修
+    # ("ducky/routes_config.py", "update_speed"),    # B7 已修
+    # ("ducky/routes_config.py", "change_password"), # B7 已修
     # B7 待修登记：三条写面在 B7 前暂不豁免——守卫先红，B7 修完变绿
     # ("ducky/routes_config.py", "update_config"),
     # ("ducky/routes_config.py", "update_speed"),
@@ -163,16 +163,14 @@ def test_ratchet_no_new_violations():
 
 
 def test_config_routes_known_open_listed():
-    """B7 整改登记：routes_config 三条写面已豁免（中间件拦），但函数级
-    caller 归属校验待修——本用例持续红到 B7 落地为止（守卫即待办）。"""
+    """B7 已修：routes_config 三条写面从豁免表移除，走函数级判据。"""
     config_writes = [
         (f, fn) for f, fn, p in _NEEDS_CENSUS
         if f == "ducky/routes_config.py" and fn.startswith(("update_", "change_"))
     ]
     assert config_writes, "普查器没找到 routes_config 写面（疑似失效）"
-    # 登记：B7 修完之前这条保持绿（豁免在 _EXEMPT_ROUTES），
-    # B7 修完后把三条从豁免表删除，让它们走函数级判据。
+    # B7 已修：三条写面不在豁免表，函数级判据必须命中
     pending = [x for x in config_writes if x in _EXEMPT_ROUTES]
-    assert len(pending) == 3, (
-        f"B7 登记漂移：预期 3 条写面待修，实际 {len(pending)} 条"
+    assert len(pending) == 0, (
+        f"B7 已修但豁免表未清理：{pending}"
     )

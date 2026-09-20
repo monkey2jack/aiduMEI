@@ -75,7 +75,7 @@ _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
         "register_v8_routes": (32, "组装器"),
     },
     "ducky/routes_config.py": {
-        "register_config_routes": (35, "组装器"),
+        "register_config_routes": (38, "组装器，v22.0 起含 B7 admin 校验"),
     },
     "ducky/schema_bootstrap.py": {
         "apply_migrations": (33, "schema 迁移组装器，幂等设计"),
