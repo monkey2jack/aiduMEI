@@ -156,7 +156,7 @@ The full registry lives in `ducky/env_registry.py` (code is the source of truth;
 
 | Dimension | Status |
 |---|---|
-| Total cases | **2208** (measured via `pytest --collect-only`, 2026-09-19, v21.2-dev tree) = **1931 behavior + 70 script/hook + 142 guard** (split口径 `scripts/count_test_kinds.py`) |
+| Total cases | **2208** (measured via `pytest --collect-only`, 2026-09-19, v21.2-dev tree) = **2002 behavior + 70 script/hook + 142 guard** (split口径 `scripts/count_test_kinds.py`) |
 | Clean dev machine | 2196 passed · **12 skipped** — **collected 2026-09-19** (v21.2-dev tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
@@ -233,6 +233,20 @@ The `(user_id, bank_id)` scope contract covers the **online read/write paths**. 
 | 1 | **`core_memory` key shape** | The table's primary key is still the single column `block_key` (`ducky/core_memory.py`). Isolation is enforced by the unique index `idx_core_memory_scope_key(user_id, bank_id, block_key_raw)` together with a write path whose `DO UPDATE SET` clause never touches the ownership columns | Changing the primary key shape is a **breaking** change and must come **after** existing rows have been reconciled to their true banks. Doing it in the other order would weld unreconciled data to the wrong bank |
 | 2 | **Whole-database maintenance jobs** | Memory evolution and salience maintenance (`ducky/evolve_mem.py`, `ducky/routes_evolve.py`) scan the **whole database and do not isolate by bank**; this is annotated in the source docstrings | Whole-database maintenance is precisely their semantics — partitioning by bank would rob decay and consolidation of their global view. These jobs **never feed the user-visible retrieval path** |
 | 3 | **Bank attribution of pre-existing data** | Memories carried over from v19 all land in the `default` bank and have **not** been reconciled to their true owners | The premise of an additive migration is that not one existing row is changed or deleted. True attribution requires business-side confirmation: that is data governance, not a code release |
+
+
+## Repository layout
+
+```text
+aiduMEI/
+├── AGENTS.md / llms.txt    # Agent deployment entry & docs index
+├── api_server.py           # Main entry (API + /ui console hosting)
+├── ducky/                  # Business logic (hot/ pipeline/ speed/ salience/ federation/ evolve_mem.py …)
+├── integrations/           # Hermes plugin / Cursor hook / shell hooks
+├── scripts/                # Deployment / smoke / backup / audit tooling
+├── tests/                  # 2203+ test cases (behavior + script + guard)
+└── benchmarks/             # Evaluation protocol (frozen, awaiting formal run)
+```
 
 ## License
 
