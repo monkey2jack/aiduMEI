@@ -424,8 +424,13 @@ def register_add_routes(app: FastAPI) -> None:
                     from ducky.epistemic import stamp_memory_refs
                     _rs = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
                     _refs = [r.get("id") or r.get("memory_id") for r in _rs if isinstance(r, dict)]
+                    # v22.1（建议一）：is_bot=True 的记忆默认降权——
+                    # 多 bot 协作或群聊场景，转述内容可能误记为「用户的原始偏好」，
+                    # 身份认知倒挂。bot 记忆标 fuzzy（而非 reasoned），检索排序靠后。
+                    _is_bot = bool((meta or {}).get("_origin_is_bot"))
+                    _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective else "user_provided")
                     stamp_memory_refs([r for r in _refs if r],
-                                      "reasoned" if infer_effective else "user_provided",
+                                      _mode,
                                       user_id=uid, bank_id=req.bank_id,
                                       source=str((meta or {}).get("_origin_agent") or "add"),
                                       origin=_origin_snapshot)

@@ -391,9 +391,16 @@ class AiduMemProvider(MemoryProvider):
         turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
         # turn_author：宿主 2026-09 新增的可选参数（该轮发言者身份）。
-        # 当前接收但不落库 —— 签名必须与宿主基类逐字一致（契约守卫盯着），
-        # 参数的使用价值（按作者分桶记忆）另行评估，本轮只为接口兼容。
-        _ = turn_author
+        # v22.1：提取 author_id / author_name / is_bot 存入 metadata——
+        # 多 bot 协作或群聊场景，转述内容可能误记为「用户的原始偏好」，
+        # 身份认知倒挂。is_bot=True 的记忆在服务端默认降权（×0.5，可配）。
+        _author_id = ""
+        _author_name = ""
+        _author_is_bot = False
+        if isinstance(turn_author, dict):
+            _author_id = str(turn_author.get("id") or "")
+            _author_name = str(turn_author.get("name") or "")
+            _author_is_bot = bool(turn_author.get("is_bot", False))
         if len((user_content or "").strip()) < _MIN_QUERY_LEN:
             return
         combined = f"User: {user_content[:4000]}\nAssistant: {(assistant_content or '')[:4000]}"
@@ -413,6 +420,10 @@ class AiduMemProvider(MemoryProvider):
                         "source": "hermes_turn",
                         "session_id": session_id or self._session_id,
                         "turn_size": turn_size,
+                        # v22.1：说话人消歧元数据
+                        "_origin_author_id": _author_id,
+                        "_origin_author_name": _author_name,
+                        "_origin_is_bot": _author_is_bot,
                     },
                 },
                 timeout=_WRITE_TIMEOUT,
