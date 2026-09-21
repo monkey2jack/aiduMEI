@@ -1,5 +1,14 @@
 # aiduMEI 版本演进史
 
+## [探针与工具修复] health_check 适配 v22 众神殿安全门禁（2026-09-21）
+
+> **性质：健康检查探针脚本入参对齐，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。
+
+- **症状**：定时健康巡检报 `aidumem_search 🔴 403`。
+- **根因**：v22.0 雷霆审计 A3 加固了众神殿门禁（持 Bearer Token 调用必须带 `caller_user_id`），`scripts/health_check.py` 内部向 `/search` 探活时只传了 `user_id` 漏带 `caller_user_id`，被服务端安全拦截返回 403。
+- **修复**：`scripts/health_check.py` 探针入参补齐 `"caller_user_id": "health_check"`，完全符合众神殿安全门禁规范。
+- **验证**：本地执行 `python scripts/health_check.py`，`aidumem_search` 正常返回 200 OK，状态码由 403 恢复为绿灯。
+
 ## v22.0.0（2026-09-20 雷霆审计整改）：众神殿鉴权 · 绑定 strict · 注入边界 · 逃逸门组合闸 · 治理多语言 · 有界评估池 · 依赖合一 · 产品面收口
 
 > **性质：大版本（默认从严，向后不兼容）。** 11 份雷霆审计（10 外部模型 + 用户）合并后 12 条 P0 全实锤整改；系统性质从「单主人自用」跃迁到「身份派生/越权默认拒」。
@@ -16,11 +25,7 @@
 - **C 面**：README 卖点证据状态标注 / CHANGELOG Scope Rulings 表 / 双前缀冻结 / README 状态标签。
 - **D 面**：鉴权面普查守卫（AST 扫管理动词路由）/ 三态纪律规范 / CC 棘轮守卫 / 鉴权负向对照模板。
 
-<<<<<<< HEAD
 用例总数 2143 → 2208（+60 条验收与整改守卫，全部红→绿）。
-=======
-用例总数 2143 → 2208（+60 条验收与整改守卫，全部红→绿）。
->>>>>>> upstream/main
 
 ## v22.0 Scope Rulings（2026-09-20 · 雷霆审计 C3）
 
@@ -86,11 +91,7 @@
   - **探针** `distill_liveness_ok`：24h 内有会话写入却零精华产出即判降级（判据把精华自己按 `origin_agent` 排除出会话计数，分子分母同源）。漏挂第三条线比漏挂写线安静——记忆照常进，只是永远没有「这一程」那一层，本版之前没有任何绿灯会因此变红。
   - README 双语把「两条线」升级为「三条线」，并写清**「自动」到底自动在哪**：三条钩子分别在「说话前 / 说话后 / 聊完」自己触发，接上之后不需要再对记忆做任何事。正典、`config.yaml.snippet`、`INTEGRATION_GUIDE.md` 同步。
 
-<<<<<<< HEAD
 - **M7 episode rollup（默认关）+ M8 借阅对齐**：同 episode 多条命中聚合为 ≤6 步轨迹摘要（拼接式零 LLM）；`grant_hall_access` / `revoke_hall_grant` 进事件账本留痕（撤销只在**真撤到了**时记账），记忆档案新增「## 八、当前生效借阅」。用例总数 2048 → 2208（+95 条验收与整改守卫，全部红→绿）；env 新键 13 个全走 `AIDUMEI_` 前缀并三处登记。施工期被本仓守卫拦下 32 次并逐条收口，其中四次是真缺陷：函数内 `import os` 遮蔽模块级绑定（P0-2 同类）、MMR 点火豁免语义写错（低分点火条会压过高分条），以及下面「写线」一节里的两处。
-=======
-- **M7 episode rollup（默认关）+ M8 借阅对齐**：同 episode 多条命中聚合为 ≤6 步轨迹摘要（拼接式零 LLM）；`grant_hall_access` / `revoke_hall_grant` 进事件账本留痕（撤销只在**真撤到了**时记账），记忆档案新增「## 八、当前生效借阅」。用例总数 2048 → 2208（+95 条验收与整改守卫，全部红→绿）；env 新键 13 个全走 `AIDUMEI_` 前缀并三处登记。施工期被本仓守卫拦下 32 次并逐条收口，其中四次是真缺陷：函数内 `import os` 遮蔽模块级绑定（P0-2 同类）、MMR 点火豁免语义写错（低分点火条会压过高分条），以及下面「写线」一节里的两处。
->>>>>>> upstream/main
 - **审计整改轮（2026-09-17，用户审计 2🔴 3🟡 2🟢）**：🔴-1 溯源打标改走**显式 metadata**（`origin_from_metadata`），`_index_after_add` / `track_knowledge_evolution` 都不再依赖 contextvar 这个隐式通道 —— 生产 sidecar 33 行 `origin_session_id` 全空、M2 向量腿与 M1 轨迹登记从上线起空转，而 `epistemic_ok` 一直是绿的；根因经三路实验判定为**调用方未透传 session**（宿主 Hermes 插件 `_add` 只传 `channel`），服务端加固是为了让「少一次 set 就静默变空」这件事不再可能。🔴-2 补上任务书 DoD 点名却漏做的 `episode_ok` 探针，并新增 `epistemic_session_coverage`（7 天窗口，长期为 0 即记降级）——窗口刻意不用 24h：本仓日增只有个位数 sidecar 行，24h 配阈值 10 会让探针永不触发，那是又造一块白护栏。🟡-1 经实测不成立（未鉴权 `/search` 本就返回 401，审计中的「空 results」是解析脚本默认值），补守卫锁死该语义。🟢-1 回声抑制降级从 `debug` 升 `warning` 并带 session/user 上下文。🟢-2 `AGENTS.md` 的 curl 示例经核为扫描器启发式假阳性（loopback + 自有 token + 管道到 `jq` 而非 shell），把良性判据前置到示例之前。用例 2078 → 2087（+9 条整改守卫，含**跨线程打标实证**与负向对照）。
 - **自查轮（2026-09-17，施工方回头复审六项）**：整改期把 v21.2.0 全部六项重走一遍，翻出 9 处「代码在场、开关一开就不对」的空转 —— 它们都因默认关 / 旁路 / 观测缺失而从未在冒烟里现形。**M8**：dossier 借阅过滤读的是 `revoked_at` 而真实键是 `revoked`（取不存在的键恒 `None`，于是一条都滤不掉），且漏了过期判据、`actions` 是 list 被当字符串渲染成 `['read']`。**M7**：`_apply_episode_rollup` 的 `limit` 形参从未被使用（折叠掉的名额不回填，一开开关返回条数就变少），去重只覆盖前 6 条（第 7 条起摘要与单条并存，与「与单条去重」正相反）。**M4**：打分出口那一刀看到的是 `IGNITION_BOOST` **之前**的分，却会淘汰点火条 —— `_apply_score_floor` 早为同一条推理显式豁免过，MMR 漏了；新增 `protect_ignited` 只在那一刀生效，funnel 那一刀（分已是终态）照常竞争。**M2**：workspace 热缓存快路提前 return、整条绕开打分出口，而那里正是回声最可能出现的地方（已补同款过滤，并用 `_bypassed` 如实声明这条路旁路了 MMR/errsig）；MCP `mem_search` 不传 `session_id`，整条 MCP 通路上回声抑制等于不存在；`conversation_id` 只被写入侧认、检索侧不认，键名集合两侧不等；funnel 降级腿丢了 `bank_id`/`session_id`（v20.2.4 F-15 的病在降级路径复发）；verbatim 元数据回填失败只 `debug`，一失败就让原文腿的回声过滤全线失效。**M6**：写入侧与检索侧各留一份正则字面量拷贝，已收成单一真源。**M1**：`get_credit_map` 无域收窄，已走 `scope_clause()` 正规入口。另把 `_errsig_hit`/`_credit` 这两个「写了没人读」的生效证据下发进遥测 —— 本轮审计的核心结论正是「单测绿 + 冒烟绿都不够，要有数据面旁证」。回声抑制对 facts 类候选的射程边界在 docstring 如实登记，不靠沉默让人以为覆盖了。
 - **范围外缺口收口（2026-09-17）**：v21.1 把跨殿借阅织进了 `recall_chain` / `session_search` / `dossier`，但 **`/search` 这条最主要的 core 读路径收了 `caller_user_id` 却从不校验** —— 调用方声明了自己是哪座殿，声明被安静收下然后丢弃，「声明了」与「没声明」行为逐字节相同，无 403 无日志。现给 `/search` 与 `/search_trace` 补上 `authorize_cross_hall`；空 caller / caller==user_id 照旧放行，**存量调用方零破坏**（宿主、MCP、控制台都不传 caller）。**顺带修掉一处语义混淆**：`recall_chain` / `session_search` 的授权拒绝原本落进通用 `except` 被兜成 `{"status":"error"}`（HTTP 200）—— 「无权限」和「服务端故障」长得一模一样，调用方的重试逻辑会一直重试一个永远不会成功的请求。四处统一转 **403**，异常类型收窄到 `HallError`（DB/导入故障不是拒绝，仍走故障响应），并按 P1-4 教训在通用 `except` 之前放行 `HTTPException`（否则刚 raise 的 403 会被自己吞掉）。
