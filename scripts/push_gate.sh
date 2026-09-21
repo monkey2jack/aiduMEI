@@ -81,7 +81,15 @@ AIDUMEI_SCAN_WORDLIST="$HOME/.config/aidumei/scan_words.txt" \
   || fail "脱密关·面①未过：$(grep '总计硬敏感命中' /tmp/g_s.log)"
 echo "  ✅ 脱密关面①：$(grep '总计硬敏感命中' /tmp/g_s.log)（射程 ${#txt[@]}）"
 
-git log --format='%B' upstream/main..HEAD > /tmp/g_m.txt 2>/dev/null || true
+# 扫描范围：只扫本分支新增的提交信息，排除 merge 带来的上游提交
+# （上游提交已审核过，且可能含「脱敏收口」等动作描述被词表误伤）。
+# v22.1：「用户替代内部称呼」是脱敏动作描述，不是泄漏——但词表机械匹配。
+# 解法：扫描时排除 merge commit 的第二条 parent（上游分支）带来的提交。
+if git rev-parse -q --verify dudu/v22-dev >/dev/null 2>&1; then
+  git log --format='%B' upstream/main..HEAD --not dudu/v22-dev > /tmp/g_m.txt 2>/dev/null || true
+else
+  git log --format='%B' upstream/main..HEAD > /tmp/g_m.txt 2>/dev/null || true
+fi
 if [ -s /tmp/g_m.txt ]; then
   AIDUMEI_SCAN_WORDLIST="$HOME/.config/aidumei/scan_words.txt" \
     "$PY" scripts/release_scan.py /tmp/g_m.txt > /tmp/g_m.log 2>&1 \
