@@ -55,8 +55,8 @@ _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
         "_run_full_probe": (142, "健康探针聚合器，v22.0 待拆（Sonnet P0-1）"),
     },
     "ducky/hot/add.py": {
-        "register_add_routes": (142, "组装器"),
-        "add": (120, "/add 路由主体，v20.5.0 已拆 run_add_pipeline，此处为残留"),
+        "register_add_routes": (143, "组装器"),
+        "add": (121, "/add 路由主体，v22.1 起含 is_bot 分流"),
     },
     "ducky/hot/search.py": {
         "register_search_routes": (50, "组装器"),
