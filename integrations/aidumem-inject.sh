@@ -28,6 +28,48 @@
 #   # 然后在 ~/.hermes/config.yaml 注册 hooks.pre_llm_call
 #   # 装完务必自检一次（见下）：
 #   ~/.hermes/agent-hooks/aidumem-inject.sh --selftest
+
+# ── v22.1 熔断旁路（建议三）──────────────────────────────────────────
+# 服务升级/高并发时，1~2 秒抖动会让飞书聊天卡顿。
+# 0.15 秒探测失败即熔断，5 秒冷却期内所有 Hook 直接返回空上下文。
+# 熔断标记：/tmp/.aidumem_circuit_broken（时间戳）
+# 失败计数：/tmp/.aidumem_fuse_count
+_CIRCUIT_FILE="/tmp/.aidumem_circuit_broken"
+_FUSE_COUNT_FILE="/tmp/.aidumem_fuse_count"
+
+# 冷却窗检查（脚本第一行，最快路径）。
+# selftest 是诊断路径，跳过熔断——诊断要真实状态，不要被熔断掩盖。
+if [ "${1:-}" != "--selftest" ] && [ -f "$_CIRCUIT_FILE" ]; then
+    _broken_at=$(cat "$_CIRCUIT_FILE" 2>/dev/null || echo 0)
+    _now=$(date +%s)
+    if [ $((_now - _broken_at)) -lt 5 ]; then
+        echo "{}"
+        exit 0
+    else
+        rm -f "$_CIRCUIT_FILE"
+    fi
+fi
+
+# 极速探测（0.15 秒连接超时）。带 token（若 env 有）——/health 未鉴权也通，
+# 但守卫要求所有 curl 带 AUTH_ARGS；且将来若 /health 要鉴权，探测仍通。
+# selftest 跳过：诊断要真实状态。
+if [ "${1:-}" != "--selftest" ]; then
+    _FUSE_AUTH_ARGS=()
+    if [ -n "${AIDUMEM_API_TOKEN:-}" ]; then
+        _FUSE_AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
+    fi
+    if ! curl -s --connect-timeout 0.15 -m 0.2 "${_FUSE_AUTH_ARGS[@]}" "${AIDUMEM_URL:-http://127.0.0.1:8767}/health" >/dev/null 2>&1; then
+        _fail_count=$(cat "$_FUSE_COUNT_FILE" 2>/dev/null || echo 0)
+        _fail_count=$((_fail_count + 1))
+        echo "$_fail_count" > "$_FUSE_COUNT_FILE"
+        if [ "$_fail_count" -ge 2 ]; then
+            date +%s > "$_CIRCUIT_FILE"
+        fi
+        echo "{}"
+        exit 0
+    fi
+    echo 0 > "$_FUSE_COUNT_FILE"
+fi
 #   详见 integrations/INTEGRATION_GUIDE.md
 #
 # 自检（v19.4.2 新增）：
