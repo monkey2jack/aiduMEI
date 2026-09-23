@@ -1573,34 +1573,37 @@ def test_readme_public_version_claim_matches_service_version():
     """
     import re
 
-    from ducky.version import SERVICE_VERSION
+    from ducky.version import FULL_VERSION
 
-    current = re.match(r"(\d+\.\d+)", SERVICE_VERSION).group(1)
+    # f0.1 起对外版本号为 f*.*（见 ducky/version.py 的两层版本说明）。
+    # 守卫改为**逐字比对品牌版本**（含前缀），比原来只比数字段更严；
+    # 正则同时收 v/f 两代前缀，射程覆盖历史 v 世代宣称，不留网眼。
+    current = FULL_VERSION
 
     zh = open(os.path.join(_REPO_ROOT, "README.md"), encoding="utf-8").read()
     en = open(os.path.join(_REPO_ROOT, "README_EN.md"), encoding="utf-8").read()
 
-    m = re.search(r"当前公开版本\s*v(\d+\.\d+)", zh)
-    assert m, "README.md 缺少「当前公开版本 vX.Y」宣称"
+    m = re.search(r"当前公开版本\s*([vf]\d+\.\d+)", zh)
+    assert m, "README.md 缺少「当前公开版本 fX.Y」宣称"
     assert m.group(1) == current, (
-        f"README.md 宣称当前公开版本 v{m.group(1)}，version.py 是 v{current}"
+        f"README.md 宣称当前公开版本 {m.group(1)}，version.py 是 {current}"
     )
-    m = re.search(r"current public release is\s*\*\*v(\d+\.\d+)", en)
-    assert m, "README_EN.md 缺少「current public release is vX.Y」宣称"
+    m = re.search(r"current public release is\s*\*\*([vf]\d+\.\d+)", en)
+    assert m, "README_EN.md 缺少「current public release is fX.Y」宣称"
     assert m.group(1) == current, (
-        f"README_EN.md 宣称 current public release v{m.group(1)}，version.py 是 v{current}"
+        f"README_EN.md 宣称 current public release {m.group(1)}，version.py 是 {current}"
     )
 
     # 形态网（v20.5 preview）：**加粗版本号** 只要紧跟在这些「现在时版本宣称」语汇
     # 之后，就必须等于当前版本。措辞可以换，形态换不掉。
     # 历史记述请用过去时或去掉加粗，即可自然绕开本网 —— 这是有意为之：
     # 本守卫拦的是「现在时宣称」，不是「提到旧版本号」。
-    _NOW_ZH = r"(?:当前|现行|现在|目前)[^。\n]{0,12}?(?:公开|正式)[^。\n]{0,6}?版(?:本)?(?:为|是)?\s*\*\*v(\d+\.\d+)"
-    _NOW_EN = r"(?:current|latest)\s+public\s+(?:release|version)\s+(?:is\s+)?\*\*v(\d+\.\d+)"
+    _NOW_ZH = r"(?:当前|现行|现在|目前)[^。\n]{0,12}?(?:公开|正式)[^。\n]{0,6}?版(?:本)?(?:为|是)?\s*\*\*([vf]\d+\.\d+)"
+    _NOW_EN = r"(?:current|latest)\s+public\s+(?:release|version)\s+(?:is\s+)?\*\*([vf]\d+\.\d+)"
     # 旧措辞（历史沿革，保留网眼，防回退）
     _LEGACY = (
-        ("README.md", zh, r"保持\s*\*\*v(\d+\.\d+)\*\*"),
-        ("README_EN.md", en, r"remain(?:ing|s)?\s*\*\*v(\d+\.\d+)\*\*"),
+        ("README.md", zh, r"保持\s*\*\*([vf]\d+\.\d+)\*\*"),
+        ("README_EN.md", en, r"remain(?:ing|s)?\s*\*\*([vf]\d+\.\d+)\*\*"),
     )
     for name, text, pat in (
         ("README.md", zh, _NOW_ZH),
@@ -1609,7 +1612,7 @@ def test_readme_public_version_claim_matches_service_version():
     ):
         for hit in re.findall(pat, text):
             assert hit == current, (
-                f"{name} 用现在时宣称「公开版本为 v{hit}」，当前版本是 v{current} —— "
+                f"{name} 用现在时宣称「公开版本为 {hit}」，当前版本是 {current} —— "
                 "历史事件请用过去时态或不加粗写法"
             )
 
@@ -1629,7 +1632,7 @@ def test_readme_public_version_claim_matches_service_version():
     for _pat, _sample in _dirty:
         _m = re.search(_pat, _sample)
         assert _m, f"守卫放过了它本该拦住的现在时宣称，样本：{_sample!r}"
-        assert _m.group(1) == "20.4", f"网眼抓到了，但取值不对：{_m.group(1)!r}"
+        assert _m.group(1) == "v20.4", f"网眼抓到了，但取值不对：{_m.group(1)!r}"
 
     _clean = (
         (_NOW_ZH, "（该次维护时公开版本与 Release 保持 v20.3）。"),
