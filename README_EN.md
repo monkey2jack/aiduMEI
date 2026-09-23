@@ -1,128 +1,146 @@
 <p align="center">
-  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI" width="100%">
+  <img src="assets/aidumei-banner.webp" alt="aiduMEI ⚕ 爱嘟优忆思 — Memory + Engine + Insight" width="100%">
 </p>
 
 <!-- distribution-policy: github-source-only -->
 
-# aiduMEI ⚕ YouiSi — the Universal Wisdom Engine for AI Agents
+# aiduMEI ⚕ YouiSi — a general-purpose wisdom engine for agents
 
-> Let your AI Agent **actually remember you**: hybrid retrieval + governance + a visual console + dual-engine autoshift. A **single-machine self-hosted** engine, MIT.
-> Your host (Hermes / Claude Code / Cursor / any MCP client) owns short-term conversation; aiduMEI owns long-term memory.
+> Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
+> Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.1** (formal) — **YouiSi: One-Line Prompt deployment, dual-engine autoshift, Pantheon multi-bot memory personas, first of its kind.** v21.2 adds the Memmy fusion set: echo suppression, MMR diversity, an error-signature channel, and trajectory-level reward credit assignment (weight defaults to 0 — installed but inert until our own data says otherwise). v21.1 lays the Pantheon foundation: multiple bots/profiles each in their own hall with independent memory personas and cross-hall isolation by default; includes v21.0 cognitive governance (epistemic origin tagging, knowledge provenance, one-click dossier export). See [CHANGELOG](CHANGELOG.md).
+> The current public release is **f0.1**.
+>
+> **About the `f`**: this is a new era, not a continuation of the old numbering. `f` stands for
+> **future / fantasy / forever** — what we want to build is not a bigger cache, but a memory that
+> can walk with someone for a long time. The version shape is `f<major>.<minor>`: routine iterations
+> bump the minor, only a disruptive rework bumps the major. Every earlier version lives in
+> [CHANGELOG](CHANGELOG.md); this README answers exactly one question: **what it is right now.**
+>
+> **Status labels**: rapid feature iteration · external calibration 1/4 (✅ benchmark trial run done, mistakes published · ⬜ dependencies · ⬜ third-party reproduction · ⬜ independent review).
+> Checking out a tag ≠ a releasable build; `pyproject.toml` is the source of truth.
 
 ---
 
+## YouiSi: MEI is more than "beauty"
+
+**MEI = Memory + Engine + Insight.** In Chinese it reads 优忆思 (YouiSi) — three characters, three
+commitments, and **each one maps to code that actually runs in this repo**, not to marketing copy:
+
+| | What it means | What it is in the code |
+|---|---|---|
+| **You (优)** · Engine | **Tuned configuration, dual engines, fully automatic** | Dual-engine autoshift (downshifts to a local spare the moment the cloud fails, upshifts on recovery) · one-line Prompt deployment · read/write/distill hooks fire by themselves — once wired, you never manage memory again |
+| **i (忆)** · Memory | **The memory substrate and its logic** | Three-track forgetting curves · dual timeline (memories **expire** rather than get deleted) · event time stored separately from ingest time · vectors + Chinese BM25/trigram + a real cross-encoder reranker (not weighted fusion) · six-type classification |
+| **Si (思)** · Insight | **Borrow the model's reasoning; spend less of your context** | A relevance gate drops small talk before retrieval · reranking narrows the set before it reaches the context · session distillation compresses a whole run into one entry · reflection and self-evolution (`reflect.py` / `evolve_mem.py`); cognitive governance backstops it — the AI may only *propose* candidate knowledge and **has no authority to create facts** |
+
+The second half of that middle row is this era's theme. The system used to answer "what did you say"
+but stumbled on "when was that" — because on write, the **time the thing happened** was silently
+replaced by the **time the record landed**, with no error and no warning: retrieval kept returning
+results and the health check stayed green. This release fixes it in all three places: write,
+retrieval, and injection (see [CHANGELOG](CHANGELOG.md)).
+
 ## Three things nobody else ships
 
-| Edge | In one line |
+> ⚠️ **Evidence status**: the three below are a **unique feature combination** (no isomorphic
+> implementation on the market). "First of its kind" refers to the combination, not to a measured
+> ranking. For numbers, see the next section — we publish the mistakes too.
+
+| Killer feature | One line |
 |---|---|
-| 🚗 **Dual-engine autoshift** | On cloud outage it downshifts to the local spare engine mid-query, upshifts on recovery, replays the debt — and the gear state is always honestly visible |
-| 📊 **Visual console** | A zero-build web console at `/ui`: memories are visible, tunable, traceable — a direct answer to "memory is a black box" |
-| 🧠 **Cognitive governance (v21)** | Every memory **has an origin** (user-stated / AI-inferred / externally-referenced / unknown, tagged at write time at zero LLM cost), **has provenance** (which agent, which session, which turn), and **is exportable** (one-click Markdown dossier); the AI may only *propose* candidate beliefs — it cannot *create facts* directly |
+| 🚗 **Dual-engine autoshift** | Cloud outage auto-downshifts to a local spare, recovery auto-upshifts, backlog auto-replays — legs swap mid-query, and the current gear is always honestly visible |
+| 📊 **Visual console** | Zero-build web console (`/ui`): memory visible, tunable, traceable; switch between real memory domains and export the current one to Markdown — we answer the "memory is a black box" complaint head-on |
+| 🧠 **Cognitive governance** | Every memory has an **origin** (you said it / AI inferred it / external citation / unknown, tagged at zero write cost), a **paper trail** (who, which session, which turn), and is **exportable** (one-click Markdown dossier) |
+
+## 📊 Benchmarks: we ran them, and we publish the mistakes
+
+**First LoCoMo benchmark trial run completed 2026-09-22.** Not one number in the table below is derived.
+
+> ⚠️ **The scale matters, or this table will mislead you.** Memory benchmarks use **two rulers that
+> must never be mixed**: **F1** (token overlap — different wording loses points, strict) and
+> **LLM-Judge** (semantic equivalence, lenient). The "LoCoMo 90%+" figures in industry marketing are
+> almost all Judge-scale and method-iterated. **This table is F1 throughout**; industry numbers come
+> from the Mem0 paper ([arXiv:2504.19413](https://arxiv.org/abs/2504.19413) Table 1, each system self-reported).
+
+| Dimension (F1) | LangMem | Zep | OpenAI full-context | Mem0 | **aiduMEI trial** | Our standing |
+|---|---|---|---|---|---|---|
+| Single-hop recall | 35.51 | 35.74 | 34.30 | **38.72** | **37.37** | 🥈 2nd |
+| Multi-hop reasoning | 26.04 | 19.37 | 20.09 | **28.64** | 23.19 | Mid-pack (beats Zep / OpenAI) |
+| Temporal reasoning | 30.75 | **42.00** | 14.04 | **48.93** | 25.79 | ❌ Clear weakness |
+| Open-domain knowledge | 40.91 | 49.56 | 39.31 | 47.65 | 9.87 | ⚠️ Only 13 questions — **not statistically meaningful** |
+| Adversarial abstention | — | — | — | — | **81.69** | ⭐ Usually absent from the industry's four-way comparisons |
+
+**Trial conditions** (reproduction anchors): official LoCoMo dataset `3eb6f2c`, **first 2 complete samples**
+(conv-26 / conv-30) · 788 turns ingested + 304 questions · embeddings BAAI/bge-m3 ·
+answering model Claude-Sonnet-4.6 · hybrid retrieval top_k=5 · **zero-correction baseline** ·
+overall F1 42.14% / Judge 52.96%.
+
+**How to read this table**:
+
+- ✅ **The two claims that hold up**: **single-hop factual recall reaches the top tier** (2nd overall,
+  ahead of Zep / OpenAI full-context / LangMem); **hallucination resistance leads by a wide margin**
+  (adversarial abstention F1 81.69) — faced with trap questions about things never mentioned in the
+  conversation, the gating philosophy rarely lets it be talked into inventing an answer.
+- ❌ **What we must admit**: **temporal reasoning is a real weakness** (25.79 vs Zep 42 / Mem0 48.93);
+  those 13 open-domain questions **do not support any conclusion**.
+- ⚠️ **What we will not claim**: this is a **trial run**, not a final score. 2 of 10 samples, and the
+  judge was Sonnet rather than the industry-standard GPT-4o. **We do not and will not claim SOTA on this basis.**
+
+### Next-release targets (**not yet re-measured**)
+
+The root cause behind the temporal weakness has been located and fixed (write / retrieval / injection),
+but **this release did not re-run the evaluation**, so the table below is a set of targets, not results:
+
+| Dimension | Trial (measured) | Target | Approach | Status |
+|---|---|---|---|---|
+| Temporal reasoning | 25.79 | **≥ 40** (vs Zep) | Record event time correctly + pass it through recall + render it on injection | 🔧 Root cause fixed, **re-run pending** |
+| Multi-hop reasoning | 23.19 | ≥ 28 (vs Mem0) | Iterative retrieval / query expansion | ⬜ Not started |
+| Open-domain | 9.87 | Full re-run for a real value | Widen the sample before choosing a strategy | ⬜ Not started |
+| Single-hop | 37.37 | Hold ≥ 37 | No regression | 🛡️ Hold |
+| Adversarial abstention | 81.69 | Hold ≥ 80 | Keep the gating advantage | 🛡️ Hold |
+
+> **Why publish an unflattering score first**: the value of a first benchmark run is exposing problems,
+> not collecting numbers. This trial immediately surfaced a root cause that had been hiding for a long
+> time (event time silently replaced by ingest time) — far more useful than a pretty figure. A formal
+> leaderboard entry requires all 10 samples re-run with a GPT-4o judge, and we will **publish the
+> failures alongside the wins**. The evaluation protocol is frozen under `benchmarks/` (dataset, models,
+> judge, prompt, seed and file hashes all pinned and recorded).
 
 ## One-prompt deploy: let your Agent do the work, you watch
 
-Send this to your AI Agent:
+Send this to your AI agent:
 
-> You are the deployment engineer. Deploy aiduMEI on this machine by following <https://github.com/monkey2jack/aiduMEI> `prompts/install.txt` verbatim (the 14-line canon). Verify each step yourself; never fake success.
+> You are now a deployment engineer. Follow the full `prompts/install.txt` (the 14-line canon) from <https://github.com/monkey2jack/aiduMEI> to deploy aiduMEI on this machine. Verify every step yourself; never pretend success.
 
-The canon walks it through: environment check → install → gear selection → keys (it asks you; never invents) → service up → **real write/recall verification** (not just `/health`) → host integration → cron & backups → final report.
+The canon walks it through: environment check → dependencies → gear selection → keys (it asks you, never invents them) → start the service → **real write/recall verification** (not just `/health`) → host integration → cron jobs and backups → a report for you.
 
-> ⚠️ **Wiring the host means wiring two hooks, not one.** The *read* hook injects memories *before* each turn — miss it and you notice immediately. The *write* hook persists the turn *afterwards* — **miss it and you will not notice for weeks**: retrieval still returns results and `/health` stays green, because the *old* memories really are healthy, while everything new you say is thrown away.
+> ⚠️ **Wire two lines to the host, not one.** The **read line** injects memory *before* each turn — if it breaks you notice immediately. The **write line** stores the turn *afterwards*, and **if that breaks you may not notice for weeks**: retrieval still returns results and `/health` still shows green, because the old memories really are healthy — while every new thing you say is being dropped.
 >
-> We paid for this lesson on our own production deployment (2026-09-17: read hook live for a month, write hook never wired, every probe green). Hence `/health` now carries an `ingest_liveness_ok` probe for "reading but not writing", and after a few real turns you should run:
+> We paid for this lesson in production (read line down for a month, write line never wired, every probe green). So now `/health` carries an `ingest_liveness_ok` probe watching for "reading but not writing", and after a few real turns you should run:
 >
 > ```bash
-> python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # exit code 0 means wired
+> python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # exit code 0 means the wiring works
 > ```
 >
-> **All three wires ship as ready-made scripts** — copy and register them, don't write your own:
+> **Each line has a ready-made script — copy it over and register it** (don't write your own):
 >
-> | | Script | Hook | What it does automatically |
+> | | Script | Hook point | What it does automatically |
 > |---|---|---|---|
-> | Read | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` | Feeds relevant memories to the model **before** each turn |
-> | Write | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` | Stores the turn **after** it finishes |
-> | Write | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` | Same |
-> | Distill | `integrations/aidumem-distill.sh` | Hermes `on_session_end` | On session close, distills "what this stretch was about" into its own memory |
+> | Read line | `integrations/aidumem-inject.sh` | Hermes `pre_llm_call` | Feeds relevant memories to the model **before** each turn |
+> | Write line | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` | Stores the turn **after** it happens |
+> | Write line | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` | Same |
+> | Distill line | `integrations/aidumem-distill.sh` | Hermes `on_session_end` | At session end, distills "the thing most worth remembering from this run" into its own entry |
 >
-> **"Automatic" means that once these three are wired you never touch memory again** —
-> no manual saves, no reminding the model to remember, no periodic cleanup. The three
-> hooks fire themselves at three moments: before you speak, after you speak, after you
-> are done. Your only job is to attach them correctly and then run the check below once.
+> **"Automatic" means that once these three are wired, you never have to do anything about memory** — no manual saving, no reminding the model to remember, no periodic tidying. The three hooks fire on their own before you speak, after you speak, and when the session ends. Your only job is to hook them in the right places and verify once with the command above.
 >
-> The distill wire addresses a different kind of forgetting: per-turn writes store
-> *facts*, and facts cannot hold "what this stretch was about" — the offhand remark,
-> the problem solved together, the moment a decision was made. It uses its own slow
-> decay lane (`distill`), and its emotional weight counts hits against the emotion
-> keyword list this repo already ships, not an invented score.
+> The distill line solves a different kind of forgetting: per-turn writes store **facts**, but cannot store "what this run was about" — an offhand remark, a problem solved together, the moment a decision was made, all scatter into a dozen facts and never resurface. It runs in its own slow-decay lane (`distill`, kept longer than ordinary memories), and its emotional weighting comes from the repo's existing sentiment lexicon, not a newly invented score.
 >
-> All three carry `--selftest` (the write one really writes a memory and reads it back). But a passing selftest only proves the script runs — **it does not prove the host is calling it**. In the incident above the scripts were fine the whole time; nobody had hooked the write one. That is why `check_ingest_wiring.py` is the only acceptance criterion. Full wiring and yaml in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
-
-**No Agent? Five manual lines:**
-
-```bash
-git clone https://github.com/monkey2jack/aiduMEI.git && cd aiduMEI
-python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-cp mem0_config_local.json.example mem0_config_local.json && cp .env.example .env   # fill in your keys
-python api_server.py                                                              # → http://127.0.0.1:8767
-python scripts/e2e_smoke.py --json                                                # real verification; PASS or it didn't happen
-```
-
-**Three engine gears, pick by your machine** (`AIDUMEI_ENGINE_MODE`):
-
-| Gear | Requires | Effect |
-|---|---|---|
-| `cloud` | Cloud LLM + embedding keys | Lightest; recall honestly `degraded` during an outage |
-| `auto` (recommended) | Keys + `pip install .[local-embed]` | Cloud-first, automatic local fallback and recovery |
-| `local` | Local model, zero keys | Zero tokens, zero outbound calls |
-
-Container deployment: [docs/DEPLOY_DOCKHOLD.md](docs/DEPLOY_DOCKHOLD.md). The full agent-side runbook (acceptance probes, backups, maintenance): [AGENTS.md](AGENTS.md).
-
-## 📦 Load & consumption — both sizes, measured and on the table
-
-> How heavy is it to deploy? **Depends on the gear you pick.** (2-core 3.5GB cloud box, measured 2026-08-27)
-
-| Dimension | ☁️ Cloud gear (`cloud`) | ⚙️ Auto gear (`auto`, default) | 🔋 Local gear (`local`) |
-|---|---|---|---|
-| **Resident memory** | **~280 MB** | **~430 MB** | ~430 MB |
-| **Dependency disk** | ~275 MB | ~353 MB + 91 MB model | same as auto |
-| **During an outage** | no spare; honestly reports `degraded` | **auto-downshift keeps running** | no external dependency at all |
-| **Token burn** | normal | normal (zero during outages) | **always zero** |
-| **Keys needed** | yes | yes (without them it just runs local) | **none** |
-
-**Shared**: 2 CPU cores suffice, idle < 1%; `/search` 0.14~0.23s per call; cold start 5.2s; a thousand memories cost ~13 MB of vectors + a few hundred KB of SQLite; zero frontend dependencies; Python 3.10–3.12.
-
-**Where the 150 MB goes, and whether it can be shaved** (measured, not estimated): the onnxruntime library alone (imported, model not loaded) **75 MB**; the bge-small-zh-v1.5 session & weights **~122 MB**; the measured two-gear delta **150 MB** (components measured separately share pages with the baseline — both figures honestly shown, no forced arithmetic). We tried to shrink it: `threads=1`, ONNX arena on-demand allocation, `malloc_trim`, `MALLOC_ARENA_MAX=2` — **all four knobs measurably did nothing**; the model is already the smallest Chinese-capable option in the fastembed catalog (the next-smallest multilingual option is 2.4× its size). So instead of pretending to optimize, we gave you the switch: **don't want the spare? Pick the cloud gear and the 150 MB costs you nothing.**
-
-> **Why the spare is resident**: dual indexing computes a local vector for *every* write — load the model only when the outage hits, and nothing written so far is recallable. The spare is stocked in advance, not found on the spot.
-> The rest of the lightness is deliberate: embedded on-disk vector store (no separate process/port), no GPU, a relevance gate that blocks chit-chat from ever triggering retrieval, SQLite+FTS5 underneath. In one line: **cloud gear runs on 1 core / 1 GB; auto and local gears want 2 cores / 2 GB.**
-
-> **Pick the gear by your machine's memory (deployment Agents, follow this)**: plenty of free RAM (≥2G headroom) and you want "recall the full history even when the cloud is down" → `auto` (the local spare is a **resident hot-spare**; that ~174MB buys the outage resilience); tight on memory or no need for offline fallback → `cloud` (~280MB, honest `degraded` on outage, no local downshift). **Don't let a memory-constrained box default to `auto` and then complain it's heavy** — the gear is yours to pick per machine; run `free -m` first.
->
-> **Planned (v21.2) cold-spare gear**: the local model is **not resident** (saves that ~174MB in normal operation), loaded only on a cloud outage to batch-recompute local vectors for existing memories; measured on a mid-size store (~1500 entries) the recompute window is on the order of ten-odd seconds, `degraded` during it, full recovery once done. It reconciles "save memory normally" with "full resilience after an outage," at the cost of a recompute window that grows linearly with store size (large stores need incremental recompute) — the direct answer to "the auto gear should load on demand." The hot-spare (today's `auto`) vs cold-spare (planned) trade-off will fold into the gear-selection guide.
-
-## The console: memory is not a black box
-
-Open `http://127.0.0.1:8767/ui` after starting: browse/search/tune memories, health probes and gear state, federation and evolution, retrieval-quality panel, **one-click memory dossier export** (Markdown, partitioned by epistemic origin, inferred entries marked "unverified").
-
-## Integrations
-
-| Host | How |
-|---|---|
-| Hermes Agent | MemoryProvider plugin: auto-save and auto-recall every turn (pre-compression rescue) |
-| Claude Code | CLI hook / MCP |
-| Cursor | Rules file (auto-saves to Raw Drawer on file save) |
-| Any MCP client | MCP Server (41 tools, default :8766, stdio/HTTP dual transport) |
-| Anything else | REST API (:8767) |
-
-Details: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+> All three ship with `--selftest` (the write line really writes an entry and reads it back). But **a passing self-test only proves the script runs, not that the host is calling it** — in that incident the script was fine all along, it simply was not hooked up. That is why `check_ingest_wiring.py` is the only acceptance criterion. Full wiring instructions and YAML in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ### ⚠️ Upgrading? You must redeploy the hooks
 
 **Hooks are copies, not symlinks.** A `git pull` updates `integrations/*.sh` in the repo, but the host still runs the **old files** — no error, no warning, clean logs, `/health` all green. The read line silently reverts to its old behaviour while you believe you have upgraded.
 
-There is a nastier second layer: **the filename the host actually calls may differ from the repo's.** An early install can leave an alias behind (our own production runs `mem0-inject.sh`, while the repo ships `aidumem-inject.sh`). Verifying by filename checks a file the host never executes — and hands you a false "already deployed".
+There is a nastier second layer: **the filename the host actually calls may differ from the repo's.** An early install can leave an alias behind. Verifying by filename checks a file the host never executes — and hands you a false "already deployed".
 
 **So after every upgrade (and any time you want to confirm "is the host running this version?"):**
 
@@ -135,56 +153,118 @@ It **ignores filenames and trusts only `~/.hermes/config.yaml`**: whatever path 
 This check is folded into `scripts/health_check.py`, so **your scheduled health check already covers it — no extra cron entry needed**.
 
 > One line to remember: **verify against the file the host actually calls — verifying the repo file is not verifying at all.**
-> This is what a user audit caught us on in f0.1 (fix written, tests green, report sent — just never delivered to the host).
+> This is what a user audit caught us on (fix written, tests green, report sent — just never delivered to the host).
+
+**No agent? Five lines by hand:**
+
+```bash
+git clone https://github.com/monkey2jack/aiduMEI.git && cd aiduMEI
+python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+cp mem0_config_local.json.example mem0_config_local.json && cp .env.example .env   # edit both, add your keys
+python api_server.py                                                              # → http://127.0.0.1:8767
+python scripts/e2e_smoke.py --json                                                # real verification; only PASS counts
+```
+
+**Three gears — pick by your machine** (`AIDUMEI_ENGINE_MODE=auto` is the recommended default; `cloud` / `local` likewise):
+
+| Gear | Requires | Effect |
+|---|---|---|
+| `cloud` | Cloud LLM + embedding keys | Lightest; on outage, recall degrades honestly |
+| `auto` (recommended) | Keys + `pip install .[local-embed]` | Cloud first, auto-switch to local on outage, auto-switch back on recovery |
+| `local` | Local models, zero keys | Zero tokens, zero outbound calls |
+
+Containerised deployment: [docs/DEPLOY_DOCKHOLD.md](docs/DEPLOY_DOCKHOLD.md). The full agent-side operating manual (acceptance probes, backups, maintenance) is in [AGENTS.md](AGENTS.md).
+
+## 📦 Load & consumption — both sizes, measured and on the table
+
+> Is this heavy to run? **Depends on the gear.** (2-core 3.5 GB cloud VM · measured 2026-08-27)
+
+| Dimension | ☁️ Cloud (`cloud`) | ⚙️ Autoshift (`auto`, default) | 🔋 Local (`local`) |
+|------|---------------------|--------------------------|---------------------|
+| **Resident memory** | **~280 MB** | **~430 MB** | ~430 MB |
+| **Dependency disk** | ~275 MB | ~353 MB + 91 MB model | Same as autoshift |
+| **On outage** | No spare; honestly reports `degraded` | **Auto-downshifts and keeps going** | No external dependency |
+| **Token usage** | Normal | Normal (zero during outage) | **Always zero** |
+| **Keys required** | Yes | Yes (without them it stays local) | **No** |
+
+**Shared**: 2 CPU cores is enough, <1% idle; `/search` 0.14–0.23 s; cold start 5.2 s; a thousand-memory data dir is ~13 MB of vectors plus a few hundred KB of SQLite; zero frontend dependencies; Python 3.10–3.12.
+
+**Where those 150 MB go, and whether they can be cut** (measured, not estimated): the onnxruntime library alone, imported without loading a model, is **75 MB**; the bge-small-zh-v1.5 session and weights are **~122 MB**; the measured delta between the two gears is **150 MB** (components measured separately and sharing pages with the gear delta — both figures stated honestly, not summed). We tried to shrink it: `threads=1`, on-demand ONNX arena allocation, `malloc_trim`, `MALLOC_ARENA_MAX=2` — **all four knobs measurably did nothing**; the model is already the smallest usable Chinese option in the fastembed catalogue (the next smallest multilingual option is 2.4× its size). So we did not fake an optimisation — we gave you a switch instead: **if you don't need the spare, pick the cloud gear and those 150 MB cost you nothing.**
+
+> **Why the spare stays resident**: dual indexing requires every write to compute a local vector at the same time — loading the model at the moment of an outage would recall nothing. The spare is prepared in advance, not found on demand.
+> The rest of the lightness is deliberate: the vector store is embedded on disk (no separate process or port), no GPU, the relevance gate drops small talk first, SQLite+FTS5 as a fallback. In short: **the cloud gear runs on 1 core / 1 GB; autoshift and local want 2 cores / 2 GB.**
+
+> **Pick a gear by available memory (deploying agents: follow this)**: plenty of headroom (≥2 GB free) and you want "cloud is down but local can still recall everything" → `auto` (the local spare stays **hot-resident**; those ~174 MB buy you that offline resilience). Tight memory, or no need for an offline fallback → `cloud` (~280 MB; if the cloud dies it honestly reports `degraded` and does not fall back locally). **Don't let a memory-starved machine default to `auto` and then complain it's heavy** — gears exist so you can choose by headroom; run `free -m` before you pick.
+>
+> **Planned cold-spare gear**: the local model is **not resident** (saving those ~174 MB in normal operation) and loads only when the cloud fails, then batch-computes local vectors for existing memories; measured on a small-to-medium store (~1500 entries) that catch-up window is on the order of ten-odd seconds, `degraded` throughout, full capability once complete. It balances "save memory normally" against "full resilience after a failure", at the cost of a catch-up window after failure (growing linearly with store size; large stores need incremental catch-up). This addresses the "autoshift should load on demand" critique directly — the hot-spare (current `auto`) versus cold-spare trade-off will be folded into the gear-selection guide.
+
+## The console: memory is not a black box
+
+Start the service and open `http://127.0.0.1:8767/ui`: browse/search/adjust memories, health probes and gear status, federation and evolution, a retrieval quality panel, and **one-click dossier export** (Markdown, partitioned by origin, with every inference explicitly marked "unverified"). The domain selector at the top only lists `(user_id, bank_id)` pairs that are registered and active server-side; an invalid domain falls back to the server default, and when the directory is unavailable it does not guess a demo domain. A federation member's `profile` is a display grouping, not a memory domain.
+
+## Integrations
+
+| Host | Method |
+|---|---|
+| Hermes Agent | MemoryProvider plugin: auto-save and auto-recall every turn (pre-compression rescue) |
+| Claude Code | CLI hook / MCP |
+| Cursor | Rules file (auto-saves to Raw Drawer on file save) |
+| Any MCP client | MCP Server (41 tools, default :8766, stdio/HTTP dual transport) |
+| Anything else | REST API (:8767) |
+
+Details: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## MCP Server (41 tools · default port 8766)
 
-MCP and REST share one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind requires `AIDUMEM_API_TOKEN` or the server refuses to start; only an explicit `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` overrides (off by default, critical-logged when on). Tool groups and call examples: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+MCP and REST run in one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind must configure `AIDUMEM_API_TOKEN` or the server refuses to start; only set `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` if you genuinely need public exposure (off by default; turning it on emits a critical log line). Tool groups and call examples in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## Security Model
 
-Bearer token (`AIDUMEM_API_TOKEN`) + console password (PBKDF2) + injection guard + loopback by default. After startup, check Three probes first: `health_status`, `degraded`, and `probes.runtime_paths.data_dir_writable` on `/health` (without credentials the probes are redacted with a `_redacted` note). Three rounds of external security audits on record: [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md).
+Bearer token (`AIDUMEM_API_TOKEN`) + console passphrase (PBKDF2) + injection defences + loopback-only by default. After startup, check Three probes first: `health_status`, `degraded`, and `probes.runtime_paths.data_dir_writable` on `/health` (probes are redacted without credentials, with a `_redacted` note). Multiple rounds of external security audit are logged line by line in [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md).
 
 ## Key environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `AIDUMEM_API_TOKEN` | API auth token (mandatory for non-loopback) | empty = loopback only |
-| `AIDUMEM_ENTITY_KEYWORDS` | Entity keywords (names/project codenames for the relevance gate) | empty |
+| `AIDUMEM_ENTITY_KEYWORDS` | Entity lexicon (names/project codenames, fed to the relevance gate) | empty |
 | `AIDUMEM_DATA_DIR` | Data directory | `~/.aidumem` |
 | `AIDUMEI_ENGINE_MODE` | Engine gear: cloud/auto/local | auto |
 | `AIDUMEM_CONFIG_READONLY` | Read-only demo mode for console config | 0 |
 | `AIDUMEI_INJECT_DATE` | Timestamp in recalled items: `day`/`minute`/`off` (hook side) | day |
 
-The full registry lives in `ducky/env_registry.py` (code is the source of truth; typos trigger a startup warning).
+The complete environment variable registry is `ducky/env_registry.py` (code is the source of truth; typos raise a startup warning).
+
+> **Dual prefixes are frozen**: new variables are always `AIDUMEI_` (`AIDUMEM_` is legacy, no new additions).
+> Existing variables are not migrated (compatibility red line) — documentation only.
 
 ## Capability map (one table, no stories)
 
-| Layer | Capabilities |
+| Layer | Capability |
 |---|---|
-| Retrieval | bge-m3 vectors + FTS5 CJK BM25/trigram + true cross-encoder rerank; relevance gate (chit-chat never triggers retrieval, saving tokens) |
-| Memory semantics | Three-track decay (identity never decays / emotion accelerated / standard) · dual timeline (memories **expire**, not deleted) · six-type classification |
-| Governance | Write-time dual review + conflict resolution + injection guard; full-path event ledger; cryptographic lineage (tamper-evident) |
-| Evolution | Reflection (active/scheduled) · instinct→skill graduation (human approval gate) · retrieval self-evolution feedback loop |
-| Collaboration | Federation: many agents share one memory base (MoE gate + fine-grained grants) |
-| Extras | Multimodal visual memory · code graph · verbatim raw drawer · Obsidian interlinks |
+| Retrieval | bge-m3 vectors + FTS5 Chinese BM25/trigram + a real cross-encoder reranker; relevance gate (small talk skips retrieval, saving tokens) |
+| Memory semantics | Three-track forgetting (identity never decays / emotional accelerates / standard curve) · dual timeline (memories **expire** rather than get deleted) · six-type classification |
+| Governance | Dual review on write + conflict resolution + injection defence; event ledger across all paths; cryptographic lineage (tamper-evident) |
+| Evolution | Reflection (on-demand and scheduled) · instinct-to-skill promotion (human approval gate) · retrieval self-evolution feedback loop |
+| Collaboration | Federation: multiple agents share one memory store (MoE gating + fine-grained grants) · multiple bots/profiles each in their own domain, independent memory personas, cross-domain isolation by default |
+| Periphery | Multimodal visual memory · code graph · verbatim drawer · Obsidian backlinks |
 
 ## Testing & quality
 
-**Test-layer honesty note (v19.4.1 P3-3)**
-> How to read the table: in every row, passed + skipped equals the `pytest --collect-only` count **for that form on that date**; rows measured on different dates may have different denominators (the tree grows), so trust the date in each row. Skips are explained per axis (see [docs/TESTING.md](docs/TESTING.md)); they are not failures.
+**Test levels, stated honestly**
+> How to read the table: "passed · skipped" per row sums to the `pytest --collect-only` count **for that shape, on that date**; different rows may have different denominators (the tree grows), so trust the date in each row. Skips are explained per "axis" (see [docs/TESTING.md](docs/TESTING.md)) and are not failures.
 
-| Dimension | Status |
-|---|---|
-| Total cases | **2220** (measured via `pytest --collect-only`, 2026-09-23, f0.1 tree) = **2014 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
-| Clean dev machine | 2208 passed · **12 skipped** — **collected 2026-09-23** (f0.1 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
-| Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
-| Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
-| All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09** (v20.5a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
-| Layering | Mostly module-level unit tests plus source-level guard assertions, with `TestClient`-driven API tests in support |
-| Platform premise | The suite is maintained for Linux/macOS (POSIX): the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics use the `resource` module and honestly report `None` on non-POSIX platforms. Windows is not a full-suite platform |
-| Statement coverage | ~51% over `ducky/` and entry points |
-| External coverage | Real mem0/Qdrant, model calls and recovery drills are production smoke tests, not unit tests |
+| Dimension | Current |
+|------|------|
+| Total cases | **2221** (measured via `pytest --collect-only`, 2026-09-23, f0.1 tree) = **2015 behavior (product code under direct test) + 70 script/hook + 136 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 2209 passed · **12 skipped** — **collected 2026-09-23** (f0.1 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
+| Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
+| All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
+| Levels | Primarily **module-level unit tests plus source-level guard assertions**, with `TestClient`-driven interface tests as support |
+| Platform | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics go through the `resource` module and honestly report `None` on non-POSIX platforms rather than crashing. Windows is not a full-suite platform |
+| Statement coverage | ~51% (`ducky/` + entry points, measured with `coverage`) |
+| Not covered | Real mem0 / Qdrant integration, real LLM calls, concurrency stress — these depend on external services and are carried by production smoke tests |
 
 ```bash
 # Full regression
@@ -193,21 +273,21 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2208 and 1821**: the first is the 2026-09-23 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
+> **Why report both 2209 and 1821**: the first is the 2026-09-23 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
-> **The 12 skips are falsifiable, reproduce them yourself**: all thirteen skip axes (host, tools, optional deps, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state controllable, reproducible in both directions:
+> **Those 12 skips are not hand-waving — you can verify them yourself**: all thirteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
 > ```bash
-> # Measured 2026-09-14: install all dependencies, deploy the model cache, and point AIDUMEI_BENCH_DATA_DIR at a directory containing locomo10.json
+> # measured 2026-09-14: install everything, deploy the model cache, and point AIDUMEI_BENCH_DATA_DIR at a directory containing locomo10.json
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2208 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2220 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2208 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2209 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2221 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2209 passed, 12 skipped
 > ```
 >
-> `2220 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2221 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >
@@ -225,47 +305,47 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` installed | 20 | real patch-layer tests |
 > | `fastembed` installed | 1 | real local-model fallback test; the configured model cache must also be present |
 > | `ruff` installed | 3 | real-defect static rules |
-> | `mcp` extra installed | 8 | MCP import-surface guards + auth-behavior + SSE transport cases + search session passthrough (v21.2 M2) |
+> | `mcp` extra installed | 8 | MCP import-surface guards + auth-behavior + SSE transport cases + search session passthrough |
 >
-> On the production box in an isolated sandbox (host source present, no `.env`), the bare command actually prints 1967 passed, 26 skipped (measured 2026-09-11, v20.5.1 tree `de09794`) — axes differ, so numbers only travel with their environment and date.
+> On the production box in an isolated sandbox (host source present, no `.env`), the bare command actually prints 1967 passed, 26 skipped (measured 2026-09-11, tree `de09794`) — axes differ, so numbers only travel with their environment and date.
 
 ## Security & compliance
 
-MIT License. `SECURITY.md` + [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md): multiple rounds of external security audits on record, including our reasons for rejecting false positives. The MCP layer refuses to start on non-loopback binds without a token.
+MIT License. `SECURITY.md` + [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md): multiple rounds of external security audit logged line by line (including our reasons for rejecting false positives). The MCP layer forces a token on non-loopback binds or refuses to start.
 
 ## Known boundaries (honestly stated)
 
-- Embedding and LLM services are required (cloud or the local spare) — that buys real semantic retrieval and extraction quality; for fully-offline sub-millisecond minimalism, zero-dependency local tools fit better, and we say so plainly.
-- Benchmark protocols (LoCoMo / LongMemEval) are frozen; formal scores pending — honestly registered in [benchmarks/RESULTS.md](benchmarks/RESULTS.md).
-- The local lite gear's recall overlap with the cloud gear is measured and limited (all differences priced openly in docs) — that is exactly why the auto gear exists.
+- Requires embedding and LLM services (cloud or a local spare) — what you get back is real semantic retrieval and extraction quality. If you want "fully offline and sub-millisecond", a zero-dependency local tool suits you better, and we won't hide that.
+- **The benchmark result is a trial run, not a final score**: 2 of 10 samples, judge is not GPT-4o. A formal entry requires a full re-run; [benchmarks/RESULTS.md](benchmarks/RESULTS.md) records this honestly.
+- Temporal reasoning remains a **known weakness**: the root cause is fixed but **not yet re-measured** — every entry in the "target" column above is still a target, not a result.
+- Measured recall overlap between the local lite gear and the cloud gear is limited (every difference is priced openly in docs) — that is exactly why the auto gear exists.
 
 ## Docs
 
-Deployment & operations: [AGENTS.md](AGENTS.md) (single agent entry point) · [docs/HEALTH.md](docs/HEALTH.md) · [docs/OPERATIONS.md](docs/OPERATIONS.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) · [docs/POSITIONING.md](docs/POSITIONING.md) (comparisons with alternatives, all figures reproducible)
+Deployment and operations: [🤖 Agent Guide](AGENTS.md) (the single entry point for agents) · [docs/HEALTH.md](docs/HEALTH.md) · [docs/OPERATIONS.md](docs/OPERATIONS.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) · [docs/POSITIONING.md](docs/POSITIONING.md) (peer comparison, every figure recomputable) · [docs/BENCHMARKING-POSTURE.md](docs/BENCHMARKING-POSTURE.md) (benchmark posture and scales)
 
 ## Known Limitations & Not Covered
 
-The `(user_id, bank_id)` scope contract covers the **online read/write paths**. The three areas below are
-**explicitly not covered** in this release. They are documented here rather than left for you to discover in production:
-
-| # | Exception | Current state | Why not in this release |
-|---|-----------|---------------|-------------------------|
-| 1 | **`core_memory` key shape** | The table's primary key is still the single column `block_key` (`ducky/core_memory.py`). Isolation is enforced by the unique index `idx_core_memory_scope_key(user_id, bank_id, block_key_raw)` together with a write path whose `DO UPDATE SET` clause never touches the ownership columns | Changing the primary key shape is a **breaking** change and must come **after** existing rows have been reconciled to their true banks. Doing it in the other order would weld unreconciled data to the wrong bank |
-| 2 | **Whole-database maintenance jobs** | Memory evolution and salience maintenance (`ducky/evolve_mem.py`, `ducky/routes_evolve.py`) scan the **whole database and do not isolate by bank**; this is annotated in the source docstrings | Whole-database maintenance is precisely their semantics — partitioning by bank would rob decay and consolidation of their global view. These jobs **never feed the user-visible retrieval path** |
-| 3 | **Bank attribution of pre-existing data** | Memories carried over from v19 all land in the `default` bank and have **not** been reconciled to their true owners | The premise of an additive migration is that not one existing row is changed or deleted. True attribution requires business-side confirmation: that is data governance, not a code release |
-
+| # | Exception | Notes |
+|---|------|------|
+| 1 | Tenant isolation narrows visibility per tenant | It is not a strong isolation layer for mutually distrusting customers; the domain contract is `ducky/bank_contract.py`, with boundaries recorded in `docs/SECURITY-AUDIT-LEDGER.md`. |
+| 2 | `fetch_local_embed_model.py` must run at deploy time | Zero network at runtime; `ducky/local_embed.py` forces `HF_HUB_OFFLINE=1`. After fetching, every file is sha256-verified against `scripts/local_embed_model_sha256.json`; a mismatch deletes the file and exits non-zero. |
+| 3 | `capture_wave` recalls nothing if `entity_keywords` is unset | No error is raised; configure `AIDUMEM_ENTITY_KEYWORDS`. See `ducky/pipeline/memory_gate.py`. |
 
 ## Repository layout
 
 ```text
 aiduMEI/
-├── AGENTS.md / llms.txt    # Agent deployment entry & docs index
+├── AGENTS.md / llms.txt    # Agent deployment entry point and doc index
 ├── api_server.py           # Main entry (API + /ui console hosting)
 ├── ducky/                  # Business logic (hot/ pipeline/ speed/ salience/ federation/ evolve_mem.py …)
-├── integrations/           # Hermes plugin / Cursor hook / shell hooks
-├── scripts/                # Deployment / smoke / backup / audit tooling
-├── tests/                  # 2203+ test cases (behavior + script + guard)
-└── benchmarks/             # Evaluation protocol (frozen, awaiting formal run)
+├── frontend/               # Console (zero-build static; js/vendor/ holds echarts locally)
+├── benchmarks/             # Evaluation protocol (dataset/models/judge/seed/hashes all pinned)
+├── tests/                  # Regression suite (pytest)
+├── prompts/install.txt     # One-line Prompt deployment canon
+├── docs/                   # Operations/health/backup/capacity/testing methodology
+├── scripts/                # e2e_smoke.py · check_hook_deployment.py · report.py and friends
+└── mem0_config_local.json  # Model configuration (gitignored, holds keys)
 ```
 
 ## License
@@ -273,5 +353,5 @@ aiduMEI/
 MIT — see [LICENSE](LICENSE).
 
 <p align="center">
-  <sub>aiduMEI ⚕ YouiSi (formerly aiduMEM / duMem — legacy names preserved in historical versions and docs) | Powered by monkey²</sub>
+  <sub>aiduMEI⚕YouiSi (formerly aiduMEM / duMem, preserved in historical versions and docs)｜Powered by monkey²</sub>
 </p>
