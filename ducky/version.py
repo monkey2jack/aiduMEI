@@ -23,11 +23,14 @@ v0.1.0 (对外 f0.1 · f 世代首版 · LoCoMo 跑分整改 · 2026-09-23)
        metadata。优先级 逐条 message.timestamp > 批次 metadata.recorded_at > now()。
     5. 读线：build_context 补读**顶层** recorded_at（verbatim 条目无 metadata，
        此前被漏读）。时序题证据时间戳覆盖率 61.0%→100.0%。
-    6. 防回归：verbatim_search 返回补 created_at。recorded_at 改后承载调用方
+    6. 读线·生产末端：integrations/aidumem-inject.sh 渲染召回块时带上日期。
+       此前只发正文——库里存着时间、/search 也返回了，却在注入那一刻丢掉，
+       模型一问「上次是什么时候」只能猜。存得对、搜得到，但没给模型看。
+    7. 防回归：verbatim_search 返回补 created_at。recorded_at 改后承载调用方
        任意格式，extract_timestamp 的 fromisoformat 会失败并回落 0.0，时间衰减
        将静默失效；created_at 恒 ISO 且 key 顺序更靠前，故时间衰减零回归而
        上下文拿到真事件时间。负向对照已钉死。
-    用例总数 2208 → 2213（+5 条 f0.1 事件时间回归守卫，每条自带负向对照，全部红→绿）。
+    用例总数 2208 → 2214（+6 条 f0.1 事件时间回归守卫，每条自带负向对照，全部红→绿）。
     诚实边界：上述覆盖率由存量数据复算，只证明「读得到」；存量时间**值**仍是
     入库时间，真值须重跑评测。本版不宣称任何新跑分成绩。
 
