@@ -16,6 +16,8 @@
 #   AIDUMEM_MIN_HISTORY     少于 N 条历史不注入检索，默认 4
 #   AIDUMEM_NEW_SESSION_MAX 历史 ≤ N 条视为新会话（注入 checkpoint），默认 8
 #   AIDUMEM_SEARCH_LIMIT    检索条数，默认 5
+#   AIDUMEI_INJECT_DATE     召回条目是否带时间：day(默认,只到天)|minute(到分)|off
+#                           （v22.0 双前缀冻结后的新变量，故用 AIDUMEI_ 前缀）
 #   AIDUMEM_TIMEOUT         单次 HTTP 超时秒数，默认 1.5
 #   AIDUMEM_API_TOKEN       鉴权门禁 token（见下方「凭据」段，可由 .env 兜底）
 #   AIDUMEM_ENV_FILE        指定 .env 路径，优先级最高
@@ -95,6 +97,10 @@ export AIDUMEM_URL="${AIDUMEM_URL:-http://127.0.0.1:8767}"
 # AIDUMEM_USER_ID 不在这里定；它要走 .env 兜底链，必须等下面的凭据段。
 # 详见「凭据与身份」段的说明。
 export AIDUMEM_SEARCH_LIMIT="${AIDUMEM_SEARCH_LIMIT:-5}"
+# 召回条目带不带时间、带到什么粒度，是**使用者的偏好**不是我们的判断：
+# 带日期每条多约 12 字符，5 条约 60 —— 觉得挤就设 off；需要区分同一天内的
+# 先后顺序就设 minute（每条多约 6 字符）。默认 day：够答「什么时候」又最省。
+export AIDUMEI_INJECT_DATE="${AIDUMEI_INJECT_DATE:-day}"
 export AIDUMEM_TIMEOUT="${AIDUMEM_TIMEOUT:-1.5}"
 AIDUMEM_MIN_HISTORY="${AIDUMEM_MIN_HISTORY:-4}"
 AIDUMEM_NEW_SESSION_MAX="${AIDUMEM_NEW_SESSION_MAX:-8}"
@@ -324,20 +330,32 @@ if results:
     # 发生的」在注入那一刻被丢掉——库里明明存着（facts 有 created_at、
     # verbatim 有 recorded_at，/search 也照常返回），模型却看不到，
     # 一问「上次是什么时候」就只能猜。与评测侧 build_context 同一根因。
-    # 只取年月日（省 token，且问「什么时候」答到天足够）；取不到就不硬造。
+    # 粒度由 AIDUMEI_INJECT_DATE 决定（day/minute/off）；取不到就不硬造。
+    mode = (os.environ.get('AIDUMEI_INJECT_DATE') or 'day').strip().lower()
+    if mode not in ('day', 'minute', 'off'):
+        mode = 'day'   # 写错了按默认走，不因为一个拼写错误就把时间整段丢掉
+
     def _day(item):
         raw = (item.get('recorded_at') or item.get('created_at')
                or (item.get('metadata') or {}).get('recorded_at') or '')
         raw = str(raw).strip()
         if not raw:
             return ''
-        m = re.match(r'(\d{4})-(\d{2})-(\d{2})', raw)
-        return m.group(0) if m else raw[:24]
+        pat = r'(\d{4})-(\d{2})-(\d{2})' if mode == 'day' else r'(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})'
+        m = re.match(pat, raw)
+        if m:
+            return m.group(0).replace('T', ' ')
+        # minute 模式下若只存到天，退回天，别因为要不到分就整条不显示时间
+        if mode == 'minute':
+            m = re.match(r'(\d{4})-(\d{2})-(\d{2})', raw)
+            if m:
+                return m.group(0)
+        return raw[:24]
 
     for r in results[:limit]:
         mem = r.get('memory') or r.get('text') or ''
         if mem:
-            day = _day(r)
+            day = '' if mode == 'off' else _day(r)
             lines.append(('· [%s] ' % day if day else '· ') + mem[:120])
     if len(lines) > 1:
         print('\n'.join(lines))

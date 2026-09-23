@@ -192,6 +192,36 @@ except Exception as e:
     checks["aidumem_stats"] = {"ok": False, "error": str(e)[:100], "ms": int((time.time()-t0)*1000)}
 
 # ═══════════ 汇总 ═══════════
+# ── 钩子部署一致性（f0.1 用户审计）────────────────────────────────
+# 宿主钩子是拷贝不是软链：升级仓库代码却忘了重新部署，读线会悄悄退回旧行为，
+# 服务健康、日志干净、这份巡检其余项全绿——假绿灯。所以把它并进已有巡检，
+# 让每一次定时巡检自动带上，**不需要任何人另外配一条 cron**。
+# 没装钩子的环境（纯 API 用法）直接跳过，不制造噪音。
+_hook_t0 = time.time()
+try:
+    _hook_cfg = os.path.expanduser(os.environ.get("HERMES_CONFIG", "~/.hermes/config.yaml"))
+    if os.path.exists(_hook_cfg):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import check_hook_deployment as _chk
+
+        _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rep = _chk.check(_hook_cfg, _repo)
+        if _rep["no_hooks_found"]:
+            pass  # 配置在但没挂钩子 = 这台机器不用钩子，不是故障
+        else:
+            checks["hook_deploy"] = {
+                "ok": _rep["ok"],
+                "ms": int((time.time() - _hook_t0) * 1000),
+                "code": f"{_rep['checked'] - _rep['drifted']}/{_rep['checked']} 与仓库一致",
+                "verdict": "" if _rep["ok"] else "宿主执行的不是本仓库这一版——升级后忘了重新部署？"
+                           " 跑 python3 scripts/check_hook_deployment.py 看详情",
+            }
+except Exception as _e:  # 自检自己坏掉不许拖垮整份巡检
+    checks["hook_deploy"] = {
+        "ok": None, "ms": int((time.time() - _hook_t0) * 1000),
+        "code": "", "verdict": f"部署自检执行失败（读不到≠通过）：{_e}",
+    }
+
 total_ms = int((time.time() - start) * 1000)
 # v22.0（雷霆审计 D2）：三态判据——ok=None（读不到）不算通过。
 # all() 里 None 是 falsy → 自动判否，无需改本行；但要在 verdict 里让 None 可见。

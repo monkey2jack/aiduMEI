@@ -63,6 +63,25 @@
 >
 > 三个脚本都带 `--selftest`（写线会真写一条再回读）。但**自检通过只证明脚本能跑，不证明宿主在调它**——那次事故里脚本一直是好的，没被挂上而已。所以上面那条 `check_ingest_wiring.py` 才是唯一的验收判据。完整挂法与 yaml 写法见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
 
+### ⚠️ 给升级者的重要提示：改完代码必须重新部署钩子
+
+**钩子是拷贝不是软链。** `git pull` 更新了仓库里的 `integrations/*.sh`，宿主执行的**仍然是旧文件**——不报错、不告警、日志干净、`/health` 全绿。读线会悄悄退回旧行为，而你以为已经升级了。
+
+还有更阴的一层：**宿主实际调用的文件名可能和仓库不一样**。早期安装可能留下了别名（我们自己的生产环境就是 `mem0-inject.sh`，而仓库里叫 `aidumem-inject.sh`）。按文件名去核对，会验到一个宿主根本不执行的文件，然后得出「已部署」的错误结论。
+
+**所以升级后（以及任何时候你想确认「宿主跑的是不是这一版」）**：
+
+```bash
+python3 scripts/check_hook_deployment.py     # 退出码 0 才算部署到位
+```
+
+它**不认文件名，只认 `~/.hermes/config.yaml`**：宿主声明调哪个路径，就去比哪个路径的 md5；发现漂移会直接把修复命令打给你。没挂钩子时它报「没测到」而不是「通过」。
+
+这项检查已并入 `scripts/health_check.py`，**定时巡检会自动带上，你不需要另外配一条 cron**。
+
+> 一句话记住：**验证要打在宿主真正调用的那个文件上——验仓库文件等于没验。**
+> 这是我们 f0.1 被用户审计当场抓出来的（修复写好了、测试绿了、报告都发了，就是没送到宿主手上）。
+
 **不用 Agent？手动五行：**
 
 ```bash
@@ -139,6 +158,7 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 | `AIDUMEM_DATA_DIR` | 数据目录 | `~/.aidumem` |
 | `AIDUMEI_ENGINE_MODE` | 引擎挡位 cloud/auto/local | auto |
 | `AIDUMEM_CONFIG_READONLY` | 控制台配置只读演示模式 | 0 |
+| `AIDUMEI_INJECT_DATE` | 召回注入带不带时间：`day`/`minute`/`off`（钩子侧） | day |
 
 全量环境变量登记册见 `ducky/env_registry.py`（代码即真相源，错拼会启动告警）。
 
@@ -164,11 +184,11 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 | 维度 | 现状 |
 |------|------|
 <<<<<<< HEAD
-| 用例总数 | **2214**（`pytest --collect-only` 实测，2026-09-23，f0.1 本树）＝ **行为用例 2008（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
-| 独立开发机 | 2202 通过 · **12 跳过** —— **2026-09-23 收集口径**（f0.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 用例总数 | **2220**（`pytest --collect-only` 实测，2026-09-23，f0.1 本树）＝ **行为用例 2014（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
+| 独立开发机 | 2208 通过 · **12 跳过** —— **2026-09-23 收集口径**（f0.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
 =======
-| 用例总数 | **2214**（`pytest --collect-only` 实测，2026-09-23，f0.1 本树）＝ **行为用例 2008（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
-| 独立开发机 | 2202 通过 · **12 跳过** —— **2026-09-23 收集口径**（f0.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 用例总数 | **2220**（`pytest --collect-only` 实测，2026-09-23，f0.1 本树）＝ **行为用例 2014（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
+| 独立开发机 | 2208 通过 · **12 跳过** —— **2026-09-23 收集口径**（f0.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
 >>>>>>> upstream/main
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，v20.5a 本树，Python 3.12） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（v20.5.1 本树 de09794，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
@@ -186,9 +206,9 @@ python -m compileall ducky api_server.py mcp_server.py
 ```
 
 <<<<<<< HEAD
-> **为什么要把 2202 和 1967 都写出来**：2202 是本树开发环境 2026-09-23 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
+> **为什么要把 2208 和 1967 都写出来**：2208 是本树开发环境 2026-09-23 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
 =======
-> **为什么要把 2202 和 1967 都写出来**：2202 是本树开发环境 2026-09-23 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
+> **为什么要把 2208 和 1967 都写出来**：2208 是本树开发环境 2026-09-23 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
 >>>>>>> upstream/main
 
 > **这 12 条不是玄学，自己就能验**：十三条跳过轴（宿主、工具、可选依赖、模型文件）全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
@@ -199,19 +219,19 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
 <<<<<<< HEAD
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：2202 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2214 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2202 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：2208 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2220 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2208 passed, 12 skipped
 > ```
 >
-> 上面代码块里的 `有宿主：2214 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
+> 上面代码块里的 `有宿主：2220 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
 =======
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：2202 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2214 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2202 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：2208 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2220 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2208 passed, 12 skipped
 > ```
 >
-> 上面代码块里的 `有宿主：2214 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
+> 上面代码块里的 `有宿主：2220 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
 >>>>>>> upstream/main
 
 > **跳过轴全量登记**（门控条数与实测逐行对账，改一条这里就红）：
