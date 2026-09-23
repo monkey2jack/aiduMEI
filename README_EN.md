@@ -118,6 +118,25 @@ Open `http://127.0.0.1:8767/ui` after starting: browse/search/tune memories, hea
 
 Details: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
+### ⚠️ Upgrading? You must redeploy the hooks
+
+**Hooks are copies, not symlinks.** A `git pull` updates `integrations/*.sh` in the repo, but the host still runs the **old files** — no error, no warning, clean logs, `/health` all green. The read line silently reverts to its old behaviour while you believe you have upgraded.
+
+There is a nastier second layer: **the filename the host actually calls may differ from the repo's.** An early install can leave an alias behind (our own production runs `mem0-inject.sh`, while the repo ships `aidumem-inject.sh`). Verifying by filename checks a file the host never executes — and hands you a false "already deployed".
+
+**So after every upgrade (and any time you want to confirm "is the host running this version?"):**
+
+```bash
+python3 scripts/check_hook_deployment.py     # exit code 0 = actually deployed
+```
+
+It **ignores filenames and trusts only `~/.hermes/config.yaml`**: whatever path the host declares is the path whose md5 gets compared. On drift it prints the exact fix command. With no hooks installed it reports "not measured" rather than "pass".
+
+This check is folded into `scripts/health_check.py`, so **your scheduled health check already covers it — no extra cron entry needed**.
+
+> One line to remember: **verify against the file the host actually calls — verifying the repo file is not verifying at all.**
+> This is what a user audit caught us on in f0.1 (fix written, tests green, report sent — just never delivered to the host).
+
 ## MCP Server (41 tools · default port 8766)
 
 MCP and REST share one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind requires `AIDUMEM_API_TOKEN` or the server refuses to start; only an explicit `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` overrides (off by default, critical-logged when on). Tool groups and call examples: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
@@ -135,6 +154,7 @@ Bearer token (`AIDUMEM_API_TOKEN`) + console password (PBKDF2) + injection guard
 | `AIDUMEM_DATA_DIR` | Data directory | `~/.aidumem` |
 | `AIDUMEI_ENGINE_MODE` | Engine gear: cloud/auto/local | auto |
 | `AIDUMEM_CONFIG_READONLY` | Read-only demo mode for console config | 0 |
+| `AIDUMEI_INJECT_DATE` | Timestamp in recalled items: `day`/`minute`/`off` (hook side) | day |
 
 The full registry lives in `ducky/env_registry.py` (code is the source of truth; typos trigger a startup warning).
 
@@ -156,8 +176,8 @@ The full registry lives in `ducky/env_registry.py` (code is the source of truth;
 
 | Dimension | Status |
 |---|---|
-| Total cases | **2214** (measured via `pytest --collect-only`, 2026-09-23, f0.1 tree) = **2008 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
-| Clean dev machine | 2202 passed · **12 skipped** — **collected 2026-09-23** (f0.1 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **2220** (measured via `pytest --collect-only`, 2026-09-23, f0.1 tree) = **2014 behavior + 70 script/hook + 136 guard** (split口径 `scripts/count_test_kinds.py`) |
+| Clean dev machine | 2208 passed · **12 skipped** — **collected 2026-09-23** (f0.1 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**, v20.5a this tree) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (v20.5.1 this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09** (v20.5a this tree, separate all-axes venv on the production box; the 1 skip is a per-axis conditional from a new test on this tree) |
@@ -173,7 +193,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2202 and 1821**: the first is the 2026-09-23 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
+> **Why report both 2208 and 1821**: the first is the 2026-09-23 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached (the basic-path figure is refreshed at the v21.1 production re-measurement).
 
 > **The 12 skips are falsifiable, reproduce them yourself**: all thirteen skip axes (host, tools, optional deps, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state controllable, reproducible in both directions:
 >
@@ -182,12 +202,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2202 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2214 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2202 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2208 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2220 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2208 passed, 12 skipped
 > ```
 >
-> `2214 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2220 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

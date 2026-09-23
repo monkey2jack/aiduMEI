@@ -8,6 +8,9 @@
 """
 from __future__ import annotations
 
+import os
+import subprocess
+
 from ducky.verbatim_vault import _normalize_ts
 
 EVENT_TS = "1:56 pm on 8 May, 2023"
@@ -77,9 +80,6 @@ def test_f01_inject_renders_time_with_memory():
     时间在注入那一刻被丢掉，模型一问「上次是什么时候」只能猜。
     与评测侧 build_context 漏读时间戳是同一根因的两处发作。
     """
-    import os
-    import subprocess
-
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sh = open(os.path.join(repo, "integrations", "aidumem-inject.sh"),
               encoding="utf-8").read()
@@ -105,3 +105,162 @@ def test_f01_inject_renders_time_with_memory():
     assert "· [1:56 pm on 8 May, 2023] B事" in out, f"非 ISO 事件时间未渲染：{out!r}"
     # 负向对照：真没有时间就不硬造（与 build_context 同口径）
     assert "· C事" in out and "[] C事" not in out, f"无时间条目被硬造了时间：{out!r}"
+
+
+# ── f0.1 补充守卫（依据用户审计的三处追问）──────────────────────────
+
+def _inject_render(env_extra: dict) -> str:
+    """把注入脚本里那段内嵌 python 抽出来真跑一遍，返回它打印的召回块。
+
+    守卫必须打在**脚本里那段真实代码**上：复制一份到测试里改着玩，
+    改的是复制品，脚本坏了守卫照样绿。
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sh = open(os.path.join(repo, "integrations", "aidumem-inject.sh"),
+              encoding="utf-8").read()
+    marker = "import re\nresults = result.get('results') or []"
+    assert marker in sh, "注入渲染段锚点不在了——守卫失去着力点，请同步改判据"
+    body = sh[sh.index(marker):sh.index('"\n}', sh.index(marker))]
+
+    env_lines = "".join(
+        "os.environ[%r] = %r\n" % (k, v) for k, v in env_extra.items()
+    )
+    harness = (
+        "import os, re\n"
+        "os.environ['AIDUMEM_SEARCH_LIMIT'] = '3'\n"
+        + env_lines +
+        "result = {'results': ["
+        "{'memory': 'A事', 'created_at': '2026-09-20T10:11:12+00:00'},"
+        "{'memory': 'B事', 'recorded_at': '2026-09-20T22:45:00+00:00'},"
+        "{'memory': 'C事'}]}\n"
+    ) + body
+    r = subprocess.run(["python3", "-c", harness], capture_output=True, text=True)
+    assert r.returncode == 0, f"注入渲染段跑不起来：{r.stderr[:300]}"
+    return r.stdout
+
+
+def test_f01_inject_date_mode_off_drops_time():
+    """AIDUMEI_INJECT_DATE=off 时不带时间——使用者嫌挤可以关掉。"""
+    out = _inject_render({"AIDUMEI_INJECT_DATE": "off"})
+    assert "· A事" in out, f"off 模式下正文应照常渲染：{out!r}"
+    assert "[2026-09-20]" not in out, f"off 模式仍带了日期：{out!r}"
+    # 负向对照：默认模式下同样的数据必须带日期，否则本用例没有区分力
+    assert "[2026-09-20]" in _inject_render({}), "默认模式没带日期——off 的断言失去意义"
+
+
+def test_f01_inject_date_mode_minute_adds_time_of_day():
+    """AIDUMEI_INJECT_DATE=minute 时精确到分——用于区分同一天内的先后。"""
+    out = _inject_render({"AIDUMEI_INJECT_DATE": "minute"})
+    assert "· [2026-09-20 10:11] A事" in out, f"minute 模式未渲染到分：{out!r}"
+    assert "· [2026-09-20 22:45] B事" in out, f"minute 模式未渲染到分：{out!r}"
+    # 负向对照：day 模式必须只到天，否则说明粒度开关根本没生效
+    day_out = _inject_render({"AIDUMEI_INJECT_DATE": "day"})
+    assert "10:11" not in day_out, f"day 模式漏出了时分——粒度开关未生效：{day_out!r}"
+
+
+def test_f01_inject_date_mode_invalid_falls_back_to_day():
+    """写错值按默认 day 走，不因为一个拼写错误把时间整段丢掉。"""
+    out = _inject_render({"AIDUMEI_INJECT_DATE": "DaY_typo"})
+    assert "· [2026-09-20] A事" in out, f"非法值未回落 day：{out!r}"
+
+
+def test_f01_timestamp_key_priority_created_at_beats_recorded_at():
+    """钉死 TIMESTAMP_KEY_PRIORITY 里 created_at 必须排在 recorded_at 之前。
+
+    f0.1 起 recorded_at 承载调用方任意格式的事件时间；若它被提到前面，
+    时间衰减会在解析失败时静默归零，**不报错、不告警**。
+    """
+    from ducky.scoring import TIMESTAMP_KEY_PRIORITY, extract_timestamp
+
+    keys = list(TIMESTAMP_KEY_PRIORITY)
+    assert "created_at" in keys and "recorded_at" in keys
+    assert keys.index("created_at") < keys.index("recorded_at"), (
+        "created_at 必须排在 recorded_at 之前，否则不可解析的事件时间会让时间衰减静默归零"
+    )
+
+    # 行为侧：两者都在时取 created_at（而不是非 ISO 的 recorded_at）
+    item = {"created_at": "2026-09-20T10:11:12+00:00",
+            "recorded_at": "1:56 pm on 8 May, 2023"}
+    assert extract_timestamp(item) > 0, "created_at 在场却没被用上——优先级失效"
+
+    # 负向对照：只有非 ISO 的 recorded_at 时确实归零（证明这个顺序在救场，不是摆设）
+    assert extract_timestamp({"recorded_at": "1:56 pm on 8 May, 2023"}) == 0.0, (
+        "负向对照失效：非 ISO recorded_at 本应解析失败归零"
+    )
+
+
+def test_f01_hook_deployment_checker_detects_drift():
+    """部署一致性自检必须真能判出漂移，且零钩子不报绿。"""
+    import importlib.util
+    import tempfile
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "_chk", os.path.join(repo, "scripts", "check_hook_deployment.py"))
+    chk = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(chk)
+
+    with tempfile.TemporaryDirectory() as td:
+        host = os.path.join(td, "inject.sh")
+        cfg = os.path.join(td, "config.yaml")
+        repo_src = os.path.join(repo, "integrations", "aidumem-inject.sh")
+        open(cfg, "w").write(
+            "hooks:\n  pre_llm_call:\n    - command: \"%s\"\n      timeout: 8\n" % host)
+
+        # ① 宿主是旧版 → 必须判 drift（这正是用户审计实锤的那个场景）
+        open(host, "w").write("#!/bin/sh\necho old\n")
+        rep = chk.check(cfg, repo)
+        assert rep["checked"] == 1, f"没解析到钩子路径，守卫射程为 0：{rep}"
+        assert not rep["ok"] and rep["items"][0]["status"] == "drift", f"旧版未判漂移：{rep}"
+
+        # ② 部署到位 → 必须判 ok（负向对照：证明 ① 不是恒红）
+        import shutil
+        shutil.copyfile(repo_src, host)
+        rep2 = chk.check(cfg, repo)
+        assert rep2["ok"] and rep2["items"][0]["status"] == "ok", f"一致却未判通过：{rep2}"
+
+        # ③ 宿主声明的文件不存在 → 判 missing，不许当成通过
+        os.remove(host)
+        rep3 = chk.check(cfg, repo)
+        assert not rep3["ok"] and rep3["items"][0]["status"] == "missing", f"缺文件未判红：{rep3}"
+
+    # ④ 空配置不报绿（「没测到」≠「通过」）
+    rep4 = chk.check(os.devnull, repo)
+    assert rep4["no_hooks_found"] and not rep4["ok"], f"零钩子被判成通过：{rep4}"
+
+
+def test_f01_hook_checker_catches_renamed_stale_hook():
+    """宿主用了**别名**且内容是旧的——必须判 🔴 drift，不许降级成「无法判定」。
+
+    这正是 f0.1 用户审计实锤的真实场景：宿主 config 指向 mem0-inject.sh，
+    仓库里只有 aidumem-inject.sh。按文件名认源会找不到而放过，
+    所以本脚本按**事件**认源。
+    """
+    import importlib.util
+    import shutil
+    import tempfile
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "_chk2", os.path.join(repo, "scripts", "check_hook_deployment.py"))
+    chk = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(chk)
+
+    with tempfile.TemporaryDirectory() as td:
+        # 别名：叫 mem0-inject.sh，仓库里没有这个名字
+        host = os.path.join(td, "mem0-inject.sh")
+        cfg = os.path.join(td, "config.yaml")
+        open(cfg, "w").write(
+            "hooks:\n  pre_llm_call:\n    - command: \"%s\"\n      timeout: 8\n" % host)
+
+        open(host, "w").write("#!/bin/sh\n# 旧版，没有日期渲染\necho '{}'\n")
+        rep = chk.check(cfg, repo)
+        assert rep["items"][0]["status"] == "drift", (
+            "改名 + 旧内容被降级了，最该报警的场景反而放过：%s" % rep)
+        assert rep["items"][0]["repo_path"].endswith("aidumem-inject.sh"), (
+            "没按事件认回真源：%s" % rep)
+
+        # 负向对照：别名但内容是新的 → 必须判 ok（证明上面判的是内容不是名字）
+        shutil.copyfile(os.path.join(repo, "integrations", "aidumem-inject.sh"), host)
+        rep2 = chk.check(cfg, repo)
+        assert rep2["ok"], "别名但内容一致却被判红——判的是名字不是内容：%s" % rep2
