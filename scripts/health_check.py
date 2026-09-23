@@ -172,8 +172,9 @@ except Exception as e:
 # ═══════════ 4. aiduMEM Search ═══════════
 t0 = time.time()
 try:
+    # v22.0（雷霆审计 A3）：持 Bearer token 调用必须带 caller_user_id，对齐众神殿安全门禁
     r = requests.post(f"{API_BASE}/search",
-        json={"query": "健康检查", "user_id": "health_check", "limit": 1}, timeout=10, headers=_auth_headers())
+        json={"query": "健康检查", "user_id": "health_check", "caller_user_id": "health_check", "limit": 1}, timeout=10, headers=_auth_headers())
     checks["aidumem_search"] = {"ok": r.status_code == 200, "code": r.status_code, "ms": int((time.time()-t0)*1000)}
 except Exception as e:
     checks["aidumem_search"] = {"ok": False, "error": str(e)[:100], "ms": int((time.time()-t0)*1000)}
