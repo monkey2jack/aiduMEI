@@ -126,6 +126,23 @@ cp integrations/aidumem-inject.sh integrations/aidumem-ingest.sh \
 chmod +x ~/.hermes/agent-hooks/aidumem-{inject,ingest,distill}.sh
 ```
 
+> ⚠️ **升级时必须重新部署钩子。** 钩子是**拷贝不是软链**——只更新仓库代码，宿主执行的仍是旧文件，且不报任何错（静默失效）。
+>
+> 并且**先读 `config.yaml` 认路径，别照抄上面的文件名**：早期安装可能用了别的文件名（例如 `mem0-inject.sh`），宿主只认 `config.yaml` 里写的那一个。
+>
+> ```bash
+> # 1) 问宿主：你到底在调哪个文件？
+> grep -A2 -E "pre_llm_call|post_llm_call|on_session_end" ~/.hermes/config.yaml
+>
+> # 2) 按它说的那个路径部署（下面 $DST 换成上一步读到的真实路径）
+> install -m 755 integrations/aidumem-inject.sh "$DST"
+>
+> # 3) 核验：宿主加载的那个文件与仓库同 md5，才算部署到位
+> md5sum "$DST" integrations/aidumem-inject.sh
+> ```
+>
+> **验证必须打在宿主真正调用的那个文件上——验仓库文件等于没验。**
+
 `~/.hermes/config.yaml` 追加（改前先备份）：
 
 ```yaml
