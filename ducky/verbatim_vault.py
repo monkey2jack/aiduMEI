@@ -238,8 +238,18 @@ def _iter_turns(messages_json):
             yield ("user", content, None)
 
 
-def _normalize_ts(ts) -> str:
-    """把消息时间戳归一成 ISO 字符串；缺失时用当前 UTC 时间。"""
+def _normalize_ts(ts, *, fallback: str | None = None) -> str:
+    """把消息时间戳归一成 ISO 字符串。
+
+    f0.1（LoCoMo 时序根因）：缺失时**先用 ``fallback``（调用方给的事件时间）**，
+    只有连 fallback 都没有才回落当前 UTC 时间。
+
+    改前无条件回落 ``now()``，于是「这句话是什么时候说的」被悄悄换成
+    「这条记录是什么时候存进来的」——两者语义完全不同，且**不报错不告警**，
+    是典型的假绿灯：2026-09-22 LoCoMo 实测中，时序题 39% 的证据条目
+    （全部来自 verbatim 召回路径）带着入库时间进了答题上下文。
+    表结构本就分 ``recorded_at``（事件时间）与 ``created_at``（入库时间），
+    所以这是纯逻辑修复，零 schema 迁移。"""
     if isinstance(ts, (int, float)) and ts > 0:
         try:
             # 兼容秒 / 毫秒
@@ -250,6 +260,8 @@ def _normalize_ts(ts) -> str:
             pass
     if isinstance(ts, str) and ts.strip():
         return ts.strip()
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback.strip()
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -305,8 +317,17 @@ def store_verbatim(
         #     list[dict]（带 timestamp）还是纯字符串（不带），重放都只落一条。
         #     命中已有行时累加 occurrences 并刷新 last_seen_at：
         #     「说过几次」被显式记录，而不是靠堆重复行来表达。
+        # f0.1：批次级事件时间。调用方（/add 的 metadata.recorded_at，见
+        # hot/add.py 把 md 原样传进来）声明的「这批话是什么时候说的」。
+        # 逐条 message.timestamp 优先级更高（更精确），此值只作回落，
+        # 两者都缺才用 now()。
+        _md = metadata if isinstance(metadata, dict) else {}
+        _event_fallback = _md.get("recorded_at") or _md.get("timestamp")
+        if _event_fallback is not None and not isinstance(_event_fallback, str):
+            _event_fallback = str(_event_fallback)
+
         for role, content, ts in _iter_turns(messages_json):
-            recorded_at = _normalize_ts(ts)
+            recorded_at = _normalize_ts(ts, fallback=_event_fallback)
             chash = _content_hash(content)
             try:
                 existing = fconn.execute(
@@ -507,7 +528,7 @@ def verbatim_search(
             fconn = get_facts_conn()
             placeholders = ",".join("?" for _ in turn_ids)
             meta_rows = fconn.execute(
-                f"SELECT id, role, session_id, recorded_at, user_id, bank_id "
+                f"SELECT id, role, session_id, recorded_at, created_at, user_id, bank_id "
                 f"FROM verbatim_turns WHERE id IN ({placeholders}) AND user_id=? AND bank_id=?",
                 turn_ids + [scope.user_id, scope.bank_id],
             ).fetchall()
@@ -536,6 +557,14 @@ def verbatim_search(
                 "role": meta.get("role", "user"),
                 "session_id": meta.get("session_id", ""),
                 "recorded_at": meta.get("recorded_at"),
+                # f0.1：入库时间随行。recorded_at 修好后承载的是**调用方给的
+                # 事件时间**（格式任意，如 LoCoMo 的 "1:56 pm on 8 May, 2023"），
+                # scoring.extract_timestamp 用 fromisoformat 解析它会失败并回落
+                # 0.0，时间衰减将静默失效。created_at 恒为 ISO，且在
+                # extract_timestamp 的 key 顺序里排在 recorded_at **之前** ——
+                # 于是时间衰减保持改前语义（零回归），而 build_context 仍取
+                # recorded_at 拿到真事件时间。两个消费方各取所需。
+                "created_at": meta.get("created_at"),
                 "_verbatim": True,
                 "_bm25_rank": r["rank"] if "rank" in r.keys() else 0,
                 "_recall_path": recall_path,

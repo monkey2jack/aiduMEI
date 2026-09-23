@@ -237,6 +237,10 @@ def build_context(items: list[dict]) -> str:
             item.get("timestamp")
             or item.get("date_time")
             or (meta.get("recorded_at") if isinstance(meta, dict) else "")
+            # f0.1：verbatim 召回路径的条目没有 metadata，事件时间在**顶层**
+            # recorded_at 上（见 verbatim_vault 的返回形状）。漏读它，
+            # 2026-09-22 实测有 39% 的时序题证据是"无时间戳"进上下文的。
+            or item.get("recorded_at")
             or ""
         ).strip()
         lines.append(f"{stamp}: {text}" if stamp else text)
