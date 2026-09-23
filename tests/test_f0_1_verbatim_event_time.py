@@ -264,3 +264,59 @@ def test_f01_hook_checker_catches_renamed_stale_hook():
         shutil.copyfile(os.path.join(repo, "integrations", "aidumem-inject.sh"), host)
         rep2 = chk.check(cfg, repo)
         assert rep2["ok"], "别名但内容一致却被判红——判的是名字不是内容：%s" % rep2
+
+
+def test_no_merge_conflict_markers_in_tracked_files():
+    """任何入库文件都不许残留 git 冲突标记。
+
+    f0.1 实战教训：一次 merge 后 README.md 里留了两组 `<<<<<<< / ======= / >>>>>>>`，
+    两侧内容甚至完全相同（所以肉眼扫过去像正常段落），**跟着提交推到了远端**。
+    门禁五关当时全绿——静态关只看 Python、测试关只比数字、脱密关只找敏感词，
+    没有一关看得见冲突标记。公开仓的 README 是门面，这种残留是直接翻车。
+
+    **本守卫刻意不引入新的跳过轴**：有 git 就问 git 要入库清单（最准）；
+    没有 git（生产沙箱就是这种形态）则遍历部署树并排除非源码目录。
+    两种形态下都有射程 —— 一条「环境不满足就跳过」的卫生检查，
+    恰恰会在最该拦它的那种环境里失效。
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    files = []
+    try:
+        listing = subprocess.run(["git", "ls-files", "-z"], cwd=repo,
+                                 capture_output=True, text=True, timeout=60)
+        if listing.returncode == 0:
+            files = [f for f in listing.stdout.split("\0") if f]
+    except (OSError, subprocess.SubprocessError):
+        files = []
+
+    if not files:      # 无 git：遍历部署树兜底，排除依赖与缓存目录
+        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__",
+                     ".pytest_cache", ".mypy_cache", "data", ".ruff_cache"}
+        for root, dirs, names in os.walk(repo):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for n in names:
+                files.append(os.path.relpath(os.path.join(root, n), repo))
+
+    assert files, "既问不到 git 也走不了目录树 —— 守卫射程为 0，不许算通过"
+
+    # 只认**行首**的标记：正文里讨论冲突标记（比如本守卫的 docstring）不该被误伤。
+    starts = ("<<<<<<< ", ">>>>>>> ")
+    offenders = []
+    scanned = 0
+    for rel in files:
+        path = os.path.join(repo, rel)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue          # 二进制或读不到，跳过（不计入射程）
+        scanned += 1
+        for i, line in enumerate(text.splitlines(), 1):
+            if line.startswith(starts):
+                offenders.append(f"{rel}:{i}: {line[:40]}")
+
+    assert scanned > 50, f"只扫到 {scanned} 个文本文件 —— 射程异常，判据失效"
+    assert not offenders, (
+        "以下文件残留 git 冲突标记（merge 没收干净就提交了）：\n  "
+        + "\n  ".join(offenders[:20])
+    )
