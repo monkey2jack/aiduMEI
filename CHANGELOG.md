@@ -18,9 +18,10 @@
 
 - **写线**：`_normalize_ts` 新增 `fallback` 参数；`store_verbatim` 从已收到却一直没用的 `metadata` 中取事件时间。优先级 `逐条 message.timestamp > 批次 metadata.recorded_at > now()`。
 - **读线**：`benchmarks/locomo_official.build_context` 补读**顶层** `recorded_at`（verbatim 条目无 `metadata`，时间戳在顶层，此前被漏读）。实测时序题证据时间戳覆盖率 **61.0% → 100.0%**。
+- **读线·生产末端**：`integrations/aidumem-inject.sh` 渲染召回块时带上日期（`· [2026-09-20] …`）。此前只发正文——库里存着时间、`/search` 也返回了，却在注入那一刻被丢掉，模型一问「上次是什么时候」只能猜。这是同一根因在生产侧的发作：**存得对、搜得到，但没给模型看**。取不到时间不硬造，与 `build_context` 同口径。
 - **防回归**：`verbatim_search` 返回补 `created_at`。因 `recorded_at` 改后承载调用方任意格式（如 LoCoMo 的 `"1:56 pm on 8 May, 2023"`），`scoring.extract_timestamp` 的 `fromisoformat` 会解析失败并回落 `0.0`，**时间衰减将静默失效**；`created_at` 恒为 ISO 且在 key 顺序中排在 `recorded_at` 之前，于是时间衰减保持改前语义（零回归），`build_context` 仍取事件时间（净收益）。负向对照已钉死：不补 `created_at` 时 `extract_timestamp` 确实归零。
 
-用例总数 2208 → 2213（+5 条 f0.1 事件时间回归守卫，每条自带负向对照，全部红→绿）。
+用例总数 2208 → 2214（+6 条 f0.1 事件时间回归守卫，每条自带负向对照，全部红→绿）。
 
 > **诚实边界**：上述 61.0%→100.0% 由 2026-09-22 存量数据复算得出，只证明「读得到」；存量 verbatim 的时间**值**仍是入库时间（写线今日才修），真值须重跑评测才算数。本版不宣称任何新的跑分成绩。
 

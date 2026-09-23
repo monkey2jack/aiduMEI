@@ -312,6 +312,7 @@ if ctx:
     print(ctx)
     sys.exit(0)
 
+import re
 results = result.get('results') or []
 if results:
     limit = int(os.environ['AIDUMEM_SEARCH_LIMIT'])
@@ -319,10 +320,25 @@ if results:
     # 与 ducky/hot/health.py 的 service=f"aiduMEM-v" 刻意相反：那个是机器契约
     # （生产监控按 aiduMEM-v* 匹配），这个是给人看的。别用一次 sed 把两者一起改。
     lines = ['[aiduMEI Recall]']
+    # f0.1：召回条目**带上时间**再注入。此前只发正文，于是「这件事什么时候
+    # 发生的」在注入那一刻被丢掉——库里明明存着（facts 有 created_at、
+    # verbatim 有 recorded_at，/search 也照常返回），模型却看不到，
+    # 一问「上次是什么时候」就只能猜。与评测侧 build_context 同一根因。
+    # 只取年月日（省 token，且问「什么时候」答到天足够）；取不到就不硬造。
+    def _day(item):
+        raw = (item.get('recorded_at') or item.get('created_at')
+               or (item.get('metadata') or {}).get('recorded_at') or '')
+        raw = str(raw).strip()
+        if not raw:
+            return ''
+        m = re.match(r'(\d{4})-(\d{2})-(\d{2})', raw)
+        return m.group(0) if m else raw[:24]
+
     for r in results[:limit]:
         mem = r.get('memory') or r.get('text') or ''
         if mem:
-            lines.append('· ' + mem[:120])
+            day = _day(r)
+            lines.append(('· [%s] ' % day if day else '· ') + mem[:120])
     if len(lines) > 1:
         print('\n'.join(lines))
 "
