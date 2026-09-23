@@ -1,31 +1,96 @@
 <p align="center">
-  <img src="assets/aidumei-v20-banner.svg" alt="aiduMEI" width="100%">
+  <img src="assets/aidumei-banner.webp" alt="aiduMEI ⚕ 爱嘟优忆思 — Memory + Engine + Insight" width="100%">
 </p>
 
 <!-- distribution-policy: github-source-only -->
 
 # aiduMEI ⚕ 爱嘟优忆思——智能体通用智慧引擎
 
-> 让你的 AI Agent **真正记住你**：混合检索 + 治理 + 可视化控制台 + 双引擎自动挡，**单机自托管**，MIT。
+> 让你的 AI Agent **真正记住你**：混合检索 + 认知治理 + 可视化控制台 + 双引擎自动挡，**单机自托管**，MIT。
 > 宿主（Hermes / Claude Code / Cursor / 任何 MCP 客户端）管短期对话，aiduMEI 管长期记忆。
 
-> **当前公开版本 f0.1 正式版 —— 优忆思：一行 Prompt 全自动部署 · 双引擎自动挡 · 众神殿多 bot 记忆人格 · 市面独一份。**（v21.2：Memmy 融改——回声抑制、MMR 多样性、错误签名通道、轨迹级奖励信用分配（默认权重 0，观察后再开）；v21.1：众神殿地基版——多 bot/多 profile 各据一殿、记忆人格独立、跨殿默认隔离；含 v21.0 认知治理：记忆出身标签 / 知识溯源 / 记忆档案导出。详见 [CHANGELOG](CHANGELOG.md)。）
+> **当前公开版本 f0.1。**
 >
-> **状态标签**：功能快速迭代期 · 外部校准 0/4（依赖 · 第三方复现 · 独立审查 · 基准成绩）。按 tag 检出 ≠ 可发布版本，以 `pyproject.toml` 为准。
+> **关于 `f`**：这是一个新的纪元，不是旧版本号的续写。`f` 取 **future / fantasy / forever** ——
+> 我们想做的不是一个更大的缓存，而是一份能陪人走很久的记忆。版本号形态 `f<主>.<次>`，
+> 常规迭代升末位，颠覆性改造才升首位。此前的版本历史全部归档在 [CHANGELOG](CHANGELOG.md)，
+> README 只回答一件事：**它现在是什么。**
+>
+> **状态标签**：功能快速迭代期 · 外部校准 1/4（✅ 基准试跑已做并公开错题本 · ⬜ 依赖 · ⬜ 第三方复现 · ⬜ 独立审查）。
+> 按 tag 检出 ≠ 可发布版本，以 `pyproject.toml` 为准。
 
 ---
 
+## 优忆思：MEI 不止是「美」
+
+**MEI = Memory + Engine + Insight** —— 记忆、引擎、洞察。中文叫**优忆思**，三个字各自兑现一件事，
+**每件都对应仓库里真实在跑的代码**，不是修辞：
+
+| | 一句话 | 它在代码里是什么 |
+|---|---|---|
+| **优** · Engine | **优化配置，双引擎全自动** | 双引擎自动挡（云端断供就地换本地备胎、恢复自动升挡）· 一行 Prompt 全自动部署 · 读/写/萃取三条钩子自己触发，接上之后你不用再管记忆 |
+| **忆** · Memory | **记忆底座与记忆逻辑** | 三轨遗忘曲线 · 双时间轴（记忆**过期**而非删除）· 事件时间与入库时间分开存 · 向量 + 中文 BM25/trigram + cross-encoder 真重排（不是加权融合）· 六型分类 |
+| **思** · Insight | **借大模型的思考力，省你的上下文** | 相关性闸门先拦掉闲聊（闲聊不检索）· 重排收窄再进上下文 · 会话萃取把一整程压成一条 · 反思与自进化（`reflect.py` / `evolve_mem.py`）；同时认知治理兜底——AI 只有「提出候选认知」的权限，**没有直接创造事实的权限** |
+
+中间那行的后半句是这一代的主题。以前系统能答「你说过什么」，答不好「那是什么时候」——
+因为写入时把**事情发生的时间**悄悄换成了**记录存进来的时间**，不报错、不告警，
+检索照常返回、健康检查照常全绿。这一代把它修到了写入、检索、注入三处（见 [CHANGELOG](CHANGELOG.md)）。
+
 ## 三样市面独一份
 
-> ⚠️ **证据状态（v22.0 雷霆审计 C2）**：以下三项为**功能组合独一份**（市面无同构实现），
-> 但**正式基准成绩尚未发布**（benchmarks/RESULTS.md 四行全空）。
-> 「独一份」指功能组合，非实测排名。跑分排期见 CHANGELOG「Scope Rulings」。
+> ⚠️ **证据状态**：以下三项为**功能组合独一份**（市面无同构实现），
+> 「独一份」指功能组合，不是实测排名。分数请看下一节，我们连错题本一起交。
 
 | 杀手锏 | 一句话 |
 |---|---|
 | 🚗 **双引擎自动挡** | 云端断供自动降本地备胎、恢复自动升挡、欠账自动重放——单查询内就地换腿，挡位永远如实可见 |
 | 📊 **可视化控制台** | 零构建 Web 控制台（`/ui`）：记忆可见、可调、可追溯；可切换真实记忆域、按当前域导出 Markdown——「记忆是黑盒」这个行业痛点，我们正面回答 |
-| 🧠 **认知治理（v21）** | 每条记忆**有出身**（你亲口/AI 推断/外部引用/不明，写入零成本打标）、**有户口**（溯源三件套：谁、哪次会话、第几轮）、**可导出**（一键 Markdown 记忆档案）；AI 只有「提出候选认知」的权限，没有「直接创造事实」的权限 |
+| 🧠 **认知治理** | 每条记忆**有出身**（你亲口/AI 推断/外部引用/不明，写入零成本打标）、**有户口**（溯源三件套：谁、哪次会话、第几轮）、**可导出**（一键 Markdown 记忆档案） |
+
+## 📊 跑分：我们跑了，连错题本一起交
+
+**2026-09-22 完成首次 LoCoMo 基准试跑。** 下面这张表里没有一个数字是推导的。
+
+> ⚠️ **先说清口径，否则这张表会骗人。** 记忆系统跑分有**两把不可混用的尺子**：
+> **F1**（逐词重叠，措辞不同即扣分，严）与 **LLM-Judge**（判语义等价，宽）。
+> 业内挂在宣传里的「LoCoMo 90%+」几乎都是 Judge 口径且经方法迭代。
+> **下表统一用 F1**，业内数字取自 Mem0 论文（[arXiv:2504.19413](https://arxiv.org/abs/2504.19413) Table 1，各系统作者自测）。
+
+| 维度（F1 口径） | LangMem | Zep | OpenAI 全上下文 | Mem0 | **aiduMEI 试跑** | 我方位次 |
+|---|---|---|---|---|---|---|
+| 单跳直接召回 | 35.51 | 35.74 | 34.30 | **38.72** | **37.37** | 🥈 第 2 |
+| 多跳推理 | 26.04 | 19.37 | 20.09 | **28.64** | 23.19 | 中游（超 Zep / OpenAI） |
+| 时序推理 | 30.75 | **42.00** | 14.04 | **48.93** | 25.79 | ❌ 明确短板 |
+| 开放域知识 | 40.91 | 49.56 | 39.31 | 47.65 | 9.87 | ⚠️ 仅 13 题，**无统计意义** |
+| 对抗拒答（防幻觉） | — | — | — | — | **81.69** | ⭐ 业内四类对比通常不含此列 |
+
+**试跑条件**（复现锚点）：LoCoMo 官方数据集 `3eb6f2c` 的**前 2 个完整样本**（conv-26 / conv-30）· 788 轮灌库 + 304 题 ·
+嵌入 BAAI/bge-m3 · 答题 Claude-Sonnet-4.6 · 混合检索 top_k=5 · **零修正基线** · 总分 F1 42.14% / Judge 52.96%。
+
+**这张表怎么读**：
+
+- ✅ **可以讲的两条**：**单跳直接事实召回进第一梯队**（业内第二，反超 Zep / OpenAI 全上下文 / LangMem）；
+  **防幻觉断层领先**（对抗拒答 F1 81.69）——面对「对话里根本没提过」的陷阱题，门控哲学让它极少被诱导编造。
+- ❌ **必须承认的**：**时序推理是硬伤**（25.79 vs Zep 42 / Mem0 48.93）；开放域那 13 题**不构成结论**。
+- ⚠️ **不能讲的**：这是**试跑**，不是正式成绩。2/10 样本、裁判用的是 Sonnet 而非业内口径的 GPT-4o。
+  **我们没有、也不会在这个基础上宣称 SOTA。**
+
+### 下一版本预期（目标，**尚未复跑验证**）
+
+时序那条短板的根因已经定位并修复（写入/检索/注入三处），但**本版没有重跑评测**，所以下表是目标不是成绩：
+
+| 维度 | 试跑实测 | 目标 | 手段 | 状态 |
+|---|---|---|---|---|
+| 时序推理 | 25.79 | **≥ 40**（对标 Zep） | 事件时间写对 + 召回透传 + 注入带时间 | 🔧 根因已修，**待复跑** |
+| 多跳推理 | 23.19 | ≥ 28（对标 Mem0） | 迭代检索 / 查询扩展 | ⬜ 未开工 |
+| 开放域 | 9.87 | 全量复跑取真值 | 先扩样本再定策略 | ⬜ 未开工 |
+| 单跳 | 37.37 | 守住 ≥ 37 | 不退步 | 🛡️ 守 |
+| 对抗拒答 | 81.69 | 守住 ≥ 80 | 保持门控优势 | 🛡️ 守 |
+
+> **为什么先交一份不好看的成绩**：第一次跑分的价值是暴露问题，不是拿分数。
+> 这次试跑直接炸出了一个藏了很久的根因（事件时间被静默换成入库时间），
+> 那比一个漂亮数字有用得多。正式打榜须全量 10 样本 + GPT-4o 裁判复跑，
+> 届时**连失败项一起公布**。评测协议已冻结在 `benchmarks/`（数据集、模型、judge、prompt、seed、文件哈希全部锁定留证）。
 
 ## 一键部署：让 Agent 干活，你看着
 
@@ -37,7 +102,7 @@
 
 > ⚠️ **接宿主时必须接两条线，不是一条。** 「读线」是每轮对话**之前**注入记忆，漏了你立刻就会发现；「写线」是每轮对话**之后**把内容记下来，**漏了你几周都发现不了**——检索照样有结果、`/health` 照样全绿，因为旧记忆确实健康，而你说的每句新话都在被丢掉。
 >
-> 这是我们自己在生产上吃过的亏（2026-09-17，读线挂了一个月、写线从没挂过、所有探针全绿）。所以现在：`/health` 有 `ingest_liveness_ok` 探针盯着「在读却不在写」，并且真实用过几轮后请跑一次
+> 这是我们自己在生产上吃过的亏（读线挂了一个月、写线从没挂过、所有探针全绿）。所以现在：`/health` 有 `ingest_liveness_ok` 探针盯着「在读却不在写」，并且真实用过几轮后请跑一次
 >
 > ```bash
 > python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # 退出码 0 才算接线成功
@@ -67,7 +132,7 @@
 
 **钩子是拷贝不是软链。** `git pull` 更新了仓库里的 `integrations/*.sh`，宿主执行的**仍然是旧文件**——不报错、不告警、日志干净、`/health` 全绿。读线会悄悄退回旧行为，而你以为已经升级了。
 
-还有更阴的一层：**宿主实际调用的文件名可能和仓库不一样**。早期安装可能留下了别名（我们自己的生产环境就是 `mem0-inject.sh`，而仓库里叫 `aidumem-inject.sh`）。按文件名去核对，会验到一个宿主根本不执行的文件，然后得出「已部署」的错误结论。
+还有更阴的一层：**宿主实际调用的文件名可能和仓库不一样**。早期安装可能留下了别名。按文件名去核对，会验到一个宿主根本不执行的文件，然后得出「已部署」的错误结论。
 
 **所以升级后（以及任何时候你想确认「宿主跑的是不是这一版」）**：
 
@@ -80,7 +145,7 @@ python3 scripts/check_hook_deployment.py     # 退出码 0 才算部署到位
 这项检查已并入 `scripts/health_check.py`，**定时巡检会自动带上，你不需要另外配一条 cron**。
 
 > 一句话记住：**验证要打在宿主真正调用的那个文件上——验仓库文件等于没验。**
-> 这是我们 f0.1 被用户审计当场抓出来的（修复写好了、测试绿了、报告都发了，就是没送到宿主手上）。
+> 这是我们被用户审计当场抓出来的（修复写好了、测试绿了、报告都发了，就是没送到宿主手上）。
 
 **不用 Agent？手动五行：**
 
@@ -123,7 +188,7 @@ python scripts/e2e_smoke.py --json                                              
 
 > **按机器内存选挡（部署 Agent 请照此选）**：可用内存充裕（≥2G 余量）且要「云断了还能本地召回全部历史」→ 用 `auto`（本地备胎**常驻热备**，那约 174MB 就是买这份断网韧性）；机器内存吃紧或不需要断网兜底 → 用 `cloud`（约 280MB，云断则如实 `degraded`、不本地降级）。**别让内存紧张的机器默认跑 `auto` 再嫌重**——挡位是给你按机器余量选的，选前先 `free -m` 看余量。
 >
-> **规划中（v21.2）冷备挡**：本地模型**不常驻**（平时省那约 174MB），仅在云端失效时才加载 + 批量补算存量本地向量；实测中小库（约 1500 条）补算窗口十几秒，期间 `degraded`、补完全量恢复。它兼顾「平时省内存」与「故障后全量韧性」，代价是故障后有一个补算窗口（时长随库大小线性增长，大库需增量补算）。这正面回应「自动挡该按需加载」——热备（当前 `auto`）与冷备（规划）的取舍会并入选挡指南。
+> **规划中的冷备挡**：本地模型**不常驻**（平时省那约 174MB），仅在云端失效时才加载 + 批量补算存量本地向量；实测中小库（约 1500 条）补算窗口十几秒，期间 `degraded`、补完全量恢复。它兼顾「平时省内存」与「故障后全量韧性」，代价是故障后有一个补算窗口（时长随库大小线性增长，大库需增量补算）。这正面回应「自动挡该按需加载」——热备（当前 `auto`）与冷备（规划）的取舍会并入选挡指南。
 
 ## 控制台：记忆不再是黑盒
 
@@ -147,7 +212,7 @@ MCP 与 REST 同进程双栈：REST 在 :8767，MCP 在 :8766（stdio/HTTP 双�
 
 ## 🔐 安全模型
 
-Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防护 + 默认仅回环。启动后先查三个数：`/health` 的 `health_status`、`degraded`、`probes.runtime_paths.data_dir_writable`（未带凭据时探针脱敏，附 `_redacted` 说明）。三轮外部安全审计留痕见 [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md)。
+Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防护 + 默认仅回环。启动后先查三个数：`/health` 的 `health_status`、`degraded`、`probes.runtime_paths.data_dir_writable`（未带凭据时探针脱敏，附 `_redacted` 说明）。多轮外部安全审计留痕见 [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md)。
 
 ## 环境变量（关键项）
 
@@ -162,7 +227,7 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 
 全量环境变量登记册见 `ducky/env_registry.py`（代码即真相源，错拼会启动告警）。
 
-> **v22.0 起冻结双前缀**：新变量一律 `AIDUMEI_`（`AIDUMEM_` 为 legacy，不再新增）。
+> **双前缀已冻结**：新变量一律 `AIDUMEI_`（`AIDUMEM_` 为 legacy，不再新增）。
 > 存量变量不迁移（兼容红线），仅文档标注。
 
 ## 功能地图（一张表，不讲故事）
@@ -173,28 +238,23 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 | 记忆语义 | 三轨遗忘（身份永不衰减/情感加速/标准曲线）· 双时间轴（记忆**过期**而非删除）· 六型分类 |
 | 治理 | 写入双审 + 冲突消解 + 注入防护；事件账本全路径留痕；密码学谱系（可检测篡改） |
 | 进化 | 反思（主动/定时）· 本能升格技能（人工审批闸门）· 检索自进化反馈环 |
-| 协作 | 联邦：多 Agent 共享一套记忆（MoE 门控 + 细粒度授权 grants） |
+| 协作 | 联邦：多 Agent 共享一套记忆（MoE 门控 + 细粒度授权 grants）· 多 bot / 多 profile 各据一域，记忆人格独立、跨域默认隔离 |
 | 周边 | 多模态视觉记忆 · 代码图谱 · 原文保真抽屉 · Obsidian 双链 |
 
 ## 测试与质量
 
-**测试层级如实说明（v19.4.1 P3-3）**
+**测试层级如实说明**
 > 读表口径：每行「通过 · 跳过」相加等于**该形态、该日期**下 `pytest --collect-only` 的收集数；不同日期的行分母可以不同（树在长），以各行括注的日期为准。跳过数按「轴」解释（见 [docs/TESTING.md](docs/TESTING.md)），不是失败。
 
 | 维度 | 现状 |
 |------|------|
-<<<<<<< HEAD
-| 用例总数 | **2220**（`pytest --collect-only` 实测，2026-09-23，f0.1 本树）＝ **行为用例 2014（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
-| 独立开发机 | 2208 通过 · **12 跳过** —— **2026-09-23 收集口径**（f0.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
-=======
-| 用例总数 | **2220**（`pytest --collect-only` 实测，2026-09-23，f0.1 本树）＝ **行为用例 2014（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——v20.5.1 起头条不再用混合数（外部审计 C-1） |
-| 独立开发机 | 2208 通过 · **12 跳过** —— **2026-09-23 收集口径**（f0.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
->>>>>>> upstream/main
-| 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，v20.5a 本树，Python 3.12） |
-| 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（v20.5.1 本树 de09794，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
-| 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（v20.5a 本树，独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
+| 用例总数 | **2221**（`pytest --collect-only` 实测，2026-09-23，f0.1 本树）＝ **行为用例 2015（产品代码直测）+ 脚本/钩子行为 70 + 守卫用例 136（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——头条不用混合数 |
+| 独立开发机 | 2209 通过 · **12 跳过** —— **2026-09-23 收集口径**（f0.1 本树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，Python 3.12） |
+| 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（本树 `de09794`，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
+| 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
 | 层级 | 以**模块级单元测试 + 源码级守卫断言**为主，`TestClient` 驱动的接口测试为辅 |
-| 平台前提 | 全量套件按 **Linux/macOS（POSIX）**口径维护：`backup_gate` 轴要 POSIX shell；`/health` 的 CPU/RSS 指标走 `resource` 模块，非 POSIX 平台诚实置 `None` 不崩（v20.1 整改）。Windows 未列为全量测试平台 |
+| 平台前提 | 全量套件按 **Linux/macOS（POSIX）**口径维护：`backup_gate` 轴要 POSIX shell；`/health` 的 CPU/RSS 指标走 `resource` 模块，非 POSIX 平台诚实置 `None` 不崩。Windows 未列为全量测试平台 |
 | 语句覆盖率 | 约 51%（`ducky/` + 入口，`coverage` 实测） |
 | 未覆盖 | 真实 mem0 / Qdrant 集成、真实 LLM 调用、并发压测 —— 这些依赖外部服务，由生产环境实机冒烟承担 |
 
@@ -205,11 +265,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-<<<<<<< HEAD
-> **为什么要把 2208 和 1967 都写出来**：2208 是本树开发环境 2026-09-23 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
-=======
-> **为什么要把 2208 和 1967 都写出来**：2208 是本树开发环境 2026-09-23 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读（生产沙箱数待生产机 v21.1 实机复测更新）。
->>>>>>> upstream/main
+> **为什么要把 2209 和 1967 都写出来**：2209 是本树开发环境 2026-09-23 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条不是玄学，自己就能验**：十三条跳过轴（宿主、工具、可选依赖、模型文件）全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
@@ -218,21 +274,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-<<<<<<< HEAD
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：2208 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2220 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2208 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：2209 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2221 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2209 passed, 12 skipped
 > ```
 >
-> 上面代码块里的 `有宿主：2220 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
-=======
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：2208 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2220 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2208 passed, 12 skipped
-> ```
->
-> 上面代码块里的 `有宿主：2220 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
->>>>>>> upstream/main
+> 上面代码块里的 `有宿主：2221 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
 
 > **跳过轴全量登记**（门控条数与实测逐行对账，改一条这里就红）：
 >
@@ -250,9 +297,9 @@ python -m compileall ducky api_server.py mcp_server.py
 > | `mem0ai` 已安装 | 20 | `tests/test_v20_mem0_patch_layer.py` 整份（补丁层疗法要真实基座在场；此前缺 mem0 是 20 条 ERROR 冒充真缺陷，现在诚实跳过） |
 > | `fastembed` 已安装 | 1 | `tests/test_v20_2_autoshift.py`（自动挡备胎真模型测试；缺依赖诚实跳过，模型未部署时用例内二次跳过） |
 > | `ruff` 已安装 | 3 | 静态规则守卫：F821/F811/F841；缺依赖时跳过，发布门禁仍会拦截 |
-> | `mcp` extra 已安装 | 8 | MCP 导入面守卫 + 鉴权行为 + SSE 传输用例 + 检索 session 透传（v21.2 M2） |
+> | `mcp` extra 已安装 | 8 | MCP 导入面守卫 + 鉴权行为 + SSE 传输用例 + 检索 session 透传 |
 >
-> 生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），实测跑出来是 1967 passed、26 skipped（2026-09-11，v20.5.1 本树 `de09794`）——跳过轴不同，数字必须与环境、日期和测试树一起读。
+> 生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），实测跑出来是 1967 passed、26 skipped（2026-09-11，本树 `de09794`）——跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 ## 安全与合规
 
@@ -261,18 +308,19 @@ MIT License。`SECURITY.md` + [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDI
 ## 已知边界（诚实声明）
 
 - 需要嵌入与 LLM 服务（云端或本地备胎）——换来的是真语义检索与抽取质量；要「完全离线 + 亚毫秒」的极简场景，零依赖本地类工具更合适，这话我们不遮。
-- 基准协议（LoCoMo / LongMemEval）已冻结，正式跑分待发布——[benchmarks/RESULTS.md](benchmarks/RESULTS.md) 如实登记。
+- **基准成绩是「试跑」不是定稿**：2/10 样本、裁判非 GPT-4o。正式打榜须全量复跑，[benchmarks/RESULTS.md](benchmarks/RESULTS.md) 如实登记。
+- 时序推理仍是**已知短板**：根因已修但**未复跑验证**，上表「目标」列一栏都还不是成绩。
 - 本地 lite 挡与云端挡的召回重叠率实测有限（差异全部明码标价写在 docs），auto 挡存在的意义正在于此。
 
 ## 文档
 
-部署与运维：[🤖 Agent Guide](AGENTS.md)（Agent 唯一入口）· [docs/HEALTH.md](docs/HEALTH.md) · [docs/OPERATIONS.md](docs/OPERATIONS.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) · [docs/POSITIONING.md](docs/POSITIONING.md)（与同类对比，口径全部可复算）
+部署与运维：[🤖 Agent Guide](AGENTS.md)（Agent 唯一入口）· [docs/HEALTH.md](docs/HEALTH.md) · [docs/OPERATIONS.md](docs/OPERATIONS.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) · [docs/POSITIONING.md](docs/POSITIONING.md)（与同类对比，口径全部可复算）· [docs/BENCHMARKING-POSTURE.md](docs/BENCHMARKING-POSTURE.md)（跑分态度与口径）
 
 ## 已知例外与本版不覆盖
 
 | # | 例外 | 说明 |
 |---|------|------|
-| 1 | 租户隔离是按租户收窄可见性 | 非互不信任客户的硬隔离层；域契约见 `ducky/bank_contract.py`，边界详录 `docs/SECURITY-AUDIT-LEDGER.md`。 |
+| 1 | 租户隔离是按租户收窄可见性 | 非互不信任客户的强隔离层；域契约见 `ducky/bank_contract.py`，边界详录 `docs/SECURITY-AUDIT-LEDGER.md`。 |
 | 2 | `fetch_local_embed_model.py` 必须部署期执行 | 运行时零网络；`ducky/local_embed.py` 强制 `HF_HUB_OFFLINE=1`。取模后按 `scripts/local_embed_model_sha256.json` 逐文件 sha256 校验，不匹配即删除并非 0 退出。 |
 | 3 | `capture_wave` 的 `entity_keywords` 漏配时零召回 | 无报错，需配置 `AIDUMEM_ENTITY_KEYWORDS`。详见 `ducky/pipeline/memory_gate.py`。 |
 
@@ -284,10 +332,11 @@ aiduMEI/
 ├── api_server.py           # 主入口（API + /ui 控制台托管）
 ├── ducky/                  # 业务逻辑（hot/ pipeline/ speed/ salience/ federation/ evolve_mem.py …）
 ├── frontend/               # 控制台（零构建纯静态；js/vendor/ 本地 echarts）
+├── benchmarks/             # 评测协议（数据集/模型/judge/seed/哈希全部锁定）
 ├── tests/                  # 回归测试集（pytest）
 ├── prompts/install.txt     # 一行 Prompt 部署正典
 ├── docs/                   # 运维/健康/备份/容量/测试口径
-├── scripts/                # e2e_smoke.py · report.py · restore_gate.sh 等
+├── scripts/                # e2e_smoke.py · check_hook_deployment.py · report.py 等
 └── mem0_config_local.json  # 模型配置（gitignored，含密钥）
 ```
 
