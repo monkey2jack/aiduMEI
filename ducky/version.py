@@ -8,6 +8,29 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.1.0 (对外 f0.1 · f 世代首版 · LoCoMo 跑分整改 · 2026-09-23)
+    主题：**让原文库记住「事情什么时候发生」，而不是「什么时候存进来」。**
+    1. 版本体系换代：对外统一 f*.*（f = future / fantasy / forever）。
+       f0.1 非 PEP 440 合法值，故包版本另用 0.1.0，二者由 LINEAGE
+       第三列钉死，不许各走各的。
+    2. 🔴P0 根因（一）：_iter_turns 只读 message 自带的 timestamp，而真实调用方
+       （含 /add 生产链路）把事件时间放在 metadata.recorded_at。
+    3. 🔴P0 根因（二）：于是 ts=None → _normalize_ts 无条件回落 now()，把事件
+       时间悄悄换成入库时间，且不报错不告警——典型假绿灯。2026-09-22 LoCoMo
+       实测：时序题 39% 的证据带着入库时间进了答题上下文。表结构本就分
+       recorded_at/created_at，故零 schema 迁移。
+    4. 写线：_normalize_ts 加 fallback；store_verbatim 用上一直收着却没用的
+       metadata。优先级 逐条 message.timestamp > 批次 metadata.recorded_at > now()。
+    5. 读线：build_context 补读**顶层** recorded_at（verbatim 条目无 metadata，
+       此前被漏读）。时序题证据时间戳覆盖率 61.0%→100.0%。
+    6. 防回归：verbatim_search 返回补 created_at。recorded_at 改后承载调用方
+       任意格式，extract_timestamp 的 fromisoformat 会失败并回落 0.0，时间衰减
+       将静默失效；created_at 恒 ISO 且 key 顺序更靠前，故时间衰减零回归而
+       上下文拿到真事件时间。负向对照已钉死。
+    用例总数 2208 → 2213（+5 条 f0.1 事件时间回归守卫，每条自带负向对照，全部红→绿）。
+    诚实边界：上述覆盖率由存量数据复算，只证明「读得到」；存量时间**值**仍是
+    入库时间，真值须重跑评测。本版不宣称任何新跑分成绩。
+
 v22.0.0 (雷霆审计整改 · 默认从严 · 2026-09-20)
     主题：**身份派生，越权默认拒。**
     11 份雷霆审计（10 外部模型 + 用户）合并后 12 条 P0 全实锤整改：
@@ -307,8 +330,17 @@ v20.4.0 (正式版 · 三方审计 P0/P1 整改 · 断点续修四环复测收�
 """
 from __future__ import annotations
 
-SERVICE_VERSION = "22.0.0"
-FULL_VERSION = f"v{SERVICE_VERSION}"
+# ── f 世代版本规格（f0.1 起，2026-09-23）──────────────────────────────
+# 对外版本号统一为 ``f*.*``：f = future / fantasy / forever。
+# Tag 与 Release 一律用它。
+#
+# 为什么还留一个数字版本：``f0.1`` **不是 PEP 440 合法版本**（必须数字开头），
+# 放进 pyproject.toml 会让 `pip install` 直接失败。故分两层——
+#   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
+#   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
+# 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
+SERVICE_VERSION = "0.1.0"
+FULL_VERSION = "f0.1"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
@@ -321,6 +353,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.1.0", "", "f0.1", "f 世代首版 · LoCoMo 跑分整改：verbatim 事件时间根因修复（写线/读线/时间衰减防回归）· 2026-09-23"),
     ("22.0.0", "", "v22.0", "雷霆审计整改 · 众神殿鉴权/绑定 strict/注入边界/逃逸门组合闸/治理多语言/有界评估池/依赖合一/产品面收口 · 2026-09-20"),
     ("21.2.0", "", "v21.2.0", "Memmy 融改 · 回声抑制/MMR/错误签名/轨迹级奖励 · 2026-09-16"),
     ("21.1.1", "", "v21.1.1", "文档补丁 · 内存挡位选择指导 + 冷备 v21.2 roadmap · 2026-09-15"),
