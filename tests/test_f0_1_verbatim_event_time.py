@@ -66,3 +66,42 @@ def test_f01_time_decay_survives_non_iso_event_time():
 
     # 负向对照：不补 created_at 时确实归零——证明这条兜底不是白护栏
     assert extract_timestamp({"recorded_at": EVENT_TS, "_verbatim": True}) == 0.0
+
+
+def test_f01_inject_renders_time_with_memory():
+    """生产读线末端：召回注入给模型时必须带上时间。
+
+    生产侧时序问题的真根因不在存储也不在检索——库里存着
+    （facts 有 created_at、verbatim 有 recorded_at），/search 也照常返回，
+    但 integrations/aidumem-inject.sh 渲染时只取 `memory` 正文，
+    时间在注入那一刻被丢掉，模型一问「上次是什么时候」只能猜。
+    与评测侧 build_context 漏读时间戳是同一根因的两处发作。
+    """
+    import os
+    import subprocess
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sh = open(os.path.join(repo, "integrations", "aidumem-inject.sh"),
+              encoding="utf-8").read()
+
+    marker = "import re\nresults = result.get('results') or []"
+    assert marker in sh, "注入渲染段锚点不在了——守卫失去着力点，请同步改判据"
+    body = sh[sh.index(marker):sh.index('"\n}', sh.index(marker))]
+
+    harness = (
+        "import os, re\n"
+        "os.environ['AIDUMEM_SEARCH_LIMIT'] = '3'\n"
+        "result = {'results': ["
+        "{'memory': 'A事', 'created_at': '2026-09-20T10:11:12+00:00'},"
+        "{'memory': 'B事', 'recorded_at': '1:56 pm on 8 May, 2023'},"
+        "{'memory': 'C事'}]}\n"
+    ) + body
+
+    r = subprocess.run(["python3", "-c", harness], capture_output=True, text=True)
+    assert r.returncode == 0, f"注入渲染段跑不起来（shell 内嵌 py 语法错会静默失效）：{r.stderr[:300]}"
+    out = r.stdout
+
+    assert "· [2026-09-20] A事" in out, f"ISO 时间未渲染进注入块：{out!r}"
+    assert "· [1:56 pm on 8 May, 2023] B事" in out, f"非 ISO 事件时间未渲染：{out!r}"
+    # 负向对照：真没有时间就不硬造（与 build_context 同口径）
+    assert "· C事" in out and "[] C事" not in out, f"无时间条目被硬造了时间：{out!r}"
