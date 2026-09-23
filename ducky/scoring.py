@@ -199,11 +199,34 @@ def _overlap_tokens(text: str) -> set:
     return toks
 
 
+# 时间戳提取的**显式优先级**——顺序即语义，不是随手排的。
+#
+# `created_at` 必须排在 `recorded_at` 之前（f0.1 起为硬约束）：
+# f0.1 让 `recorded_at` 承载**调用方给什么就是什么**的事件时间，可能完全不是
+# ISO（LoCoMo 样本里就有 "1:56 pm on 8 May, 2023"）。时间衰减要的是「这条记录
+# 多久没动过」，用不可解析的事件时间会 fromisoformat 失败并一路回落到 0.0，
+# 把衰减静默打成「无限旧」。`created_at` 恒为 ISO 入库时间，放在前面即可让
+# 衰减保持 f0.1 之前的语义（零回归），而需要**事件时间**的读线（build_context /
+# 注入渲染）另行直取 `recorded_at`，各取所需。
+#
+# 调换这两个的顺序会静默改变时间衰减语义且不报错，
+# 故由 tests/test_f0_1_verbatim_event_time.py 的守卫钉死（含负向对照）。
+TIMESTAMP_KEY_PRIORITY = (
+    "timestamp",
+    "created_at",
+    "recorded_at",
+    "updated_at",
+    "valid_from",
+    "valid_to",
+    "expires_at",
+)
+
+
 def extract_timestamp(item: dict) -> float:
     """三级时间戳提取（事实级 created_at -> metadata -> 兜底 0）。"""
     if not isinstance(item, dict):
         return 0.0
-    for key in ("timestamp", "created_at", "recorded_at", "updated_at", "valid_from", "valid_to", "expires_at"):
+    for key in TIMESTAMP_KEY_PRIORITY:
         val = item.get(key)
         if isinstance(val, (int, float)) and val > 0:
             return float(val)
@@ -217,7 +240,7 @@ def extract_timestamp(item: dict) -> float:
                 logger.debug(f"extract_timestamp: suppressed exception: {e}")
     md = item.get("metadata") or {}
     if isinstance(md, dict):
-        for key in ("timestamp", "created_at", "recorded_at", "updated_at", "valid_from", "valid_to", "expires_at"):
+        for key in TIMESTAMP_KEY_PRIORITY:
             val = md.get(key)
             if isinstance(val, (int, float)) and val > 0:
                 return float(val)
