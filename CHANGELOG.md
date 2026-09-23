@@ -25,7 +25,6 @@
 
 > **诚实边界**：上述 61.0%→100.0% 由 2026-09-22 存量数据复算得出，只证明「读得到」；存量 verbatim 的时间**值**仍是入库时间（写线今日才修），真值须重跑评测才算数。本版不宣称任何新的跑分成绩。
 
-
 ## v22.0.0（2026-09-20 雷霆审计整改）：众神殿鉴权 · 绑定 strict · 注入边界 · 逃逸门组合闸 · 治理多语言 · 有界评估池 · 依赖合一 · 产品面收口
 
 > **性质：大版本（默认从严，向后不兼容）。** 11 份雷霆审计（10 外部模型 + 用户）合并后 12 条 P0 全实锤整改；系统性质从「单主人自用」跃迁到「身份派生/越权默认拒」。
@@ -46,12 +45,12 @@
 
 ## [探针与工具修复] health_check 适配 v22 众神殿安全门禁（2026-09-21）
 
-> **性质：健康检查探针脚本入参对齐，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 生产机 2026-09-21 已热修上线（`c2d216d5`），f0.1 部署前回收进主线，避免生产独有改动成为孤本。
+> **性质：健康检查探针脚本入参对齐，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。
 
 - **症状**：定时健康巡检报 `aidumem_search 🔴 403`。
 - **根因**：v22.0 雷霆审计 A3 加固了众神殿门禁（持 Bearer Token 调用必须带 `caller_user_id`），`scripts/health_check.py` 内部向 `/search` 探活时只传了 `user_id` 漏带 `caller_user_id`，被服务端安全拦截返回 403。
-- **修复**：探针入参补齐 `"caller_user_id": "health_check"`。
-- **验证**：生产执行 `python scripts/health_check.py`，`aidumem_search` 由 403 恢复 200 OK。
+- **修复**：`scripts/health_check.py` 探针入参补齐 `"caller_user_id": "health_check"`，完全符合众神殿安全门禁规范。
+- **验证**：本地执行 `python scripts/health_check.py`，`aidumem_search` 正常返回 200 OK，状态码由 403 恢复为绿灯。
 
 ## v22.0 Scope Rulings（2026-09-20 · 雷霆审计 C3）
 
