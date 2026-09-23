@@ -85,18 +85,25 @@ overall F1 42.14% / Judge 52.96%.
 - ⚠️ **What we will not claim**: this is a **trial run**, not a final score. 2 of 10 samples, and the
   judge was Sonnet rather than the industry-standard GPT-4o. **We do not and will not claim SOTA on this basis.**
 
-### Next-release targets (**not yet re-measured**)
+### This release's targets (**not yet re-measured**)
 
-The root cause behind the temporal weakness has been located and fixed (write / retrieval / injection),
-but **this release did not re-run the evaluation**, so the table below is a set of targets, not results:
+The most glaring weakness in the table above — temporal reasoning — **is something this release
+already worked on**: the root cause was traced to "event time silently replaced by ingest time on
+write" and fixed in all three places at once: write, retrieval, and injection (see [CHANGELOG](CHANGELOG.md)).
 
-| Dimension | Trial (measured) | Target | Approach | Status |
+But **this release did not re-run the evaluation**, so not a single entry in the "target" column is a result yet:
+
+| Dimension | Trial (measured) | Target | What this release did | Status |
 |---|---|---|---|---|
-| Temporal reasoning | 25.79 | **≥ 40** (vs Zep) | Record event time correctly + pass it through recall + render it on injection | 🔧 Root cause fixed, **re-run pending** |
-| Multi-hop reasoning | 23.19 | ≥ 28 (vs Mem0) | Iterative retrieval / query expansion | ⬜ Not started |
-| Open-domain | 9.87 | Full re-run for a real value | Widen the sample before choosing a strategy | ⬜ Not started |
-| Single-hop | 37.37 | Hold ≥ 37 | No regression | 🛡️ Hold |
-| Adversarial abstention | 81.69 | Hold ≥ 80 | Keep the gating advantage | 🛡️ Hold |
+| **Temporal reasoning** | 25.79 | **≥ 40** (vs Zep) | **Main focus of this release**: event time recorded correctly · passed through `/search` · rendered with the date on injection | 🔧 **Fixed, re-run pending** |
+| Single-hop | 37.37 | Hold ≥ 37 | Retrieval main path untouched; should not regress | 🛡️ Hold |
+| Adversarial abstention | 81.69 | Hold ≥ 80 | Gating philosophy unchanged | 🛡️ Hold |
+| Multi-hop reasoning | 23.19 | ≥ 28 (vs Mem0) | Untouched this release | ⬜ Deferred (iterative retrieval / query expansion) |
+| Open-domain | 9.87 | Full re-run for a real value | Untouched this release | ⬜ Deferred (widen the sample first) |
+
+> **Why "fixed" still isn't a score**: writing the right code does not mean the number moves.
+> That has to be settled by a full re-run. Until then, the right-hand side of the table states
+> **what we intend to deliver**, not what we have already delivered.
 
 > **Why publish an unflattering score first**: the value of a first benchmark run is exposing problems,
 > not collecting numbers. This trial immediately surfaced a root cause that had been hiding for a long
