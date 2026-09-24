@@ -101,7 +101,11 @@ class _FakeMem:
     def add(self, messages, user_id=None, metadata=None, **kw):
         self.added.append({"messages": messages, "user_id": user_id,
                            "metadata": dict(metadata or {})})
-        return {"results": []}
+        # 🔴f0.1+：替身必须返回**真实的成功形态**。
+        # 原先返回 {"results": []} —— 那在真实 mem0 里恰恰是「抽取返空、
+        # 静默丢弃」的失败形态。graduate_to_skill 现在会校验写入是否成功，
+        # 拿失败形态当成功，测的就不是生产行为。
+        return {"results": [{"id": f"skill-{len(self.added)}", "event": "ADD"}]}
 
     def delete(self, memory_id):
         self.deleted.append(memory_id)
@@ -137,6 +141,15 @@ def test_graduation_survives_reasoning_truncation_and_actually_graduates(_cfg, m
     monkeypatch.setattr(llm_client.requests, "post", fake_post)
 
     mem = _FakeMem(_three_instincts())
+
+    # 🔴f0.1+：删除已改走 cascade_delete_memory（留墓碑），不再调 mem.delete。
+    # 替身只监听 mem.delete 的话，下面「源记忆被回收」的断言会永远看到空集。
+    import ducky.wal_engine as _we
+    import ducky.tombstone as _tb
+    monkeypatch.setattr(_we, "cascade_delete_memory",
+                        lambda mid, **kw: mem.deleted.append(mid) or {"status": "ok"})
+    monkeypatch.setattr(_tb, "snapshot_before_delete", lambda mid, **kw: 1)
+
     out = graduation.graduate_to_skill(mem, "user_x", {"category": "打卡", "count": 3})
 
     assert out == "蒸馏后的打卡技能", (

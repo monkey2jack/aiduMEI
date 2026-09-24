@@ -294,11 +294,17 @@ def register_v8_routes(app: FastAPI) -> None:
 
     # ── Instinct→Skill 毕业 ───────────────────────────
     @app.post("/graduate")
-    def graduate_instincts(user_id: str = DEFAULT_USER_ID, dry_run: bool = False,
+    def graduate_instincts(user_id: str = DEFAULT_USER_ID, dry_run: bool = True,
                            bank_id: str = ""):
         """Instinct→Skill 自动毕业（注：v9.0.1 已彻底关闭自动生成 auto-*.md）
 
         v20 P0-2：毕业链整体锁在 (user_id, bank_id) 域内；不传 bank_id = default 域。
+
+        🔴f0.1+：``dry_run`` **默认改为 True**（原默认 False）。
+        这个端点会把同 category 的 ≤10 条原始记忆蒸馏成 1 条技能并**删掉原始**，
+        是破坏性操作 —— 不带参数调一次就真删，默认值方向错了。
+        现在默认只预览，要真执行必须显式传 ``dry_run=false``。
+        **这是行为变更**：此前依赖默认值执行毕业的调用方需改为显式传参。
         """
         try:
             from ducky.instinct_graduation import auto_graduate, scan_instincts
