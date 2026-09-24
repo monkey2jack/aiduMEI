@@ -105,6 +105,26 @@ def scan_instincts(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> list
         return []
 
 
+def _add_succeeded(add_result) -> bool:
+    """判断 mem0.add 是否**确实**写进去了一条。
+
+    mem0 的 add 失败形态不止抛异常一种：抽取返回空时它会静默丢弃、
+    返回 ``{"results": []}`` 而不报错。把「没抛异常」当成「写成功」，
+    就会在技能没落库的情况下把原始记忆删光。
+    """
+    if add_result is None:
+        return False
+    if isinstance(add_result, dict):
+        results = add_result.get("results")
+        if isinstance(results, list):
+            return len(results) > 0
+        # 没有 results 键但返回了 dict（历版形态不一）：有 id 就算数
+        return bool(add_result.get("id"))
+    if isinstance(add_result, list):
+        return len(add_result) > 0
+    return bool(add_result)
+
+
 def graduate_to_skill(memory, user_id: str, group: dict,
                       bank_id: str = DEFAULT_BANK_ID) -> Optional[str]:
     """将一组记忆蒸馏为 skill（v20 P0-2：蒸馏与删除都锁死在本域内）"""
@@ -163,18 +183,46 @@ def graduate_to_skill(memory, user_id: str, group: dict,
             "graduated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }, scope.bank_id)
         from ducky.gear import should_try_llm
-        memory.add(messages, user_id=scope.user_id, metadata=metadata, infer=should_try_llm())
+        add_result = memory.add(messages, user_id=scope.user_id, metadata=metadata,
+                                infer=should_try_llm())
 
-        # 删除原始记忆
+        # 🔴f0.1+：**先确认技能真的写进去了，再删原始记忆。**
+        #
+        # 此前这里对 add_result 一眼都不看就往下删。mem0 的 add 在抽取返回空时
+        # 会**静默丢弃、不抛异常**（推理模型预算被思考吃光就是这个形态，
+        # 见 _call_llm 上方那段注释）。于是可能出现：新技能没写成、原始 10 条
+        # 照删不误 —— 净蒸发 10 条记忆，日志还报「毕业成功」。
+        # 只发半条电路的代价：写线出问题，往往几周都发现不了。
+        if not _add_succeeded(add_result):
+            logger.warning(
+                "Instinct 毕业中止：技能写入未确认（category=%s, 待毕业 %d 条）——"
+                "**原始记忆一条不删**。add 返回=%r",
+                cat, len(source_ids), add_result)
+            return None
+
+        # 删除原始记忆（走墓碑，可恢复）
         deleted = 0
         for sid in source_ids:
+            # 🔴f0.1+：删除前留 tombstone 快照，再走级联删除。
+            # 旧实现直接调 mem0 原生 memory.delete()，绕过快照 ——
+            # 一次毕业删掉 10 条原始记忆，且永远找不回来。
             try:
-                memory.delete(sid)
+                from ducky.tombstone import snapshot_before_delete
+                snapshot_before_delete(
+                    sid, user_id=scope.user_id, bank_id=scope.bank_id,
+                    reason="instinct_graduation", actor="instinct_graduation",
+                )
+            except (OSError, ValueError, TypeError, KeyError, ImportError,
+                    AttributeError, RuntimeError) as te:
+                logger.warning(f"tombstone 快照失败，{sid[:8]} 删除后不可恢复: {te}")
+            try:
+                from ducky.wal_engine import cascade_delete_memory
+                cascade_delete_memory(sid, user_id=scope.user_id, bank_id=scope.bank_id)
                 deleted += 1
             except Exception as e:
                 logger.debug(f"删除原始记忆失败 {sid[:8]}: {e}")
 
-        logger.info(f"Instinct 毕业: {cat} ({len(source_ids)}→1 skill, 删除{deleted})")
+        logger.info(f"Instinct 毕业: {cat} ({len(source_ids)}→1 skill, 删除{deleted}，已留墓碑)")
         return distilled[:100]
     except Exception as e:
         logger.warning(f"毕业失败: {e}")
