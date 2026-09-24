@@ -39,6 +39,12 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",
+    # f0.1+：Layer1 容量自动合并三件套。AIDUMEI_AUTO_MERGE **默认 off** ——
+    # 该逻辑曾按 metadata.source 一刀切删记忆（用户单次被删 794~864 条），
+    # 判据已改为内容相似度，但默认仍不自动删：宁可库满告警，不替用户删数据。
+    "AIDUMEI_AUTO_MERGE",
+    "AIDUMEI_MAX_CAPACITY",
+    "AIDUMEI_CAPACITY_THRESHOLD",
     # v21 preview F1：epistemic 检索乘数四档（非法值 fail-closed 回默认，见 ducky/epistemic.py）
     "AIDUMEI_EPISTEMIC_MULT_USER_PROVIDED",
     "AIDUMEI_EPISTEMIC_MULT_REFERENCED",

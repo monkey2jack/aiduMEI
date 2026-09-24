@@ -9,7 +9,7 @@ Aion Memory 设计哲学：
 - Instinct 同域 ≥3 → 标记可毕业
 """
 
-import logging, time
+import logging, math, os, time
 from typing import Optional
 
 from .bank_contract import (
@@ -24,10 +24,56 @@ from ducky.failure_ledger import feature_failed
 logger = logging.getLogger("aiduMEM.selfcheck")
 
 # ── 配置 ──
-MAX_CAPACITY = 1000           # 单用户最大记忆数
-CAPACITY_THRESHOLD = 0.80     # 触发合并的容量阈值
+# 🔴f0.1+：这三个曾是写死的模块常量，用户踩到误删后**没有任何配置手段自救**，
+# 只能改源码。现在全部可由环境变量覆盖，并登记进 ducky/env_registry.py。
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = int(str(os.environ.get(name, "")).strip())
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """读浮点配置；非有限值（NaN/inf）一律回落默认。
+
+    NaN 会让 ``pct >= CAPACITY_THRESHOLD`` 恒为 False（看着像「安全」），
+    也会让相似度判据恒为 False —— 两种都是静默失效，所以先拦掉。
+    """
+    try:
+        v = float(str(os.environ.get(name, "")).strip())
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(v) or v <= 0:
+        return default
+    return v
+
+
+MAX_CAPACITY = _env_int("AIDUMEI_MAX_CAPACITY", 1000)              # 单用户最大记忆数
+CAPACITY_THRESHOLD = _env_float("AIDUMEI_CAPACITY_THRESHOLD", 0.80)  # 触发合并的容量阈值
 DEDUP_THRESHOLD = 0.85        # 去重相似度阈值
 MERGE_MIN_GROUP = 3           # 合并最少同组条数
+
+# 🔴f0.1+ P0：自动合并**默认关闭**。
+#
+# 起因是外部用户实锤：auto_merge_similar 名为「合并相似记忆」，实现却只按
+# metadata.source 分组、完全不比内容，把几百条话题各异的记忆当成「同类」，
+# 只留最新一条，其余直接 memory.delete() 真删（单次删掉 794~864 条）。
+#
+# 相似度判据已在本版修好（见 auto_merge_similar），但**默认仍然关闭**：
+# 宁可让库涨到上限、如实告警，也不能替用户静默删数据。
+# 想要自动合并的人显式开 AIDUMEI_AUTO_MERGE=on。
+AUTO_MERGE_ENABLED_DEFAULT = False
+
+
+def auto_merge_enabled() -> bool:
+    """自动合并开关（默认关）。每次读环境变量，便于测试与热调整。"""
+    raw = str(os.environ.get("AIDUMEI_AUTO_MERGE", "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return AUTO_MERGE_ENABLED_DEFAULT
 
 
 def check_capacity(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict:
@@ -102,16 +148,82 @@ def _text_similarity(a: str, b: str) -> float:
     return len(ba & bb) / len(ba | bb)
 
 
+def _memory_text(item: dict) -> str:
+    """取一条记忆的正文（mem0 的字段名历版有别，逐个兜底）。"""
+    if not isinstance(item, dict):
+        return ""
+    for key in ("memory", "text", "content", "data"):
+        v = item.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _cluster_by_similarity(items: list, threshold: float) -> list:
+    """把一组记忆按**内容相似度**聚成簇，返回 [[item, ...], ...]。
+
+    🔴f0.1+ 这是本次整改的核心。此前的实现按 metadata.source 一刀切分组，
+    等于「只要来源相同就算同一条记忆」——日常对话沉淀的记忆 source 清一色是
+    hermes_turn，于是几百条话题各异的记忆被判为同类，只留最新一条，其余真删。
+
+    注意：把分组键从 source 换成 category **并不能解决问题**。用户可能有
+    50 条互不相同的 PREFERENCES，它们 category 相同、内容毫无关系，按标签
+    分组照样会被删到只剩一条。**只有比内容才是对的判据。**
+
+    贪心单链聚类：逐条与已有簇的**首条**比对，超过阈值则入簇，否则自成一簇。
+    只与首条比（而非簇内全比）是有意为之——保证「留下来的那条」与被删的每
+    一条都直接相似，不会因为链式传递把 A~B、B~C 但 A≁C 的三条并成一簇。
+    """
+    clusters: list = []
+    for item in items:
+        text = _memory_text(item)
+        if not text:
+            # 取不到正文就**单独成簇**，永远不会被当成谁的重复删掉
+            clusters.append([item])
+            continue
+        placed = False
+        for cluster in clusters:
+            head_text = _memory_text(cluster[0])
+            if head_text and _text_similarity(text[:200], head_text[:200]) > threshold:
+                cluster.append(item)
+                placed = True
+                break
+        if not placed:
+            clusters.append([item])
+    return clusters
+
+
 def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
                        bank_id: str = DEFAULT_BANK_ID) -> dict:
-    """合并同类记忆：同 metadata.source 或 category 的 ≥3 条 → 保留最新
+    """合并**内容真正相似**的记忆：相似度 > DEDUP_THRESHOLD 的 ≥3 条 → 保留最新。
 
-    🔴v20：这个函数会 ``memory.delete()`` **真删**记忆。此前它按
-    ``{"user_id": …}`` 全域取数，只按 metadata.source 分组 —— 往 home 域写一条
-    触发容量合并，能把 work 域里同 source 的旧记忆永久删掉。域隔离在这里不是
-    可见性问题，是数据安全问题，所以取数和复筛都必须限定在写入方所在的域内。
+    🔴f0.1+（外部用户实锤整改）：本函数此前名为「合并相似」，实现却
+    **一次相似度计算都没有** —— 只按 ``metadata.source`` 分组，把同来源的
+    几百条不同话题记忆当成同类，只留最新一条，其余 ``memory.delete()`` 真删。
+    用户环境单次删除 794~864 条。同文件第一个相似度函数 ``_text_similarity``
+    早就存在、去重路径也一直在用，唯独这里没调。
+
+    本版三处改动：
+    1. **真比内容**：先按 source 粗分桶（省比对量），桶内再按
+       ``_text_similarity > DEDUP_THRESHOLD`` 聚类，只有真重复才进同一簇；
+    2. **默认不删**：``AIDUMEI_AUTO_MERGE`` 默认 off，达阈值也只告警；
+    3. **删除可恢复**：走 ``cascade_delete_memory`` 留 tombstone 快照，
+       不再直接调 mem0 原生 ``memory.delete()``（那条路绕过了快照）。
+
+    🔴v20：这个函数会**真删**记忆。此前它按 ``{"user_id": …}`` 全域取数，
+    往 home 域写一条触发容量合并，能把 work 域里同 source 的旧记忆永久删掉。
+    域隔离在这里不是可见性问题，是数据安全问题，所以取数和复筛都必须限定在
+    写入方所在的域内。
     """
     try:
+        # ── 闸门一：默认关闭 ──────────────────────────────────
+        if not auto_merge_enabled():
+            logger.info(
+                "Layer1 容量达阈值，但自动合并未开启（AIDUMEI_AUTO_MERGE=off，默认）："
+                "本次不删除任何记忆。如需自动合并请显式开启。"
+            )
+            return {"merged_groups": 0, "deleted": 0, "skipped_reason": "auto_merge_disabled"}
+
         all_mem = memory.get_all(filters=vector_scope_filters(user_id, bank_id), limit=10000)
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
         if not isinstance(results, list):
@@ -121,33 +233,59 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
         if len(results) < MERGE_MIN_GROUP:
             return {"merged_groups": 0, "deleted": 0}
 
-        # 按 metadata.source 分组
-        groups = {}
+        # ── 第一步：按 source 粗分桶（只为减少两两比对量，**不作为删除判据**）──
+        buckets: dict = {}
         for item in results:
             if not isinstance(item, dict):
                 continue
             meta = item.get("metadata") or {}
             source = meta.get("source", "unknown")
-            if source not in groups:
-                groups[source] = []
-            groups[source].append(item)
+            buckets.setdefault(source, []).append(item)
 
         merged = 0
         deleted_total = 0
-        for source, items in list(groups.items())[:max_groups]:
-            if len(items) < MERGE_MIN_GROUP:
+        for _source, bucket in buckets.items():
+            if len(bucket) < MERGE_MIN_GROUP:
                 continue
-            # 保留最新的一条，删除其余
-            items_sorted = sorted(items, key=lambda x: x.get("created_at", ""), reverse=True)
-            for old_item in items_sorted[1:]:
-                try:
-                    memory.delete(old_item["id"])
-                    deleted_total += 1
-                except Exception as e:
-                    logger.debug(f"删除记忆 {old_item.get('id','')[:8]} 失败: {e}")
-            merged += 1
+            # ── 第二步：桶内按**内容相似度**聚类，这才是删除的唯一判据 ──
+            for cluster in _cluster_by_similarity(bucket, DEDUP_THRESHOLD):
+                if len(cluster) < MERGE_MIN_GROUP:
+                    continue            # 不够 3 条真重复，一条都不删
+                if merged >= max_groups:
+                    break
+                # 保留最新的一条，删除其余
+                items_sorted = sorted(cluster, key=lambda x: x.get("created_at", ""), reverse=True)
+                for old_item in items_sorted[1:]:
+                    mid = old_item.get("id")
+                    if not mid:
+                        continue
+                    # 🔴f0.1+：删除前先留 tombstone 快照，再走级联删除。
+                    # 旧实现直接调 mem0 原生 memory.delete()，绕过了快照 ——
+                    # 既删错了、又删得找不回来。这里两步都要，且**顺序不能反**。
+                    try:
+                        from ducky.tombstone import snapshot_before_delete
+                        snapshot_before_delete(
+                            mid, user_id=user_id, bank_id=bank_id,
+                            reason="layer1_auto_merge_capacity",
+                            actor="layer1_auto_merge",
+                        )
+                    except (OSError, ValueError, TypeError, KeyError, ImportError,
+                            AttributeError, RuntimeError) as te:
+                        # 快照失败不阻断删除主链路（与 wal_engine 同口径），
+                        # 但必须留痕 —— 这条记忆将不可恢复。
+                        # 收窄到具体类型而非 except Exception：宽捕获棘轮只降不升。
+                        logger.warning(f"tombstone 快照失败，{str(mid)[:8]} 删除后不可恢复: {te}")
+                    try:
+                        from ducky.wal_engine import cascade_delete_memory
+                        cascade_delete_memory(mid, user_id=user_id, bank_id=bank_id)
+                        deleted_total += 1
+                    except Exception as e:
+                        logger.debug(f"删除记忆 {str(mid)[:8]} 失败: {e}")
+                merged += 1
+            if merged >= max_groups:
+                break
 
-        logger.info(f"Layer1 自动合并: {merged} 组, 删除 {deleted_total} 条")
+        logger.info(f"Layer1 自动合并: {merged} 组, 删除 {deleted_total} 条（判据=内容相似度>{DEDUP_THRESHOLD}）")
         return {"merged_groups": merged, "deleted": deleted_total}
     except Exception as e:
         logger.warning(f"自动合并失败: {e}")
@@ -361,7 +499,6 @@ def _classify_memory_type_on_add(memory_id: str, content: str, *, user_id: str =
     环境变量控制是否用 LLM；失败静默降级不阻断写入。
     """
     try:
-        import os
         enabled = os.getenv("AIDUMEM_TYPE_CLASSIFY_ENABLED", "false").lower() in {"1", "true", "yes"}
         from ducky.memory_types import classify_and_record
         classify_and_record(memory_id, content, use_llm=enabled, user_id=user_id, bank_id=bank_id)
