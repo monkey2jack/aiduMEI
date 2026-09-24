@@ -99,7 +99,11 @@ class _FakeMem:
     def add(self, messages, user_id=None, metadata=None, **kw):
         self.added.append({"messages": messages, "user_id": user_id,
                            "metadata": dict(metadata or {})})
-        return {"results": []}
+        # 🔴f0.1+：替身必须返回**真实的成功形态**。
+        # 原先返回 {"results": []} —— 那在真实 mem0 里恰恰是「抽取返空、
+        # 静默丢弃」的失败形态。graduate_to_skill 现在会校验写入是否成功，
+        # 拿失败形态当成功，测的就不是生产行为。
+        return {"results": [{"id": f"skill-{len(self.added)}", "event": "ADD"}]}
 
     def delete(self, memory_id):
         self.deleted.append(memory_id)
@@ -167,6 +171,15 @@ def test_graduation_skill_stamped_and_foreign_never_deleted(monkeypatch):
     monkeypatch.setattr(graduation, "_call_llm",
                         lambda prompt, max_tokens=None: "蒸馏后的打卡技能")
     mem = _FakeMem(_seed_items())
+
+    # 🔴f0.1+：删除已改走 cascade_delete_memory（留墓碑），不再调 mem.delete。
+    # 替身若仍只监听 mem.delete，`mem.deleted` 会恒空 —— 这条「不许跨域删」
+    # 的断言就会因为「压根没观测到删除」而恒绿，是白护栏。监听真实删除点。
+    import ducky.wal_engine as _we
+    import ducky.tombstone as _tb
+    monkeypatch.setattr(_we, "cascade_delete_memory",
+                        lambda mid, **kw: mem.deleted.append(mid) or {"status": "ok"})
+    monkeypatch.setattr(_tb, "snapshot_before_delete", lambda mid, **kw: 1)
 
     out = graduation.graduate_to_skill(
         mem, "user_x", {"category": "打卡", "count": 3}, "bank_a")
