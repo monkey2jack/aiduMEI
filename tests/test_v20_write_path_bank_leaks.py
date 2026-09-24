@@ -234,11 +234,16 @@ class _MergeMemory:
         self.deleted.append(memory_id)
 
 
-def test_merge_never_deletes_other_banks():
+def test_merge_never_deletes_other_banks(monkeypatch):
     """往 home 域触发合并，一条 work 域记忆都不许删。
 
     这是本文件里唯一一条**真删数据**的路径 —— 越界一次就是永久性丢失。
+
+    🔴f0.1+：必须**显式开启** AIDUMEI_AUTO_MERGE 才测得到东西。自本版起
+    自动合并默认关闭，若沿用默认值，这条断言会因为「功能压根没跑」而恒绿 ——
+    那是白护栏，不是守卫。
     """
+    monkeypatch.setenv("AIDUMEI_AUTO_MERGE", "on")
     mem = _MergeMemory()
     auto_merge_similar(mem, "alice", bank_id="home")
     assert not [d for d in mem.deleted if d.startswith("work")], (
@@ -246,12 +251,44 @@ def test_merge_never_deletes_other_banks():
     )
 
 
-def test_merge_still_works_inside_its_own_bank():
-    """反向对照：本域内 3 条同 source，仍要留最新删其余，功能不能被改没。"""
+def test_merge_is_off_by_default_even_at_capacity(monkeypatch):
+    """🔴f0.1+：默认配置下一条都不许删（宁可库满，不替用户静默删数据）。"""
+    monkeypatch.delenv("AIDUMEI_AUTO_MERGE", raising=False)
     mem = _MergeMemory()
     out = auto_merge_similar(mem, "alice", bank_id="work")
-    assert out["deleted"] == 2
-    assert set(mem.deleted) == {"work-1", "work-2"}, "应保留最新的 work-3"
+    assert out["deleted"] == 0 and not mem.deleted, (
+        f"默认关闭时仍删除了记忆：{mem.deleted}"
+    )
+    assert out.get("skipped_reason") == "auto_merge_disabled"
+
+    # 负向对照：显式开启后这条路径确实会跑起来（否则上面的断言没有区分力）
+    monkeypatch.setenv("AIDUMEI_AUTO_MERGE", "on")
+    out2 = auto_merge_similar(_MergeMemory(), "alice", bank_id="work")
+    assert out2.get("skipped_reason") is None, "开启后不该再报 disabled"
+
+
+def test_merge_does_not_delete_different_content_sharing_a_source(monkeypatch):
+    """🔴f0.1+ 核心回归：同 source 但**内容不同**的记忆，一条都不许删。
+
+    这正是外部用户实锤的那个缺陷：work-1/2/3 的 source 同为 chat，
+    但正文 work1/work2/work3 互不相同（字符 bigram 相似度约 0.6，
+    低于 DEDUP_THRESHOLD 0.85）。旧实现只按 source 分组，会把它们
+    删到只剩最新一条；新实现必须一条不动。
+    """
+    monkeypatch.setenv("AIDUMEI_AUTO_MERGE", "on")
+    mem = _MergeMemory()
+    out = auto_merge_similar(mem, "alice", bank_id="work")
+    assert out["deleted"] == 0, f"内容不同却被当成重复删了：{mem.deleted}"
+    assert not mem.deleted
+
+    # 负向对照：证明相似度判据真的在起作用 —— 把三条换成内容近乎一致的，
+    # 同一条代码路径就该正常收敛（否则上面的 0 只是「功能没跑」）。
+    from ducky.layer1_selfcheck import _cluster_by_similarity
+    dup = [{"id": f"d{i}", "memory": "今天下午三点和张总开会讨论预算"} for i in range(3)]
+    clusters = _cluster_by_similarity(dup, 0.85)
+    assert len(clusters) == 1 and len(clusters[0]) == 3, (
+        f"真重复未被聚成一簇，相似度判据失效：{clusters}"
+    )
 
 
 def test_merge_in_default_bank_only_touches_legacy_and_default():
