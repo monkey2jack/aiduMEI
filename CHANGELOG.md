@@ -1,5 +1,18 @@
 # aiduMEI 版本演进史
 
+## [基座升级] mem0ai 2.1.0 → 2.2.1（2026-09-26）
+
+> **性质：纯基座依赖小版本推进，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。
+
+- **升级内容**：`pyproject.toml` + `requirements.txt` 钉版 `mem0ai==2.1.0` → `==2.2.1`（PyPI 官方最新版）。
+- **上游改动评估**：
+  1. `add()` (`Memory` / `AsyncMemory`) 修复向量库未成功落库时虚报 ADD 的假成功 Bug（只把真实写入的记录存入历史与实体链接，全部失败抛出 `VectorStoreError` 并存留现场消息，杜绝假绿灯）；
+  2. 恢复 `Memory` / `AsyncMemory` 上下文管理器协议支持（`with Memory() as m:`）；
+  3. Client 侧增加 User Profiles 画像生成，支持幂等重试（本地自托管模式不走该接口）；
+  4. 向量库适配层加固（Turbopuffer 操作符与评分对齐、Valkey 时间戳 None 防御等）。
+- **对 aiduMEI 影响**：本仓纯本地自托管（Qdrant + SQLite + ducky 运行时补丁层），`mem0_patches.py` 四大挂载点（`role_drop`、`code_block_hardening`、`llm_transport_policy`、`usage_tracking`）命名空间与函数签名均未受破坏；补丁层 20 项专项回归全绿通过；本地 Qdrant 写入持久性更加健壮。
+- **验证**：pip 升级 → 双文件钉版同步 → `systemctl restart dudu-mem0-api` → `/health` 全绿（status ok、degraded []、patch 层正常加载）→ 冒烟全通。
+
 ## [f0.1+ 整改] Layer1 容量合并误删记忆（2026-09-24）
 
 > **性质：P0 数据安全缺陷整改。不升版本号、不打 Tag、不发 Release**，只以 commit 推进 main。
