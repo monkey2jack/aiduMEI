@@ -328,7 +328,12 @@ class AiduMemProvider(MemoryProvider):
                 "/search",
                 body={"query": query.strip()[:2000], "user_id": self._client.user_id,
                       # v22.0（A3）：读自己殿，caller==user_id
-                      "caller_user_id": self._client.user_id, "limit": 5},
+                      "caller_user_id": self._client.user_id, "limit": 5,
+                      # f0.2：读线必须带 session_id。此前只有写线（sync_turn）带，
+                      # 读线漏了 —— 服务端 _req_session_id 顶层就等它，缺了则
+                      # M2 回声抑制在热路径上静默失效、ingest_conv_reads_24h 恒 0。
+                      # 兜底口径与写线一致：显式传入优先，否则用 initialize 存的。
+                      "session_id": session_id or self._session_id},
                 timeout=_QUERY_TIMEOUT,
             )
             lines = self._format_hits(hits)
@@ -502,7 +507,35 @@ class AiduMemProvider(MemoryProvider):
                   f"&user_id={quote(self._client.user_id, safe='')}")
             self._client.try_request("POST", qs, timeout=_WRITE_TIMEOUT)
 
+        def _distill():
+            # f0.2：推荐的插件路径此前**只反思不萃取** —— on_session_end 只调
+            # /session/end，distill_made_24h 恒 0，「精华萃取」这个卖点功能走
+            # 插件路径的用户永远拿不到（萃取只在兜底的 aidumem-distill.sh 钩子里）。
+            # 这里补上，与那个钩子同契约、两步走：
+            #   ① /session/distill 只提炼（纯函数，可安全重跑）
+            #   ② /add 落库 —— 精华必须进主库和向量库才召回得到，
+            #      落独立表等于没做（用户原话「让最重要的东西浮出来」）。
+            dqs = (f"/session/distill?session_id={quote(str(sid), safe='')}"
+                   f"&user_id={quote(self._client.user_id, safe='')}")
+            out = self._client.try_request("POST", dqs, timeout=_WRITE_TIMEOUT)
+            # status=skipped（短会话没什么可提炼）或非 ok：正常，不落库。
+            if not isinstance(out, dict) or out.get("status") != "ok":
+                return
+            summary = out.get("summary")
+            if not summary:
+                return
+            self._client.try_request(
+                "POST", "/add",
+                body={"messages": summary,
+                      "user_id": out.get("user_id") or self._client.user_id,
+                      "bank_id": out.get("bank_id") or "default",
+                      "async_mode": True,
+                      "metadata": out.get("metadata") or {}},
+                timeout=_WRITE_TIMEOUT,
+            )
+
         self._spawn(_end, "aidumem-session-end")
+        self._spawn(_distill, "aidumem-distill")
 
     # -- 工具 ---------------------------------------------------------------
 
