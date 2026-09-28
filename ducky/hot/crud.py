@@ -145,7 +145,9 @@ def register_crud_routes(app: FastAPI) -> None:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"stats 失败: {e}")
+            import traceback
+            traceback.print_exc()
+            logger.error(f"stats 失败: {e}\n{traceback.format_exc()}")
             raise HTTPException(500, api_error_detail(e))
 
     @app.post("/delete")

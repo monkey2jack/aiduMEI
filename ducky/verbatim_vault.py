@@ -326,67 +326,66 @@ def store_verbatim(
         if _event_fallback is not None and not isinstance(_event_fallback, str):
             _event_fallback = str(_event_fallback)
 
-        for role, content, ts in _iter_turns(messages_json):
-            recorded_at = _normalize_ts(ts, fallback=_event_fallback)
-            chash = _content_hash(content)
-            try:
-                existing = fconn.execute(
-                    """SELECT id, occurrences FROM verbatim_turns
-                       WHERE user_id=? AND bank_id=? AND content_hash=? AND session_id=?
-                       LIMIT 1""",
-                    (scope.user_id, scope.bank_id, chash, session_id),
-                ).fetchone()
+        # 批量事务优化：在外层包裹事物，避免每轮单独 commit 导致的极高 I/O 阻塞
+        with fconn, tconn:
+            for role, content, ts in _iter_turns(messages_json):
+                recorded_at = _normalize_ts(ts, fallback=_event_fallback)
+                chash = _content_hash(content)
+                try:
+                    existing = fconn.execute(
+                        """SELECT id, occurrences FROM verbatim_turns
+                           WHERE user_id=? AND bank_id=? AND content_hash=? AND session_id=?
+                           LIMIT 1""",
+                        (scope.user_id, scope.bank_id, chash, session_id),
+                    ).fetchone()
 
-                if existing is not None:
-                    try:
-                        fconn.execute(
-                            """UPDATE verbatim_turns
-                               SET occurrences = COALESCE(occurrences, 1) + 1,
-                                   last_seen_at = ?
-                               WHERE id = ?""",
-                            (recorded_at, existing["id"]),
-                        )
-                        fconn.commit()
-                    except Exception as ue:
-                        logger.debug("verbatim occurrences 累加跳过: %s", ue)
-                    result["skipped"] += 1
-                    continue
+                    if existing is not None:
+                        try:
+                            fconn.execute(
+                                """UPDATE verbatim_turns
+                                   SET occurrences = COALESCE(occurrences, 1) + 1,
+                                       last_seen_at = ?
+                                   WHERE id = ?""",
+                                (recorded_at, existing["id"]),
+                            )
+                        except Exception as ue:
+                            logger.debug("verbatim occurrences 累加跳过: %s", ue)
+                        result["skipped"] += 1
+                        continue
 
-                cur = fconn.execute(
-                    """INSERT INTO verbatim_turns
-                       (user_id, bank_id, session_id, role, content, content_hash,
-                        recorded_at, occurrences, last_seen_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
-                    (
-                        scope.user_id,
-                        scope.bank_id,
-                        session_id,
-                        role,
-                        content,
-                        chash,
-                        recorded_at,
-                        recorded_at,
-                    ),
-                )
-                fconn.commit()
-                if cur.rowcount and cur.rowcount > 0:
-                    turn_id = cur.lastrowid
-                    # 同步灌 FTS 映射表（触发器自动维护 trigram 索引）
-                    try:
-                        tconn.execute(
-                            "INSERT OR REPLACE INTO verbatim_fts_map "
-                            "(turn_id, content, user_id, bank_id) VALUES (?, ?, ?, ?)",
-                            (turn_id, content, scope.user_id, scope.bank_id),
-                        )
-                        tconn.commit()
-                    except Exception as fe:
-                        logger.debug("verbatim FTS 灌入跳过: %s", fe)
-                    result["stored"] += 1
-                else:
+                    cur = fconn.execute(
+                        """INSERT INTO verbatim_turns
+                           (user_id, bank_id, session_id, role, content, content_hash,
+                            recorded_at, occurrences, last_seen_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                        (
+                            scope.user_id,
+                            scope.bank_id,
+                            session_id,
+                            role,
+                            content,
+                            chash,
+                            recorded_at,
+                            recorded_at,
+                        ),
+                    )
+                    if cur.rowcount and cur.rowcount > 0:
+                        turn_id = cur.lastrowid
+                        # 同步灌 FTS 映射表（触发器自动维护 trigram 索引）
+                        try:
+                            tconn.execute(
+                                "INSERT OR REPLACE INTO verbatim_fts_map "
+                                "(turn_id, content, user_id, bank_id) VALUES (?, ?, ?, ?)",
+                                (turn_id, content, scope.user_id, scope.bank_id),
+                            )
+                        except Exception as fe:
+                            logger.debug("verbatim FTS 灌入跳过: %s", fe)
+                        result["stored"] += 1
+                    else:
+                        result["skipped"] += 1
+                except Exception as row_err:
+                    logger.debug("verbatim 单条写入跳过: %s", row_err)
                     result["skipped"] += 1
-            except Exception as row_err:
-                logger.debug("verbatim 单条写入跳过: %s", row_err)
-                result["skipped"] += 1
 
         if result["stored"]:
             logger.info(
