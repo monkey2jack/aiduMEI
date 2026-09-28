@@ -237,6 +237,15 @@ def ensure_memory_banks_schema(conn: Any | None = None) -> dict[str, Any]:
     never drops/rebuilds a table and never deletes data.  ``facts`` may not
     exist yet during a clean import, in which case only the registry is made;
     the next schema bootstrap call will add the columns once ``facts`` exists.
+
+    f0.2：曾有一个模块级 ``_MEMORY_BANKS_SCHEMA_INITIALIZED`` once 缓存（生产侧
+    生产侧改动），第一次建表后所有后续调用一律短路返回。生产单库长驻时它是
+    命中收益，但它以「全局布尔」为键，覆盖不了「conn 指向不同库」这个输入维度——
+    传入新库的 conn 时照样短路，新库不建表，下一次查询直接 ``no such table``。
+    全量测试每个用例各用一个临时库，第一个用例把缓存置真后，其余 189 个用例
+    的新库全被判「已初始化」而炸。**键覆盖不了全部输入就别缓存** —— 建表本身
+    就幂等（CREATE TABLE IF NOT EXISTS + 逐列 add-if-missing），省的那点 PRAGMA
+    检查远抵不上多库场景全盘失效，故去掉该缓存。
     """
     own_conn = conn is None
     conn = conn or get_facts_conn()

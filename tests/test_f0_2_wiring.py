@@ -147,3 +147,43 @@ def test_on_session_end_triggers_distill():
         f"萃取函数 {distill_fn} 定义了却没被 _spawn 调用 —— 定义在也不会跑，"
         "这正是 f0.1+ 踩过的『判据扫到定义而非调用』的白护栏"
     )
+
+
+# ── f0.2 合入生产改动时发现的缺陷：schema 建表不许 once 缓存 ──
+
+def test_ensure_memory_banks_schema_has_no_module_level_once_cache():
+    """建表函数不许用模块级 once 缓存短路 —— 键覆盖不了「不同库」这个输入维度。
+
+    生产侧曾给 ensure_memory_banks_schema 加 _MEMORY_BANKS_SCHEMA_INITIALIZED
+    全局布尔缓存：生产单库长驻时命中是收益，但传入指向新库的 conn 时照样短路、
+    新库不建表 → 下一次查询 no such table。全量测试每个用例各用临时库，第一个
+    用例置真后其余 189 个全炸。记忆「缓存失效条件压过收益」的同款坑，故去除。
+    本守卫钉死它不复活。
+    """
+    import ast as _ast
+
+    src_path = os.path.join(_REPO, "ducky", "bank_contract.py")
+    tree = _ast.parse(open(src_path, encoding="utf-8").read())
+    fn = next((n for n in _ast.walk(tree)
+               if isinstance(n, _ast.FunctionDef) and n.name == "ensure_memory_banks_schema"), None)
+    assert fn is not None, "ensure_memory_banks_schema 不在了 —— 守卫失去着力点"
+
+    # 函数体内不许出现「global <名> + 基于该名的早退 return」这种 once 缓存形态
+    globals_declared = set()
+    for n in _ast.walk(fn):
+        if isinstance(n, _ast.Global):
+            globals_declared.update(n.names)
+    once_like = {g for g in globals_declared if "INITIALIZED" in g.upper() or "ONCE" in g.upper()
+                 or "_DONE" in g.upper() or "CACHED" in g.upper()}
+    assert not once_like, (
+        f"ensure_memory_banks_schema 又出现 once 缓存全局：{once_like} —— "
+        "以全局布尔为键覆盖不了『不同 conn/库』，多库场景会 no such table"
+    )
+
+    # 负向对照：确认这个 AST 判据真能抓到 once 缓存形态（构造一个假函数验）
+    bad = _ast.parse(
+        "def f():\n    global _X_INITIALIZED\n    if _X_INITIALIZED:\n        return\n"
+    )
+    bad_fn = bad.body[0]
+    bad_globals = {nm for n in _ast.walk(bad_fn) if isinstance(n, _ast.Global) for nm in n.names}
+    assert any("INITIALIZED" in g.upper() for g in bad_globals), "判据对 once 缓存形态失去识别力"
