@@ -1,5 +1,37 @@
 # aiduMEI 版本演进史
 
+## v0.2.0（2026-09-28 · 对外版本号 **f0.2**）：接线整改 —— 读线 session / 萃取线 / 验收脚本
+
+> **性质：功能性升级（升次位）。** 外部用户在 Windows 上用自己的 agent 全面自检，报了一批问题；逐条对源码核实后**分三类**：我们的锅（本版修）、用户没部署（回话给建议）、Windows 环境不匹配（非 bug）。本版只修第一类。
+
+### 🔴 读线不传 session_id —— M2 回声抑制在热路径静默失效
+
+写线（`sync_turn`）一直带 `session_id`，读线（`prefetch` 的 `/search`）却**漏了**。服务端 `_req_session_id` 顶层就等它、M2 回声抑制/workspace 命中都用它 —— 缺了则 `ingest_conv_reads_24h` 恒 0、回声抑制形同虚设。**这是 v21.2 M2 修写线时漏了读线，同源缺陷只修了半条电路。** 修复纯插件侧一行：`/search` body 补 `"session_id": session_id or self._session_id`（口径与写线一致），服务端零改动。
+
+### 🔴 验收脚本自己会 FAIL —— cron 数硬编码脱节
+
+`acceptance_check.sh` 那条 crontab 检查硬编码期望 `-eq 8`，而实际 TASKS 有 **9** 条（v21.2 加了 `ingest_wiring`）。改为**动态自比对**：`grep` 出 TASKS 声明数与 `--list` 输出数比对，期望值不再是魔数，加/删任务自动跟随。**顺带修一个计数正则的坑**：原想用 `[a-z_]+` 数任务名，但 `e2e_smoke` 含数字被漏（数出 8 而非 9）——正则改 `[a-z0-9_]+`。
+
+### 🟡 推荐插件路径缺萃取线 —— distill_made 恒 0
+
+`/session/distill`（精华萃取）唯一调用方是兜底的 `aidumem-distill.sh` 钩子；推荐的 MemoryProvider 插件 `on_session_end` 只调 `/session/end`（反思），**不碰萃取**。走推荐路径的用户永远拿不到「精华萃取」这个卖点。文档 `INTEGRATION_GUIDE:32` 还写着「触发归档与反思」加重误导。修复：插件 `on_session_end` 补萃取两步（`/session/distill` 提炼 → `/add` 落库，与那个钩子同契约、同「提炼/落库分离」语义）。
+
+### 📖 文档落差
+
+- README 的「cross-encoder 真重排」卖点旁标注：**需配 reranker key 才生效、默认不开**（用户 `rerank_configured: False` 是没配 key，不是 bug，但卖点话术给了开箱即用的错觉）。
+
+### 🛡️ 守卫（5 条，每条自带负向对照，AST 判据非字符串）
+
+钉死：读线 `/search` 必带 session_id（含「读写对称」防只修半条电路）、验收 cron 数不许硬编码且正则覆盖数字任务名、插件 `on_session_end` 的萃取函数**必须真被 `_spawn`**（首版只验字符串存在 → 嵌套函数定义在也白搭，收紧为验调用，与 f0.1+ 同款坑）。
+
+### 未纳入（回话给建议 / 非 bug）
+
+- 用户侧：8 项 cron 没装、零备份、token 没设 —— 部署方职责，`crontab_installed_count: null` = 一步没做。
+- Windows：`post-upgrade` 3 FAIL（`pgrep`/`systemctl` 不存在，服务实际在跑）、backup qdrant .lock、`restore verify latest`（已知问题）—— 环境不匹配，非代码 bug。
+- 数据完好：facts.db 17679 行 / qdrant 27113 点 / fts 7243，`/stats` 返回 20 是显示上限非丢失。
+
+用例总数 2237 → 2242（+5 条 f0.2 接线守卫，每条自带负向对照，全部红→绿）。
+
 ## [基座升级] mem0ai 2.1.0 → 2.2.1（2026-09-26）
 
 > **性质：纯基座依赖小版本推进，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 只推 commit + CHANGELOG 留痕。

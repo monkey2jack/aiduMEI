@@ -43,7 +43,7 @@ check "report.py exists and is executable" bash -c 'test -x scripts/report.py'
 check "drill_autoshift contract exists" bash -c 'test -x scripts/drill_autoshift.sh && bash scripts/drill_autoshift.sh --check >/dev/null'
 check "drill --run actually passes against a real health shape" bash -c 'test -f tests/test_v20_3_1_drill_autoshift.py && grep -q "test_drill_run_passes_against_real_health_shape" tests/test_v20_3_1_drill_autoshift.py'
 check "restore_gate exists and rejects invalid path" bash -c 'test -x scripts/restore_gate.sh && ! bash scripts/restore_gate.sh --dry-run /tmp/does-not-exist >/dev/null 2>&1'
-check "crontab intent list matches real TASKS array (8, ghost-free)" bash -c 'test "$(bash scripts/update_crontab.sh --list | python3 -c "import json,sys; print(len(json.load(sys.stdin)[\"tasks\"]))")" -eq 8'
+check "crontab intent list matches TASKS array declaration (count auto-tracked, ghost-free)" bash -c 'decl=$(grep -cE "^[[:space:]]+\"[a-z0-9_]+\|" scripts/update_crontab.sh); listed=$(bash scripts/update_crontab.sh --list | python3 -c "import json,sys; print(len(json.load(sys.stdin)[\"tasks\"]))"); test "$decl" -gt 0 && test "$decl" -eq "$listed"'
 check "crontab every task target script exists" bash -c 'bash scripts/update_crontab.sh --dry-run >/dev/null' 
 check "deploy prompt is present and canonical" bash -c 'test -f prompts/install.txt && test -f ONE_LINE_INSTALL.md && cmp -s prompts/install.txt ONE_LINE_INSTALL.md && grep -q "report.py" prompts/install.txt && grep -q "e2e_smoke.py" prompts/install.txt && grep -q "agent_integration_check.py" prompts/install.txt && grep -q "update_crontab.sh" prompts/install.txt'
 # v20.3.1（九份审计 P0-8 · 用户审计 🔴-4）：展示区与 canonical 的对账。
