@@ -129,7 +129,8 @@ else:
 # ═══════════ 3. aiduMEM API Health ═══════════
 t0 = time.time()
 try:
-    r = requests.get(f"{API_BASE}/health", timeout=5, headers=_auth_headers())
+    # 探活超时对齐 search/stats 统一为 10s（防密集归纳时瞬间并发导致的 5s 超时假警报）
+    r = requests.get(f"{API_BASE}/health", timeout=10, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
         # v21.2.0：**必须读 health_status / degraded**。

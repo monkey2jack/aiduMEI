@@ -263,8 +263,8 @@ The complete environment variable registry is `ducky/env_registry.py` (code is t
 
 | Dimension | Current |
 |------|------|
-| Total cases | **2242** (measured via `pytest --collect-only`, 2026-09-28, f0.2 tree) = **2036 behavior (product code under direct test) + 70 script/hook + 136 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 2230 passed · **12 skipped** — **collected 2026-09-28** (f0.2 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **2243** (measured via `pytest --collect-only`, 2026-09-28, f0.2 tree) = **2037 behavior (product code under direct test) + 70 script/hook + 136 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 2231 passed · **12 skipped** — **collected 2026-09-28** (f0.2 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
@@ -280,7 +280,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2230 and 1821**: the first is the 2026-09-23 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 2231 and 1821**: the first is the 2026-09-23 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
 > **Those 12 skips are not hand-waving — you can verify them yourself**: all thirteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
@@ -289,12 +289,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2230 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2242 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2230 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2231 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2243 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2231 passed, 12 skipped
 > ```
 >
-> `2242 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2243 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

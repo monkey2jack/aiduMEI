@@ -30,7 +30,13 @@
 - Windows：`post-upgrade` 3 FAIL（`pgrep`/`systemctl` 不存在，服务实际在跑）、backup qdrant .lock、`restore verify latest`（已知问题）—— 环境不匹配，非代码 bug。
 - 数据完好：facts.db 17679 行 / qdrant 27113 点 / fts 7243，`/stats` 返回 20 是显示上限非丢失。
 
-用例总数 2237 → 2242（+5 条 f0.2 接线守卫，每条自带负向对照，全部红→绿）。
+### 🔗 合入生产侧既有改动（一起测、一起进仓库）
+
+f0.1+ 结案后，生产环境先行做了一批改动（本地/大小仓当时都没有）——本版一并收回、测试、合并：
+
+- **mem0ai 基座 2.1.0 → 2.2.1**（生产提交 `4e25e02f`，保留原作者身份并入，见下方独立段）；`verbatim_vault` 批量事务优化（外层包事务省 I/O）、`health_check` 探活超时 5s→10s、`hot/crud` 小改 —— 三处合理，直接纳入。**但 `bank_contract` 的 `ensure_memory_banks_schema` once 缓存是缺陷**：以模块级全局布尔为键，覆盖不了「conn 指向不同库」这个输入维度，传入新库照样短路不建表 → 下一次 `no such table`。全量测试各用例独立临时库，第一个置真后其余 **189 个连炸**。这是记忆「缓存失效条件压过收益」的同款坑（建表本就幂等，省的 PRAGMA 检查远抵不上多库全盘失效），已去除该缓存并补 AST 守卫钉死不复活。
+
+用例总数 2237 → 2243（+5 条 f0.2 接线守卫 + 1 条 once 缓存防复发，每条自带负向对照，全部红→绿）。
 
 ## [基座升级] mem0ai 2.1.0 → 2.2.1（2026-09-26）
 
@@ -43,7 +49,7 @@
   3. Client 侧增加 User Profiles 画像生成，支持幂等重试（本地自托管模式不走该接口）；
   4. 向量库适配层加固（Turbopuffer 操作符与评分对齐、Valkey 时间戳 None 防御等）。
 - **对 aiduMEI 影响**：本仓纯本地自托管（Qdrant + SQLite + ducky 运行时补丁层），`mem0_patches.py` 四大挂载点（`role_drop`、`code_block_hardening`、`llm_transport_policy`、`usage_tracking`）命名空间与函数签名均未受破坏；补丁层 20 项专项回归全绿通过；本地 Qdrant 写入持久性更加健壮。
-- **验证**：pip 升级 → 双文件钉版同步 → `systemctl restart dudu-mem0-api` → `/health` 全绿（status ok、degraded []、patch 层正常加载）→ 冒烟全通。
+- **验证**：pip 升级 → 双文件钉版同步 → `systemctl restart aidumem-api` → `/health` 全绿（status ok、degraded []、patch 层正常加载）→ 冒烟全通。
 
 ## [f0.1+ 整改] Layer1 容量合并误删记忆（2026-09-24）
 
