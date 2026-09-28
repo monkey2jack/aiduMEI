@@ -607,8 +607,13 @@ def _current_version_records():
     from ducky.version import SERVICE_VERSION
 
     changelog = (_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    # f0.2：切段前瞻从 `## v\d` 收紧为**任何二级标题** `## `。
+    # 原正则假设「版本段之间没有别的 ## 段」，但 CHANGELOG 里 `## [f0.1+ 整改]`、
+    # `## [探针修复]` 这类不升版本的补丁段就夹在版本段之间 —— 当它出现在当前版本
+    # 段与下一个 `## v` 之间时，会被整段吞进当前版本段，bullet 数虚高（f0.2 段一度
+    # 被算成 4+9=13 条）。所有版本段正文只用 `###`，故按 `## ` 切更严格且不误伤。
     m = re.search(
-        r"^## v%s\b(.*?)(?=^## v\d)" % re.escape(SERVICE_VERSION),
+        r"^## v%s\b(.*?)(?=^## )" % re.escape(SERVICE_VERSION),
         changelog, re.M | re.S,
     )
     assert m, f"CHANGELOG.md 找不到 v{SERVICE_VERSION} 小节"

@@ -8,6 +8,24 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.2.0 (对外 f0.2 · 接线整改 · 2026-09-28)
+    主题：**把 v21.2 只修了一半的电路补齐，顺带堵掉文档与验收脚本的脱节。**
+    外部用户 Windows 自检反馈，逐条核实后分三类，本版只修「我们的锅」。
+    1. 读线不传 session_id：写线带、读线漏 —— 服务端 _req_session_id 顶层就等它，
+       缺了 M2 回声抑制热路径静默失效、ingest_conv_reads_24h 恒 0。纯插件侧补
+       prefetch 的 /search body «session_id»，服务端零改动。v21.2 M2 同源半修。
+    2. 验收脚本 cron 数硬编码 8 而实际 9（v21.2 加了 ingest_wiring）：改为动态
+       自比对（TASKS 声明数 vs --list），并修计数正则 [a-z_]→[a-z0-9_]（e2e_smoke
+       含数字被漏，正是数出 8 的原因）。
+    3. 推荐插件路径缺萃取线：on_session_end 只反思不萃取，distill_made 恒 0。
+       补两步（/session/distill 提炼 → /add 落库），与 aidumem-distill.sh 同契约。
+       README 顺带标注 rerank 需配 key 才生效（默认不开），消除卖点开箱错觉。
+    4. 守卫 5 条（AST 判据 + 负向对照）：读写 session 对称防只修半条电路、cron 数
+       不许硬编码且正则覆盖数字名、萃取函数必须真被 _spawn（首版只验字符串存在=
+       嵌套定义在也白搭，收紧为验调用，f0.1+ 同款坑）。
+    用例总数 2237 → 2242（+5 条 f0.2 接线守卫，每条自带负向对照，全部红→绿）。
+    未纳入：用户侧未部署（cron/备份/token）+ Windows 环境不匹配 = 非代码 bug。
+
 v0.1.0 (对外 f0.1 · f 世代首版 · LoCoMo 跑分整改 · 2026-09-23)
     主题：**让原文库记住「事情什么时候发生」，而不是「什么时候存进来」。**
     1. 版本体系换代：对外统一 f*.*（f = future / fantasy / forever）。
@@ -59,7 +77,7 @@ v0.1.0 (对外 f0.1 · f 世代首版 · LoCoMo 跑分整改 · 2026-09-23)
         正常段落）跟着提交推到远端，而门禁五关全绿：静态关只看 Python、测试关
         只比数字、脱密关只找敏感词，没有一关看得见它。守卫刻意不引入新跳过轴
         （无 git 时遍历部署树兜底），自带射程断言与负向对照。
-    用例总数 2208 → 2237（+13 条 f0.1 守卫 + 16 条 f0.1+ 整改守卫：6 条事件时间回归 + 6 条部署一致性与注入粒度 + 1 条冲突标记，每条自带负向对照，全部红→绿）。
+    用例总数 2208 → 2242（+13 条 f0.1 守卫 + 16 条 f0.1+ 整改守卫 + 5 条 f0.2 接线守卫：6 条事件时间回归 + 6 条部署一致性与注入粒度 + 1 条冲突标记，每条自带负向对照，全部红→绿）。
     诚实边界：上述覆盖率由存量数据复算，只证明「读得到」；存量时间**值**仍是
     入库时间，真值须重跑评测。本版不宣称任何新跑分成绩。
 
@@ -395,8 +413,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.1.0"
-FULL_VERSION = "f0.1"
+SERVICE_VERSION = "0.2.0"
+FULL_VERSION = "f0.2"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
@@ -409,6 +427,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.2.0", "", "f0.2", "接线整改（外部用户反馈）· 读线补 session_id 令 M2 回声抑制生效 / 推荐插件路径补萃取线 / 验收脚本 cron 数动态对齐 · 2026-09-28"),
     ("0.1.0", "", "f0.1", "f 世代首版 · LoCoMo 跑分整改：verbatim 事件时间根因修复（写线/读线/时间衰减防回归）· 2026-09-23"),
     ("22.0.0", "", "v22.0", "雷霆审计整改 · 众神殿鉴权/绑定 strict/注入边界/逃逸门组合闸/治理多语言/有界评估池/依赖合一/产品面收口 · 2026-09-20"),
     ("21.2.0", "", "v21.2.0", "Memmy 融改 · 回声抑制/MMR/错误签名/轨迹级奖励 · 2026-09-16"),
