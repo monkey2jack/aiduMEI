@@ -59,20 +59,24 @@ def _fake_bin(tmp_path: Path, *, root: bool = False) -> Path:
         '  cat "$1" > "$CRON_STATE"\n'
         'fi\n', encoding="utf-8")
     crontab.chmod(0o755)
+    # The installer's identity is always faked: whoever runs the suite (root
+    # in a container, a developer elsewhere) must not change the verdict.
+    uid, login = ("0", "root") if root else ("1000", "tester")
+    (fake / "id").write_text(
+        '#!/bin/sh\n'
+        'case "$*" in\n'
+        f'  "-u") echo {uid} ;;\n'
+        f'  "-un") echo {login} ;;\n'
+        '  "-u aidumem") echo 990 ;;\n'
+        '  *) exit 1 ;;\n'
+        'esac\n', encoding="utf-8")
+    (fake / "id").chmod(0o755)
     if root:
         # A root installer on a host that has the demotion user and runuser.
-        (fake / "id").write_text(
-            '#!/bin/sh\n'
-            'case "$*" in\n'
-            '  "-u") echo 0 ;;\n'
-            '  "-un") echo root ;;\n'
-            '  "-u aidumem") echo 990 ;;\n'
-            '  *) exit 1 ;;\n'
-            'esac\n', encoding="utf-8")
         (fake / "runuser").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         (fake / "chown").write_text(
             '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CHOWN_LOG"\n', encoding="utf-8")
-        for name in ("id", "runuser", "chown"):
+        for name in ("runuser", "chown"):
             (fake / name).chmod(0o755)
     return fake
 
@@ -85,6 +89,8 @@ def _env(tmp_path: Path, repo: Path, fake: Path, **extra: str) -> dict[str, str]
         "CHOWN_LOG": str(tmp_path / "chown.log"),
         "AIDUMEM_HOME": str(repo),
         "AIDUMEM_PYTHON": sys.executable,
+        "AIDUMEM_DATA_DIR": str(tmp_path / "data"),
+        "AIDUMEM_LOG_DIR": str(tmp_path / "logs"),
     })
     env.update(extra)
     return env
@@ -290,10 +296,8 @@ def test_invalid_run_as_names_are_refused_before_crontab_changes(shell, tmp_path
 def test_run_as_needs_root_and_a_real_user(shell, tmp_path):
     prod = _checkout(tmp_path, "prod")
     state = tmp_path / "crontab.txt"
-    # Not root (the real id): noted and ignored, no prefix.
+    # Not root: noted and ignored, no prefix.
     plain = _env(tmp_path, prod, _fake_bin(tmp_path / "plain"), AIDUMEI_CRON_RUN_AS="aidumem")
-    if os.geteuid() == 0:
-        pytest.skip("the non-root branch needs a non-root test runner")
     result = _cron(shell, prod, plain, "install")
     assert result.returncode == 0, result.stderr
     assert "ignored: runuser needs a root installer" in result.stderr
