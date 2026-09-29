@@ -199,6 +199,10 @@ except Exception as e:
 # 让每一次定时巡检自动带上，**不需要任何人另外配一条 cron**。
 # 没装钩子的环境（纯 API 用法）直接跳过，不制造噪音。
 _hook_t0 = time.time()
+_hook_mode = os.environ.get("AIDUMEI_INTEGRATION_MODE", "auto")
+_hook_note = (f"N/A（{_hook_mode} 接入；未运行 shell hook 部署比对）"
+              if _hook_mode in ("api", "plugin") else
+              "SKIP（未发现 Hermes 配置，接入方式未判定；需另验读写线）")
 try:
     _hook_cfg = os.path.expanduser(os.environ.get("HERMES_CONFIG", "~/.hermes/config.yaml"))
     if os.path.exists(_hook_cfg):
@@ -206,16 +210,24 @@ try:
         import check_hook_deployment as _chk
 
         _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _rep = _chk.check(_hook_cfg, _repo)
+        _rep = _chk.check(
+            _hook_cfg, _repo,
+            integration=_hook_mode,
+        )
         if _rep["no_hooks_found"]:
-            pass  # 配置在但没挂钩子 = 这台机器不用钩子，不是故障
+            if _rep["applicability"] == "not_applicable":
+                _hook_note = f"N/A（{_rep['integration']} 接入；无 shell hooks）"
+            else:
+                _hook_note = "SKIP（Hermes 配置无 shell hooks 且未声明接入方式；需另验读写线）"
         else:
             checks["hook_deploy"] = {
                 "ok": _rep["ok"],
                 "ms": int((time.time() - _hook_t0) * 1000),
-                "code": f"{_rep['checked'] - _rep['drifted']}/{_rep['checked']} 与仓库一致",
-                "verdict": "" if _rep["ok"] else "宿主执行的不是本仓库这一版——升级后忘了重新部署？"
-                           " 跑 python3 scripts/check_hook_deployment.py 看详情",
+                "code": f"{_rep['checked'] - _rep['drifted']}/{_rep['checked']} 与仓库一致；"
+                        f"缺必需线={','.join(_rep['missing_events']) or '无'}",
+                "verdict": "" if _rep["ok"] else
+                           "钩子缺必需的读/写线或与仓库版本不一致；"
+                           "跑 python3 scripts/check_hook_deployment.py 看详情",
             }
 except Exception as _e:  # 自检自己坏掉不许拖垮整份巡检
     checks["hook_deploy"] = {
@@ -249,6 +261,8 @@ for name, result in checks.items():
     if result.get("verdict"):
         extra += f" [{result['verdict']}]"
     print(f"  {icon} {name}: {detail}{extra} ({result['ms']}ms)")
+if "hook_deploy" not in checks:
+    print(f"  ⬜ hook_deploy: {_hook_note}")
 
 print(f"\n总计: {total_ms}ms | {'🟢 全部正常' if all_ok else '⚠️ 有异常'}")
 

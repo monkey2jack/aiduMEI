@@ -4,7 +4,13 @@
 # 我没读退出码，带着命中把提交推进了小仓。铁律 0 写着「任一面命中 → 立即停推」，
 # 而我用一条 `&&` 把那句话作废了。纪律靠记性执行，早晚会失效一次 —— 焊成脚本。
 set -e
+umask 077
 cd "$(git rev-parse --show-toplevel)"
+GATE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/aidumei-gate.XXXXXXXX")
+trap 'rm -rf "$GATE_TMP"' EXIT
+SCAN_WORDLIST="${AIDUMEI_SCAN_WORDLIST:-$HOME/.config/aidumei/f02_full_scan_words.txt}"
+SCAN_PUBLIC_WORDLIST="${AIDUMEI_SCAN_PUBLIC_WORDLIST:-$HOME/.config/aidumei/f02_public_identifiers.txt}"
+SCAN_REVIEWED_PUBLIC="${AIDUMEI_SCAN_REVIEWED_PUBLIC:-$HOME/.config/aidumei/f02_reviewed_public_lines.txt}"
 unset ALL_PROXY all_proxy http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 # v20.3.2 正式版（用户审计 C）：解释器不许写死 `.venv/`。生产是 `venv/`（无点），
 # 这条闸门在生产从来跑不起来 —— 而 acceptance_check.sh 里早有正确的探测链，
@@ -41,7 +47,7 @@ print("+".join(present) if present else "无")
 EOF
 )"
 
-"$PY" -m pytest tests/ -q > /tmp/g_t.log 2>&1 || fail "测试关未过：$(tail -1 /tmp/g_t.log)"
+"$PY" -m pytest tests/ -q > "$GATE_TMP/tests.log" 2>&1 || fail "测试关未过（私有日志已清理）"
 
 # v20.2.5：静态关。只拦**真缺陷类** —— F821 未定义名（运行时 NameError，
 # 本版就抓到一条被 except 吞了很久的）、F811 重复定义。
@@ -54,8 +60,8 @@ EOF
 # 不在误删射程内。
 if "$PY" -c "import ruff" >/dev/null 2>&1; then
   "$PY" -m ruff check ducky/ api_server.py mcp_server.py scripts/ conftest.py tests/ \
-      --select F821,F811,F841,F401,F541,W,UP015 --output-format concise > /tmp/g_ruff.log 2>&1 \
-      || fail "静态关未过（F821/F811/F841/F401/F541/W/UP015 全清零后入门禁）：$(head -3 /tmp/g_ruff.log | tr '\n' ' ')"
+      --select F821,F811,F841,F401,F541,W,UP015 --output-format concise > "$GATE_TMP/ruff.log" 2>&1 \
+      || fail "静态关未过（F821/F811/F841/F401/F541/W/UP015 全清零后入门禁；私有日志已清理）"
   echo "  ✅ 静态关：F821/F811/F841/F401/F541/W/UP015 零命中"
 else
   # 生产 venv 不装 lint 工具。**显式 SKIP 并计入**，不许静默当过（那就是假绿灯），
@@ -63,9 +69,9 @@ else
   echo "  ⚪ 静态关：SKIP（本解释器无 ruff；此关由开发机推送前承担）"
   GATE_SKIPPED="${GATE_SKIPPED:-}static "
 fi
-echo "  ✅ 测试关：$(tail -1 /tmp/g_t.log)"
+echo "  ✅ 测试关：$(tail -1 "$GATE_TMP/tests.log")"
 
-"$PY" -m compileall -q ducky api_server.py mcp_server.py mem0_sync.py tests scripts benchmarks > /tmp/g_c.log 2>&1 \
+"$PY" -m compileall -q ducky api_server.py mcp_server.py mem0_sync.py tests scripts benchmarks > "$GATE_TMP/compile.log" 2>&1 \
   || fail "编译关未过"
 echo "  ✅ 编译关：0 语法错误"
 
@@ -76,37 +82,45 @@ txt=(); for f in "${files[@]}"; do
   case "$f" in *.png|*.jpg|*.jpeg|*.gif|*.ico|*.webp|*.woff|*.woff2|*.ttf|*.gz|*.zip|*.pyc);;
   *) [[ -f "$f" ]] && txt+=("$f");; esac
 done
-AIDUMEI_SCAN_WORDLIST="$HOME/.config/aidumei/scan_words.txt" \
-  "$PY" scripts/release_scan.py "${txt[@]}" > /tmp/g_s.log 2>&1 \
-  || fail "脱密关·面①未过：$(grep '总计硬敏感命中' /tmp/g_s.log)"
-echo "  ✅ 脱密关面①：$(grep '总计硬敏感命中' /tmp/g_s.log)（射程 ${#txt[@]}）"
+AIDUMEI_SCAN_WORDLIST="$SCAN_WORDLIST" AIDUMEI_SCAN_PUBLIC_WORDLIST="$SCAN_PUBLIC_WORDLIST" \
+  AIDUMEI_SCAN_REVIEWED_PUBLIC="$SCAN_REVIEWED_PUBLIC" \
+  "$PY" scripts/release_scan.py --redact-report "${txt[@]}" > "$GATE_TMP/tree-scan.log" 2>&1 \
+  || fail "脱密关·面①未过：$(grep -E '^总计(基线继承公开标识|逐行复核公开标识|扫描覆盖跳过|硬敏感命中) =' "$GATE_TMP/tree-scan.log" | tr '\n' ' ')"
+echo "  ✅ 脱密关面①：$(grep -E '^总计(基线继承公开标识|逐行复核公开标识|扫描覆盖跳过|硬敏感命中) =' "$GATE_TMP/tree-scan.log" | tr '\n' ' ')（射程 ${#txt[@]}）"
 
 # 扫描范围：只扫本分支新增的提交信息，排除 merge 带来的上游提交
 # （上游提交已审核过，且可能含「脱敏收口」等动作描述被词表误伤）。
 # v22.1：「用户替代内部称呼」是脱敏动作描述，不是泄漏——但词表机械匹配。
 # 解法：扫描时排除 merge commit 的第二条 parent（上游分支）带来的提交。
 if git rev-parse -q --verify dudu/v22-dev >/dev/null 2>&1; then
-  git log --format='%B' upstream/main..HEAD --not dudu/v22-dev > /tmp/g_m.txt 2>/dev/null || true
+  git log --format='%B' upstream/main..HEAD --not dudu/v22-dev > "$GATE_TMP/messages.txt" 2>"$GATE_TMP/git-log.log" \
+    || fail "提交信息范围不可读取"
 else
-  git log --format='%B' upstream/main..HEAD > /tmp/g_m.txt 2>/dev/null || true
+  git log --format='%B' upstream/main..HEAD > "$GATE_TMP/messages.txt" 2>"$GATE_TMP/git-log.log" \
+    || fail "提交信息范围不可读取"
 fi
-if [ -s /tmp/g_m.txt ]; then
-  AIDUMEI_SCAN_WORDLIST="$HOME/.config/aidumei/scan_words.txt" \
-    "$PY" scripts/release_scan.py /tmp/g_m.txt > /tmp/g_m.log 2>&1 \
+if [ -s "$GATE_TMP/messages.txt" ]; then
+  AIDUMEI_SCAN_WORDLIST="$SCAN_WORDLIST" AIDUMEI_SCAN_PUBLIC_WORDLIST="$SCAN_PUBLIC_WORDLIST" \
+    AIDUMEI_SCAN_REVIEWED_PUBLIC="$SCAN_REVIEWED_PUBLIC" \
+    "$PY" scripts/release_scan.py --redact-report "$GATE_TMP/messages.txt" > "$GATE_TMP/message-scan.log" 2>&1 \
     || fail "脱密关·面②（提交信息）未过"
-  echo "  ✅ 脱密关面②：$(grep '总计硬敏感命中' /tmp/g_m.log)"
+  echo "  ✅ 脱密关面②：$(grep -E '^总计(基线继承公开标识|逐行复核公开标识|扫描覆盖跳过|硬敏感命中) =' "$GATE_TMP/message-scan.log" | tr '\n' ' ')"
 fi
+AIDUMEI_SCAN_WORDLIST="$SCAN_WORDLIST" \
+  "$PY" scripts/commit_metadata_scan.py --base upstream/main --head HEAD \
+  > "$GATE_TMP/metadata-scan.log" 2>&1 \
+  || fail "脱密关·面②作者/提交者元数据未过（私有日志已清理）"
+echo "  ✅ 脱密关面②元数据：$(cat "$GATE_TMP/metadata-scan.log")"
 if [[ -n "${GATE_SKIPPED:-}" ]]; then
   echo "  ── 四道关：$(echo "${GATE_SKIPPED}" | wc -w | tr -d ' ') 关 SKIP（${GATE_SKIPPED}），其余全过 ──"
 else
   echo "  ── 四道关全过，可以推 ──"
 fi
 
-# v20.5.1（维护者审计新发现-1 · 第五道关：线上门禁必须真的在场）
-# 2026-09-09 docker-context-secrets 红 → 整个 Tests workflow 被手动禁用 →
-# 09-10 正式版在零 CI 门禁下发布，且仓内无任何记录。本地四道关全绿，
-# 抵不掉「线上门禁不存在」。推送前必须确认 Tests workflow 处于 active；
-# 查询失败按失败处理（反正下一步 git push 也需要网络到 GitHub）。
+# 2026-09-29 维护者裁决：Tests workflow 保持 disabled_manually，不恢复 active。
+# 第五道关保留远端状态核验，但按当前交付策略要求它保持禁用。
+# 全量本地测试、静态、编译、完整词表扫描及生产实机验收仍是硬闸。
+# 查询失败继续按失败处理，不把未知状态冒充已核对。
 WF_STATE=$("$PY" - <<'EOF'
 import json, urllib.request
 try:
@@ -123,7 +137,7 @@ except Exception:
     print("unreachable")
 EOF
 )
-if [[ "${WF_STATE}" != "active" ]]; then
-  fail "第五道关未过：Tests workflow 当前状态=${WF_STATE}（应为 active）。禁用它 = 拆掉全部线上门禁；先去 GitHub 恢复启用，并把禁用原因写进 CHANGELOG。"
+if [[ "${WF_STATE}" != "disabled_manually" ]]; then
+  fail "第五道关未过：Tests workflow 当前状态=${WF_STATE}（维护者要求保持 disabled_manually）；请核对远端状态与维护裁决。"
 fi
-echo "  ✅ 第五道关：Tests workflow active（线上门禁在场）"
+echo "  ✅ 第五道关：Tests workflow disabled_manually（维护者裁决；本地与实机门禁仍必过）"

@@ -586,7 +586,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "memory_types":     ("clean",  "fact 引用 + 可见租户契约双路删除（§3/§3b）"),
     "core_memory":      ("clean",  "可见租户契约删除（§8，v20.1 整改轮补齐；此前正本残留且被 inject_context 持续注入 —— 外审 w P0 / 自报 4.1）"),
     "refined_memories": ("clean",  "user 轴删除（§9，v20.1 整改轮补齐）。该表无 bank 列（v20 已登记限制 9c）：清任一 bank 会清掉该租户全部整合账本，宁可域内多删不留隐私残留，已文档化"),
-    "checkpoints":      ("exempt", "会话轴（session_id）单租户遗产子系统，无租户列，读写 API 均无租户轴；随 MAX_SESSIONS=5 自然滚动 + /api/checkpoint/cleanup 管理端清理口。多租户化另立项（外审 w P0 的第三张表 —— 豁免是显式裁决，不是沉默）"),
+    "checkpoints":      ("exempt", "按 user_id/bank_id 归属的会话快照，delete_all 显式保留并在 not_cleared 列出；随每域 MAX_SESSIONS=5 滚动，/api/checkpoint/cleanup 按域清理旧快照。保留策略沿用既有裁决，租户轴已于 v20.4 接入"),
     "memory_banks":     ("exempt", "bank 注册表：行是「域存在过」的元数据不含记忆内容；删除域数据不注销域名，避免删除后同名域立刻复用造成审计断代"),
     "entities":         ("exempt", "实体规范化词典（跨租户共享的无内容索引结构）"),
     "fact_entities":    ("clean",  "随 facts 行经外键/引用清理（facts 删除后无悬挂引用即视为达成）"),

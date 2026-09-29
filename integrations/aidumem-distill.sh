@@ -23,7 +23,7 @@
 # stdout : {}
 #
 # 配置（与另两条线共用同一套键，故意如此——三条线必须同租户同凭据）：
-#   AIDUMEM_URL / AIDUMEM_USER_ID / AIDUMEM_API_TOKEN / AIDUMEM_ENV_FILE …
+#   AIDUMEM_URL / AIDUMEM_USER_ID / AIDUMEI_BANK_ID / AIDUMEM_API_TOKEN / AIDUMEM_ENV_FILE …
 #   AIDUMEI_DISTILL_TIMEOUT   单次 HTTP 超时秒数，默认 35（要等 LLM 提炼）
 #
 # 安装：
@@ -91,16 +91,22 @@ if [ -z "$_uid" ]; then
         || _uid="default"
 fi
 export AIDUMEM_USER_ID="$_uid"
+_bid="${AIDUMEI_BANK_ID:-}"
+if [ -z "$_bid" ]; then
+    _bid=$(_lookup_env_key AIDUMEI_BANK_ID) || _bid="default"
+fi
+export AIDUMEI_BANK_ID="$_bid"
 export AIDUMEM_HOOK_QUIET="${AIDUMEM_HOOK_QUIET:-}"
 
 # ── 两步：提炼 → 落库 ────────────────────────────────────────────
 _distill_and_write() {
     _DISTILL_SESSION="$1" python3 -c '
-import json, os, sys, urllib.error, urllib.request
+import hashlib, json, os, sys, urllib.error, urllib.parse, urllib.request
 
 base = os.environ["AIDUMEM_URL"].rstrip("/")
 sid = os.environ["_DISTILL_SESSION"]
 uid = os.environ["AIDUMEM_USER_ID"]
+bid = os.environ["AIDUMEI_BANK_ID"]
 tmo = float(os.environ["AIDUMEI_DISTILL_TIMEOUT"])
 headers = {"Content-Type": "application/json"}
 tok = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
@@ -124,8 +130,8 @@ def _post(path, payload=None, query=""):
 # ① 提炼（只读，可安全重跑）
 try:
     out = _post("/session/distill",
-                query="?session_id=%s&user_id=%s" % (
-                    urllib.request.quote(sid), urllib.request.quote(uid)))
+                query="?" + urllib.parse.urlencode({
+                    "session_id": sid, "user_id": uid, "bank_id": bid}))
 except urllib.error.HTTPError as e:
     if e.code in (401, 403):
         _diag("[aidumem-distill] auth_failed status=%d token=%s（这一程没有精华）\n"
@@ -148,15 +154,45 @@ if status != "ok" or not (out or {}).get("summary"):
     sys.exit(0)
 
 # ② 落库（走 /add 完整管线：精华必须进向量库才召回得到）
+# 这个 shell 钩子每次结束都会启动新进程，进程内 UUID 无法保护重放。
+# 同域、同会话、同一批已提交来源使用稳定键；来源窗口变化则允许新一代
+# 精华。旧服务端没有来源指纹时才回退到来源条数。LLM 重跑措辞可能改变，
+# 此时服务端会对同键不同载荷返回 409，
+# 但绝不能因此无键重写出第二条。
+write_uid = out.get("user_id") or uid
+write_bid = out.get("bank_id") or bid
+generation = json.dumps([write_uid, write_bid, sid,
+                         out.get("source_fingerprint") or out.get("source_count")],
+                        ensure_ascii=False, separators=(",", ":"))
+write_key = "shell-distill-" + hashlib.sha256(generation.encode("utf-8")).hexdigest()
 try:
-    _post("/add", {"messages": out["summary"],
-                   "user_id": out.get("user_id") or uid,
-                   "bank_id": out.get("bank_id") or "default",
+    stored = _post("/add", {"messages": out["summary"],
+                   "user_id": write_uid,
+                   "bank_id": write_bid,
+                   "idempotency_key": write_key,
                    "async_mode": True,
-                   "metadata": out.get("metadata") or {}})
+                   "metadata": {**(out.get("metadata") or {}),
+                                "session_id": "distill:" + sid}})
+except urllib.error.HTTPError as exc:
+    if exc.code == 409:
+        _diag("[aidumem-distill] write_pending_or_conflict status=409 "
+              "（同一代精华已有在途或不同措辞的写入；没有重复写）\n")
+    else:
+        _diag("[aidumem-distill] 提炼成功但落库失败 status=%d\n" % exc.code)
+    sys.exit(0)
 except Exception as exc:
     _diag("[aidumem-distill] 提炼成功但落库失败 err=%s —— 这一程的精华丢了\n"
           % type(exc).__name__)
+    sys.exit(0)
+
+write_status = (stored or {}).get("status")
+if write_status == "accepted" or (stored or {}).get("durable") is False:
+    _diag("[aidumem-distill] queued job=%s（异步接收，尚未确认精华落库）\n"
+          % (stored.get("job_id") or "unknown"))
+    sys.exit(0)
+if write_status != "ok":
+    _diag("[aidumem-distill] write_unconfirmed status=%s（精华未获落库确认）\n"
+          % write_status)
     sys.exit(0)
 
 if not os.environ.get("AIDUMEM_HOOK_QUIET"):
@@ -170,17 +206,18 @@ if not os.environ.get("AIDUMEM_HOOK_QUIET"):
 # 必须在 `PAYLOAD=$(cat)` 之前：那一行会阻塞等 stdin。
 if [ "${1:-}" = "--selftest" ]; then
     python3 -c '
-import json, os, sys, urllib.error, urllib.request
+import json, os, sys, urllib.error, urllib.parse, urllib.request
 base = os.environ["AIDUMEM_URL"].rstrip("/")
 uid = os.environ["AIDUMEM_USER_ID"]
+bid = os.environ["AIDUMEI_BANK_ID"]
 headers = {"Content-Type": "application/json"}
 tok = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
 if tok:
     headers["Authorization"] = "Bearer " + tok
 # 拿一个必然不存在的 session 去打：要的是「端点在、鉴权过、返回结构对」。
 # 不造真数据 —— 自检不该往用户库里塞垃圾。
-url = base + "/session/distill?session_id=__distill_selftest__&user_id=" + \
-    urllib.request.quote(uid)
+url = base + "/session/distill?" + urllib.parse.urlencode({
+    "session_id": "__distill_selftest__", "user_id": uid, "bank_id": bid})
 try:
     req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=20) as resp:

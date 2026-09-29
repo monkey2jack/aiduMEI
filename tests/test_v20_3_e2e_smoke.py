@@ -163,6 +163,60 @@ def test_valid_config_path_is_respected_and_passes(smoke, tmp_path, monkeypatch)
     assert smoke.results[0]["data"]["config_source"] == "AIDUMEM_CONFIG_FILE"
     assert smoke.results[0]["data"]["config_path"] == str(config)
 
+
+def test_local_mode_needs_no_cloud_keys(smoke, tmp_path, monkeypatch):
+    monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+    monkeypatch.setenv("AIDUMEM_CONFIG_FILE", str(tmp_path / "absent.json"))
+    smoke.config()
+    assert smoke.results[0]["status"] == "PASS"
+    assert smoke.warnings == 0
+
+
+def test_local_server_mode_is_authoritative_for_config_check(smoke, tmp_path, monkeypatch):
+    monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")
+    monkeypatch.setenv("AIDUMEM_CONFIG_FILE", str(tmp_path / "absent.json"))
+    smoke.health_data = {"probes": {"engine_mode_policy": {"configured": "local"}}}
+    smoke.config()
+    assert smoke.results[0]["status"] == "PASS"
+    assert smoke.results[0]["data"]["mode"] == "local"
+
+
+def test_cloud_mode_uses_runtime_env_key_precedence(smoke, tmp_path, monkeypatch):
+    from ducky import mem0_runtime
+
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({
+        "llm": {"config": {"api_key": "YOUR_LLM_API_KEY"}},
+        "embedder": {"config": {"api_key": "YOUR_EMBEDDING_API_KEY"}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")
+    monkeypatch.setenv("AIDUMEM_CONFIG_FILE", str(config))
+    monkeypatch.setenv("AIDUMEI_LLM_API_KEY", "real-env-llm")
+    monkeypatch.setenv("AIDUMEI_EMBEDDER_API_KEY", "real-env-embed")
+    monkeypatch.setattr(mem0_runtime, "BASE_DIR", str(tmp_path))
+    smoke.config()
+    assert smoke.results[0]["status"] == "PASS"
+    assert smoke.warnings == 0
+
+
+def test_cloud_mode_rejects_effective_placeholder_and_absent_keys(smoke, tmp_path, monkeypatch):
+    from ducky import mem0_runtime
+
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({
+        "llm": {"config": {"api_key": "real-file-llm"}},
+        "embedder": {"config": {"api_key": ""}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")
+    monkeypatch.setenv("AIDUMEM_CONFIG_FILE", str(config))
+    monkeypatch.setenv("AIDUMEI_LLM_API_KEY", "YOUR_ENV_KEY")
+    monkeypatch.delenv("AIDUMEI_EMBEDDER_API_KEY", raising=False)
+    monkeypatch.setattr(mem0_runtime, "BASE_DIR", str(tmp_path))
+    smoke.config()
+    assert smoke.results[0]["status"] == "WARN"
+    assert smoke.results[0]["data"]["placeholder_keys"] == ["llm"]
+    assert "embedder" in smoke.results[0]["data"]["missing_keys"]
+
 def test_default_tenant_contains_random_suffix():
     text = (_ROOT / "scripts" / "e2e_smoke.py").read_text(encoding="utf-8")
     assert "secrets.token_hex" in text
@@ -180,6 +234,33 @@ def test_failed_recall_is_failure(smoke):
     statuses = [x["status"] for x in smoke.results]
     assert "FAIL" in statuses
     assert smoke.failures >= 1
+
+
+def test_trace_declares_own_tenant_for_bearer_auth(smoke, monkeypatch):
+    """The live smoke uses a bearer token, so the trace read needs a caller."""
+    smoke.headers = {"Authorization": "Bearer test-token"}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"trace": {"stages": []}}
+
+    def bearer_trace(method, url, **kwargs):
+        assert (method, url) == ("POST", "http://test.local/search_trace")
+        assert kwargs["headers"] == smoke.headers
+        body = kwargs["json"]
+        assert body["user_id"] == smoke.tenant
+        if body.get("caller_user_id") != smoke.tenant:
+            return SimpleNamespace(status_code=403, json=lambda: {"detail": "caller required"})
+        return Response()
+
+    monkeypatch.setattr(smoke.trace.__globals__["requests"], "request", bearer_trace)
+    assert bearer_trace("POST", "http://test.local/search_trace", headers=smoke.headers,
+                        json={"user_id": smoke.tenant}).status_code == 403
+    smoke.trace()
+    assert smoke.failures == 0
+    assert smoke.results[-1]["status"] == "PASS"
 
 
 def test_cleanup_partial_is_failure(smoke):
