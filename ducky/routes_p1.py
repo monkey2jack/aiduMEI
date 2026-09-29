@@ -11,6 +11,7 @@ OBSERVATIONS / REFLECTIONS / DECISIONS 六类显式分离。这里提供：
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Annotated, Literal
 
 from fastapi import FastAPI
@@ -88,6 +89,47 @@ class RefineActionRequest(BaseModel):
     bank_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
+def _types_query_memories(conn, memory_type: str, scope, owner_sql: str,
+                          owner_params, limit: int) -> list[dict]:
+    """f0.3 (C5): mem0-keyed ledger rows of one type, resolved by their own key.
+
+    A mem0 memory has no facts row; its text lives in text_fts.memories under
+    the scoped storage key (bare id in the default bank).  Never derive a
+    facts id from a UUID.
+    """
+    refs = conn.execute(
+        f"SELECT mt.memory_ref_raw, mt.confidence FROM memory_types mt "
+        f"WHERE mt.memory_type = ? AND {owner_sql} AND mt.bank_id = ? "
+        f"AND mt.memory_ref_raw IS NOT NULL AND mt.memory_ref_raw != '' "
+        f"AND mt.memory_ref_raw NOT GLOB 'fact:*' "
+        f"ORDER BY mt.updated_at DESC LIMIT ?",
+        (memory_type, *owner_params, scope.bank_id, limit),
+    ).fetchall()
+    if not refs:
+        return []
+    from ducky.bank_contract import scoped_storage_key
+    from ducky.utils import get_text_conn
+    by_key = {scoped_storage_key(r[0], scope): (str(r[0]), r[1]) for r in refs}
+    found: dict = {}
+    try:
+        f_owner_sql, f_owner_params = visible_user_clause(scope.user_id)
+        ph = ",".join("?" for _ in by_key)
+        tconn = get_text_conn()
+        for row in tconn.execute(
+                f"SELECT id, content, category FROM memories WHERE id IN ({ph}) "
+                f"AND {f_owner_sql} AND bank_id = ?",
+                (*by_key, *f_owner_params, scope.bank_id)).fetchall():
+            found[str(row[0])] = (row[1], row[2])
+    except (sqlite3.Error, ImportError, ValueError) as exc:  # index unavailable: refs stay unresolved
+        logger.warning(f"/memory/types/query 记忆正文解析跳过: {exc}")
+    out = []
+    for key, (raw, confidence) in by_key.items():
+        content, category = found.get(key, (None, None))
+        out.append({"memory_id": raw, "content": content, "category": category,
+                    "type_confidence": confidence, "resolved": key in found})
+    return out
+
+
 def register_p1_routes(app: FastAPI) -> None:
     from ducky.memory_types import (
         VALID_TYPES,
@@ -139,12 +181,22 @@ def register_p1_routes(app: FastAPI) -> None:
             # bank 轴保持精确相等（不可被环境变量改名，放宽就是跨库串味）。
             mt_owner_sql, mt_owner_params = visible_user_clause(scope.user_id, alias="mt")
             f_owner_sql, f_owner_params = visible_user_clause(scope.user_id, alias="f")
+            capped = max(1, min(int(limit), 200))
+            # f0.3 (C5 / S-5): the ledger holds two disjoint key spaces --
+            # `fact:<int>` (facts rowid, from backfill) and mem0 UUIDs (the
+            # write path).  The old join CAST(substr(ref, 6)) turned a UUID
+            # like '550e8400-…' into 400 and returned unrelated fact #400
+            # (~60% of UUIDs start with digits after position 5).  Only a
+            # strict `fact:<digits>` ref may join facts; UUID refs resolve
+            # through the text index of mem0 memories (_types_query_memories).
             rows = conn.execute(
                 f"""
                 SELECT f.id, f.category, f.fact_key, f.fact_value, f.valid_from,
                        f.valid_to, f.recorded_at, mt.confidence AS type_confidence
                 FROM memory_types mt
-                JOIN facts f ON f.id = CAST(substr(mt.memory_ref_raw, 6) AS INTEGER)
+                JOIN facts f ON mt.memory_ref_raw GLOB 'fact:[0-9]*'
+                            AND substr(mt.memory_ref_raw, 6) NOT GLOB '*[^0-9]*'
+                            AND f.id = CAST(substr(mt.memory_ref_raw, 6) AS INTEGER)
                 WHERE mt.memory_type = ? AND f.archived = 0
                   AND {mt_owner_sql} AND mt.bank_id = ?
                   AND {f_owner_sql} AND f.bank_id = ?
@@ -156,9 +208,11 @@ def register_p1_routes(app: FastAPI) -> None:
                     scope.bank_id,
                     *f_owner_params,
                     scope.bank_id,
-                    max(1, min(int(limit), 200)),
+                    capped,
                 ),
             ).fetchall()
+            memories = _types_query_memories(conn, memory_type, scope,
+                                             mt_owner_sql, mt_owner_params, capped)
             conn.close()
             return {
                 "status": "ok",
@@ -167,6 +221,8 @@ def register_p1_routes(app: FastAPI) -> None:
                 "bank_id": scope.bank_id,
                 "count": len(rows),
                 "facts": [dict(r) for r in rows],
+                "memory_count": len(memories),
+                "memories": memories,
             }
         except Exception as e:
             logger.error(f"/memory/types/query 失败: {e}")
