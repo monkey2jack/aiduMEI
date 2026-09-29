@@ -170,11 +170,13 @@ def test_slugify_chinese_stable():
 
 
 # ── 8. 路由注册 + 冒烟 ─────────────────────────────────────
-def test_routes_registered_and_smoke():
+def test_routes_registered_and_smoke(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.routes_persona import register_persona_routes
 
+    # f0.3：/persona/* 是系统级端点（不在租户轴上），默认关闭；本冒烟显式开启。
+    monkeypatch.setenv("AIDUMEM_PERSONA_ENABLED", "true")
     app = FastAPI()
     register_persona_routes(app)
     client = TestClient(app)

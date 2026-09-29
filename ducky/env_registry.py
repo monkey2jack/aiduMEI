@@ -167,6 +167,11 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEM_VECTOR_BACKEND",
     # f0.3 身份闸：白名单模式下额外放行的项目身份（`Name <email>`，`;` 分隔）
     "AIDUMEI_IDENTITY_ALLOWLIST",
+    # f0.3 系统级端点族（不在租户轴上）：默认全关，显式 true 才放行（ducky/system_endpoints.py）
+    "AIDUMEI_CRYSTALS_ENABLED",
+    "AIDUMEI_CODE_GRAPH_ENABLED",
+    "AIDUMEI_EVOLVE_ADMIN_ENABLED",
+    "AIDUMEI_SKILL_DRAFTS_ENABLED",
 ))
 
 

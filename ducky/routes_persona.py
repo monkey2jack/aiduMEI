@@ -11,7 +11,10 @@ ducky.routes_persona — v19.0 人格记忆基座路由（Persona Memory Layer�
     POST   /persona/rollback     回滚到指定版本（数据不删，只切状态）
     GET    /persona/context      直接拿注入用上下文文本
 
-配置：AIDUMEM_PERSONA_ENABLED=false 可整体关闭（register_persona_routes 变 no-op）。
+配置（f0.3 起**默认关闭**）：基座是全实例共享的派生数据，bank_id 是可枚举的
+自增整数，不在 (user_id, bank_id) 租户轴上。部署方显式设
+AIDUMEM_PERSONA_ENABLED=true 才放行；未开启时端点仍在路由表里，回
+404 feature_disabled。OpenAPI 里标 `system-only (not tenant-isolated)`。
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ducky.api_models import (
     ID_FIELD_MAX_CHARS, SHORT_TEXT_MAX_CHARS, TEXT_FIELD_MAX_CHARS,
 )
+from ducky.system_endpoints import feature_enabled, system_route
 
 logger = logging.getLogger("aiduMEM.routes_persona")
 
@@ -56,13 +60,14 @@ class PersonaRollbackRequest(BaseModel):
 
 
 def register_persona_routes(app: FastAPI) -> None:
-    from ducky.persona_memory import PERSONA_ENABLED
+    # f0.3：路由**始终注册**（路由表 / OpenAPI / MCP 契约保持稳定），是否放行
+    # 由 system_route("persona") 的依赖在**每次请求**时读 AIDUMEM_PERSONA_ENABLED
+    # 判定 —— 默认关闭（基座是全实例共享的、bank_id 是可枚举自增整数，不在租户轴上）。
+    if not feature_enabled("AIDUMEM_PERSONA_ENABLED"):
+        logger.info("👤 人格记忆基座端点默认关闭（系统级、未按域隔离）；"
+                    "设 AIDUMEM_PERSONA_ENABLED=true 开启")
 
-    if not PERSONA_ENABLED:
-        logger.info("👤 人格记忆基座路由已禁用（AIDUMEM_PERSONA_ENABLED=false）")
-        return
-
-    @app.post("/persona/build")
+    @app.post("/persona/build", **system_route("persona"))
     def persona_build(req: PersonaBuildRequest):
         """构建人格记忆基座。
 
@@ -84,7 +89,7 @@ def register_persona_routes(app: FastAPI) -> None:
             logger.error(f"/persona/build 失败: {e}")
             return {"status": "error", "detail": str(e)}
 
-    @app.get("/persona/banks")
+    @app.get("/persona/banks", **system_route("persona"))
     def persona_banks(persona_key: str = "", status: str = ""):
         """列出基座（含版本、L/G/E 计数、构建耗时）。"""
         from ducky.persona_memory import list_banks
@@ -95,7 +100,7 @@ def register_persona_routes(app: FastAPI) -> None:
             logger.error(f"/persona/banks 失败: {e}")
             return {"status": "error", "detail": str(e), "banks": []}
 
-    @app.get("/persona/detail")
+    @app.get("/persona/detail", **system_route("persona"))
     def persona_detail(bank_id: int):
         """查看某基座全部 L/G/E 记忆。"""
         from ducky.persona_memory import get_bank_detail
@@ -106,7 +111,7 @@ def register_persona_routes(app: FastAPI) -> None:
             logger.error(f"/persona/detail 失败: {e}")
             return {"status": "error", "detail": str(e)}
 
-    @app.post("/persona/retrieve")
+    @app.post("/persona/retrieve", **system_route("persona"))
     def persona_retrieve(req: PersonaRetrieveRequest):
         """按当前情境检索相关人格记忆（替代整卡注入）。"""
         from ducky.persona_memory import retrieve_persona
@@ -123,7 +128,7 @@ def register_persona_routes(app: FastAPI) -> None:
             logger.error(f"/persona/retrieve 失败: {e}")
             return {"status": "error", "detail": str(e), "results": []}
 
-    @app.post("/persona/rollback")
+    @app.post("/persona/rollback", **system_route("persona"))
     def persona_rollback(req: PersonaRollbackRequest):
         """回滚到指定版本（数据不删，只切 ready/superseded 状态）。"""
         from ducky.persona_memory import rollback_persona
@@ -134,7 +139,7 @@ def register_persona_routes(app: FastAPI) -> None:
             logger.error(f"/persona/rollback 失败: {e}")
             return {"status": "error", "detail": str(e)}
 
-    @app.get("/persona/context")
+    @app.get("/persona/context", **system_route("persona"))
     def persona_context(persona_key: str, situation: str = "", k: int = 5):
         """直接拿注入用上下文文本（供 Hermes 等下游在对话前调用）。"""
         from ducky.persona_memory import get_persona_context

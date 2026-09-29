@@ -72,12 +72,14 @@ def test_context_used_not_always_true():
 
 
 # ── 🔴8 /crystals/approve 端点 ────────────────────────────
-def test_crystals_approve_endpoint():
+def test_crystals_approve_endpoint(monkeypatch):
     import ducky.skill_crystallizer as sc
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.routes_octopus import register_octopus_routes
 
+    # f0.3：/crystals 全族是系统级端点，默认关闭；本用例显式开启。
+    monkeypatch.setenv("AIDUMEI_CRYSTALS_ENABLED", "true")
     sc.init_crystallizer_schema()
     conn = sqlite3.connect(_TEST_DB)
     conn.execute(

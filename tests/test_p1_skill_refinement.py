@@ -113,13 +113,15 @@ def test_prune_skips_drafts():
 
 
 # ── 5. 路由 ──────────────────────────────────────────────
-def test_refinement_routes():
+def test_refinement_routes(monkeypatch):
     _fresh()
     _seed_crystal("route-skill")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from ducky.routes_octopus import register_octopus_routes
 
+    # f0.3：/crystals 全族是系统级端点，默认关闭；本用例显式开启。
+    monkeypatch.setenv("AIDUMEI_CRYSTALS_ENABLED", "true")
     app = FastAPI()
     register_octopus_routes(app)
     client = TestClient(app)
