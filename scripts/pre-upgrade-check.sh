@@ -22,9 +22,16 @@ REPO_ROOT="${AIDUMEM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 API_BASE="${AIDUMEM_API_BASE:-http://127.0.0.1:8767}"
 # 🔴P0-1（v19.4.1）：门禁开启后不带凭据的 curl 一律 401。
 # 这里统一构造 auth 头，未设 token 时为空数组（行为与旧版一致）。
+# f0.3：Bearer 头写进 0600 临时文件，curl 用 -H @file 读取（curl >= 7.55），
+# token 不再出现在进程命令行里（ps 对本机其他用户可见）。
 AUTH_ARGS=()
+_AUTH_HDR_FILE=""
 if [[ -n "${AIDUMEM_API_TOKEN:-}" ]]; then
-  AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
+  _AUTH_HDR_FILE="$(mktemp "${TMPDIR:-/tmp}/aidumem_hdr.XXXXXX")"
+  chmod 600 "$_AUTH_HDR_FILE"
+  printf 'Authorization: Bearer %s\n' "${AIDUMEM_API_TOKEN}" > "$_AUTH_HDR_FILE"
+  trap 'rm -f "${_AUTH_HDR_FILE}"' EXIT
+  AUTH_ARGS=(-H "@${_AUTH_HDR_FILE}")
 fi
 
 BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-${REPO_ROOT}/backups}"

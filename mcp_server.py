@@ -87,14 +87,24 @@ def _api_headers(extra: dict | None = None) -> dict:
         headers.update(extra)
     return headers
 
-def _sse_authorization_allowed() -> bool:
+def _insecure_public_confirmed(host: str | None) -> bool:
+    """f0.3: the credential-less escape hatch needs the same explicit
+    confirmation as the REST gate — AIDUMEM_ALLOW_INSECURE_PUBLIC=1 *and*
+    AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH equal (verbatim) to the bind host."""
+    if os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() not in {"1", "true", "yes"}:
+        return False
+    confirm = os.environ.get("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", "").strip()
+    return bool(host) and confirm == str(host).strip()
+
+
+def _sse_authorization_allowed(host: str | None = None) -> bool:
     """SSE must not expose authenticated API tools without a transport credential."""
     if api_auth_headers().get("Authorization"):
         return True
-    return os.environ.get("AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
+    return _insecure_public_confirmed(host)
 
 
-def _build_sse_app_with_auth(mcp_obj, *, loopback: bool):
+def _build_sse_app_with_auth(mcp_obj, *, loopback: bool, host: str | None = None):
     """v20.4.0（三方审计 P1-7 · Codex P1-03）：SSE 传输层逐请求认证。
 
     此前非回环启动只查「服务器配置了 token」，`sse_app` 与 uvicorn 之间
@@ -107,7 +117,8 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool):
     `Authorization: Bearer <AIDUMEM_API_TOKEN>`（与 API 门禁同一把钥匙，
     constant-time 比较）；缺失/错误 → 401，不进 MCP 会话。回环绑定保持
     免认证（与 api_server 的回环信任模型同一口径）。显式
-    AIDUMEM_ALLOW_INSECURE_PUBLIC=1 时按部署方声明放行（启动日志已 WARN）。
+    AIDUMEM_ALLOW_INSECURE_PUBLIC=1 且 AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH 逐字
+    等于监听地址时，按部署方声明放行（f0.3：与 REST 公网门禁同一确认口径）。
     """
     import hmac
 
@@ -119,8 +130,7 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool):
         auth = api_auth_headers().get("Authorization", "")
         return auth.removeprefix("Bearer ").strip()
 
-    insecure_ok = os.environ.get(
-        "AIDUMEM_ALLOW_INSECURE_PUBLIC", "0").lower() in {"1", "true", "yes"}
+    insecure_ok = _insecure_public_confirmed(host)
 
     async def _auth_wrapped(scope, receive, send):
         if scope.get("type") != "http" or insecure_ok:
@@ -994,14 +1004,15 @@ if __name__ == "__main__":
     if args.sse:
         logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")
         loopback = args.host in {"127.0.0.1", "localhost", "::1"}
-        if not loopback and not _sse_authorization_allowed():
+        if not loopback and not _sse_authorization_allowed(args.host):
             raise RuntimeError(
                 "MCP SSE refuses to bind a non-loopback host without AIDUMEM_API_TOKEN "
-                "(or explicit AIDUMEM_ALLOW_INSECURE_PUBLIC=1)."
+                "(or explicit AIDUMEM_ALLOW_INSECURE_PUBLIC=1 plus "
+                f"AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH='{args.host}')."
             )
         import uvicorn
         # v20.4.0（P1-7）：非回环绑定时逐请求认证包住 sse_app
-        app = _build_sse_app_with_auth(mcp, loopback=loopback)
+        app = _build_sse_app_with_auth(mcp, loopback=loopback, host=args.host)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     else:
         logger.info("📟 stdio 模式启动")
