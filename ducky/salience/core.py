@@ -169,7 +169,12 @@ def on_memory_accessed(memory_id: str):
 
 
 def decay_all() -> dict:
-    """衰减所有记忆的显著性（v8.3.0: Lane 感知乘系数），返回被踢出的 ID 列表"""
+    """衰减所有记忆的显著性（v8.3.0: Lane 感知乘系数），返回淘汰候选 ID 列表
+
+    f0.3：另附 ``evicted_details``（每个候选的衰减后显著性 / 闲置天数 / 泳道），
+    consolidator 的 dry-run 靠它写出「为什么是它」。只是候选 —— 删不删、
+    删没删成由 consolidator 按 /delete 的真实状态决定与记账。
+    """
     now = time.time()
     conn = get_salience_conn()
     rows = conn.execute(
@@ -177,6 +182,7 @@ def decay_all() -> dict:
     ).fetchall()
 
     evicted = []
+    evicted_details = []
     updated = 0
     for mid, old_s, last_ts, lane in rows:
         days_elapsed = (now - last_ts) / 86400
@@ -188,6 +194,12 @@ def decay_all() -> dict:
 
         if new_s < SALIENCE_FLOOR and days_idle > IDLE_EVICT_DAYS:
             evicted.append(mid)
+            evicted_details.append({
+                "memory_id": mid,
+                "salience": round(new_s, 4),
+                "idle_days": round(days_idle, 1),
+                "lane": lane or DEFAULT_LANE,
+            })
         else:
             conn.execute(
                 "UPDATE salience SET salience = ? WHERE memory_id = ?",
@@ -199,8 +211,8 @@ def decay_all() -> dict:
     conn.close()
 
     if evicted or updated:
-        logger.info(f"salience 衰减完成: {updated} 条更新, {len(evicted)} 条踢出")
-    return {"updated": updated, "evicted": evicted}
+        logger.info(f"salience 衰减完成: {updated} 条更新, {len(evicted)} 条进入淘汰候选")
+    return {"updated": updated, "evicted": evicted, "evicted_details": evicted_details}
 
 
 def get_salience(memory_id: str) -> float:
