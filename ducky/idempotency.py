@@ -182,8 +182,22 @@ def _row_verdict(row: Any, now: float) -> str:
     return "replay" if now - created < ttl_seconds() else "expired"
 
 
+def _rollback_quietly(conn: sqlite3.Connection) -> None:
+    """Close a failed write's transaction on this layer's own short connection
+    (never the request thread's shared connection), then let the error go on."""
+    try:
+        conn.rollback()
+    except sqlite3.Error as exc:
+        logger.debug("idempotency rollback skipped: %s", exc)
+
+
 def purge_expired(now: float | None = None, conn: sqlite3.Connection | None = None) -> int:
-    """Delete receipts older than the TTL.  Returns the number of rows removed."""
+    """Delete receipts older than the TTL.  Returns the number of rows removed.
+
+    ``conn`` is only ever this layer's own short connection (claim passes the
+    one it just opened, before any claim write), so a rollback here cannot
+    discard anybody else's pending work.
+    """
     now = time.time() if now is None else now
     own = conn is None
     if own:
@@ -193,6 +207,9 @@ def purge_expired(now: float | None = None, conn: sqlite3.Connection | None = No
                            (now - ttl_seconds(),))
         conn.commit()
         return int(cur.rowcount or 0)
+    except _DB_ERRORS:
+        _rollback_quietly(conn)
+        raise
     finally:
         if own:
             conn.close()
@@ -223,6 +240,9 @@ def delete_scope(user_id: str, bank_id: str) -> int:
         cur = conn.execute("DELETE FROM idempotency_keys WHERE 1=1" + frag, params)
         conn.commit()
         return int(cur.rowcount or 0)
+    except _DB_ERRORS:
+        _rollback_quietly(conn)
+        raise
     finally:
         conn.close()
 
