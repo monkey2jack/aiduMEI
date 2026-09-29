@@ -52,6 +52,16 @@ def _index_direct_results(add_result, *, user_id: str, bank_id: str,
             logger.debug("六型分类跳过: %s", exc)
 
 
+def _flush_http_response(report: dict):
+    """f0.3 (C4): HTTP status follows the flush outcome (same idiom as /delete)."""
+    from fastapi.responses import JSONResponse
+    status = report.get("status")
+    if status == "ok":
+        return report
+    code = {"partial": 207, "unavailable": 503}.get(status, 500)
+    return JSONResponse(status_code=code, content=report)
+
+
 def register_add_routes(app: FastAPI) -> None:
     @app.post("/add")
     def add(req: AddRequest, background_tasks: BackgroundTasks = None, request: Request = None):
@@ -146,7 +156,7 @@ def register_add_routes(app: FastAPI) -> None:
                     "idempotency_key is already bound to a different payload",
                 )
 
-            def _finalize_and(resp: dict) -> dict:
+            def _finalize_and(resp: dict, provisional: bool = False) -> dict:
                 """v20.3.1（九份审计 P0-5）：早返回路径的幂等收口。
 
                 上一版 finalize 只挂在同步完整路径的末尾，local/lite/async
@@ -154,14 +164,20 @@ def register_add_routes(app: FastAPI) -> None:
                 TTL 内重试被判 pending 而不是 replay，幂等保护恰在 local
                 档（用户最可能首跑的档）失效。每条早返回构造完响应都
                 过这里：落账 + 回填 request_id，一个实现不抄五遍。
+
+                f0.3 (C2): async hand-offs pass provisional=True -- the key is
+                handed to the job (bound in job_create), which settles it as
+                durable on success or releases it on failure.
                 """
                 if req.idempotency_key and idempotency_state["action"] != "disabled":
                     from ducky import idempotency
                     resp = {**resp, "request_id": req.idempotency_key}
                     idempotency.finalize(
-                        req.idempotency_key, req.user_id, req.bank_id, resp
+                        req.idempotency_key, req.user_id, req.bank_id, resp,
+                        claimed_at=idempotency.claim_token(idempotency_state),
+                        provisional=provisional,
                     )
-                    _idem_claimed.clear()  # P0-1：已落账，失败释放不再适用
+                    _idem_claimed.clear()  # P0-1：已落账/已移交作业，失败释放不再适用
                 return resp
 
 
@@ -354,6 +370,13 @@ def register_add_routes(app: FastAPI) -> None:
             except Exception as _ve:
                 feature_failed("store_verbatim", _ve)
                 logger.debug(f"📼 [VerbatimVault] 原文落库跳过: {_ve}")
+
+            # f0.3 (C1 / S-1): a session summary records which sources it was
+            # derived from, in every engine mode (local/lite never create a
+            # vector payload), so deleting a source can cascade to it.
+            # No-op for ordinary writes; never raises.
+            from ducky.session_distill import record_summary_sources
+            record_summary_sources(req.user_id, req.bank_id, md, _full_text)
 
             # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
             try:
@@ -598,7 +621,10 @@ def register_add_routes(app: FastAPI) -> None:
             # 注册 coalesce 冲刷回调 + 后台 worker（只一次）
             def _coalesce_cb(uid, msgs, meta, job_ids, *, bank_id="default", infer=True):
                 # v20.2.4（F-04）：scope 从 batch 参数来，**不读闭包里的 req**
-                _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id, infer=infer)
+                # f0.3 (C4): return the outcome -- the manual flush endpoint
+                # reports per-batch action/fallback instead of a bare "ok".
+                return _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id,
+                                      infer=infer)
 
             register_coalesce_flusher(_coalesce_cb)
             ensure_coalesce_worker()
@@ -606,9 +632,14 @@ def register_add_routes(app: FastAPI) -> None:
             # ── 异步路径 ──
             if async_flag and background_tasks is not None:
                 # v20.4.0（P1-5 · Kimi P2-2）：job 记录带全两轴，查询端校验归属
+                # f0.3 (C2): the job inherits this request's idempotency claim
+                # *before* it can run (a coalesce worker may flush at once).
                 job_id = job_create({"text_preview": text_preview,
                                      "user_id": req.user_id,
-                                     "bank_id": req.bank_id})
+                                     "bank_id": req.bank_id,
+                                     "idempotency": idempotency.job_binding(
+                                         idempotency_state, req.idempotency_key,
+                                         req.user_id, req.bank_id)})
 
                 # 短句连发 → 合并队列（省 LLM）
                 should, why = coalesce_should_buffer(
@@ -677,7 +708,7 @@ def register_add_routes(app: FastAPI) -> None:
                                 "idle_sec": enq.get("idle_sec"),
                                 "window_sec": enq.get("window_sec"),
                             },
-                        })
+                        }, provisional=True)
                     # 当前句触发了满额即时冲刷
                     return _finalize_and({
                         "status": "accepted",
@@ -693,7 +724,7 @@ def register_add_routes(app: FastAPI) -> None:
                             "key": enq.get("key"),
                             "profile": enq.get("profile"),
                         },
-                    })
+                    }, provisional=True)
 
                 # 不进合并：单条异步
                 def _bg_job(jid=job_id, msgs=messages_json, meta=md,
@@ -710,7 +741,7 @@ def register_add_routes(app: FastAPI) -> None:
                     "message": "已收下，后台正在总结落库",
                     "preview": text_preview,
                     "coalesce_skip": why,
-                })
+                }, provisional=True)
 
             out = _run_pipeline(req.user_id, messages_json, md)
             # v20：回显 infer —— 调用方（尤其跑分适配器）据此断言服务端
@@ -722,7 +753,8 @@ def register_add_routes(app: FastAPI) -> None:
                 if idempotency_state["action"] != "disabled":
                     from ducky import idempotency
                     idempotency.finalize(
-                        req.idempotency_key, req.user_id, req.bank_id, out
+                        req.idempotency_key, req.user_id, req.bank_id, out,
+                        claimed_at=idempotency.claim_token(idempotency_state),
                     )
                     _idem_claimed.clear()  # P0-1：已落账
             return out
@@ -794,43 +826,23 @@ def register_add_routes(app: FastAPI) -> None:
                            # v20.2.4（外审 F-04）：手动冲刷也必须接受作用域 ——
                            # 否则一个域的 preview 会被交给另一个域处理。
                            bank_id: str = ""):
-        """手动冲刷合并队列（调试）"""
+        """手动冲刷合并队列（调试）
+
+        f0.3 (C4): batches run through the *same* executor as the normal /add
+        worker (the registered flusher -> _execute_batch -> _run_pipeline), so
+        a batch keeps its own infer flag and an LLM failure falls back to the
+        deterministic direct write.  The response is honest per batch:
+        200 ok / 207 partial / 500 failed; 503 (queue untouched) when no
+        executor is registered in this process.
+        """
         try:
-            from ducky.add_speed import coalesce_flush_due, ensure_coalesce_worker
-            from ducky.add_speed import job_update, patch_llm_for_speed
-
-            mem = get_memory()
-            patch_llm_for_speed(mem)
-
-            def _run_pipeline(uid, msgs, meta, *, bank_id="default"):
-                # F-04：bank 从 batch 自带的 scope 来，不猜、不读全局
-                return lazy_import_layer1()(mem, msgs, uid, meta or {}, bank_id=bank_id)
-
-            flushed = []
-            batches = coalesce_flush_due(user_id=(user_id or None), force=force,
-                                         bank_id=(bank_id or None))
-            for b in batches:
-                jids = b.get("job_ids") or []
-                for jid in jids:
-                    job_update(jid, status="running")
-                try:
-                    result = _run_pipeline(b["user_id"], b["messages"], b.get("metadata") or {},
-                                           bank_id=b.get("bank_id") or "default")
-                    for jid in jids:
-                        job_update(jid, status="done", result=result)
-                    flushed.append({
-                        "key": b.get("key"),
-                        "count": b.get("count"),
-                        "reason": b.get("reason"),
-                        "job_ids": jids,
-                        "action": (result or {}).get("action") if isinstance(result, dict) else None,
-                    })
-                except Exception as e:
-                    for jid in jids:
-                        job_update(jid, status="error", error=str(e)[:300])
-                    flushed.append({"key": b.get("key"), "error": str(e)[:200]})
-            ensure_coalesce_worker()
-            return {"status": "ok", "flushed": flushed, "n": len(flushed)}
+            from ducky.speed.coalesce import flush_now
+            # Backend readiness first: an unconfigured deployment gets the
+            # standard actionable 503 (what to configure, /health, /add/raw).
+            get_memory()
+            report = flush_now(user_id=(user_id or None), force=force,
+                               bank_id=(bank_id or None))
+            return _flush_http_response(report)
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
