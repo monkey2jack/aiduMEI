@@ -7,6 +7,11 @@ ducky.routes_octopus — v16.0 Opus Octopod (opus八爪鱼) 专属端点
 3. POST /tree/node        — 添加树状节点
 4. GET  /crystals          — 查询沉淀的技能结晶候选项
 5. POST /crystals/detect   — 立即触发一次技能结晶感知
+
+f0.3：/crystals 全族（含 use / prune / approve）是**系统级**端点——结晶从全实例
+事实里挖出、按全局自增 id 审批，不在 (user_id, bank_id) 租户轴上。默认关闭，
+设 AIDUMEI_CRYSTALS_ENABLED=true 才放行（见 ducky.system_endpoints）。
+冲突消解与树状记忆按域隔离，不受影响。
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from ducky.skill_crystallizer import (
     approve_crystal,
 )
 from ducky.api_errors import api_error_detail
+from ducky.system_endpoints import system_route
 
 logger = logging.getLogger("aiduMEM.OctopusRoutes")
 
@@ -111,7 +117,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             logger.error("🐙 /tree/node 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
 
-    @app.get("/crystals")
+    @app.get("/crystals", **system_route("crystals"))
     def crystals_list_endpoint(status: str = "candidate"):
         """获取技能结晶候选项列表"""
         try:
@@ -121,7 +127,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             logger.error("🐙 /crystals 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
 
-    @app.post("/crystals/detect")
+    @app.post("/crystals/detect", **system_route("crystals"))
     def crystals_detect_endpoint():
         """手动触发模式感知与技能结晶"""
         try:
@@ -132,7 +138,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             raise HTTPException(500, api_error_detail(e))
 
     # ── v19.0 P1-2 技能精炼：复用追踪 + 低效用淘汰 ─────────
-    @app.post("/crystals/use")
+    @app.post("/crystals/use", **system_route("crystals"))
     def crystals_use_endpoint(skill_name: str, success: bool = True):
         """记录一次技能复用成功/失败（P1-2 技能精炼）"""
         try:
@@ -141,7 +147,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             logger.error("🐙 /crystals/use 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
 
-    @app.post("/crystals/prune")
+    @app.post("/crystals/prune", **system_route("crystals"))
     def crystals_prune_endpoint():
         """低效用技能自动标记为 archived（待淘汰，可人工复核）"""
         try:
@@ -152,7 +158,7 @@ def register_octopus_routes(app: FastAPI) -> None:
             raise HTTPException(500, api_error_detail(e))
 
     # 🔴8：人工审批端点——此前 approve_crystal 零调用方，draft 永远转不了正。
-    @app.post("/crystals/approve")
+    @app.post("/crystals/approve", **system_route("crystals"))
     def crystals_approve_endpoint(crystal_id: int):
         """人工审核通过某个技能结晶候选项（candidate/draft -> approved）。
 

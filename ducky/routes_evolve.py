@@ -6,6 +6,10 @@ ducky.routes_evolve — EvolveMem v18.1 路由
   GET  /evolve/report     — 获取进化状态报告
   POST /evolve/cycle      — 手动触发一次进化循环（调试用）
   POST /evolve/episode/feedback — 任务级（轨迹）反馈，按位置回传信用（v21.2 M1）
+
+f0.3：report / cycle 是全库统计与全库维护作业（不按域隔离），默认关闭，设
+AIDUMEI_EVOLVE_ADMIN_ENABLED=true 才放行（见 ducky.system_endpoints）。
+两个 feedback 端点是控制台与 MCP 的默认接入路径，保持默认开启。
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ from ducky.evolve_mem import (
     record_episode_feedback,
     run_evolution_cycle,
 )
+from ducky.system_endpoints import system_route
 
 logger = logging.getLogger("aiduMEM.routes.evolve")
 
@@ -115,7 +120,7 @@ def register_evolve_routes(app: FastAPI) -> None:
             logger.error(f"evolve_episode_feedback 失败: {e}", exc_info=True)
             return {"status": "error", "detail": str(e)}
 
-    @app.get("/evolve/report", summary="EvolveMem 进化状态报告")
+    @app.get("/evolve/report", **system_route("evolve_admin", summary="EvolveMem 进化状态报告"))
     def evolve_report() -> dict:
         """
         返回过去 7 天的搜索质量统计、反馈分布、salience 调整动作、上次进化时间等。
@@ -127,7 +132,7 @@ def register_evolve_routes(app: FastAPI) -> None:
             logger.error(f"evolve_report 失败: {e}", exc_info=True)
             return {"status": "error", "detail": str(e)}
 
-    @app.post("/evolve/cycle", summary="手动触发进化循环（调试）")
+    @app.post("/evolve/cycle", **system_route("evolve_admin", summary="手动触发进化循环（调试）"))
     def evolve_cycle() -> dict:
         """
         手动执行一次 EvolveMem 进化循环（正常由后台每 6h 自动执行）。

@@ -31,6 +31,9 @@ from ducky.utils import get_facts_conn
 logger = logging.getLogger("aiduMEM.skill_growth")
 
 # 默认关闭自动 LLM 生成（保守：只在部署方明确开启后才消耗 LLM）
+# f0.3：这个开关只管「生成草稿时调不调 LLM」。HTTP 面的 /skill/grow、/skill/drafts
+# 属系统级端点（草稿落在全实例共享的 skill_crystals 表，不在租户轴上），另由
+# AIDUMEI_SKILL_DRAFTS_ENABLED 默认关闭（见 ducky.system_endpoints）。
 SKILL_GROWTH_ENABLED = os.environ.get("AIDUMEM_SKILL_GROWTH_ENABLED", "false").strip().lower() not in {
     "0", "false", "no", "off",
 }
