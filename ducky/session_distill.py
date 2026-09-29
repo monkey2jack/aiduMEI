@@ -349,6 +349,23 @@ def ensure_distill_sources_schema(conn) -> None:
     conn.execute(_DISTILL_SOURCES_INDEX)
 
 
+def _rollback_own_write(conn, was_clean: bool) -> None:
+    """Undo a failed ledger write on the shared thread connection.
+
+    A failed statement leaves the connection inside a transaction (holding the
+    write lock if anything was written), and the next unrelated commit on this
+    thread would persist the half-done write.  Roll back only a transaction
+    this function opened: the caller's pending writes on the same connection
+    are not ours to discard.
+    """
+    if not was_clean or not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except sqlite3.Error as exc:
+        logger.debug("distill_sources rollback skipped: %s", exc)
+
+
 def record_summary_sources(user_id: str, bank_id: str, metadata: dict | None,
                            summary_text: str) -> int:
     """/add hook: remember which sources a session summary was built from.
@@ -365,6 +382,7 @@ def record_summary_sources(user_id: str, bank_id: str, metadata: dict | None,
     text = (summary_text or "").strip()
     if not refs or not text:
         return 0
+    conn, was_clean = None, False
     try:
         from ducky.bank_contract import make_scope
         from datetime import datetime, timezone
@@ -373,6 +391,7 @@ def record_summary_sources(user_id: str, bank_id: str, metadata: dict | None,
         now = datetime.now(timezone.utc).isoformat()
         sid = str(md.get("_origin_session_id") or "")[:_REF_MAX_CHARS]
         conn = get_facts_conn()
+        was_clean = not conn.in_transaction
         ensure_distill_sources_schema(conn)
         conn.executemany(
             "INSERT OR IGNORE INTO distill_sources "
@@ -382,6 +401,8 @@ def record_summary_sources(user_id: str, bank_id: str, metadata: dict | None,
         conn.commit()
         return len(refs)
     except (sqlite3.Error, ValueError, TypeError) as exc:
+        if conn is not None:
+            _rollback_own_write(conn, was_clean)
         logger.warning("session summary source ledger write failed "
                        "(vector payload still carries the refs): %s", exc)
         return 0
@@ -390,6 +411,7 @@ def record_summary_sources(user_id: str, bank_id: str, metadata: dict | None,
 def delete_scope_sources(user_id: str, bank_id: str) -> int:
     """delete_all leg for the ledger (exact (user_id, bank_id))."""
     conn = get_facts_conn()
+    was_clean = not conn.in_transaction
     try:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                             "AND name='distill_sources'").fetchone():
@@ -398,6 +420,9 @@ def delete_scope_sources(user_id: str, bank_id: str) -> int:
         cur = conn.execute("DELETE FROM distill_sources WHERE 1=1" + frag, params)
         conn.commit()
         return int(cur.rowcount or 0)
+    except sqlite3.Error:
+        _rollback_own_write(conn, was_clean)
+        raise
     finally:
         conn.close()
 
@@ -408,6 +433,7 @@ def forget_summary_sources(user_id: str, bank_id: str, summary_hashes) -> int:
     if not hashes:
         return 0
     conn = get_facts_conn()
+    was_clean = not conn.in_transaction
     try:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                             "AND name='distill_sources'").fetchone():
@@ -418,6 +444,9 @@ def forget_summary_sources(user_id: str, bank_id: str, summary_hashes) -> int:
             [(h, *params) for h in hashes])
         conn.commit()
         return int(cur.rowcount or 0)
+    except sqlite3.Error:
+        _rollback_own_write(conn, was_clean)
+        raise
     finally:
         conn.close()
 
