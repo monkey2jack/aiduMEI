@@ -335,6 +335,15 @@ def summary_text_hash(text: str) -> str:
     return hashlib.sha256((text or "").strip().encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _canonical(user_id: str, bank_id: str) -> tuple:
+    """(scope, fragment, params) through the one scope entry (scope_sql)."""
+    from ducky.bank_contract import make_scope
+    from ducky.scope_sql import scope_clause
+    scope = make_scope(user_id, bank_id)
+    frag, params = scope_clause(scope, flavor="canonical")
+    return scope, frag, list(params)
+
+
 def ensure_distill_sources_schema(conn) -> None:
     conn.execute(_DISTILL_SOURCES_DDL)
     conn.execute(_DISTILL_SOURCES_INDEX)
@@ -385,8 +394,8 @@ def delete_scope_sources(user_id: str, bank_id: str) -> int:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                             "AND name='distill_sources'").fetchone():
             return 0
-        cur = conn.execute("DELETE FROM distill_sources WHERE user_id=? AND bank_id=?",
-                           (user_id, bank_id))
+        _, frag, params = _canonical(user_id, bank_id)
+        cur = conn.execute("DELETE FROM distill_sources WHERE 1=1" + frag, params)
         conn.commit()
         return int(cur.rowcount or 0)
     finally:
@@ -403,9 +412,10 @@ def forget_summary_sources(user_id: str, bank_id: str, summary_hashes) -> int:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                             "AND name='distill_sources'").fetchone():
             return 0
+        _, frag, params = _canonical(user_id, bank_id)
         cur = conn.executemany(
-            "DELETE FROM distill_sources WHERE user_id=? AND bank_id=? AND summary_hash=?",
-            [(user_id, bank_id, h) for h in hashes])
+            "DELETE FROM distill_sources WHERE summary_hash=?" + frag,
+            [(h, *params) for h in hashes])
         conn.commit()
         return int(cur.rowcount or 0)
     finally:
@@ -420,8 +430,7 @@ def source_keys_before_delete(memory_id: str, user_id: str, bank_id: str,
     share the item's content (deleted by content hash) cannot be resolved.
     Returns {"refs": set, "sessions": set, "content": str}.
     """
-    from ducky.bank_contract import make_scope
-    scope = make_scope(user_id, bank_id)
+    _, frag, sparams = _canonical(user_id, bank_id)
     mid = str(memory_id or "").strip()
     refs = {mid} if mid else set()
     sessions: set = set()
@@ -432,24 +441,21 @@ def source_keys_before_delete(memory_id: str, user_id: str, bank_id: str,
         if vid.isdigit():
             refs.add(f"verbatim:{int(vid)}")
             row = conn.execute(
-                "SELECT content, session_id FROM verbatim_turns "
-                "WHERE id=? AND user_id=? AND bank_id=?",
-                (int(vid), scope.user_id, scope.bank_id)).fetchone()
+                "SELECT content, session_id FROM verbatim_turns WHERE id=?" + frag,
+                (int(vid), *sparams)).fetchone()
             if row:
                 text = text or str(row[0] or "").strip()
                 sessions.add(str(row[1] or ""))
         if text:
             for row in conn.execute(
-                    "SELECT id, session_id FROM verbatim_turns "
-                    "WHERE user_id=? AND bank_id=? AND content_hash=?",
-                    (scope.user_id, scope.bank_id, summary_text_hash(text))).fetchall():
+                    "SELECT id, session_id FROM verbatim_turns WHERE content_hash=?" + frag,
+                    (summary_text_hash(text), *sparams)).fetchall():
                 refs.add(f"verbatim:{row[0]}")
                 sessions.add(str(row[1] or ""))
         try:
             for row in conn.execute(
-                    "SELECT origin_session_id FROM memory_epistemic "
-                    "WHERE memory_ref=? AND user_id=? AND bank_id=?",
-                    (mid, scope.user_id, scope.bank_id)).fetchall():
+                    "SELECT origin_session_id FROM memory_epistemic WHERE memory_ref=?" + frag,
+                    (mid, *sparams)).fetchall():
                 sessions.add(str(row[0] or ""))
         except sqlite3.Error as exc:
             logger.debug("sidecar session lookup skipped: %s", exc)
@@ -471,11 +477,11 @@ def _ledger_summaries(scope, refs: set) -> dict[str, str]:
                             "AND name='distill_sources'").fetchone():
             return {}
         out: dict[str, str] = {}
+        _, frag, params = _canonical(scope.user_id, scope.bank_id)
         for ref in sorted(refs):          # a handful of refs; indexed lookups
             for row in conn.execute(
                     "SELECT summary_hash, session_id FROM distill_sources "
-                    "WHERE user_id=? AND bank_id=? AND source_ref=?",
-                    (scope.user_id, scope.bank_id, ref)).fetchall():
+                    "WHERE source_ref=?" + frag, (ref, *params)).fetchall():
                 out[str(row[0])] = str(row[1] or "")
         return out
     finally:
@@ -526,10 +532,11 @@ def summary_verbatim_ids(scope, hashes) -> list[int]:
     conn = get_facts_conn()
     try:
         ids: set = set()
+        _, frag, params = _canonical(scope.user_id, scope.bank_id)
         for digest in hashes:
             ids.update(int(r[0]) for r in conn.execute(
-                "SELECT id FROM verbatim_turns WHERE user_id=? AND bank_id=? "
-                "AND content_hash=?", (scope.user_id, scope.bank_id, digest)).fetchall())
+                "SELECT id FROM verbatim_turns WHERE content_hash=?" + frag,
+                (digest, *params)).fetchall())
         return sorted(ids)
     except sqlite3.Error as exc:
         logger.debug("summary verbatim lookup skipped: %s", exc)
@@ -546,10 +553,10 @@ def _pending_summary_ids(scope, keys: dict, hashes) -> list[int]:
     out: list[int] = []
     conn = get_facts_conn()
     try:
+        _, frag, params = _canonical(scope.user_id, scope.bank_id)
         rows = conn.execute(
             "SELECT pending_id, payload FROM pending_embeddings "
-            "WHERE user_id=? AND bank_id=? AND side='cloud' AND replayed_at IS NULL",
-            (scope.user_id, scope.bank_id)).fetchall()
+            "WHERE side='cloud' AND replayed_at IS NULL" + frag, params).fetchall()
     except sqlite3.Error:
         return []
     finally:

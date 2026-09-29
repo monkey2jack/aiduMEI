@@ -89,45 +89,48 @@ class RefineActionRequest(BaseModel):
     bank_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
-def _types_query_memories(conn, memory_type: str, scope, mt_owner_sql: str,
-                          mt_owner_params, limit: int) -> list[dict]:
+def _types_query_memories(conn, memory_type: str, scope, limit: int) -> list[dict]:
     """f0.3 (C5): mem0-keyed ledger rows of one type, resolved by their own key.
 
-    A mem0 memory has no facts row; its text lives in text_fts.memories under
-    the scoped storage key (bare id in the default bank).  Never derive a
-    facts id from a UUID.
+    The ledger holds two disjoint key spaces: `fact:<int>` (facts rowid, from
+    the backfill) and mem0 UUIDs (the write path).  A mem0 memory has no facts
+    row; its text lives in text_fts.memories under the scoped storage key of
+    the row's *own* owner (bare id in the default bank).  Never derive a facts
+    id from a UUID.  Read visibility follows visible_user_ids (a renamed
+    default identity still sees its pre-rename rows); every predicate comes
+    from scope_clause, one exact scope at a time.
     """
-    refs = conn.execute(
-        f"SELECT mt.memory_ref_raw, mt.confidence FROM memory_types mt "
-        f"WHERE mt.memory_type = ? AND {mt_owner_sql} AND mt.bank_id = ? "
-        f"AND mt.memory_ref_raw IS NOT NULL AND mt.memory_ref_raw != '' "
-        f"AND mt.memory_ref_raw NOT GLOB 'fact:*' "
-        f"ORDER BY mt.updated_at DESC LIMIT ?",
-        (memory_type, *mt_owner_params, scope.bank_id, limit),
-    ).fetchall()
+    from ducky.bank_contract import scoped_storage_key, visible_user_ids
+    from ducky.scope_sql import scope_clause
+    from ducky.utils import get_text_conn
+    refs = []
+    for owner in visible_user_ids(scope.user_id):
+        owner_scope = make_scope(owner, scope.bank_id)
+        frag, params = scope_clause(owner_scope, alias="mt")
+        refs.extend((owner_scope, row) for row in conn.execute(
+            "SELECT mt.memory_ref_raw, mt.confidence, mt.updated_at FROM memory_types mt "
+            "WHERE mt.memory_type = ? AND mt.memory_ref_raw IS NOT NULL "
+            "AND mt.memory_ref_raw != '' AND mt.memory_ref_raw NOT GLOB 'fact:*'" + frag +
+            " ORDER BY mt.updated_at DESC LIMIT ?", (memory_type, *params, limit)).fetchall())
+    refs.sort(key=lambda pair: str(pair[1][2] or ""), reverse=True)
     if not refs:
         return []
-    from ducky.bank_contract import scoped_storage_key
-    from ducky.utils import get_text_conn
-    by_key = {scoped_storage_key(r[0], scope): (str(r[0]), r[1]) for r in refs}
-    found: dict = {}
     try:
-        f_owner_sql, f_owner_params = visible_user_clause(scope.user_id)
         tconn = get_text_conn()
-        for key in by_key:                # <= 200 primary-key lookups, local
-            row = tconn.execute(
-                f"SELECT id, content, category FROM memories WHERE id = ? "
-                f"AND {f_owner_sql} AND bank_id = ?",
-                (key, *f_owner_params, scope.bank_id)).fetchone()
-            if row is not None:
-                found[str(row[0])] = (row[1], row[2])
-    except (sqlite3.Error, ImportError, ValueError) as exc:  # index unavailable: refs stay unresolved
+    except (sqlite3.Error, OSError) as exc:  # index unavailable: refs stay unresolved
         logger.warning(f"/memory/types/query 记忆正文解析跳过: {exc}")
+        tconn = None
     out = []
-    for key, (raw, confidence) in by_key.items():
-        content, category = found.get(key, (None, None))
-        out.append({"memory_id": raw, "content": content, "category": category,
-                    "type_confidence": confidence, "resolved": key in found})
+    for owner_scope, (raw, confidence, _updated) in refs[:limit]:
+        row = None
+        if tconn is not None:
+            frag, params = scope_clause(owner_scope)
+            row = tconn.execute(
+                "SELECT content, category FROM memories WHERE id = ?" + frag,
+                (scoped_storage_key(raw, owner_scope), *params)).fetchone()
+        out.append({"memory_id": str(raw), "content": row[0] if row else None,
+                    "category": row[1] if row else None,
+                    "type_confidence": confidence, "resolved": row is not None})
     return out
 
 
@@ -212,8 +215,7 @@ def register_p1_routes(app: FastAPI) -> None:
                     capped,
                 ),
             ).fetchall()
-            memories = _types_query_memories(conn, memory_type, scope,
-                                             mt_owner_sql, mt_owner_params, capped)
+            memories = _types_query_memories(conn, memory_type, scope, capped)
             conn.close()
             return {
                 "status": "ok",
