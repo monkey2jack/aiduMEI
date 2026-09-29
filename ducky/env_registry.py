@@ -58,6 +58,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_DISTILL_MIN_SESSIONS",
     "AIDUMEI_DISTILL_MIN_MEMORIES",
     "AIDUMEI_DISTILL_MAX_SOURCE",
+    # f0.3（C2）：已结清幂等回执的保留天数（默认 7，1..3650；非法值回退默认并进 config_errors）
+    "AIDUMEI_IDEMPOTENCY_TTL_DAYS",
     "AIDUMEI_MMR_ENABLED",
     "AIDUMEI_MMR_LAMBDA",
     "AIDUMEI_ERRSIG_BONUS",

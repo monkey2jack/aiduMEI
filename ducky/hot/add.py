@@ -156,7 +156,7 @@ def register_add_routes(app: FastAPI) -> None:
                     "idempotency_key is already bound to a different payload",
                 )
 
-            def _finalize_and(resp: dict) -> dict:
+            def _finalize_and(resp: dict, provisional: bool = False) -> dict:
                 """v20.3.1（九份审计 P0-5）：早返回路径的幂等收口。
 
                 上一版 finalize 只挂在同步完整路径的末尾，local/lite/async
@@ -164,14 +164,20 @@ def register_add_routes(app: FastAPI) -> None:
                 TTL 内重试被判 pending 而不是 replay，幂等保护恰在 local
                 档（用户最可能首跑的档）失效。每条早返回构造完响应都
                 过这里：落账 + 回填 request_id，一个实现不抄五遍。
+
+                f0.3 (C2): async hand-offs pass provisional=True -- the key is
+                handed to the job (bound in job_create), which settles it as
+                durable on success or releases it on failure.
                 """
                 if req.idempotency_key and idempotency_state["action"] != "disabled":
                     from ducky import idempotency
                     resp = {**resp, "request_id": req.idempotency_key}
                     idempotency.finalize(
-                        req.idempotency_key, req.user_id, req.bank_id, resp
+                        req.idempotency_key, req.user_id, req.bank_id, resp,
+                        claimed_at=idempotency.claim_token(idempotency_state),
+                        provisional=provisional,
                     )
-                    _idem_claimed.clear()  # P0-1：已落账，失败释放不再适用
+                    _idem_claimed.clear()  # P0-1：已落账/已移交作业，失败释放不再适用
                 return resp
 
 
@@ -619,9 +625,14 @@ def register_add_routes(app: FastAPI) -> None:
             # ── 异步路径 ──
             if async_flag and background_tasks is not None:
                 # v20.4.0（P1-5 · Kimi P2-2）：job 记录带全两轴，查询端校验归属
+                # f0.3 (C2): the job inherits this request's idempotency claim
+                # *before* it can run (a coalesce worker may flush at once).
                 job_id = job_create({"text_preview": text_preview,
                                      "user_id": req.user_id,
-                                     "bank_id": req.bank_id})
+                                     "bank_id": req.bank_id,
+                                     "idempotency": idempotency.job_binding(
+                                         idempotency_state, req.idempotency_key,
+                                         req.user_id, req.bank_id)})
 
                 # 短句连发 → 合并队列（省 LLM）
                 should, why = coalesce_should_buffer(
@@ -690,7 +701,7 @@ def register_add_routes(app: FastAPI) -> None:
                                 "idle_sec": enq.get("idle_sec"),
                                 "window_sec": enq.get("window_sec"),
                             },
-                        })
+                        }, provisional=True)
                     # 当前句触发了满额即时冲刷
                     return _finalize_and({
                         "status": "accepted",
@@ -706,7 +717,7 @@ def register_add_routes(app: FastAPI) -> None:
                             "key": enq.get("key"),
                             "profile": enq.get("profile"),
                         },
-                    })
+                    }, provisional=True)
 
                 # 不进合并：单条异步
                 def _bg_job(jid=job_id, msgs=messages_json, meta=md,
@@ -723,7 +734,7 @@ def register_add_routes(app: FastAPI) -> None:
                     "message": "已收下，后台正在总结落库",
                     "preview": text_preview,
                     "coalesce_skip": why,
-                })
+                }, provisional=True)
 
             out = _run_pipeline(req.user_id, messages_json, md)
             # v20：回显 infer —— 调用方（尤其跑分适配器）据此断言服务端
@@ -735,7 +746,8 @@ def register_add_routes(app: FastAPI) -> None:
                 if idempotency_state["action"] != "disabled":
                     from ducky import idempotency
                     idempotency.finalize(
-                        req.idempotency_key, req.user_id, req.bank_id, out
+                        req.idempotency_key, req.user_id, req.bank_id, out,
+                        claimed_at=idempotency.claim_token(idempotency_state),
                     )
                     _idem_claimed.clear()  # P0-1：已落账
             return out
