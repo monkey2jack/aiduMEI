@@ -215,11 +215,12 @@ def _maybe_purge(conn: sqlite3.Connection, now: float) -> None:
 
 def delete_scope(user_id: str, bank_id: str) -> int:
     """delete_all leg: drop every receipt of exactly (user_id, bank_id)."""
+    from ducky.bank_contract import make_scope
+    from ducky.scope_sql import scope_clause
+    frag, params = scope_clause(make_scope(user_id, bank_id), flavor="canonical")
     conn = _connect()
     try:
-        cur = conn.execute(
-            "DELETE FROM idempotency_keys WHERE user_id=? AND bank_id=?",
-            (user_id, bank_id))
+        cur = conn.execute("DELETE FROM idempotency_keys WHERE 1=1" + frag, params)
         conn.commit()
         return int(cur.rowcount or 0)
     finally:
@@ -430,3 +431,16 @@ def settle_job(binding: dict | None, *, ok: bool, result: Any = None,
         return "finalized"
     release(key, user_id, bank_id, claimed_at=claimed_at)
     return "released"
+
+
+_SETTLE_ERRORS = (sqlite3.Error, OSError, ValueError, TypeError, KeyError, AttributeError)
+
+
+def settle_job_quietly(binding: dict | None, *, ok: bool, result: Any = None,
+                       job_id: str = "") -> str:
+    """settle_job for job bookkeeping (speed.jobs): logs instead of raising."""
+    try:
+        return settle_job(binding, ok=ok, result=result, job_id=job_id)
+    except _SETTLE_ERRORS as exc:
+        logger.warning("idempotency settle failed job=%s: %s", job_id, exc)
+        return "error"
