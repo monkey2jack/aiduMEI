@@ -13,7 +13,14 @@ from ducky.salience.config import (
     LANE_KEYWORDS,
     SALIENCE_FLOOR,
 )
-from ducky.salience.conflict import detect_conflicts, resolve_conflict_salience
+from ducky.salience.conflict import (
+    conflict_penalty_mode,
+    conflict_penalty_mode_status,
+    detect_conflicts,
+    judge_pair,
+    resolve_conflict_salience,
+    scan_conflicts,
+)
 from ducky.salience.core import (
     _detect_lane,
     decay_all,
@@ -25,7 +32,11 @@ from ducky.salience.core import (
     prune_orphan_salience,
 )
 from ducky.salience.db import _ensure_db, ensure_db
-from ducky.salience.metrics import get_historical_metrics, record_daily_metrics
+from ducky.salience.metrics import (
+    consolidator_last_run_path,
+    get_historical_metrics,
+    record_daily_metrics,
+)
 from ducky.salience.lesson_verify import verify_lessons_closed
 
 # 模块加载时确保表结构（与旧 memory_salience 行为一致）
@@ -43,6 +54,11 @@ __all__ = [
     "get_historical_metrics",
     "detect_conflicts",
     "resolve_conflict_salience",
+    "scan_conflicts",
+    "judge_pair",
+    "conflict_penalty_mode",
+    "conflict_penalty_mode_status",
+    "consolidator_last_run_path",
     "audit_health_anomalies",
     "_detect_lane",
     "_ensure_db",
