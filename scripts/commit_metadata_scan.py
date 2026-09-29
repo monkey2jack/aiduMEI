@@ -73,7 +73,7 @@ _PRIVATE_SUFFIXES = frozenset((
     b"local", b"localhost", b"localdomain", b"internal", b"intranet",
     b"lan", b"home", b"corp", b"private", b"arpa",
 ))
-# 云厂商默认主机名：阿里云 ECS iZ<实例号>Z、腾讯云 CVM VM-0-12-centos。
+# 云主机默认主机名：形如 iZ<实例号>Z、VM-0-12-centos 的厂商出厂实例名。
 _CLOUD_HOST_LABEL = re.compile(rb"iz[0-9a-z]{8,}z|vm-[0-9]{1,3}-[0-9]{1,3}-[a-z0-9]+")
 # 标签里嵌着点分改连字符的 IPv4（AWS ip-10-0-0-1 / ec2-54-1-2-3 等）。
 _DASHED_IPV4 = re.compile(rb"(?:^|-)[0-9]{1,3}(?:-[0-9]{1,3}){3}(?:-|$)")

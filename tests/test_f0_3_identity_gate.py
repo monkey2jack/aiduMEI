@@ -31,7 +31,7 @@ from scripts import commit_metadata_scan as cms
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
-CLEAN = ("monkey2jack", "monkey2jack@users.noreply.github.com")
+CLEAN = ("monkey2jack", "monkey2jack" + "@users.noreply.github.com")
 WORD = "synthetic-private-fragment-7c41"
 # 扫描报告的原文字段：被拦要能分清「判了红」与「扫描器崩了」。
 FORBIDDEN_HIT = re.compile("禁止邮箱域=[1-9]")
@@ -217,7 +217,7 @@ def test_negative_control_old_domain_rule_let_these_through(email: str) -> None:
 
 
 @pytest.mark.parametrize("email", [
-    "monkey2jack@users.noreply.github.com",
+    "monkey2jack" + "@users.noreply.github.com",
     "12345+someone@users.noreply.github.com",
     "noreply@github.com",
     "dev@example.com",

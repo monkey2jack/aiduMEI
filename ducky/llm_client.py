@@ -9,7 +9,7 @@ key 文件回退），通过 requests 直发 OpenAI 兼容 chat/completions。
 铁律：密钥永远从占位符文件解析，不在源码里硬编码。
 失败一律返回 None，由调用方降级，不阻断主链路。
 
-f0.3（A4）：**进程级 LLM 并发闸门**。生产上游（StepFun）限并发 5，一天回
+f0.3（A4）：**进程级 LLM 并发闸门**。生产上游 LLM 服务限并发 5，一天回
 「concurrency reached, current: 6, limit: 5」约 134 次 —— 服务里 call_llm 与
 mem0 抽取两条通道各自想发就发，进程内没有任何总量约束。现在两条通道共用本模块
 一个 BoundedSemaphore（AIDUMEI_LLM_MAX_CONCURRENCY，默认 4，给上游其他消费者
