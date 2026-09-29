@@ -20,8 +20,9 @@ qdrant-client==1.18.0
 # --- Web 框架: FastAPI + Uvicorn --------------------------------------------
 # fastapi: api_server.py 用的 Web 框架（0.136 是 2025-Q4 的稳定小版本）
 fastapi==0.136.3
-# uvicorn: ASGI 服务器（0.30+ 兼容 pydantic v2；锁 <1.0 避免 1.x 的大改动）
-uvicorn>=0.30,<1.0
+# uvicorn: ASGI 服务器。f0.3 起与生产实跑版本精确对齐（此前是 >=0.30,<1.0 的范围，
+# 同一份 requirements 在不同日期装出不同的服务器）
+uvicorn==0.52.3
 
 # --- 数据模型: Pydantic v2 --------------------------------------------------
 # pydantic: api_server.py 的 BaseModel / Field 都来自这里（v2 系列）
@@ -32,10 +33,10 @@ pydantic-settings==2.14.2   # v20.2.4：2.14.1 命中 GHSA-4xgf-cpjx-pc3j，升�
 pydantic_core==2.46.4
 
 # --- HTTP 客户端 ------------------------------------------------------------
-# httpx: 异步 HTTP 客户端（mem0ai 内部用 + 测试脚本备用）
-httpx>=0.27
-# requests: 同步 HTTP 客户端（tests/test_smoke_api.py 用，零依赖）
-requests>=2.31
+# httpx: 异步 HTTP 客户端（mem0ai 内部用 + 测试脚本备用）；f0.3 起锁生产实跑版本
+httpx==0.28.1
+# requests: 同步 HTTP 客户端（tests/test_smoke_api.py 用，零依赖）；f0.3 起锁生产实跑版本
+requests==2.34.2
 
 # --- 表单解析 ---------------------------------------------------------------
 # python-multipart: FastAPI 的 Form(...) 依赖。**它在路由注册期（import 期）
@@ -46,11 +47,13 @@ requests>=2.31
 # README「30 秒上手」那条纯 requirements.txt 路径裸奔**——新用户的第一印象
 # 恰好踩在唯一没人走的路上。与 v19.4.2 的 inotify_simple 是同一类事故，
 # 教训这次焊成守卫：tests/test_v20_runtime_deps_declaration.py。
-python-multipart>=0.0.9
+# f0.3 起锁生产实跑版本。
+python-multipart==0.0.32
 
 # --- 同步守护进程 -----------------------------------------------------------
 # inotify_simple: mem0_sync.py --daemon 监听 MEMORY.md 变化。
 # 只有 Linux 有 inotify，marker 保证 macOS/Windows 上 pip install 不会失败。
 # v19.4.2 补：此前从未声明，导致按仓库部署 mem0-sync 必然 ImportError 崩溃循环
 # ——而 systemd 的 activating 状态还会把崩溃伪装成「正在启动」，静默 8 天。
-inotify_simple>=1.3.5; sys_platform == "linux"
+# f0.3 起锁生产实跑版本（marker 保留）。
+inotify_simple==2.0.1; sys_platform == "linux"
