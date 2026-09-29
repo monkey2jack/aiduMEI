@@ -106,10 +106,15 @@ if [ -s "$GATE_TMP/messages.txt" ]; then
     || fail "脱密关·面②（提交信息）未过"
   echo "  ✅ 脱密关面②：$(grep -E '^总计(基线继承公开标识|逐行复核公开标识|扫描覆盖跳过|硬敏感命中) =' "$GATE_TMP/message-scan.log" | tr '\n' ' ')"
 fi
+# f0.3：身份面补齐标签 tagger（指着 HEAD 或落在新范围内的附注标签），
+# 并启用白名单模式——新提交与新标签的身份只许是项目身份或 GitHub noreply
+# （额外项目身份用 AIDUMEI_IDENTITY_ALLOWLIST='Name <email>' 登记）。
+# 被推送的每个引用（含其它分支与任意标签）另由 pre-push 钩子逐个扫描。
 AIDUMEI_SCAN_WORDLIST="$SCAN_WORDLIST" \
   "$PY" scripts/commit_metadata_scan.py --base upstream/main --head HEAD \
+  --tags-in-range --require-allowlist \
   > "$GATE_TMP/metadata-scan.log" 2>&1 \
-  || fail "脱密关·面②作者/提交者元数据未过（私有日志已清理）"
+  || fail "脱密关·面②作者/提交者/标签 tagger 元数据未过（私有日志已清理）"
 echo "  ✅ 脱密关面②元数据：$(cat "$GATE_TMP/metadata-scan.log")"
 if [[ -n "${GATE_SKIPPED:-}" ]]; then
   echo "  ── 四道关：$(echo "${GATE_SKIPPED}" | wc -w | tr -d ' ') 关 SKIP（${GATE_SKIPPED}），其余全过 ──"

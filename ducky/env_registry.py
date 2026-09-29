@@ -165,6 +165,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEM_UI_PASSWORD",
     "AIDUMEM_UPSTREAM",
     "AIDUMEM_VECTOR_BACKEND",
+    # f0.3 身份闸：白名单模式下额外放行的项目身份（`Name <email>`，`;` 分隔）
+    "AIDUMEI_IDENTITY_ALLOWLIST",
 ))
 
 
