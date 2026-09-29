@@ -80,34 +80,37 @@ def test_prefetch_and_sync_turn_symmetric_on_session():
 
 # ── WP2：验收脚本不硬编码 cron 数 ──────────────────────────────────
 
-def test_acceptance_cron_count_not_hardcoded():
-    """acceptance_check 的 cron 数期望不许是硬编码常量。"""
+def _acceptance_cron_block() -> str:
     src = open(_ACCEPT, encoding="utf-8").read()
-    # 找那条 crontab intent 的 check 行
-    line = next((ln for ln in src.splitlines()
-                 if "crontab intent list" in ln and "TASKS" in ln), None)
-    assert line, "acceptance_check 里找不到 crontab intent 那条 check —— 守卫失去着力点"
-    # 负向对照式判据：不许再出现 `-eq 8` / `-eq 9` 这类拿死数字比的形态
-    assert not re.search(r"-eq\s+\d+\b", line), (
-        f"cron 数仍硬编码为常量：{line.strip()[:120]} —— "
-        "加/删任务时会重演脱节，应改为读实际 TASKS 声明数"
-    )
-    # 正向：必须两来源自比对（声明数 vs --list）
-    assert "grep -c" in line and "--list" in line, (
-        "cron 数期望没有从实际 TASKS 声明动态取 —— 应 grep 声明数并与 --list 比对"
-    )
+    m = re.search(r"^# >>> gate-cron-installed\n(.*?)^# <<< gate-cron-installed\n",
+                  src, re.S | re.M)
+    assert m, "acceptance_check 里找不到 cron 实装对账块 —— 守卫失去着力点"
+    return m.group(1)
+
+
+def test_acceptance_cron_count_not_hardcoded():
+    """acceptance_check 的 cron 数期望不许是硬编码常量，也不许是恒等式。
+
+    f0.3（B6）：f0.2 把硬编码 `-eq 8` 换成了「TASKS 声明数 vs 同一数组的
+    --list」—— 同一份数据数两遍，永远相等。现在必须对账真实 crontab。
+    行为验证见 tests/test_f0_3_acceptance_gate.py。
+    """
+    block = _acceptance_cron_block()
+    assert not re.search(r"-eq\s+\d+\b", block), "cron 数仍硬编码为常量"
+    assert "update_crontab.sh --installed" in block, "没有对账真实 crontab（--installed）"
+    assert "SKIP" in block, "没有 crontab 时必须明确打印 SKIP，而不是算作 PASS"
 
 
 def test_task_name_pattern_covers_digits():
-    """TASKS 声明的计数正则必须覆盖含数字的任务名（如 e2e_smoke）。
+    """TASKS 计数正则当年漏了 e2e_smoke（[a-z_]+ 不含数字）。
 
-    这本身就是本次踩的坑：[a-z_]+ 漏了 e2e_smoke，数出 8 而非 9。
+    f0.3：这条自比对已整体移除（它本身是恒等式）；守卫改为钉死它不回来 ——
+    验收脚本不许再用 grep 数 update_crontab.sh 的 TASKS 声明来冒充实装数。
     """
     src = open(_ACCEPT, encoding="utf-8").read()
-    line = next((ln for ln in src.splitlines() if "grep -c" in ln and "update_crontab" in ln), "")
-    assert "a-z0-9_" in line or "[[:alnum:]" in line, (
-        f"TASKS 计数正则不含数字类，会漏 e2e_smoke 这类名字：{line.strip()[:120]}"
-    )
+    offenders = [ln.strip()[:120] for ln in src.splitlines()
+                 if "grep -c" in ln and "update_crontab" in ln]
+    assert not offenders, f"验收脚本又在数 TASKS 声明（恒等式）：{offenders}"
 
 
 # ── WP3：插件 on_session_end 触发萃取 ──────────────────────────────
