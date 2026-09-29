@@ -110,8 +110,10 @@
 > 这是我们自己在生产上吃过的亏（读线挂了一个月、写线从没挂过、所有探针全绿）。所以现在：`/health` 有 `ingest_liveness_ok` 探针盯着「在读却不在写」，并且真实用过几轮后请跑一次
 >
 > ```bash
-> python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # 退出码 0 才算接线成功
+> python3 scripts/check_ingest_wiring.py   # 凭据取自环境变量 AIDUMEM_API_TOKEN（或仓库根 .env）；退出码 0 才算接线成功
 > ```
+>
+> 凭据请走环境变量或 `.env`，别写成 `--token "$AIDUMEM_API_TOKEN"`：命令行参数对本机其他用户 `ps` 可见。
 >
 > **三条线各有现成脚本，拷过去注册上即可**（别自己写）：
 >
@@ -225,7 +227,7 @@ python scripts/e2e_smoke.py --json                                              
 
 ## MCP Server（41 工具 · 默认端口 8766）
 
-MCP 与 REST 同进程双栈：REST 在 :8767，MCP 在 :8766（stdio/HTTP 双传输）。**鉴权纪律**：非回环绑定必须配置 `AIDUMEM_API_TOKEN`，否则拒绝启动；确有公网暴露需求才显式设置 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1`（默认关闭，开启会打 critical 日志）。工具分组与调用示例见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
+MCP 与 REST 同进程双栈：REST 在 :8767，MCP 在 :8766（stdio/HTTP 双传输）。**鉴权纪律**：非回环绑定必须配置 `AIDUMEM_API_TOKEN`，否则拒绝启动；确有无凭据公网暴露需求才显式设置 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1`（默认关闭，开启会打 critical 日志）——REST 服务还须同时设 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<监听地址>`（值必须逐字等于实际监听地址，`1`/`true` 不算），否则照样拒绝启动。工具分组与调用示例见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
 
 ## 🔐 安全模型
 
@@ -254,7 +256,7 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 |---|---|
 | 检索 | bge-m3 向量 + FTS5 中文 BM25/trigram + cross-encoder 真重排（**需配 reranker key 才生效，默认不开**，见 `.env.example` 的 `AIDUMEI_RERANKER_API_KEY`）；相关性闸门（闲聊不检索，省 token） |
 | 记忆语义 | 三轨遗忘（身份永不衰减/情感加速/标准曲线）· 双时间轴（记忆**过期**而非删除）· 六型分类 |
-| 治理 | 写入双审 + 冲突消解 + 注入防护；事件账本全路径留痕；密码学谱系（可检测篡改） |
+| 治理 | 写入双审 + 冲突消解 + 注入防护；事件账本全路径留痕；谱系一致性校验链（无密钥 SHA-256 串链：查得出意外损坏与只改一处的编辑，挡不住能改写整个数据库的人） |
 | 进化 | 反思（主动/定时）· 本能升格技能（人工审批闸门）· 检索自进化反馈环 |
 | 协作 | 联邦：多 Agent 共享一套记忆（MoE 门控 + 细粒度授权 grants）· 多 bot / 多 profile 各据一域，记忆人格独立、跨域默认隔离 |
 | 周边 | 多模态视觉记忆 · 代码图谱 · 原文保真抽屉 · Obsidian 双链 |
