@@ -11,7 +11,8 @@
     sync_turn         → POST /add（宿主后台线程、服务端同步完成）
     on_pre_compress   → POST /add，把即将被压掉的轮次先落盘
     on_memory_write   → POST /facts/add，镜像内置 memory 的写入
-    on_session_end    → 等待轮次落库、结束会话、萃取并写入精华
+    on_session_end    → 等待轮次落库（永久拒收的轮次跳过）、尽力结束会话、
+                        萃取并写入精华（萃取不依赖结束成功，f0.3）
     get_tool_schemas  → aidumem_search / aidumem_remember / aidumem_status
     backup_paths      → 数据目录交给 Hermes 的备份流程
 
@@ -28,9 +29,12 @@
 
 from __future__ import annotations
 
+import errno
+import http.client
 import json
 import logging
 import os
+import socket
 import threading
 import time
 import uuid
@@ -52,8 +56,47 @@ _BACKGROUND_WRITE_TIMEOUT = 45.0  # /add 同步抽取可用满服务端 30s LLM 
 _DISTILL_TIMEOUT = 45.0      # /session/distill 同样需要 30s LLM 预算和本地余量
 _SHUTDOWN_GRACE_SECONDS = 100.0  # 会话结束 + 萃取 + 精华同步落库的全局收尾上限
 _TURN_RETRY_DELAYS = (0.5, 1.5)  # 会话收尾时重试未确认的幂等写入
+# f0.3 (H-5): retries run in rounds over all unconfirmed turns (one sleep per
+# round, not per turn) and stop at this budget or at the first "unreachable"
+# answer. Previously every turn slept 2 s on its own, so a stopped service
+# held shutdown for 2 s x turns, up to the whole 100 s grace period.
+_TURN_RETRY_BUDGET_SECONDS = 20.0
 _MIN_QUERY_LEN = 3
 _MAX_CONTEXT_CHARS = 4000
+
+# f0.3 (H-4): failure classes. try_request still returns None on any failure
+# (the memory layer must never break a turn), but the finalizer has to tell a
+# turn the server will never accept (400 from the injection guard, 422 from
+# the request model) from one that may still land (timeout, 5xx, 409 while the
+# same idempotency key is in flight). 408/409/425/429 are the retryable 4xx.
+_RETRYABLE_4XX = frozenset({408, 409, 425, 429})
+_PERMANENT_FAILURES = frozenset({"permanent", "auth"})
+
+# f0.3 (H-3): the server reports health_status "ok" or "degraded". A soft
+# degradation still serves reads and writes, so only these states (and an
+# unreachable or unauthorized answer) make the provider unavailable.
+_UNAVAILABLE_HEALTH = frozenset({"fatal", "error", "down", "unavailable", "critical"})
+
+
+def _http_failure_kind(code: int) -> str:
+    if code in (401, 403):
+        return "auth"
+    if 400 <= code < 500 and code not in _RETRYABLE_4XX:
+        return "permanent"
+    return "transient"
+
+
+def _transport_failure_kind(exc: BaseException) -> str:
+    """Refused, unresolvable or invalid endpoint = unreachable; the rest may recover."""
+    if isinstance(exc, ValueError):
+        return "unreachable"
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, (ConnectionRefusedError, socket.gaierror)):
+        return "unreachable"
+    if isinstance(reason, OSError) and reason.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+        return "unreachable"
+    return "transient"
+
 
 # v20.2.4（外审 F-12）：宿主侧的边界中和。与服务端
 # ducky.security.injection_guard._BOUNDARY_MARKERS **同口径**，
@@ -151,6 +194,8 @@ class _Client:
         self.base = base_url.rstrip("/")
         self.user_id = user_id
         self.bank_id = bank_id
+        # f0.3: per-thread outcome of the latest try_request (see last_outcome).
+        self._outcome = threading.local()
         # 🔴P0-1（v19.4.1）：与后端读同一个环境变量携带 Bearer token。
         # 后端一旦启用门禁（设了 AIDUMEM_API_TOKEN），插件不带凭据会全线 401，
         # 而记忆层失败是静默的（try_request 吞异常）—— 用户只会觉得
@@ -197,22 +242,49 @@ class _Client:
         但「不崩掉」不等于「不吭声」：v19.4.2 起，鉴权失败单独升到 warning。
         401 是配置问题（token 没传到），不是网络抖动，它不会自愈，
         混在 debug 里等于永远没人知道 —— 记忆静默失效整整一天就是这么来的。
+
+        f0.3：返回值口径不变（失败一律 None），但失败**种类**记进本线程的
+        last_outcome()：会话收尾要区分「服务端永远不会收」（400/422 等）与
+        「稍后可能成功」（超时、5xx、409 在途）。日志只写端点、不写 query ——
+        /facts/add 的 query 里带着记忆正文。
         """
+        self.reset_outcome()
+        endpoint = path.split("?", 1)[0]
         try:
-            return self.request(method, path, **kwargs)
+            result = self.request(method, path, **kwargs)
         except urlerror.HTTPError as exc:
+            self._outcome.code = exc.code
+            self._outcome.kind = _http_failure_kind(exc.code)
             if exc.code in (401, 403):
                 logger.warning(
                     "aiduMEI 鉴权失败 HTTP %s（%s %s）：记忆功能已全线失效。"
                     "请确认 %s 已注入宿主进程，或让 AIDUMEM_ENV_FILE 指向部署的 .env。",
-                    exc.code, method, path, _ENV_TOKEN_KEY,
+                    exc.code, method, endpoint, _ENV_TOKEN_KEY,
                 )
+            elif self._outcome.kind == "permanent":
+                logger.warning("aiduMEI %s %s rejected: HTTP %s (not retryable)",
+                               method, endpoint, exc.code)
             else:
-                logger.debug("aiduMEI %s %s failed: HTTP %s", method, path, exc.code)
+                logger.debug("aiduMEI %s %s failed: HTTP %s", method, endpoint, exc.code)
             return None
-        except (urlerror.URLError, OSError, ValueError) as exc:
-            logger.debug("aiduMEI %s %s failed: %s", method, path, exc)
+        except (urlerror.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+            self._outcome.kind = _transport_failure_kind(exc)
+            logger.debug("aiduMEI %s %s failed: %s", method, endpoint, exc)
             return None
+        self._outcome.kind = "ok"
+        return result
+
+    def reset_outcome(self) -> None:
+        self._outcome.kind = ""
+        self._outcome.code = None
+
+    def last_outcome(self) -> tuple:
+        """(kind, http_code) of this thread's latest try_request.
+
+        kind is "ok", "auth", "permanent", "transient" or "unreachable";
+        "" means no real request ran on this thread since the last reset.
+        """
+        return getattr(self._outcome, "kind", ""), getattr(self._outcome, "code", None)
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +418,34 @@ class AiduMemProvider(MemoryProvider):
         return "aidumem"
 
     def is_available(self) -> bool:
+        """Configured, reachable and authorized; a soft degradation stays available.
+
+        Hermes skips initialize() when this returns False, so a strict verdict
+        here silently disables memory for the whole agent run (f0.3, H-3). The
+        server reports health_status "ok" or "degraded"; a degraded subsystem
+        still serves reads and writes, and every call path already fails soft.
+        Unavailable means: no answer, the anonymous (redacted) view — the token
+        is missing or rejected — or an explicit fatal state.
+        """
         health = self._client.try_request("GET", "/health", timeout=_CONNECT_TIMEOUT)
-        probes = health.get("probes") if isinstance(health, dict) else None
-        return (isinstance(health, dict) and health.get("status") == "ok"
-                and health.get("health_status") == "ok"
-                and isinstance(probes, dict) and "_redacted" not in probes)
+        if not isinstance(health, dict):
+            logger.warning("aiduMEI provider unavailable: %s/health did not answer",
+                           self._client.base)
+            return False
+        probes = health.get("probes")
+        if not isinstance(probes, dict) or "_redacted" in probes:
+            logger.warning("aiduMEI provider unavailable: /health returned the anonymous "
+                           "view; %s is missing or rejected", _ENV_TOKEN_KEY)
+            return False
+        state = str(health.get("health_status") or "").strip().lower()
+        if health.get("status") != "ok" or state in _UNAVAILABLE_HEALTH:
+            logger.warning("aiduMEI provider unavailable: status=%s health_status=%s",
+                           health.get("status"), state or "missing")
+            return False
+        if state != "ok":
+            logger.info("aiduMEI provider available with health_status=%s degraded=%s",
+                        state, health.get("degraded"))
+        return True
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
@@ -514,7 +609,7 @@ class AiduMemProvider(MemoryProvider):
             open_event = self._generation_open.get(current)
             write = lambda: fn(source_id)
             state: Dict[str, Any] = {"done": threading.Event(), "response": None,
-                                     "retry": write}
+                                     "retry": write, "failure": "", "code": None}
             self._pending_turns.setdefault(session_id, []).append(state)
 
         def _run():
@@ -535,7 +630,7 @@ class AiduMemProvider(MemoryProvider):
                         open_event.set()
                 elif open_event is not None:
                     open_event.wait()
-                state["response"] = write()
+                state["response"], state["failure"], state["code"] = self._tracked(write)
             finally:
                 if opener and open_event is not None:
                     open_event.set()
@@ -547,6 +642,60 @@ class AiduMemProvider(MemoryProvider):
     def _write_confirmed(response: Any) -> bool:
         return (isinstance(response, dict) and response.get("status") == "ok"
                 and response.get("durable") is not False)
+
+    def _tracked(self, call) -> tuple:
+        """Run one write and capture this thread's failure class with it."""
+        self._client.reset_outcome()
+        try:
+            response = call()
+        except Exception:  # noqa: BLE001 — a writer must never kill its thread
+            logger.exception("aiduMEI write raised")
+            response = None
+        kind, code = self._client.last_outcome()
+        return response, kind, code
+
+    def _needs_retry(self, state: Dict[str, Any]) -> bool:
+        return (not self._write_confirmed(state["response"])
+                and state.get("failure") not in _PERMANENT_FAILURES)
+
+    def _settle_turns(self, sid: str, pending: List[Dict[str, Any]]) -> tuple:
+        """Confirm dispatched turn writes; return (unconfirmed, rejected).
+
+        /add carries force_sync and an idempotency key, so retrying a timed
+        out write with the same key confirms it without duplicating the turn.
+        Retries run in rounds over every unconfirmed turn, within one budget,
+        and stop at the first "unreachable" answer: a stopped service is
+        detected once instead of once per turn. A permanently rejected turn
+        (4xx other than 408/409/425/429) is never retried.
+        """
+        for state in pending:
+            state["done"].wait()
+        deadline = time.monotonic() + _TURN_RETRY_BUDGET_SECONDS
+        for delay in _TURN_RETRY_DELAYS:
+            todo = [state for state in pending if self._needs_retry(state)]
+            if not todo or time.monotonic() + delay >= deadline:
+                break
+            time.sleep(delay)
+            unreachable = False
+            for state in todo:
+                if time.monotonic() >= deadline:
+                    break
+                state["response"], state["failure"], state["code"] = self._tracked(
+                    state["retry"])
+                if state["failure"] == "unreachable":
+                    unreachable = True
+                    break
+            if unreachable:
+                logger.warning("aiduMEI session %s: service unreachable while confirming "
+                               "turn writes; no further retries", sid[:32])
+                break
+        rejected = [state for state in pending
+                    if not self._write_confirmed(state["response"])
+                    and state.get("failure") in _PERMANENT_FAILURES]
+        unconfirmed = [state for state in pending
+                       if not self._write_confirmed(state["response"])
+                       and state.get("failure") not in _PERMANENT_FAILURES]
+        return unconfirmed, rejected
 
     def sync_turn(
         self,
@@ -690,7 +839,9 @@ class AiduMemProvider(MemoryProvider):
             pending = self._pending_turns.pop(sid, [])
 
         def _distill():
-            failed = []
+            # Until the settle step has classified them, every pending turn
+            # counts as unconfirmed, so an unexpected error re-queues them all.
+            failed = pending
             completed = False
             try:
                 if predecessor is not None:
@@ -706,43 +857,54 @@ class AiduMemProvider(MemoryProvider):
                           f"&{self._scope_query()}")
                     started = self._client.try_request("POST", qs, timeout=_CONNECT_TIMEOUT)
                     if not isinstance(started, dict) or started.get("status") != "ok":
-                        logger.warning("aiduMEI resumed session start unconfirmed")
-                        return
-                # /add carries force_sync and an idempotency key. A timed out
-                # response may still be processing server-side; retrying that
-                # same key can confirm its result without duplicating the turn.
-                for state in pending:
-                    state["done"].wait()
-                    if self._write_confirmed(state["response"]):
-                        continue
-                    for delay in _TURN_RETRY_DELAYS:
-                        time.sleep(delay)
-                        try:
-                            state["response"] = state["retry"]()
-                        except Exception:
-                            logger.exception("aiduMEI session %s turn retry failed", sid[:32])
-                            state["response"] = None
-                        if self._write_confirmed(state["response"]):
-                            break
-                failed = [state for state in pending
-                          if not self._write_confirmed(state["response"])]
+                        # f0.3 (H-2): the server session only feeds the archive
+                        # of /session/end; distill reads this generation's own
+                        # source records, so an unconfirmed start no longer
+                        # aborts the finalizer.
+                        logger.warning("aiduMEI resumed session start unconfirmed; "
+                                       "continuing with end and distill")
+                # f0.3 (H-4): one turn can no longer hold the whole session
+                # hostage. A permanently rejected write (400 injection guard,
+                # 422 request model) is logged and skipped; transient failures
+                # get the bounded retry rounds of _settle_turns; whatever is
+                # still unconfirmed afterwards stays queued, and end + distill
+                # run regardless. A "skipped" distill verdict is not final
+                # while turns are unconfirmed (see below).
+                failed, rejected = self._settle_turns(sid, pending)
+                for state in rejected:
+                    logger.warning(
+                        "aiduMEI session %s: a turn write was rejected permanently "
+                        "(%s, HTTP %s); skipped so the session can still end and distill",
+                        sid[:32], state.get("failure"), state.get("code"),
+                    )
                 if failed:
                     logger.error(
-                        "aiduMEI session %s: %d turn writes remain unconfirmed; "
-                        "session end and distill deferred. Retry on_session_end while "
-                        "this provider is alive (no cross-process retry queue).",
+                        "aiduMEI session %s: %d turn writes remain unconfirmed after "
+                        "bounded retries; ending and distilling anyway (they stay queued "
+                        "for a later on_session_end in this process).",
                         sid[:32], len(failed),
                     )
-                    return
 
                 if key not in self._ended_sessions:
                     eqs = (f"/session/end?session_id={quote(str(sid), safe='')}"
                            f"&{self._scope_query()}")
                     ended = self._client.try_request("POST", eqs, timeout=_WRITE_TIMEOUT)
-                    if not isinstance(ended, dict) or ended.get("status") != "ok":
-                        logger.warning("aiduMEI session end failed for %s: %s", sid[:32], ended)
-                        return
-                    self._ended_sessions.add(key)
+                    if isinstance(ended, dict) and ended.get("status") == "ok":
+                        self._ended_sessions.add(key)
+                    else:
+                        # f0.3 (H-2): the server keeps sessions in memory
+                        # (30 min TTL, evicted by any later start, lost on
+                        # restart), so long or restarted sessions end as "not
+                        # found". Distilling never depended on that table.
+                        logger.warning(
+                            "aiduMEI session end not confirmed for %s (%s); distilling anyway",
+                            sid[:32],
+                            (str(ended.get("detail") or ended.get("status"))[:80]
+                             if isinstance(ended, dict) else "no answer"),
+                        )
+                        if isinstance(ended, dict):
+                            # The server answered; asking again cannot revive it.
+                            self._ended_sessions.add(key)
 
                 body = self._distill_payloads.get(key)
                 if body is None:
@@ -750,7 +912,15 @@ class AiduMemProvider(MemoryProvider):
                            f"&{self._scope_query()}")
                     out = self._client.try_request("POST", dqs, timeout=_DISTILL_TIMEOUT)
                     if isinstance(out, dict) and out.get("status") == "skipped":
-                        # All known turns were confirmed. This is a real short
+                        if failed:
+                            # A turn still in flight can make a real session
+                            # look short. Keep the generation open so a later
+                            # on_session_end distills again once it lands.
+                            logger.warning(
+                                "aiduMEI session %s: distill skipped while %d turn writes "
+                                "are unconfirmed; not treated as final", sid[:32], len(failed))
+                            return
+                        # All known turns were settled. This is a real short
                         # session, rather than a still-in-flight third turn.
                         completed = True
                         return
@@ -781,6 +951,8 @@ class AiduMemProvider(MemoryProvider):
                     return
                 completed = True
                 self._distill_payloads.pop(key, None)
+            except Exception:  # noqa: BLE001 — finalization must release its barrier
+                logger.exception("aiduMEI session %s finalization failed", sid[:32])
             finally:
                 with self._pending_lock:
                     if failed:
