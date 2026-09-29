@@ -44,11 +44,15 @@ in `llm.config` and `embedder.config` with your model names, API endpoints and
 credentials. The example is a template; it is not loaded automatically.
 
 The image excludes real configuration and credentials from the build context.
-Its default configuration location, `/app/mem0_config_local.json`, is under
-the root-owned code directory, so the service cannot create or update it
-there. For console editing, both the configuration file and its parent
-directory must be writable by the runtime user. For a read-only secret file
-mount, set `AIDUMEM_CONFIG_READONLY=1` and update it through the mount instead.
+Since f0.3 its default configuration location is
+`/app/data/mem0_config_local.json`, inside the image's writable data
+directory (the code under `/app` stays root-owned and read-only). On Dockhold
+that directory is scratch unless it is the persistent path, which is why
+`AIDUMEM_CONFIG_FILE` above points at the storage path instead. For console
+editing, both the configuration file and its parent directory must be
+writable by the runtime user: settings are saved with a temporary file and an
+atomic rename in the same directory. For a read-only secret file mount, set
+`AIDUMEM_CONFIG_READONLY=1` and update it through the mount instead.
 Setting model credentials as unrelated environment variables does not create
 the required configuration file.
 

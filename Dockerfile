@@ -74,7 +74,14 @@ ENV AIDUMEM_HOST="127.0.0.1"
 ENV AIDUMEM_HOME="/app"
 ENV AIDUMEM_DATA_DIR="/app/data"
 ENV AIDUMEM_LOG_DIR="/app/logs"
-ENV AIDUMEM_CONFIG_FILE="/app/mem0_config_local.json"
+# ★ f0.3：模型配置默认放进**可写的数据目录**，不再是 /app/mem0_config_local.json。
+#   /app 是 root 属主、进程只读（上面刻意的取舍），而控制台保存配置 / PUT /config /
+#   POST /config/_speed 走「同目录临时文件 + os.replace」的原子写 —— 父目录必须对
+#   uid 10001 可写。旧默认值下这条写路径在容器里恒失败（compose 还把它以 :ro
+#   单文件挂进来，双重只读）。放在 /app/data 下随数据卷持久化；仍可用
+#   AIDUMEM_CONFIG_FILE 覆盖（只读 secret 挂载请配 AIDUMEM_CONFIG_READONLY=1）。
+#   非容器安装不受影响：未设该变量时代码仍回落到安装根下的 mem0_config_local.json。
+ENV AIDUMEM_CONFIG_FILE="/app/data/mem0_config_local.json"
 
 # ★ HOME 必须指向一个**可写**目录（与 deploy/aidumem-api.service 的
 #   `StateDirectory` + `Environment=HOME=` 是同一件事，那边已经修过）。
@@ -91,8 +98,9 @@ ENV HOME="/app/data"
 
 # v20.5.0 正式版（Sonnet 外审 P1-8）：容器原生健康检查，编排系统可直接探活。
 # 打 /livez（O(1) 存活探针），不打 /health（完整探针贵，不适合高频轮询）。
-# v22.0（雷霆审计 A8 · GLM F-05）：与实际绑定解耦——容器内回环探测容器内服务，
-# 宿主可达性由 compose 的 healthcheck 承担（见 docker-compose.yml）。
+# v22.0（雷霆审计 A8 · GLM F-05）：与实际绑定解耦——容器内回环探测容器内服务。
+# f0.3 更正：compose 的 healthcheck 同样在**容器内**执行、不是宿主视角；两处
+# 用同一条 python 命令（镜像里没有 curl）。宿主可达性靠端口映射本身，不靠探针。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8767/livez', timeout=4).status == 200 else 1)"
 

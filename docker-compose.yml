@@ -4,13 +4,26 @@
 #   docker compose logs -f        # 跟踪日志
 #   docker compose down           # 停止并移除容器
 #
-# 注意：
-#   1. 默认使用仓库根目录的 mem0_config_local.json（可被环境变量覆盖）
-#   2. 数据落盘在 ./data（已在 .gitignore，不会提交）
-#   3. 生产部署建议仍用 systemd（见 deploy/aidumem-api.service）
-#   4. 安全：默认只监听 127.0.0.1。要对外暴露请先设置
-#      AIDUMEM_API_TOKEN + AIDUMEM_UI_PASSWORD，并前置 TLS 反代。
-#   5. ★ 首次起之前先交接挂载目录的属主（v20.0 P3-8 起容器不再以 root 跑）：
+# 注意（首次起之前三件事，缺一件都起不来或带着绿灯失能 —— README「容器部署」一节同文）：
+#   1. ★ 凭据：在本文件旁的 .env 里写 AIDUMEM_API_TOKEN=<随机长串>。
+#      compose 只拿项目 .env 做 ${} 插值，**不会**把 .env 整体注入容器，
+#      所以下面 environment 里显式引用它；缺了 `docker compose up` 当场报错退出，
+#      而不是让容器以 0.0.0.0 无凭据被安全门禁拒绝启动、反复崩溃重启。
+#   2. ★ 模型配置放进数据目录：
+#          cp mem0_config_local.json.example data/mem0_config_local.json
+#      容器读写的是 /app/data/mem0_config_local.json（Dockerfile 的
+#      AIDUMEM_CONFIG_FILE）。/app 是 root 属主的只读代码目录，配置原子写
+#      （临时文件 + rename）必须落在 uid 10001 可写的目录里 —— 旧版把配置
+#      以 :ro 单文件挂进 /app，控制台保存配置、POST /config 一律失败。
+#      从旧版 compose 升级：把 ./mem0_config_local.json 移进 ./data/。
+#   3. ★ 向量后端：本 compose **不单起 Qdrant 服务**，用的是嵌入式（本地模式）
+#      Qdrant —— 配置里 vector_store.config.path 必须落在数据目录内
+#      （样例的 ./data/qdrant 在容器里即 /app/data/qdrant，随 ./data 持久化）。
+#      嵌入式 Qdrant 持有目录锁，只能单进程（服务本身也拒绝多 worker）。
+#   其余：数据落盘在 ./data（已在 .gitignore）；生产部署建议仍用 systemd
+#   （见 deploy/aidumem-api.service）；宿主只发布 127.0.0.1:8767，
+#   对外暴露请前置 TLS 反代。
+#   4. ★ 首次起之前先交接挂载目录的属主（v20.0 P3-8 起容器不再以 root 跑）：
 #          mkdir -p ./data ./logs && sudo chown -R 10001:10001 ./data ./logs
 #      漏了这一步的症状是**启动成功但写不进**：容器起来了、/health 也答，
 #      第一次写记忆才报 `unable to open database file`。
@@ -32,9 +45,15 @@ services:
       - AIDUMEM_API_PORT=8767
       - MEM0_API_PORT=8767
       - MEM0_TELEMETRY=false
-      # 安全：按需在宿主机 .env 注入（compose 会自动读取）
-      # - AIDUMEM_API_TOKEN=change-me-please
-      # - AIDUMEM_UI_PASSWORD=change-me-please
+      # 凭据：0.0.0.0 绑定 + 无凭据 = 服务拒绝启动（fail-closed）。token 必填，
+      # 从本文件旁的 .env 插值；UI 口令可选（留空即不设）。
+      - AIDUMEM_API_TOKEN=${AIDUMEM_API_TOKEN:?set AIDUMEM_API_TOKEN in the .env next to docker-compose.yml - see README container deployment}
+      - AIDUMEM_UI_PASSWORD=${AIDUMEM_UI_PASSWORD:-}
+      # 模型配置在可写的数据目录里（与 Dockerfile 默认值一致，写在这里是为了显眼）
+      - AIDUMEM_CONFIG_FILE=/app/data/mem0_config_local.json
+      # 向量后端：嵌入式 Qdrant（本地模式，无独立服务），数据在配置的
+      # vector_store.config.path 下 —— 必须位于 /app/data 内才会持久化
+      - AIDUMEM_VECTOR_BACKEND=qdrant
       # v19.0 认知层开关（默认开启 Reflect / self-edit；P1 的 LLM 增强默认关闭）
       - AIDUMEM_REFLECT_ENABLED=true
       - AIDUMEM_SELF_EDIT_ENABLED=true
@@ -48,19 +67,24 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # v22.0（雷霆审计 A8）：宿主视角 healthcheck——验证「宿主 curl 通」，
-    # 与容器内 HEALTHCHECK（探容器内回环）互补，不再假绿。
+    #   ↑ 一个 capability 都不留：本服务只监听 8767（>1024），不需要
+    #     NET_BIND_SERVICE。若你把端口改到 1024 以下，要补 cap_add。
+    # f0.3：compose 的 healthcheck 与 Dockerfile 的 HEALTHCHECK 一样**在容器内**
+    # 执行（不是宿主视角）。python:3.12-slim 镜像里没有 curl，旧写法
+    # `curl -sf` 每次都是 command not found → 容器恒 unhealthy。改用镜像里
+    # 必有的 python 标准库探 /livez（与 Dockerfile 同一条命令；/livez 免鉴权）。
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8767/livez"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8767/livez', timeout=4).status == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 30s
-    #   ↑ 一个 capability 都不留：本服务只监听 8767（>1024），不需要
-    #     NET_BIND_SERVICE。若你把端口改到 1024 以下，要补 cap_add。
     volumes:
+      # 只挂目录、全部可写：数据、日志、模型配置（data/mem0_config_local.json）
+      # 都在 uid 10001 名下（见上方 chown）。不再单文件 :ro 挂配置进 /app。
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./mem0_config_local.json:/app/mem0_config_local.json:ro
-      # 部署方如需自定义实体词表，取消下一行注释：
-      # - ./.env:/app/.env
+      # 部署方如需自定义实体词表，取消下面两行注释（服务按 AIDUMEM_ENV_FILE
+      # 找 .env；wheel 安装形态下默认位置不在 /app，只挂文件不设变量等于没挂）：
+      # - ./.env:/app/.env:ro
+      # 并在 environment 里加：- AIDUMEM_ENV_FILE=/app/.env
