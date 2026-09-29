@@ -578,9 +578,15 @@ def _enforce_public_binding_policy() -> None:
         # 部署方的知情选择，**组合态**此前只剩一行 WARNING，没有任何机制
         # 阻止「顺手多开一个开关」把实例推上公网。组合态必须二次显式确认：
         # 确认变量的值必须逐字等于实际监听地址（防复制粘贴的 1/true 蒙混）。
-        if _trust_proxy_enabled():
-            confirm = os.environ.get("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", "").strip()
-            if confirm != host:
+        #
+        # f0.3：**单开** INSECURE_PUBLIC 也改为同一道二次确认。单开的后果已经是
+        # 「任何能连到这台机器的人都能读写全部记忆」，此前却只打一行 WARNING 就
+        # 放行 —— 一个 `=1` 就把实例推上公网，比组合态少的只是反代那三道防线。
+        # 两种形态共用 AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH，值必须逐字等于监听地址。
+        confirm = os.environ.get("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", "").strip()
+        combo = _trust_proxy_enabled()
+        if confirm != host:
+            if combo:
                 logger.critical(
                     "🛑 [Security Fatal] 拒绝启动：AIDUMEM_ALLOW_INSECURE_PUBLIC=1 与 "
                     "AIDUMEI_TRUST_PROXY=1 同时开启且未配置任何凭据——公网监听 '%s' "
@@ -593,16 +599,30 @@ def _enforce_public_binding_policy() -> None:
                     f"credential on '{host}' requires AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH='{host}'."
                 )
             logger.critical(
+                "🛑 [Security Fatal] 拒绝启动：AIDUMEM_ALLOW_INSECURE_PUBLIC=1 且未配置任何凭据"
+                "——公网监听 '%s'，任何能连到本机的人都能读写全部记忆。若确属知情部署，"
+                "请再设 AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s（值必须逐字等于监听地址）；"
+                "否则请配置 AIDUMEM_API_TOKEN。", host, host,
+            )
+            raise RuntimeError(
+                "Fatal Security Policy: INSECURE_PUBLIC without any credential on "
+                f"'{host}' requires AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH='{host}'."
+            )
+        if combo:
+            logger.critical(
                 "🛑 [Security] 组合逃逸门已二次确认（AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s）："
                 "公网裸奔 + 三道请求期防线全部让渡给反代，后果自负。", host,
             )
         else:
-            logger.warning("⚠️ 已开启 AIDUMEM_ALLOW_INSECURE_PUBLIC：以不安全模式监听公网 %s", host)
+            logger.critical(
+                "🛑 [Security] 无凭据公网监听已二次确认（AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s）："
+                "任何能连到本机的人都能读写全部记忆，后果自负。", host,
+            )
         return
     logger.critical(
         "🛑 [Security Fatal] 拒绝启动：监听地址为公网/非回环 '%s' 且未配置任何凭据"
-        "（AIDUMEM_API_TOKEN 或 UI 口令）。请配置凭据，或显式设置 "
-        "AIDUMEM_ALLOW_INSECURE_PUBLIC=1 后重试。", host,
+        "（AIDUMEM_API_TOKEN 或 UI 口令）。请配置凭据；确属知情的无凭据公网部署，须同时设 "
+        "AIDUMEM_ALLOW_INSECURE_PUBLIC=1 与 AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=%s。", host, host,
     )
     raise RuntimeError(
         f"Fatal Security Policy: binding to '{host}' without any credential is prohibited."

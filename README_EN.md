@@ -125,8 +125,10 @@ The canon walks it through: environment check → dependencies → gear selectio
 > We paid for this lesson in production (read line down for a month, write line never wired, every probe green). So now `/health` carries an `ingest_liveness_ok` probe watching for "reading but not writing", and after a few real turns you should run:
 >
 > ```bash
-> python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"   # exit code 0 means the wiring works
+> python3 scripts/check_ingest_wiring.py   # credential read from AIDUMEM_API_TOKEN (or the repo-root .env); exit code 0 means the wiring works
 > ```
+>
+> Pass the credential through the environment or `.env`, not as `--token "$AIDUMEM_API_TOKEN"`: command-line arguments are visible to other local users via `ps`.
 >
 > **Each line has a ready-made script — copy it over and register it** (don't write your own):
 >
@@ -235,7 +237,7 @@ Details: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## MCP Server (41 tools · default port 8766)
 
-MCP and REST run in one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind must configure `AIDUMEM_API_TOKEN` or the server refuses to start; only set `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` if you genuinely need public exposure (off by default; turning it on emits a critical log line). Tool groups and call examples in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+MCP and REST run in one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind must configure `AIDUMEM_API_TOKEN` or the server refuses to start; only set `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` if you genuinely need credential-less public exposure (off by default; turning it on emits a critical log line) — the REST service additionally requires `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<listen address>` (the value must equal the actual listen address verbatim; `1`/`true` do not count), otherwise it still refuses to start. Tool groups and call examples in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## Security Model
 
@@ -264,7 +266,7 @@ The complete environment variable registry is `ducky/env_registry.py` (code is t
 |---|---|
 | Retrieval | bge-m3 vectors + FTS5 Chinese BM25/trigram + a real cross-encoder reranker (**requires a reranker key to take effect, off by default** — see `AIDUMEI_RERANKER_API_KEY` in `.env.example`); relevance gate (small talk skips retrieval, saving tokens) |
 | Memory semantics | Three-track forgetting (identity never decays / emotional accelerates / standard curve) · dual timeline (memories **expire** rather than get deleted) · six-type classification |
-| Governance | Dual review on write + conflict resolution + injection defence; event ledger across all paths; cryptographic lineage (tamper-evident) |
+| Governance | Dual review on write + conflict resolution + injection defence; event ledger across all paths; lineage consistency chain (an unkeyed SHA-256 hash chain: it detects accidental corruption and partial edits, but does not stop anyone who can rewrite the database) |
 | Evolution | Reflection (on-demand and scheduled) · instinct-to-skill promotion (human approval gate) · retrieval self-evolution feedback loop |
 | Collaboration | Federation: multiple agents share one memory store (MoE gating + fine-grained grants) · multiple bots/profiles each in their own domain, independent memory personas, cross-domain isolation by default |
 | Periphery | Multimodal visual memory · code graph · verbatim drawer · Obsidian backlinks |

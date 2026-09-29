@@ -57,9 +57,13 @@ def test_confirmation_wrong_value_denied(monkeypatch):
         assert "INSECURE_PUBLIC + TRUST_PROXY" in str(ei.value)
 
 
-def test_single_insecure_public_still_allowed(monkeypatch):
-    """单开 INSECURE_PUBLIC（不开 TRUST_PROXY）→ 旧行为保留，只 WARNING。"""
-    _call_policy(monkeypatch, trust=False)  # 不抛
+def test_single_insecure_public_now_requires_the_same_confirmation(monkeypatch):
+    """f0.3：单开 INSECURE_PUBLIC（不开 TRUST_PROXY）此前只 WARNING 就放行；
+    现与组合态同一道二次确认——不确认拒绝启动，逐字确认监听地址才放行。"""
+    with pytest.raises(RuntimeError) as ei:
+        _call_policy(monkeypatch, trust=False)
+    assert "INSECURE_PUBLIC without any credential" in str(ei.value), str(ei.value)
+    _call_policy(monkeypatch, trust=False, confirm="0.0.0.0")  # 不抛
 
 
 def test_loopback_unaffected(monkeypatch):
