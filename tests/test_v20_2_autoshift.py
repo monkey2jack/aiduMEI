@@ -1098,3 +1098,48 @@ def test_add_coalesce_keeps_punctuation_scopes_separate(rig, monkeypatch, scopes
     remaining = coalesce.coalesce_flush_due(force=True)
     assert len(remaining) == 1
     assert (remaining[0]['user_id'], remaining[0]['bank_id']) == scopes[1][:2]
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("summary", [False, True])
+def test_completed_summary_route_preserves_write_and_origin(rig, monkeypatch, fallback, summary):
+    import ducky.add_speed as speed
+    import ducky.epistemic as epistemic
+    import ducky.hot.add as hot_add
+
+    _, fake, http, _ = rig
+    seen, stamps, writes = [], [], []
+    original_add = fake.add
+
+    def record_add(*args, **kwargs):
+        writes.append(kwargs)
+        return original_add(*args, **kwargs)
+
+    monkeypatch.setattr(fake, "add", record_add)
+    monkeypatch.setattr(speed, "ensure_coalesce_worker", lambda: None)
+    monkeypatch.setattr(speed, "register_coalesce_flusher", lambda *a, **k: None)
+    monkeypatch.setattr(gear, "should_try_llm", lambda **kw: True)
+    monkeypatch.setattr(epistemic, "stamp_memory_refs", lambda refs, mode, **kw: stamps.append(mode))
+
+    def pipeline(mem, msgs, uid, meta, *, infer, bank_id):
+        seen.append((infer, dict(meta)))
+        if fallback:
+            raise ValueError("exercise direct fallback")
+        return {"status": "ok", "action": "observed"}
+
+    monkeypatch.setattr(hot_add, "lazy_import_layer1", lambda: pipeline)
+    metadata = {"kind": "session_distill", "lane": "distill",
+                "_origin_agent": "session-distill"} if summary else {}
+    body = {"messages": "The team chose the blue design.", "user_id": "summary-user",
+            "bank_id": "work", "metadata": metadata,
+            "idempotency_key": f"summary-{summary}-{fallback}"}
+    response = http.post("/add", json=body)
+    assert response.status_code == 200, response.text
+    assert seen[0][0] is (not summary)
+    assert bool(seen[0][1].get("no_coalesce")) is summary
+    if fallback:
+        assert writes[-1]["infer"] is (not summary)
+        assert stamps[-1] == "reasoned"
+    replay = http.post("/add", json=body)
+    assert replay.json()["idempotency_replayed"] is True
+    assert len(seen) == 1
