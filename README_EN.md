@@ -237,7 +237,7 @@ Details: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## MCP Server (41 tools · default port 8766)
 
-MCP and REST run in one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind must configure `AIDUMEM_API_TOKEN` or the server refuses to start; only set `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` if you genuinely need credential-less public exposure (off by default; turning it on emits a critical log line) — the REST service additionally requires `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<listen address>` (the value must equal the actual listen address verbatim; `1`/`true` do not count), otherwise it still refuses to start. Tool groups and call examples in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+MCP and REST run in one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind must configure `AIDUMEM_API_TOKEN` or the server refuses to start; only set `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` if you genuinely need credential-less public exposure (off by default; turning it on emits a critical log line) — both the REST service and MCP SSE additionally require `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<listen address>` (the value must equal the actual listen address verbatim; `1`/`true` do not count), otherwise it still refuses to start. Tool groups and call examples in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## Security Model
 

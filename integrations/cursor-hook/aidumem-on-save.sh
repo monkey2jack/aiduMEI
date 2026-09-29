@@ -79,9 +79,15 @@ if [ -z "$AIDUMEM_USER_ID" ]; then
         || AIDUMEM_USER_ID="default"
 fi
 
+# f0.3：Bearer 头写进 0600 临时文件，curl 用 -H @file 读取，token 不进命令行。
 AUTH_ARGS=()
+_AUTH_HDR_FILE=""
 if [ -n "${AIDUMEM_API_TOKEN:-}" ]; then
-    AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
+    _AUTH_HDR_FILE="$(mktemp "${TMPDIR:-/tmp}/aidumem_hdr.XXXXXX")"
+    chmod 600 "$_AUTH_HDR_FILE"
+    printf 'Authorization: Bearer %s\n' "${AIDUMEM_API_TOKEN}" > "$_AUTH_HDR_FILE"
+    trap 'rm -f "${_AUTH_HDR_FILE}"' EXIT
+    AUTH_ARGS=(-H "@${_AUTH_HDR_FILE}")
 fi
 
 # ── 参数校验 ──────────────────────────────────────────
@@ -138,7 +144,7 @@ print(json.dumps({
 # symlink 覆盖风险。改 mktemp + 0600 + trap 清理。
 RESP_FILE=$(mktemp "${TMPDIR:-/tmp}/aidumem_resp.XXXXXX")
 chmod 600 "$RESP_FILE"
-trap 'rm -f "$RESP_FILE"' EXIT INT TERM
+trap 'rm -f "$RESP_FILE" "${_AUTH_HDR_FILE:-}"' EXIT INT TERM
 HTTP_CODE=$(curl -s -o "$RESP_FILE" -w "%{http_code}" \
     --max-time "$TIMEOUT" \
     -X POST "${AIDUMEM_URL}/add/raw" \

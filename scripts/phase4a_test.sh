@@ -7,9 +7,15 @@ URL="${AIDUMEM_API_BASE:-http://127.0.0.1:8767}/api/mem0/inject-context"
 
 # 🔴P0-1（v19.4.1）：门禁开启后不带凭据的 curl 一律 401。
 # 未设 token 时为空数组（行为与旧版一致）。
+# f0.3：Bearer 头写进 0600 临时文件，curl 用 -H @file 读取，token 不进命令行。
 AUTH_ARGS=()
+_AUTH_HDR_FILE=""
 if [[ -n "${AIDUMEM_API_TOKEN:-}" ]]; then
-  AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
+  _AUTH_HDR_FILE="$(mktemp "${TMPDIR:-/tmp}/aidumem_hdr.XXXXXX")"
+  chmod 600 "$_AUTH_HDR_FILE"
+  printf 'Authorization: Bearer %s\n' "${AIDUMEM_API_TOKEN}" > "$_AUTH_HDR_FILE"
+  trap 'rm -f "${_AUTH_HDR_FILE}"' EXIT
+  AUTH_ARGS=(-H "@${_AUTH_HDR_FILE}")
 fi
 PASS=0
 FAIL=0

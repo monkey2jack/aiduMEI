@@ -227,7 +227,7 @@ python scripts/e2e_smoke.py --json                                              
 
 ## MCP Server（41 工具 · 默认端口 8766）
 
-MCP 与 REST 同进程双栈：REST 在 :8767，MCP 在 :8766（stdio/HTTP 双传输）。**鉴权纪律**：非回环绑定必须配置 `AIDUMEM_API_TOKEN`，否则拒绝启动；确有无凭据公网暴露需求才显式设置 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1`（默认关闭，开启会打 critical 日志）——REST 服务还须同时设 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<监听地址>`（值必须逐字等于实际监听地址，`1`/`true` 不算），否则照样拒绝启动。工具分组与调用示例见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
+MCP 与 REST 同进程双栈：REST 在 :8767，MCP 在 :8766（stdio/HTTP 双传输）。**鉴权纪律**：非回环绑定必须配置 `AIDUMEM_API_TOKEN`，否则拒绝启动；确有无凭据公网暴露需求才显式设置 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1`（默认关闭，开启会打 critical 日志）——REST 与 MCP SSE 都还须同时设 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<监听地址>`（值必须逐字等于实际监听地址，`1`/`true` 不算），否则照样拒绝启动。工具分组与调用示例见 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
 
 ## 🔐 安全模型
 

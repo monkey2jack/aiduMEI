@@ -21,8 +21,11 @@ database by hand to find it.
 So, before you trust this system with anything:
 
 ```bash
-python3 scripts/check_ingest_wiring.py --token "$AIDUMEM_API_TOKEN"
+python3 scripts/check_ingest_wiring.py   # reads AIDUMEM_API_TOKEN from the environment / .env
 ```
+
+Keep the credential in the environment or `.env`; avoid `--token "$AIDUMEM_API_TOKEN"`,
+because command-line arguments are visible to other local users via `ps`.
 
 It asks exactly one question — *you are reading; are you also writing?* —
 and exits non-zero if the answer is no. Run it after deploying, and keep it
@@ -238,4 +241,4 @@ Use the HTTP API as the single integration surface: `/gate`, `/search`, `/add`, 
 
 ## MCP server (port 8766)
 
-The built-in MCP server exposes the same operations over stdio or SSE. Its write tools land on the REST API and share the REST credential. Trust model: stdio and loopback-bound SSE (`127.0.0.1`/`localhost`/`::1`) trust the local machine; **SSE bound to a non-loopback address refuses to start unless `AIDUMEM_API_TOKEN` is configured** (sent as Bearer), so the MCP surface cannot bypass REST auth. The explicit escape hatch `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` lifts the refusal (off by default, critical-level log when on).
+The built-in MCP server exposes the same operations over stdio or SSE. Its write tools land on the REST API and share the REST credential. Trust model: stdio and loopback-bound SSE (`127.0.0.1`/`localhost`/`::1`) trust the local machine; **SSE bound to a non-loopback address refuses to start unless `AIDUMEM_API_TOKEN` is configured** (sent as Bearer), so the MCP surface cannot bypass REST auth. The explicit escape hatch `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` lifts the refusal only together with `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<bind host>` (verbatim; same rule as the REST gate since f0.3; off by default, critical-level log when on).

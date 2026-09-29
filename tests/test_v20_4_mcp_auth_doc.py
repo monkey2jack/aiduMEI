@@ -37,10 +37,24 @@ class TestMcpSseAuthorizationBehavior:
         assert mcp_server._sse_authorization_allowed() is False
 
     def test_allowed_by_explicit_escape_hatch(self, monkeypatch):
+        """f0.3: the escape hatch alone no longer opens the door — the bind
+        host must be confirmed verbatim, same as the REST gate."""
         mcp_server = pytest.importorskip("mcp_server")
         monkeypatch.setattr(mcp_server, "api_auth_headers", lambda: {})
         monkeypatch.setenv("AIDUMEM_ALLOW_INSECURE_PUBLIC", "1")
-        assert mcp_server._sse_authorization_allowed() is True
+        monkeypatch.setenv("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", "0.0.0.0")
+        assert mcp_server._sse_authorization_allowed("0.0.0.0") is True
+
+    def test_escape_hatch_without_confirmation_is_refused(self, monkeypatch):
+        mcp_server = pytest.importorskip("mcp_server")
+        monkeypatch.setattr(mcp_server, "api_auth_headers", lambda: {})
+        monkeypatch.setenv("AIDUMEM_ALLOW_INSECURE_PUBLIC", "1")
+        monkeypatch.delenv("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", raising=False)
+        assert mcp_server._sse_authorization_allowed("0.0.0.0") is False
+        assert mcp_server._sse_authorization_allowed() is False
+        # a confirmation for a different host must not count either
+        monkeypatch.setenv("AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH", "1")
+        assert mcp_server._sse_authorization_allowed("0.0.0.0") is False
 
     def test_non_loopback_refusal_is_wired_at_bind(self):
         """AST/源码守卫：非回环绑定前必须过 _sse_authorization_allowed 判定 —
@@ -48,7 +62,7 @@ class TestMcpSseAuthorizationBehavior:
         直接读磁盘源码而不是 import：这条静态守卫不需要 mcp 依赖，
         不该在基础安装路径上跟着行为用例一起跳过。"""
         src = pathlib.Path(_ROOT, "mcp_server.py").read_text(encoding="utf-8")
-        assert "if not loopback and not _sse_authorization_allowed():" in src, \
+        assert "if not loopback and not _sse_authorization_allowed(args.host):" in src, \
             "非回环拒绑的判定不在启动路径上"
 
 
