@@ -89,8 +89,8 @@ class RefineActionRequest(BaseModel):
     bank_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
-def _types_query_memories(conn, memory_type: str, scope, owner_sql: str,
-                          owner_params, limit: int) -> list[dict]:
+def _types_query_memories(conn, memory_type: str, scope, mt_owner_sql: str,
+                          mt_owner_params, limit: int) -> list[dict]:
     """f0.3 (C5): mem0-keyed ledger rows of one type, resolved by their own key.
 
     A mem0 memory has no facts row; its text lives in text_fts.memories under
@@ -99,11 +99,11 @@ def _types_query_memories(conn, memory_type: str, scope, owner_sql: str,
     """
     refs = conn.execute(
         f"SELECT mt.memory_ref_raw, mt.confidence FROM memory_types mt "
-        f"WHERE mt.memory_type = ? AND {owner_sql} AND mt.bank_id = ? "
+        f"WHERE mt.memory_type = ? AND {mt_owner_sql} AND mt.bank_id = ? "
         f"AND mt.memory_ref_raw IS NOT NULL AND mt.memory_ref_raw != '' "
         f"AND mt.memory_ref_raw NOT GLOB 'fact:*' "
         f"ORDER BY mt.updated_at DESC LIMIT ?",
-        (memory_type, *owner_params, scope.bank_id, limit),
+        (memory_type, *mt_owner_params, scope.bank_id, limit),
     ).fetchall()
     if not refs:
         return []
@@ -113,13 +113,14 @@ def _types_query_memories(conn, memory_type: str, scope, owner_sql: str,
     found: dict = {}
     try:
         f_owner_sql, f_owner_params = visible_user_clause(scope.user_id)
-        ph = ",".join("?" for _ in by_key)
         tconn = get_text_conn()
-        for row in tconn.execute(
-                f"SELECT id, content, category FROM memories WHERE id IN ({ph}) "
+        for key in by_key:                # <= 200 primary-key lookups, local
+            row = tconn.execute(
+                f"SELECT id, content, category FROM memories WHERE id = ? "
                 f"AND {f_owner_sql} AND bank_id = ?",
-                (*by_key, *f_owner_params, scope.bank_id)).fetchall():
-            found[str(row[0])] = (row[1], row[2])
+                (key, *f_owner_params, scope.bank_id)).fetchone()
+            if row is not None:
+                found[str(row[0])] = (row[1], row[2])
     except (sqlite3.Error, ImportError, ValueError) as exc:  # index unavailable: refs stay unresolved
         logger.warning(f"/memory/types/query 记忆正文解析跳过: {exc}")
     out = []
