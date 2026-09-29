@@ -5,54 +5,59 @@
 依据四份互相独立的审计（内部自审、生产用户视角审计、两份外部审计），逐条核实后收录；外审里与既定裁决冲突、或经核实不成立的条目不进本版。用例总数 2385 → 2858（`pytest --collect-only` 实测：行为 2385 + 脚本/钩子 327 + 守卫 146），每条修复自带负向对照：把改动逐一退回原代码，对应用例全部变红。
 
 ### 止血：consolidator 不再在「删除 0/N」的日志下真删
-- **淘汰判据与 /delete 契约脱节**：`/delete` 自 v20.2.5-b 起只返回 `committed` / `not_found` / `partial` / `failed`，consolidator 却按 `status == "ok"` 判成功 —— 日志连续多日写「删除 0/N」，实际删除照常发生（墓碑可恢复）。现在淘汰分三档 `AIDUMEI_CONSOLIDATOR_EVICT=off|dry-run|apply`，**默认 dry-run（只列候选，一条不删）**；apply 档按四态分别记账、按候选自身作用域删除，对账不平打 WARNING；每轮写 `consolidator_last_run.json`。
-- **矛盾检测重写**：旧实现按单字反义词两两比对（开/关、大/小、多/少……，且「不是」本身含「是」），立场相同的两句（「不要熬夜」「不要喝酒」）也判矛盾，每对把两条记忆的显著性各减半 —— 生产上单轮数万对、平方级增长，正是淘汰名单的推手。现在删去单字对，否定式不再算作肯定式，按子句要求主语与宾语相同（Jaccard ≥ 0.5）；处置档 `AIDUMEI_CONFLICT_PENALTY_MODE` **默认 warn（只记摘要，不改显著性）**，apply 档每条每轮最多减半一次；每组比对设上限并如实报截断。
-- **日志双写**：FileHandler 与 cron 的 `2>&1` 同写一个文件，每行两遍；StreamHandler 只在 stderr 是终端时挂载。
-- **墓碑恢复补回向量层**：`restore_tombstone` 原先只回插 facts + FTS，恢复出的记忆召回不到；现在按原 id 重新嵌入并重建向量点，所有必需层成功才盖章，可重复执行。新增 `scripts/restore_tombstones.py` 批量工具（默认演练，`--apply` 逐条恢复、核验并写 JSON 回执；经 HTTP 走运行中的服务，不另开向量库）。
+- **止血**：淘汰默认只预览、按 /delete 四态如实记账；矛盾检测重写并默认只告警；日志单写；墓碑恢复补回向量层。
+  - **淘汰判据与 /delete 契约脱节**：`/delete` 自 v20.2.5-b 起只返回 `committed` / `not_found` / `partial` / `failed`，consolidator 却按 `status == "ok"` 判成功 —— 日志连续多日写「删除 0/N」，实际删除照常发生（墓碑可恢复）。现在淘汰分三档 `AIDUMEI_CONSOLIDATOR_EVICT=off|dry-run|apply`，**默认 dry-run（只列候选，一条不删）**；apply 档按四态分别记账、按候选自身作用域删除，对账不平打 WARNING；每轮写 `consolidator_last_run.json`。
+  - **矛盾检测重写**：旧实现按单字反义词两两比对（开/关、大/小、多/少……，且「不是」本身含「是」），立场相同的两句（「不要熬夜」「不要喝酒」）也判矛盾，每对把两条记忆的显著性各减半 —— 生产上单轮数万对、平方级增长，正是淘汰名单的推手。现在删去单字对，否定式不再算作肯定式，按子句要求主语与宾语相同（Jaccard ≥ 0.5）；处置档 `AIDUMEI_CONFLICT_PENALTY_MODE` **默认 warn（只记摘要，不改显著性）**，apply 档每条每轮最多减半一次；每组比对设上限并如实报截断。
+  - **日志双写**：FileHandler 与 cron 的 `2>&1` 同写一个文件，每行两遍；StreamHandler 只在 stderr 是终端时挂载。
+  - **墓碑恢复补回向量层**：`restore_tombstone` 原先只回插 facts + FTS，恢复出的记忆召回不到；现在按原 id 重新嵌入并重建向量点，所有必需层成功才盖章，可重复执行。新增 `scripts/restore_tombstones.py` 批量工具（默认演练，`--apply` 逐条恢复、核验并写 JSON 回执；经 HTTP 走运行中的服务，不另开向量库）。
 
 ### 判据归真与可观测
-- 授权 `/health` 新增 consolidator 探针（档位、候选数、四态计数、对账不平与陈旧告警）与 `git_sha`；匿名公开视图不变。
-- 进程级 LLM 并发闸门（`AIDUMEI_LLM_MAX_CONCURRENCY`，默认 4；`call_llm` 与 mem0 抽取共用；等位带超时，不会死锁）；`scripts/report.py` 新增 24h LLM 降级率一级指标，cron 应装条数改读清单（去掉写死的 8）。
-- 验收脚本：解释器探测补 `venv/`（生产形态此前必报「找不到带 pytest 的解释器」）；cron 检查对账真实 crontab，无本仓条目时明确打印 SKIP；py_compile 覆盖全部受 git 跟踪的 `.py`（去掉 `head -400` 与 `2>/dev/null`）；只查文档的检查标 `DOC-` 前缀。
-- cron 按「任务名 + 仓库根」认主人：同机沙箱执行 `install` 不再把生产的托管任务搬到自己名下；清单外重复运行本仓脚本的行判为漂移；新增 `AIDUMEI_CRON_RUN_AS`，写数据的 consolidator 可降权运行。
+- **判据归真**：/health 探针与 git_sha、进程级 LLM 并发闸门与降级率、验收脚本对齐生产形态、cron 按仓库根认主人。
+  - 授权 `/health` 新增 consolidator 探针（档位、候选数、四态计数、对账不平与陈旧告警）与 `git_sha`；匿名公开视图不变。
+  - 进程级 LLM 并发闸门（`AIDUMEI_LLM_MAX_CONCURRENCY`，默认 4；`call_llm` 与 mem0 抽取共用；等位带超时，不会死锁）；`scripts/report.py` 新增 24h LLM 降级率一级指标，cron 应装条数改读清单（去掉写死的 8）。
+  - 验收脚本：解释器探测补 `venv/`（生产形态此前必报「找不到带 pytest 的解释器」）；cron 检查对账真实 crontab，无本仓条目时明确打印 SKIP；py_compile 覆盖全部受 git 跟踪的 `.py`（去掉 `head -400` 与 `2>/dev/null`）；只查文档的检查标 `DOC-` 前缀。
+  - cron 按「任务名 + 仓库根」认主人：同机沙箱执行 `install` 不再把生产的托管任务搬到自己名下；清单外重复运行本仓脚本的行判为漂移；新增 `AIDUMEI_CRON_RUN_AS`，写数据的 consolidator 可降权运行。
 
 ### 插件与钩子
-- 插件萃取不再依附 `/session/end` 成功（服务端会话表在内存里，长会话、服务重启后必然「不存在」，旧实现就此放弃萃取）。
-- 插件 `is_available()` 回到「配置 + 可达 + 已授权」：health 为 degraded/warn 时仍可用，此前任一软降级都会让宿主整场不启用插件。
-- 永久拒收的轮次（400/422）跳过并记日志，暂时失败在有界时间内重试；一轮不再拖住整场的 end 与萃取；服务停机时快速失败，不再按轮数累计拖延退出。
-- 读钩子：熔断/计数文件的内容先校验为纯数字再进 bash 算术（此前文件内容会被当作代码执行）；探活改打 O(1) 的 `/livez`；Bearer 头改走 stdin。运维脚本（升级前后检查、编辑器钩子等）同样改用 0600 头文件，token 不再出现在进程命令行。
-- 安装文档：萃取线挂 `on_session_end`（`session_end` 是错误事件名），并写明是必需线；部署自检遇到插件与 shell 钩子重复安装报黄。
+- **插件与钩子**：萃取不再依附 end、降级时仍可用、拒收的轮次不拖垮整场、读钩子加固、安装文档与部署自检对齐。
+  - 插件萃取不再依附 `/session/end` 成功（服务端会话表在内存里，长会话、服务重启后必然「不存在」，旧实现就此放弃萃取）。
+  - 插件 `is_available()` 回到「配置 + 可达 + 已授权」：health 为 degraded/warn 时仍可用，此前任一软降级都会让宿主整场不启用插件。
+  - 永久拒收的轮次（400/422）跳过并记日志，暂时失败在有界时间内重试；一轮不再拖住整场的 end 与萃取；服务停机时快速失败，不再按轮数累计拖延退出。
+  - 读钩子：熔断/计数文件的内容先校验为纯数字再进 bash 算术（此前文件内容会被当作代码执行）；探活改打 O(1) 的 `/livez`；Bearer 头改走 stdin。运维脚本（升级前后检查、编辑器钩子等）同样改用 0600 头文件，token 不再出现在进程命令行。
+  - 安装文档：萃取线挂 `on_session_end`（`session_end` 是错误事件名），并写明是必需线；部署自检遇到插件与 shell 钩子重复安装报黄。
 
 ### 服务端
-- 会话精华记录来源引用：删除源记忆或原文（单删、原文删除、`delete_all`）时，派生精华走带墓碑的正常级联一并删除。
-- 异步幂等回执按任务终态结清：失败即释放键，完成的键按 `AIDUMEI_IDEMPOTENCY_TTL_DAYS`（默认 7 天）过期清理；回执不再存正文；`delete_all` 同时清理 `idempotency_keys`。
-- 合并队列认 `_origin_session_id`，不同会话永不共批（此前生产写线的两个会话会被合成一批、溯源记到其中一个）。
-- `/add/coalesce/flush` 保留批次自己的 `infer`，LLM 失败时回落直写，失败返回 500/207，不再一律 200 ok。
-- `/memory/types/query` 只对严格的 `fact:<整数>` 关联 facts；UUID 走正确的存储解析（此前约六成 UUID 被截成整数、关联到无关事实）。
-- 原文库批量写入先提交 facts 再写 FTS，提交失败两边一起回滚，计数只算已提交的行。
-- `delete_all` 的 `not_cleared` 带上各派生表当前的残留行数。
+- **服务端**：精华随源级联删除、幂等回执按终态结清、合并队列会话键、flush 兜底、类型查询键空间、原文库提交顺序、`not_cleared` 行数。
+  - 会话精华记录来源引用：删除源记忆或原文（单删、原文删除、`delete_all`）时，派生精华走带墓碑的正常级联一并删除。
+  - 异步幂等回执按任务终态结清：失败即释放键，完成的键按 `AIDUMEI_IDEMPOTENCY_TTL_DAYS`（默认 7 天）过期清理；回执不再存正文；`delete_all` 同时清理 `idempotency_keys`。
+  - 合并队列认 `_origin_session_id`，不同会话永不共批（此前生产写线的两个会话会被合成一批、溯源记到其中一个）。
+  - `/add/coalesce/flush` 保留批次自己的 `infer`，LLM 失败时回落直写，失败返回 500/207，不再一律 200 ok。
+  - `/memory/types/query` 只对严格的 `fact:<整数>` 关联 facts；UUID 走正确的存储解析（此前约六成 UUID 被截成整数、关联到无关事实）。
+  - 原文库批量写入先提交 facts 再写 FTS，提交失败两边一起回滚，计数只算已提交的行。
+  - `delete_all` 的 `not_cleared` 带上各派生表当前的残留行数。
 
 ### 公开面与交付形态
-- 身份闸：pre-push 扫描每一个被推送的 ref（分支与 tag；附注标签扫 tagger），禁止邮箱域补上单段主机名、`.internal/.lan/.home/.localdomain/.corp` 等私网后缀与云厂商默认主机名；新增白名单模式（项目身份或 GitHub noreply），push_gate 已启用。
-- 容器：compose 健康检查改用镜像内的 python（slim 镜像无 curl，旧探针恒为 unhealthy）；配置默认放到可写的 `/app/data/`；compose 强制要求 `AIDUMEM_API_TOKEN`，缺失时启动当场报错而不是崩溃循环；README 补「容器部署」前置条件。
-- 系统级端点默认关闭：人格基座、技能结晶、代码图谱、进化报告与循环、技能草稿不在租户轴上，未开启时回 404 `feature_disabled`，OpenAPI 标注 system-only；反馈端点保持默认开启。
-- 无凭据公网监听：单开 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` 也必须 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH` 逐字等于监听地址，REST 与 MCP SSE 同一口径。
-- 谱系措辞归真：「可检测篡改的密码学谱系」改为「无密钥 SHA-256 一致性校验链」（能发现意外损坏与局部改动，防不住能重算整条链的人）。
-- 运行依赖锁定到生产实跑版本：uvicorn 0.52.3、httpx 0.28.1、requests 2.34.2、python-multipart 0.0.32、inotify_simple 2.0.1。
+- **公开面与交付**：身份闸扫所有 ref 与 tag、容器健康检查与可写配置、系统级端点默认关、无凭据公网须逐字确认、谱系措辞归真、运行依赖锁版本。
+  - 身份闸：pre-push 扫描每一个被推送的 ref（分支与 tag；附注标签扫 tagger），禁止邮箱域补上单段主机名、`.internal/.lan/.home/.localdomain/.corp` 等私网后缀与云厂商默认主机名；新增白名单模式（项目身份或 GitHub noreply），push_gate 已启用。
+  - 容器：compose 健康检查改用镜像内的 python（slim 镜像无 curl，旧探针恒为 unhealthy）；配置默认放到可写的 `/app/data/`；compose 强制要求 `AIDUMEM_API_TOKEN`，缺失时启动当场报错而不是崩溃循环；README 补「容器部署」前置条件。
+  - 系统级端点默认关闭：人格基座、技能结晶、代码图谱、进化报告与循环、技能草稿不在租户轴上，未开启时回 404 `feature_disabled`，OpenAPI 标注 system-only；反馈端点保持默认开启。
+  - 无凭据公网监听：单开 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` 也必须 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH` 逐字等于监听地址，REST 与 MCP SSE 同一口径。
+  - 谱系措辞归真：「可检测篡改的密码学谱系」改为「无密钥 SHA-256 一致性校验链」（能发现意外损坏与局部改动，防不住能重算整条链的人）。
+  - 运行依赖锁定到生产实跑版本：uvicorn 0.52.3、httpx 0.28.1、requests 2.34.2、python-multipart 0.0.32、inotify_simple 2.0.1。
 
 ### 升级须知（行为变更）
-- 人格 / 结晶 / 代码图谱 / 进化报告 / 技能草稿默认关闭；需要时逐个设 `AIDUMEM_PERSONA_ENABLED`、`AIDUMEI_CRYSTALS_ENABLED`、`AIDUMEI_CODE_GRAPH_ENABLED`、`AIDUMEI_EVOLVE_ADMIN_ENABLED`、`AIDUMEI_SKILL_DRAFTS_ENABLED` 为 true。
-- consolidator 默认不再删除任何记忆；矛盾检测默认不再改显著性。
-- 非回环、无凭据且只开 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` 的部署，升级后必须补 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<监听地址>`，否则拒绝启动。
-- 钩子是拷贝不是软链：三个 shell 钩子都改过，升级后必须按 `config.yaml` 实际引用的文件名重新部署并核 md5。
-- 清单外、未托管的旧 consolidator cron 行会被判为漂移，`update_crontab.sh install` 前请先清理。
+1. 人格 / 结晶 / 代码图谱 / 进化报告 / 技能草稿默认关闭；需要时逐个设 `AIDUMEM_PERSONA_ENABLED`、`AIDUMEI_CRYSTALS_ENABLED`、`AIDUMEI_CODE_GRAPH_ENABLED`、`AIDUMEI_EVOLVE_ADMIN_ENABLED`、`AIDUMEI_SKILL_DRAFTS_ENABLED` 为 true。
+2. consolidator 默认不再删除任何记忆；矛盾检测默认不再改显著性。
+3. 非回环、无凭据且只开 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` 的部署，升级后必须补 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<监听地址>`，否则拒绝启动。
+4. 钩子是拷贝不是软链：三个 shell 钩子都改过，升级后必须按 `config.yaml` 实际引用的文件名重新部署并核 md5。
+5. 清单外、未托管的旧 consolidator cron 行会被判为漂移，`update_crontab.sh install` 前请先清理。
 
 ### 保留边界（本版未修，如实登记）
-- `decay_all` 写回衰减值但不更新计时起点，实际衰减快于设计（约 30 天趋近 0）；淘汰已默认只预览，修法待定。
-- `/session/distill` 仍未接调用方授权：现有调用方不传 `caller_user_id`，接上会让它们一律 403。
-- facts.db 中尚有 8 张表未在级联矩阵里裁定，`delete_all` 不清也不报。
-- 升级前留下的旧 accepted 幂等回执在过期前可能再执行一次，有重复写一条精华的可能。
-- 系统级端点关闭时，MCP 里调用这些端点的工具会收到 404。
+1. `decay_all` 写回衰减值但不更新计时起点，实际衰减快于设计（约 30 天趋近 0）；淘汰已默认只预览，修法待定。
+2. `/session/distill` 仍未接调用方授权：现有调用方不传 `caller_user_id`，接上会让它们一律 403。
+3. facts.db 中尚有 8 张表未在级联矩阵里裁定，`delete_all` 不清也不报。
+4. 升级前留下的旧 accepted 幂等回执在过期前可能再执行一次，有重复写一条精华的可能。
+5. 系统级端点关闭时，MCP 里调用这些端点的工具会收到 404。
 
 ## f0.2 同版维护（2026-09-29）：主动审计与接线、作用域、验收加固
 
