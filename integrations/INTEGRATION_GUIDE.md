@@ -29,7 +29,7 @@ JSON 字段吃饭，字段一变形就静默返回空，长期不注入也不报
 | `sync_turn` | `/add` | 每轮对话后台归档，不阻塞对话 |
 | `on_pre_compress` | `/add` | 压缩前把即将丢掉的轮次先落进长期记忆 |
 | `on_memory_write` | `/facts/add` | 镜像 Hermes 内置 MEMORY.md / USER.md 写入 |
-| `on_session_end` | `/session/end` | 触发服务端归档与反思 |
+| `on_session_end` | `/session/end` + `/session/distill` → `/add` | 等本会话轮次落库后尽力归档与反思，再萃取「这一程」精华；萃取不依赖 `/session/end` 成功（服务端会话表在内存里，长会话/重启后会报「不存在」），被服务端永久拒收的轮次（400/422）跳过、不挡整场收尾 |
 | `get_tool_schemas` | `/search` `/add` `/health` | `aidumem_search` / `aidumem_remember` / `aidumem_status` |
 | `backup_paths` | — | 数据目录纳入 Hermes 备份流程 |
 
@@ -69,7 +69,8 @@ aiduMEI 默认仅监听回环；设置 API token 或 UI 口令后接口会强制
 
 ## B. Shell Hook（兜底方案）
 
-宿主 Hermes 不方便装插件时用。**两个脚本，两个挂点，缺一不可。**
+宿主 Hermes 不方便装插件时用。**三个脚本，三个挂点，缺一不可**（萃取线的挂点是
+`on_session_end`，不是 `session_end`；`check_hook_deployment.py` 缺任何一条都判不通过）。
 
 ### ⚠️ 先读这段：装一半等于没装
 
@@ -252,7 +253,9 @@ systemctl restart hermes-gateway     # 若以 gateway 方式运行
 ## ❓ 常见问题
 
 **Q: 两种方案能同时开吗？**
-不要。会重复注入，白烧 token。选一个。
+不要。会重复注入白烧 token，还会每轮重复写入、每程重复萃取。选一个。
+`python3 scripts/check_hook_deployment.py` 发现 `memory.provider: aidumem` 与
+aiduMEI shell 钩子同时在册时报黄（`double_install`，退出码 2），哪怕文件全部一致。
 
 **Q: 插件方案要重启吗？**
 装完插件和改 `memory.provider` 后要重启一次 Hermes / gateway。
