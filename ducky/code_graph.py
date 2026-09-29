@@ -10,6 +10,10 @@ ducky.code_graph — 代码结构图谱（Zeus-Alpha）
   - build_dependency_graph: 从目录构建依赖图
   - compute_blast_radius: 计算改动文件的"爆炸半径"
   - REST 端点: GET /code/graph, POST /code/impact
+
+f0.3：两个 REST 端点扫的是**服务端自己的源码树**（AIDUMEM_HOME 下），属系统级、
+不在租户轴上，默认关闭；设 AIDUMEI_CODE_GRAPH_ENABLED=true 才放行
+（见 ducky.system_endpoints）。库函数本身不受影响。
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
+from ducky.system_endpoints import system_route
 from ducky.utils import BASE_DIR
 
 logger = logging.getLogger("aiduMEM.code_graph")
@@ -207,7 +212,7 @@ def _workspace_root(root_dir: str) -> str:
 def register_code_graph_routes(app: FastAPI) -> None:
     """注册代码图谱端点"""
 
-    @app.post("/code/impact")
+    @app.post("/code/impact", **system_route("code_graph"))
     def code_impact(req: ImpactRequest):
         """计算改动文件的爆炸半径"""
         t0 = time.time()
@@ -230,7 +235,7 @@ def register_code_graph_routes(app: FastAPI) -> None:
             **result,
         }
 
-    @app.get("/code/graph")
+    @app.get("/code/graph", **system_route("code_graph"))
     def code_graph_stats(root_dir: str = ""):
         """代码图谱统计"""
         t0 = time.time()

@@ -250,6 +250,7 @@ Bearer token (`AIDUMEM_API_TOKEN`) + console passphrase (PBKDF2) + injection def
 | `AIDUMEM_DATA_DIR` | Data directory | `~/.aidumem` |
 | `AIDUMEI_ENGINE_MODE` | Engine gear: cloud/auto/local | auto |
 | `AIDUMEM_CONFIG_READONLY` | Read-only demo mode for console config | 0 |
+| `AIDUMEM_PERSONA_ENABLED` · `AIDUMEI_CRYSTALS_ENABLED` · `AIDUMEI_CODE_GRAPH_ENABLED` · `AIDUMEI_EVOLVE_ADMIN_ENABLED` · `AIDUMEI_SKILL_DRAFTS_ENABLED` | System-only endpoint families (persona banks / skill crystals / code graph / evolve report and cycle / skill drafts): instance-wide derived data **not on the tenant axis**; while off they answer 404 `feature_disabled`. `/evolve/feedback` is unaffected | false |
 | `AIDUMEI_INJECT_DATE` | Timestamp in recalled items: `day`/`minute`/`off` (hook side) | day |
 
 The complete environment variable registry is `ducky/env_registry.py` (code is the source of truth; typos raise a startup warning).
