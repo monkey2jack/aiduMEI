@@ -240,6 +240,7 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 | `AIDUMEM_DATA_DIR` | 数据目录 | `~/.aidumem` |
 | `AIDUMEI_ENGINE_MODE` | 引擎挡位 cloud/auto/local | auto |
 | `AIDUMEM_CONFIG_READONLY` | 控制台配置只读演示模式 | 0 |
+| `AIDUMEM_PERSONA_ENABLED` · `AIDUMEI_CRYSTALS_ENABLED` · `AIDUMEI_CODE_GRAPH_ENABLED` · `AIDUMEI_EVOLVE_ADMIN_ENABLED` · `AIDUMEI_SKILL_DRAFTS_ENABLED` | 系统级端点族（人格基座 / 技能结晶 / 代码图谱 / 进化报告与循环 / 技能草稿）：全实例共享的派生数据、**不在租户轴上**，未开启时回 404 `feature_disabled`；`/evolve/feedback` 不受影响 | false |
 | `AIDUMEI_INJECT_DATE` | 召回注入带不带时间：`day`/`minute`/`off`（钩子侧） | day |
 
 全量环境变量登记册见 `ducky/env_registry.py`（代码即真相源，错拼会启动告警）。

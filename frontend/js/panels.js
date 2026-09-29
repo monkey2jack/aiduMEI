@@ -1010,15 +1010,28 @@ function renderHistory(events) {
 /* ===========================================================================
    EVOLVE — is it getting better
    =========================================================================== */
+/* f0.3: system-only endpoint families (not tenant-isolated) answer
+   404 feature_disabled until the deployment opts in. Show that as an explicit
+   "off" state naming the flag, not as a panel failure. */
+function disabledFlag(e) {
+  const d = e && e.status === 404 && e.body && e.body.detail;
+  return d && d.code === 'feature_disabled' ? String(d.feature_flag || '') : '';
+}
+
 async function renderEvolve(body) {
   body.innerHTML = loading('进化报告 / Evolution report');
 
   let report, trust, crystals;
+  let reportOff = '', crystalsOff = '';
   try {
     [report, trust, crystals] = await Promise.all([
-      API.get('/evolve/report'),
+      API.get('/evolve/report').catch(function (e) {
+        reportOff = disabledFlag(e);
+        if (reportOff) return {};
+        throw e;
+      }),
       API.get('/facts/trust-stats'),
-      API.get('/crystals').catch(function () { return null; }),
+      API.get('/crystals').catch(function (e) { crystalsOff = disabledFlag(e); return null; }),
     ]);
   } catch (e) {
     body.innerHTML = failure(e);
@@ -1031,7 +1044,11 @@ async function renderEvolve(body) {
   const peakCnt = cats.length ? Math.max.apply(null, cats.map(function (c) { return c.cnt; })) : 1;
   const quiet = !s7.total_queries;
 
-  body.innerHTML =
+  body.innerHTML = (reportOff
+    ? '<div class="sec">' + secHead('进化报告', 'EVOLUTION REPORT', '') +
+        '<div class="hint">进化报告是系统级端点（未按域隔离），默认关闭 / system-only, off by default. ' +
+        '部署方设 <code>' + esc(reportOff) + '=true</code> 开启。</div></div>'
+    :
     '<div class="sec">' + secHead('最近 7 天检索质量', 'SEARCH QUALITY · 7 DAYS',
       report.last_cycle_human ? '上次进化 ' + esc(report.last_cycle_human) : '') +
       '<div class="tiles">' +
@@ -1057,7 +1074,7 @@ async function renderEvolve(body) {
               '<b>' + fmtInt(a.count) + ' 次 ' + (up ? '+' : '') + (a.avg_delta || 0).toFixed(4) + '</b></div>';
           }).join('') + '</div>'
         : '<div class="hint">这一周没有权重调整 / No adjustments this week.</div>') +
-    '</div>' +
+    '</div>') +
 
     '<div class="sec">' + secHead('各分类信任度', 'TRUST BY CATEGORY', '满分 1.00') +
       '<div class="layers">' + cats.map(function (c) {
@@ -1071,8 +1088,11 @@ async function renderEvolve(body) {
       }).join('') + '</div>' +
     '</div>' +
 
-    '<div class="sec">' + secHead('结晶候选', 'CRYSTALS', crystals ? '' : '接口未响应') +
-      (crystals && (crystals.crystals || crystals.items || []).length
+    '<div class="sec">' + secHead('结晶候选', 'CRYSTALS', crystals || crystalsOff ? '' : '接口未响应') +
+      (crystalsOff
+        ? '<div class="hint">结晶候选是系统级端点（未按域隔离），默认关闭 / system-only, off by default. ' +
+          '部署方设 <code>' + esc(crystalsOff) + '=true</code> 开启。</div>'
+        : crystals && (crystals.crystals || crystals.items || []).length
         ? '<div class="recs">' + (crystals.crystals || crystals.items).slice(0, 5).map(function (c) {
             return '<div class="rec"><div class="rtext">' + esc(clip(c.pattern || c.text || JSON.stringify(c), 200)) + '</div></div>';
           }).join('') + '</div>'

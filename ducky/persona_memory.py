@@ -25,7 +25,8 @@ ducky.persona_memory — 人格记忆基座（v19.0 · Persona Memory Layer）
     · 基座离线构建、版本化、可回滚（rollback 切回旧版本，数据不删）
 
 配置：
-    AIDUMEM_PERSONA_ENABLED=false 可整体关闭路由注册（默认 true）
+    AIDUMEM_PERSONA_ENABLED=true 才放行 /persona/* 端点（f0.3 起**默认 false**：
+                                基座全实例共享、bank_id 可枚举，不在租户轴上）
     AIDUMEM_PERSONA_MAX_MEMORIES  单基座最大记忆条数（默认 2000，防爆表）
 """
 from __future__ import annotations
@@ -43,8 +44,10 @@ logger = logging.getLogger("aiduMEM.persona_memory")
 
 PERSONA_DB = os.path.join(DATA_DIR, "persona.db")
 
-PERSONA_ENABLED = os.environ.get("AIDUMEM_PERSONA_ENABLED", "true").strip().lower() not in {
-    "0", "false", "no", "off",
+# f0.3：默认关闭，只认显式 true/1/yes/on。这只是 import 期快照（供旧调用方读）；
+# 端点放行以 ducky.system_endpoints 在每次请求时读到的环境值为准。
+PERSONA_ENABLED = os.environ.get("AIDUMEM_PERSONA_ENABLED", "").strip().lower() in {
+    "1", "true", "yes", "on",
 }
 _MAX_MEMORIES = 2000
 

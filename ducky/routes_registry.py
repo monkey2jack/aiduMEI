@@ -25,6 +25,7 @@ from ducky.routes_pantheon import register_pantheon_routes
 from ducky.routes_p0 import register_p0_routes
 from ducky.routes_p1 import register_p1_routes
 from ducky.routes_persona import register_persona_routes
+from ducky.system_endpoints import GatedRegistrar, assert_all_gated
 
 logger = logging.getLogger("aiduMEM.RoutesRegistry")
 
@@ -71,7 +72,10 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
     register_p0_routes(app)
 
     # 14. 注册 v19.0 P1 记忆类型分离路由（四网络查询视图）
-    register_p1_routes(app)
+    #     f0.3：经 GatedRegistrar 注册 —— 其中的 /skill/grow、/skill/drafts 属系统级
+    #     派生端点（全实例共享的 skill_crystals 表），自动挂上默认关闭的特性闸
+    #     （AIDUMEI_SKILL_DRAFTS_ENABLED）；其余路由原样透传。
+    register_p1_routes(GatedRegistrar(app))
 
     # 15. 注册 v19.0 人格记忆基座路由（Persona Memory Layer）
     register_persona_routes(app)
@@ -79,5 +83,9 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
     # 16. 注册 v21 知识治理只读端点（演化审计 / 记忆档案导出）
     register_knowledge_routes(app)
     register_pantheon_routes(app)
+
+    # f0.3：系统级（不在租户轴上）端点族必须全部挂着各自的默认关闭特性闸 ——
+    # 哪一个被注册成了裸路由（重构漏了闸），启动即失败，而不是静默对外敞开。
+    assert_all_gated(app)
 
     logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus + v18.1 EvolveMem + aiduMEI 配置 + Obsidian + v19.0 Reflect/类型分离/人格基座 + v21 知识治理)")
