@@ -52,6 +52,11 @@ def patch_llm_for_speed(mem_instance) -> None:
             logger.debug(f"patch_llm_for_speed: suppressed exception: {e}")
 
         _orig = client.chat.completions.create
+        # f0.3（A4）：mem0 抽取通道与 call_llm 共用**同一个**进程级并发闸门
+        # （ducky.llm_client._LLM_SLOTS）。等不到空位抛 LLMConcurrencyTimeout
+        # （TimeoutError）—— mem0 的 generate_response 调用点把任何异常包成
+        # LLMError，写入链路对 LLMError 的既有处置是「记 LLM 腿失败 + 确定性直写」。
+        from ducky.llm_client import LLMConcurrencyTimeout, llm_slot, record_llm_outcome
 
         def _wrapped(*args, **kwargs):
             # 只有部署方显式配了才注入。原先的 if/elif 两个分支做的是同一件事，
@@ -61,7 +66,17 @@ def patch_llm_for_speed(mem_instance) -> None:
             # reasoning 路径 SDK 可能不带 max_tokens；这里强制补上
             if force_max and "max_tokens" not in kwargs and "max_completion_tokens" not in kwargs:
                 kwargs["max_tokens"] = max_tokens
-            return _orig(*args, **kwargs)
+            outcome = "failed"
+            try:
+                with llm_slot("mem0"):
+                    result = _orig(*args, **kwargs)
+                outcome = "ok"
+                return result
+            except LLMConcurrencyTimeout:
+                outcome = "gate_timeout"
+                raise
+            finally:
+                record_llm_outcome(outcome, origin="mem0")
 
         client.chat.completions.create = _wrapped
         setattr(mem_instance, "_aidumem_speed_patched", True)
