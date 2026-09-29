@@ -10,6 +10,15 @@
 #      路径，可执行判据才有意义。
 #   另：install 完成后回读**真实 crontab** 对账，世界没装够就红；--installed
 #   报告实装数（report.py 用它，不再拿意图数冒充实装数）。
+#
+# f0.3 (O-3): an entry belongs to one checkout -- task name + the root in its
+#   `cd "<root>"` part. Installing from a second checkout (a sandbox next to
+#   production) leaves the other root's entries untouched and reports them;
+#   --installed also flags job lines outside the managed block that run this
+#   root's managed scripts (e.g. a legacy unmanaged consolidator line) as drift.
+#   Optional demotion: AIDUMEI_CRON_RUN_AS=<user> (environment, else the repo
+#   .env) makes a root installer prefix the data-writing tasks with
+#   `runuser -u <user> --`. Stays bash 3.2 compatible (no mapfile/assoc arrays).
 set -euo pipefail
 
 REPO_ROOT="${AIDUMEM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -39,6 +48,61 @@ case "${MODE}" in
   --list|--installed|--dry-run|install) ;;
   *) usage; exit 2 ;;
 esac
+
+# f0.3: optional demotion of data-writing tasks. The consolidator writes
+# facts.db directly (decay, conflict resolution, daily metrics) plus its lock
+# and its own log; run as root it leaves root-owned files that the demoted
+# service cannot write (see deploy/aidumem-api.service). Tasks that read the
+# installing user's own state stay out of this list on purpose: report.py
+# verifies *root's* crontab and health_check.py reads root's ~/.hermes.
+RUN_AS_TASKS=" consolidator "
+RUN_AS="${AIDUMEI_CRON_RUN_AS:-}"
+if [[ -z "${RUN_AS}" && -r "${REPO_ROOT}/.env" ]]; then
+  RUN_AS="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}AIDUMEI_CRON_RUN_AS[[:space:]]*=[[:space:]]*//p' \
+      "${REPO_ROOT}/.env" 2>/dev/null | head -1 | tr -d '\r' \
+      | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")" || RUN_AS=""
+fi
+if [[ "${MODE}" == "--list" ]]; then
+  RUN_AS=""   # the intent list is identical for every installer
+fi
+
+valid_user_name() {
+  # Portable login name; explicit letters because [a-z] follows the locale's
+  # collation in bash 3.2 and may match upper case there.
+  local lower='abcdefghijklmnopqrstuvwxyz'
+  case "$1" in
+    ''|[!${lower}_]*|*[!${lower}0123456789_-]*) return 1 ;;
+  esac
+  [[ ${#1} -le 32 ]]
+}
+
+RUNUSER_BIN=""
+if [[ -n "${RUN_AS}" ]]; then
+  if ! valid_user_name "${RUN_AS}"; then
+    echo "AIDUMEI_CRON_RUN_AS must be a plain user name ([a-z_][a-z0-9_-], at most 32 chars)" >&2
+    exit 2
+  fi
+  if [[ "$(id -u)" == "0" ]]; then
+    if ! id -u "${RUN_AS}" >/dev/null 2>&1; then
+      echo "AIDUMEI_CRON_RUN_AS: no such user: ${RUN_AS}" >&2
+      exit 1
+    fi
+    # Absolute path: cron's PATH is narrow and runuser lives in sbin.
+    RUNUSER_BIN="$(command -v runuser 2>/dev/null || true)"
+    for cand in /usr/sbin/runuser /sbin/runuser /usr/bin/runuser; do
+      if [[ -z "${RUNUSER_BIN}" && -x "${cand}" ]]; then RUNUSER_BIN="${cand}"; fi
+    done
+    if [[ -z "${RUNUSER_BIN}" || ! -x "${RUNUSER_BIN}" ]]; then
+      echo "AIDUMEI_CRON_RUN_AS needs runuser (util-linux); none found" >&2
+      exit 1
+    fi
+  else
+    if [[ "${MODE}" == "install" || "${MODE}" == "--dry-run" ]]; then
+      echo "note: AIDUMEI_CRON_RUN_AS=${RUN_AS} ignored: runuser needs a root installer" >&2
+    fi
+    RUN_AS=""
+  fi
+fi
 
 # 建目录只发生在 install（真正要写 crontab 的动作）。
 # --list/--installed 全程只读；--dry-run 也不建——九份审计整改：dry-run 的职责
@@ -102,9 +166,19 @@ for row in "${TASKS[@]}"; do
     first="${command%% *}"; first="${first#\"}"; first="${first%%\"*}"
     [[ -x "${REPO_ROOT}/${first}" ]] || { echo "missing executable: ${REPO_ROOT}/${first}" >&2; exit 1; }
   fi
+  run_prefix=""
+  if [[ -n "${RUNUSER_BIN}" && "${RUN_AS_TASKS}" == *" ${name} "* ]]; then
+    run_prefix="\"${RUNUSER_BIN}\" -u ${RUN_AS} -- "
+    if [[ "${MODE}" == "install" && ! -L "${LOG_DIR}/${log}" ]]; then
+      # The root cron shell opens this log (>>) and the demoted process opens
+      # it again (consolidator's FileHandler): hand it to that user up front.
+      : >> "${LOG_DIR}/${log}"
+      chown "${RUN_AS}" "${LOG_DIR}/${log}"
+    fi
+  fi
   # 注释头把任务名放最前，去重键逐任务唯一。
   entries+=("# aiduMEI:${name}|owner=${owner}|failure=${failure}
-${schedule} cd \"${REPO_ROOT}\" && ${command} >> \"${LOG_DIR}/${log}\" 2>&1")
+${schedule} cd \"${REPO_ROOT}\" && ${run_prefix}${command} >> \"${LOG_DIR}/${log}\" 2>&1")
 done
 
 MANIFEST_CHECK="${REPO_ROOT}/scripts/cron_manifest.py"
@@ -112,8 +186,12 @@ MANIFEST_CHECK="${REPO_ROOT}/scripts/cron_manifest.py"
 
 if [[ "${MODE}" == "--installed" ]]; then
   # Only count a unique task when its declared name, schedule and full command
-  # match this release's manifest. Unknown/duplicate owned entries keep ok=false.
-  (crontab -l 2>/dev/null || true) | python3 "${MANIFEST_CHECK}" verify "${REPO_ROOT}" "${entries[@]}"
+  # match this release's manifest. Unknown/duplicate owned entries keep ok=false;
+  # other checkouts' entries are listed as "foreign", lines outside the managed
+  # block that run this root's scripts as "unmanaged" (drift, ok=false).
+  report="$( (crontab -l 2>/dev/null || true) | python3 "${MANIFEST_CHECK}" verify "${REPO_ROOT}" "${entries[@]}")"
+  printf '%s\n' "${report}"
+  printf '%s' "${report}" | python3 "${MANIFEST_CHECK}" explain || true
   exit 0
 fi
 
@@ -134,6 +212,7 @@ crontab "${MERGED}"
 
 # 与世界对账，而不是与自己数组里的数字对账。
 result="$(crontab -l 2>/dev/null | python3 "${MANIFEST_CHECK}" verify "${REPO_ROOT}" "${entries[@]}")"
+printf '%s' "${result}" | python3 "${MANIFEST_CHECK}" explain || true
 installed="$(printf '%s' "${result}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["installed"])')"
 expected="${#entries[@]}"
 verified="$(printf '%s' "${result}" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["ok"]))')"
