@@ -236,27 +236,35 @@ def test_negative_control_old_layout_made_the_config_read_only() -> None:
     assert not _config_is_writable(OLD_CONFIG_FILE, OLD_VOLUMES[:2], _dockerfile_instructions())
 
 
-def test_config_writer_needs_a_writable_parent_directory(tmp_path: Path, monkeypatch) -> None:
-    if os.geteuid() == 0:
-        pytest.skip("root bypasses directory permissions")
+def test_config_writer_creates_its_temp_file_in_the_config_directory(
+        tmp_path: Path, monkeypatch) -> None:
+    """Why the parent directory must be writable: temp file there + os.replace."""
+    import json
+    import tempfile
+
     from ducky import routes_config
 
-    writable = tmp_path / "data"
-    writable.mkdir()
-    monkeypatch.setattr(routes_config, "_CFG_PATH", str(writable / "mem0_config_local.json"))
-    routes_config._atomic_write_config({"_speed": {"k": 1}})
-    assert (writable / "mem0_config_local.json").read_text(encoding="utf-8").strip()
+    target = tmp_path / "data" / "mem0_config_local.json"
+    target.parent.mkdir()
+    monkeypatch.setattr(routes_config, "_CFG_PATH", str(target))
+    dirs, replaced = [], []
+    real_mkstemp, real_replace = tempfile.mkstemp, os.replace
 
-    readonly = tmp_path / "app"
-    readonly.mkdir()
-    (readonly / "mem0_config_local.json").write_text("{}", encoding="utf-8")
-    readonly.chmod(0o555)
-    try:
-        monkeypatch.setattr(routes_config, "_CFG_PATH", str(readonly / "mem0_config_local.json"))
-        with pytest.raises(PermissionError):
-            routes_config._atomic_write_config({"_speed": {"k": 1}})
-    finally:
-        readonly.chmod(0o755)
+    def spy_mkstemp(*args, **kwargs):
+        dirs.append(kwargs.get("dir"))
+        return real_mkstemp(*args, **kwargs)
+
+    def spy_replace(src, dst):
+        replaced.append((os.path.dirname(src), dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(routes_config.tempfile, "mkstemp", spy_mkstemp)
+    monkeypatch.setattr(routes_config.os, "replace", spy_replace)
+    routes_config._atomic_write_config({"_speed": {"k": 1}})
+
+    assert dirs == [str(target.parent)]
+    assert replaced == [(str(target.parent), str(target))]
+    assert json.loads(target.read_text(encoding="utf-8")) == {"_speed": {"k": 1}}
 
 
 def test_non_container_default_config_path_is_unchanged(monkeypatch) -> None:
