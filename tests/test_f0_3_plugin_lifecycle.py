@@ -255,6 +255,7 @@ def _degraded_health() -> dict:
         "degraded_details": {"vector_backend": "probe failed"},
         "warnings": [],
         "health_status": "degraded",
+        "git_sha": "0000000",
     }
     assert set(payload) == _server_health_keywords() | {"status"}, (
         "fixture drifted from the server's /health envelope")

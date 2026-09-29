@@ -58,13 +58,25 @@ def test_dependency_not_ready_is_503_not_500():
 
 # ── N-2：degraded 与 degraded_details 必须同源 ─────────────────────────
 
-def test_degraded_details_explains_every_degraded_entry():
+def test_degraded_details_explains_every_degraded_entry(monkeypatch):
     """`degraded` 里的每一项，`degraded_details` 都必须有一条对应。
 
     零配置首跑实测到的形态是：`degraded=['vector_backend','entity_keywords']`
     而 `degraded_details=None` —— **明细通道恰好在最需要它的时候是空的**。
+
+    f0.3：进程级 DegradationTracker 会带着更早用例记下的降级（例如 schema_version）
+    进来，用例执行顺序一变，这里就多出一项。本用例测的是探针理由的回填，
+    所以把追踪器钉成空的，与下方 broken-tracker 用例同一隔离写法。
     """
+    from ducky.hot import health as H
     from ducky.hot.health import _reconcile_degraded_details
+
+    class _EmptyTracker:
+        @staticmethod
+        def get_degraded_details():
+            return {}
+
+    monkeypatch.setattr(H, "DegradationTracker", _EmptyTracker)
 
     degraded = ["vector_backend", "entity_keywords", "mystery"]
     probes = {"vector_backend_error": "no credentials configured"}
