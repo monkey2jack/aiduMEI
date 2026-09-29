@@ -156,11 +156,16 @@ def _run_probe(cmd: list[str], port: int, path: str) -> int:
     assert cmd[0] == "CMD", cmd
     argv = [arg.replace("127.0.0.1:8767", f"127.0.0.1:{port}")
                .replace("localhost:8767", f"127.0.0.1:{port}") for arg in cmd[1:]]
-    try:
-        return subprocess.run(argv, env={"PATH": path}, capture_output=True,
-                              timeout=20).returncode
-    except FileNotFoundError:
-        return 127  # what the container runtime reports: executable not found
+    import tempfile
+    with tempfile.TemporaryDirectory() as scratch:
+        # Pin the data/log landing spots: a probe that ever imported ducky must
+        # not create databases in the current working directory.
+        env = {"PATH": path, "AIDUMEM_DATA_DIR": scratch, "AIDUMEM_LOG_DIR": scratch}
+        try:
+            return subprocess.run(argv, env=env, capture_output=True,
+                                  timeout=20).returncode
+        except FileNotFoundError:
+            return 127  # what the container runtime reports: executable not found
 
 
 @pytest.mark.parametrize("source", ["compose", "dockerfile"])
