@@ -61,8 +61,9 @@ _aidumem_state_read() {
     [ -L "$1" ] && return 0
     [ -f "$1" ] || return 0
     IFS= read -r -n 32 _raw < "$1" 2>/dev/null || true
+    # Explicit digits: bash 3.2 resolves [0-9] through the locale's collation.
     case "$_raw" in
-        ''|*[!0-9]*) _raw="" ;;
+        ''|*[!0123456789]*) _raw="" ;;
     esac
     if [ -z "$_raw" ] || [ "${#_raw}" -gt 12 ]; then
         _aidumem_state_write "$1" 0
@@ -77,7 +78,7 @@ if [ "${1:-}" != "--selftest" ] && [ -f "$_CIRCUIT_FILE" ]; then
     _aidumem_state_read "$_CIRCUIT_FILE"
     _broken_at=$_AIDUMEM_STATE
     _now=$(date +%s)
-    case "$_now" in ''|*[!0-9]*) _now=0 ;; esac
+    case "$_now" in ''|*[!0123456789]*) _now=0 ;; esac
     # A timestamp from the future is as untrusted as garbage: a planted
     # 9999999999 would otherwise hold every hook in cooldown for good.
     if [ "$_broken_at" -le "$_now" ] && [ $((_now - _broken_at)) -lt 5 ]; then
