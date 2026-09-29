@@ -17,7 +17,10 @@
     python3 scripts/check_hook_deployment.py --json     # 机读
     python3 scripts/check_hook_deployment.py --config <path> --repo <dir>
 
-退出码：0=全部一致或声明的非钩子接入 N/A；1=漂移、缺线或适用范围不明。
+退出码：0=全部一致或声明的非钩子接入 N/A；1=漂移、缺线或适用范围不明；
+2=黄灯：文件都一致，但 ``memory.provider: aidumem`` 插件与 aiduMEI shell 钩子
+同时在册（f0.3 · H-6）—— 插件本身已覆盖读线/写线/萃取线，叠挂等于每轮双写、
+每程双萃取，此前这种组合被判绿。
 """
 from __future__ import annotations
 
@@ -131,7 +134,8 @@ def check(config_path: str, repo_dir: str, *, integration: str = "auto") -> dict
     if integration not in {"auto", "hooks", "plugin", "api"}:
         raise ValueError(f"invalid integration mode: {integration}")
     declared = parse_hook_commands(config_path)
-    selected = "plugin" if integration == "auto" and _provider_selected(config_path) else integration
+    provider = _provider_selected(config_path)
+    selected = "plugin" if integration == "auto" and provider else integration
     if selected in {"plugin", "api"}:
         commands = {event: relevant for event, paths in declared.items()
                     if (relevant := [p for p in paths if _is_aidumem_hook(p, event, repo_dir)])}
@@ -176,11 +180,31 @@ def check(config_path: str, repo_dir: str, *, integration: str = "auto") -> dict
     bad = [i for i in items if i["status"] != "ok"]
     missing_events = ([] if not_applicable else
                       [event for event in REQUIRED_EVENTS if event not in commands])
+    # f0.3 (H-6): the provider already covers read (prefetch), write
+    # (sync_turn) and distill (on_session_end). aiduMEI shell hooks registered
+    # next to it inject twice, write every turn twice and distill every
+    # session twice; matching files must not turn that into a green verdict.
+    duplicated = sorted(event for event, paths in declared.items()
+                        if any(_is_aidumem_hook(p, event, repo_dir) for p in paths))
+    double_install = provider and bool(duplicated)
+    warnings = []
+    if double_install:
+        warnings.append(
+            "double_install: memory.provider aidumem and aiduMEI shell hooks ("
+            + ", ".join(duplicated) + ") are both configured; every turn is written "
+            "twice and every session distilled twice. Keep one route.")
+    files_ok = not bad and not missing_events and bool(items)
+    level = ("na" if not_applicable else "red" if not files_ok
+             else "yellow" if double_install else "green")
     return {
         "config": config_path,
         "repo": repo_dir,
         "items": items,
-        "ok": None if not_applicable else (not bad and not missing_events and bool(items)),
+        "ok": None if not_applicable else level == "green",
+        "level": level,
+        "double_install": double_install,
+        "duplicated_events": duplicated if double_install else [],
+        "warnings": warnings,
         "checked": len(items),
         "drifted": len(bad),
         "missing_events": missing_events,
@@ -189,6 +213,13 @@ def check(config_path: str, repo_dir: str, *, integration: str = "auto") -> dict
         "integration": selected,
         "ignored_other_hooks": ignored_hooks,
     }
+
+
+def exit_code(rep: dict) -> int:
+    """0 green or N/A, 2 yellow (consistent but double-installed), 1 red/unknown."""
+    if rep["applicability"] == "not_applicable" or rep["level"] == "green":
+        return 0
+    return 2 if rep["level"] == "yellow" else 1
 
 
 def _find_repo_source_by_content(repo_dir: str, host_md5: str | None):
@@ -219,7 +250,7 @@ def main() -> int:
     rep = check(args.config, args.repo, integration=args.integration)
     if args.json:
         print(json.dumps(rep, ensure_ascii=False, indent=2))
-        return 0 if rep["ok"] or rep["applicability"] == "not_applicable" else 1
+        return exit_code(rep)
 
     if rep["applicability"] == "not_applicable":
         print(f"⬜ 钩子部署检查 N/A：{rep['integration']} 接入未声明 Hermes shell hooks。"
@@ -248,9 +279,18 @@ def main() -> int:
         print("  🔴 必需钩子未声明: " + ", ".join(rep["missing_events"]))
         print("      读线与写线必须同时接上；只有文件 MD5 一致不足以证明部署完成")
 
+    if rep["double_install"]:
+        print("  🟡 重复安装: memory.provider: aidumem 插件与 aiduMEI shell 钩子"
+              f"（{', '.join(rep['duplicated_events'])}）同时在册")
+        print("      插件已覆盖读线/写线/萃取线，叠挂 = 每轮双写、每程双萃取；二选一，"
+              "删掉 config.yaml 里对应的 hooks 段或取消 memory.provider")
+
     if rep["ok"]:
         print(f"\n总计: 已比对 {rep['checked']} 个 · 🟢 宿主执行的就是本仓库这一版")
         return 0
+    if rep["level"] == "yellow":
+        print(f"\n总计: 已比对 {rep['checked']} 个 · 🟡 文件一致，但插件与 shell 钩子重复安装")
+        return exit_code(rep)
     print(f"\n总计: 已比对 {rep['checked']} 个 · 🔴 {rep['drifted']} 个不一致，"
           f"{len(rep['missing_events'])} 条必需线缺席")
     return 1
