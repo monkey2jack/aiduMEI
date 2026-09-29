@@ -182,6 +182,18 @@ python scripts/e2e_smoke.py --json                                              
 
 Containerised deployment: [docs/DEPLOY_DOCKHOLD.md](docs/DEPLOY_DOCKHOLD.md). The full agent-side operating manual (acceptance probes, backups, maintenance) is in [AGENTS.md](AGENTS.md).
 
+### Container deployment (Docker Compose)
+
+Before `docker compose up -d`, **all three of these are required** — skip one and the service either refuses to start or starts and then cannot write, green lights and all:
+
+1. **Credential**: put `AIDUMEM_API_TOKEN=<a long random string>` in the `.env` next to `docker-compose.yml` (`AIDUMEM_UI_PASSWORD` is optional). Inside the container the service binds `0.0.0.0` so the host port mapping can reach it, and a non-loopback bind without any credential is refused at startup. The compose file references `${AIDUMEM_API_TOKEN:?…}`, so a missing token stops `docker compose up` with an error instead of a restart loop. Compose only uses `.env` for interpolation; other keys in it do not reach the container.
+2. **Directory ownership**: `mkdir -p data logs && sudo chown -R 10001:10001 data logs`. The container runs as uid 10001 and bind mounts do not remap uids; without this, `/health` answers but the first memory write fails with `unable to open database file`.
+3. **Model configuration inside the data directory**: `cp mem0_config_local.json.example data/mem0_config_local.json`, then fill in your keys. The container reads and writes `/app/data/mem0_config_local.json` (`AIDUMEM_CONFIG_FILE`), which is what lets the console and `PUT /config/*` save settings; `/app` itself is read-only code. Upgrading from an older compose file: move the repo-root `mem0_config_local.json` into `data/`.
+
+**Vector backend**: the compose file does not start a separate Qdrant service. It uses embedded (local-mode) Qdrant, stored under the configuration's `vector_store.config.path` — the template's `./data/qdrant` is `/app/data/qdrant` inside the container and persists with `./data`; a path outside the data directory is lost when the container is recreated. Embedded Qdrant holds a directory lock, so run a single process only.
+
+Once up, `docker compose ps` should show `healthy` (the probe runs inside the container with Python against the unauthenticated `/livez`). Then verify real writes and recall with `docker compose exec aidumem python scripts/e2e_smoke.py --json`. Hosted platforms (Dockhold and similar): [docs/DEPLOY_DOCKHOLD.md](docs/DEPLOY_DOCKHOLD.md).
+
 ## 📦 Load & consumption — both sizes, measured and on the table
 
 > Is this heavy to run? **Depends on the gear.** (2-core 3.5 GB cloud VM · measured 2026-08-27)

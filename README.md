@@ -172,6 +172,18 @@ python scripts/e2e_smoke.py --json                                              
 
 容器化部署见 [docs/DEPLOY_DOCKHOLD.md](docs/DEPLOY_DOCKHOLD.md)；Agent 侧的完整作业说明（验收探针、备份、维护）在 [AGENTS.md](AGENTS.md)。
 
+### 容器部署（Docker Compose）
+
+`docker compose up -d` 之前**三件事缺一不可**——缺一件，要么起不来，要么起来了却写不进、带着绿灯失能：
+
+1. **凭据**：在 `docker-compose.yml` 旁的 `.env` 里写 `AIDUMEM_API_TOKEN=<随机长串>`（`AIDUMEM_UI_PASSWORD` 可选）。容器内服务绑定 `0.0.0.0`（宿主端口映射才进得来），而无凭据的非回环绑定会被安全门禁拒绝启动；compose 引用的是 `${AIDUMEM_API_TOKEN:?…}`，缺 token 时 `docker compose up` 当场报错，而不是容器反复崩溃重启。compose 只拿 `.env` 做插值，里面其余的键不会自动进容器。
+2. **目录属主**：`mkdir -p data logs && sudo chown -R 10001:10001 data logs`。容器以 uid 10001 运行，bind mount 不做 uid 映射；漏了这一步的症状是 `/health` 能答、第一次写记忆才报 `unable to open database file`。
+3. **模型配置放进数据目录**：`cp mem0_config_local.json.example data/mem0_config_local.json` 后填 Key。容器读写的是 `/app/data/mem0_config_local.json`（`AIDUMEM_CONFIG_FILE`），控制台保存配置与 `PUT /config/*` 这才写得进；`/app` 是只读代码目录。从旧版 compose 升级：把仓库根的 `mem0_config_local.json` 移进 `data/`。
+
+**向量后端**：compose 不单起 Qdrant 服务，用的是嵌入式（本地模式）Qdrant，数据落在配置的 `vector_store.config.path` 下——样例的 `./data/qdrant` 在容器里即 `/app/data/qdrant`，随 `./data` 持久化；改到数据目录以外，容器一重建就丢。嵌入式 Qdrant 持有目录锁，只能单进程。
+
+起来之后 `docker compose ps` 应为 `healthy`（探针在容器内用 python 打免鉴权的 `/livez`）；再用 `docker compose exec aidumem python scripts/e2e_smoke.py --json` 做真实写入/召回验证。托管平台（Dockhold 等）见 [docs/DEPLOY_DOCKHOLD.md](docs/DEPLOY_DOCKHOLD.md)。
+
 ## 📦 负荷与消耗——两种体量，实测全摆在这里
 
 > 这套东西部署起来重不重？**取决于你选哪个挡位。**（2 核 3.5G 云主机 · 2026-08-27 实测）
