@@ -1,6 +1,6 @@
 """f0.3 A4 -- one process-level LLM concurrency gate for call_llm AND mem0.
 
-Production fact: the upstream (StepFun) answers "concurrency reached, current: 6,
+Production fact: the upstream LLM provider answers "concurrency reached, current: 6,
 limit: 5" ~134 times/day; the service had no process-level limit -- call_llm and
 the mem0 extraction client each fired whenever they liked.
 

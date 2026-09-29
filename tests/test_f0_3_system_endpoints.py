@@ -38,7 +38,14 @@ def server():
 
 @pytest.fixture
 def client(server):
-    return TestClient(server.app)
+    # Hosts that run the suite with AIDUMEM_API_TOKEN set (production-shaped
+    # sandboxes) have the auth gate on; carry the credential so these cases
+    # measure the feature flags, not the auth gate.
+    headers = {}
+    token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return TestClient(server.app, headers=headers)
 
 
 def _call(client: TestClient, method: str, path: str):
