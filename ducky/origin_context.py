@@ -104,3 +104,11 @@ def extract_origin_fields(extra: Any, metadata: dict | None) -> tuple[str, str, 
     except (TypeError, ValueError):
         turn = 0
     return agent, session_id, turn
+
+
+def is_session_summary(metadata: dict | None) -> bool:
+    """Recognize the derived record returned by the session distill endpoint."""
+    md = metadata or {}
+    return (md.get("kind") == "session_distill"
+            and md.get("lane") == "distill"
+            and md.get("_origin_agent") == "session-distill")

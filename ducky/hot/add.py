@@ -217,6 +217,13 @@ def register_add_routes(app: FastAPI) -> None:
             md.setdefault("_origin_session_id", _os)
             md.setdefault("_origin_turn", _ot)
 
+            # Completed summaries must not be extracted a second time or
+            # coalesced with other generations. This also covers older hooks.
+            from ducky.origin_context import is_session_summary
+            if is_session_summary(md):
+                infer_flag = False
+                md["no_coalesce"] = True
+
             # P0-1 写入侧自动时间戳（与生产环境对齐）：
             # 调用方未显式传 recorded_at 时自动补 UTC ISO 时间，供
             # 时间过滤（before/after）和三级时间戳回退使用。
@@ -459,7 +466,7 @@ def register_add_routes(app: FastAPI) -> None:
                     # 多 bot 协作或群聊场景，转述内容可能误记为「用户的原始偏好」，
                     # 身份认知倒挂。bot 记忆标 fuzzy（而非 reasoned），检索排序靠后。
                     _is_bot = bool((meta or {}).get("_origin_is_bot"))
-                    _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective else "user_provided")
+                    _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective or is_session_summary(meta) else "user_provided")
                     stamp_memory_refs([r for r in _refs if r],
                                       _mode,
                                       user_id=uid, bank_id=bank_id,
