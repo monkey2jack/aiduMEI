@@ -571,6 +571,8 @@ def flush_now(user_id: Optional[str] = None, *, force: bool = True,
     cb = _coalesce_flush_cb
     if cb is None:
         return {"status": "unavailable", "reason": "flusher_not_registered",
+                "detail": "no /add request has registered the batch executor in this "
+                          "process; the queue was left untouched (see /health)",
                 "flushed": [], "n": 0, "failed": 0}
     batches = coalesce_flush_due(user_id=user_id, force=force, bank_id=bank_id)
     flushed = [_run_one_batch(cb, b) for b in batches]
