@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sqlite3
 from datetime import datetime, timezone
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn, get_text_conn
@@ -265,6 +266,54 @@ def _normalize_ts(ts, *, fallback: str | None = None) -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _rollback_quietly(conn) -> None:
+    try:
+        conn.rollback()
+    except sqlite3.Error as exc:
+        logger.debug("verbatim rollback 跳过: %s", exc)
+
+
+def _commit_turns_then_index(fconn, tconn, new_rows: list, scope, result: dict) -> bool:
+    """f0.3 (C6): facts commit first, FTS map second; count only what committed.
+
+    Returns False when the facts commit failed (both sides rolled back,
+    ``stored`` stays 0, ``error`` says why).  A failed FTS commit after a
+    successful facts commit keeps the turns (the durable truth: distill,
+    delete-by-content and restore read verbatim_turns directly) and reports
+    ``fts_failed`` -- the failure is surfaced, never swallowed.
+    """
+    try:
+        fconn.commit()
+    except sqlite3.Error as exc:
+        _rollback_quietly(fconn)
+        _rollback_quietly(tconn)
+        result["stored"] = 0
+        result["error"] = f"facts_commit_failed:{type(exc).__name__}"
+        from ducky.failure_ledger import feature_failed
+        feature_failed("store_verbatim", exc)
+        logger.warning("📼 Verbatim Vault facts 提交失败，整批回滚（未计入 stored）: %s", exc)
+        return False
+    result["stored"] = len(new_rows)
+    if not new_rows:
+        return True
+    try:
+        # 同步灌 FTS 映射表（触发器自动维护 trigram 索引）—— 只灌已提交的原文行
+        tconn.executemany(
+            "INSERT OR REPLACE INTO verbatim_fts_map "
+            "(turn_id, content, user_id, bank_id) VALUES (?, ?, ?, ?)",
+            [(tid, content, scope.user_id, scope.bank_id) for tid, content in new_rows],
+        )
+        tconn.commit()
+    except sqlite3.Error as exc:
+        _rollback_quietly(tconn)
+        result["fts_failed"] = len(new_rows)
+        from ducky.failure_ledger import feature_failed
+        feature_failed("store_verbatim", exc)
+        logger.warning("📼 原文已落库 %d 条，但 FTS 索引提交失败（原文检索暂不可见）: %s",
+                       len(new_rows), exc)
+    return True
+
+
 def store_verbatim(
     user_id: str,
     messages_json,
@@ -326,66 +375,66 @@ def store_verbatim(
         if _event_fallback is not None and not isinstance(_event_fallback, str):
             _event_fallback = str(_event_fallback)
 
-        # 批量事务优化：在外层包裹事物，避免每轮单独 commit 导致的极高 I/O 阻塞
-        with fconn, tconn:
-            for role, content, ts in _iter_turns(messages_json):
-                recorded_at = _normalize_ts(ts, fallback=_event_fallback)
-                chash = _content_hash(content)
-                try:
-                    existing = fconn.execute(
-                        """SELECT id, occurrences FROM verbatim_turns
-                           WHERE user_id=? AND bank_id=? AND content_hash=? AND session_id=?
-                           LIMIT 1""",
-                        (scope.user_id, scope.bank_id, chash, session_id),
-                    ).fetchone()
+        # 批量事务优化：一次事务写完整批，避免每轮单独 commit 导致的极高 I/O 阻塞。
+        # f0.3 (C6 / S-7): the former `with fconn, tconn:` exited in reverse
+        # order -- text_fts committed *before* facts, and utils._ConnProxy
+        # swallows a failed commit as a WARNING, so a failed facts commit left
+        # FTS map rows pointing at turns that never existed while `stored`
+        # (counted inside the loop) reported success.  Now: facts rows are
+        # written and committed first; only then are their FTS rows written
+        # and committed; `stored` counts rows whose facts commit succeeded.
+        new_rows: list = []
+        for role, content, ts in _iter_turns(messages_json):
+            recorded_at = _normalize_ts(ts, fallback=_event_fallback)
+            chash = _content_hash(content)
+            try:
+                existing = fconn.execute(
+                    """SELECT id, occurrences FROM verbatim_turns
+                       WHERE user_id=? AND bank_id=? AND content_hash=? AND session_id=?
+                       LIMIT 1""",
+                    (scope.user_id, scope.bank_id, chash, session_id),
+                ).fetchone()
 
-                    if existing is not None:
-                        try:
-                            fconn.execute(
-                                """UPDATE verbatim_turns
-                                   SET occurrences = COALESCE(occurrences, 1) + 1,
-                                       last_seen_at = ?
-                                   WHERE id = ?""",
-                                (recorded_at, existing["id"]),
-                            )
-                        except Exception as ue:
-                            logger.debug("verbatim occurrences 累加跳过: %s", ue)
-                        result["skipped"] += 1
-                        continue
-
-                    cur = fconn.execute(
-                        """INSERT INTO verbatim_turns
-                           (user_id, bank_id, session_id, role, content, content_hash,
-                            recorded_at, occurrences, last_seen_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
-                        (
-                            scope.user_id,
-                            scope.bank_id,
-                            session_id,
-                            role,
-                            content,
-                            chash,
-                            recorded_at,
-                            recorded_at,
-                        ),
-                    )
-                    if cur.rowcount and cur.rowcount > 0:
-                        turn_id = cur.lastrowid
-                        # 同步灌 FTS 映射表（触发器自动维护 trigram 索引）
-                        try:
-                            tconn.execute(
-                                "INSERT OR REPLACE INTO verbatim_fts_map "
-                                "(turn_id, content, user_id, bank_id) VALUES (?, ?, ?, ?)",
-                                (turn_id, content, scope.user_id, scope.bank_id),
-                            )
-                        except Exception as fe:
-                            logger.debug("verbatim FTS 灌入跳过: %s", fe)
-                        result["stored"] += 1
-                    else:
-                        result["skipped"] += 1
-                except Exception as row_err:
-                    logger.debug("verbatim 单条写入跳过: %s", row_err)
+                if existing is not None:
+                    try:
+                        fconn.execute(
+                            """UPDATE verbatim_turns
+                               SET occurrences = COALESCE(occurrences, 1) + 1,
+                                   last_seen_at = ?
+                               WHERE id = ?""",
+                            (recorded_at, existing["id"]),
+                        )
+                    except Exception as ue:
+                        logger.debug("verbatim occurrences 累加跳过: %s", ue)
                     result["skipped"] += 1
+                    continue
+
+                cur = fconn.execute(
+                    """INSERT INTO verbatim_turns
+                       (user_id, bank_id, session_id, role, content, content_hash,
+                        recorded_at, occurrences, last_seen_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                    (
+                        scope.user_id,
+                        scope.bank_id,
+                        session_id,
+                        role,
+                        content,
+                        chash,
+                        recorded_at,
+                        recorded_at,
+                    ),
+                )
+                if cur.rowcount and cur.rowcount > 0:
+                    new_rows.append((cur.lastrowid, content))
+                else:
+                    result["skipped"] += 1
+            except Exception as row_err:
+                logger.debug("verbatim 单条写入跳过: %s", row_err)
+                result["skipped"] += 1
+
+        if not _commit_turns_then_index(fconn, tconn, new_rows, scope, result):
+            return result
 
         if result["stored"]:
             logger.info(

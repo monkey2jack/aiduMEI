@@ -295,7 +295,11 @@ def register_crud_routes(app: FastAPI) -> None:
             scope = make_scope(req.user_id, req.bank_id)
             uid = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
             res = restore_tombstone(req.tombstone_id, user_id=uid, bank_id=scope.bank_id)
-            return {"status": "ok" if res.get("restored") else "noop", "details": res}
+            # f0.3 (C7): pass the layered outcome through -- "partial" (a
+            # required layer, e.g. the vector point, is missing; retry is
+            # safe) must not be flattened into "noop".
+            return {"status": res.get("status", "ok" if res.get("restored") else "noop"),
+                    "details": res}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。

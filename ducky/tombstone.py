@@ -35,9 +35,13 @@ ducky.tombstone — tombstone 遗忘层 (v19.4.0 · Mímir 借鉴 B3)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
+import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn, get_text_conn
 from ducky.bank_contract import (
@@ -64,7 +68,8 @@ CREATE TABLE IF NOT EXISTS tombstones (
     reason           TEXT DEFAULT '',
     actor            TEXT DEFAULT 'system',
     tombstoned_at    TEXT,
-    restored_at      TEXT
+    restored_at      TEXT,
+    vector_snapshot  TEXT
 )
 """
 
@@ -90,6 +95,11 @@ def ensure_tombstone_schema() -> None:
                 conn.execute(
                     "ALTER TABLE tombstones ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'"
                 )
+            # f0.3 (C7): the deleted point's vector payload (metadata only --
+            # no embedding, no text) so a restore can rebuild the point the
+            # way a normal write created it.  Additive; legacy rows stay NULL.
+            if "vector_snapshot" not in cols:
+                conn.execute("ALTER TABLE tombstones ADD COLUMN vector_snapshot TEXT")
         except Exception as mexc:
             logger.debug("tombstone bank_id 迁移跳过: %s", mexc)
         for stmt in _TOMBSTONE_INDEXES:
@@ -202,6 +212,50 @@ def _capture_fts_content(
         return ""
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# Payload keys rebuilt at restore time (text lives in content_snapshot).
+_VECTOR_REBUILT_KEYS = frozenset({"data", "hash", "text_lemmatized", "updated_at"})
+
+
+def _is_vector_point_id(target_id: Any) -> bool:
+    """mem0 memory ids (and every point id this service writes) are UUIDs."""
+    return bool(_UUID_RE.match(str(target_id or "").strip()))
+
+
+def _point_payload(point: Any) -> dict:
+    payload = getattr(point, "payload", None)
+    if payload is None and isinstance(point, dict):
+        payload = point.get("payload", point)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _payload_in_scope(payload: dict, scope) -> bool:
+    from ducky.bank_contract import vector_item_bank
+    return (str(payload.get("user_id") or "") == scope.user_id
+            and vector_item_bank(payload) == scope.bank_id)
+
+
+def _capture_vector_payload(memory_id: str, scope) -> dict:
+    """f0.3 (C7): the live point's payload, metadata only, *if it is in scope*.
+
+    Never snapshots another tenant's point (vector_store.get is unscoped).
+    Returns {} when there is no point, no backend, or the id is not a point id.
+    """
+    if not _is_vector_point_id(memory_id):
+        return {}
+    try:
+        from ducky.mem0_runtime import get_memory
+        point = get_memory().vector_store.get(vector_id=str(memory_id))
+    except Exception as exc:  # no backend / backend down: tombstone without it
+        logger.debug("tombstone 向量快照跳过: %s", exc)
+        return {}
+    payload = _point_payload(point) if point is not None else {}
+    if not payload or not _payload_in_scope(payload, scope):
+        return {}
+    return payload
+
+
 def snapshot_before_delete(
     memory_id: str,
     user_id: str = DEFAULT_USER_ID,
@@ -224,19 +278,24 @@ def snapshot_before_delete(
         fts_content = _capture_fts_content(memory_id, scope.user_id, scope.bank_id) or _capture_verbatim_content(
             memory_id, scope.user_id, scope.bank_id
         )
+        vector_payload = _capture_vector_payload(memory_id, scope)
+        vector_text = str(vector_payload.get("data") or "").strip()
 
-        # 至少抓到一样东西才值得留快照；两者皆空说明这条记忆本就不在结构化仓里
-        if not facts_row and not fts_content:
+        # 至少抓到一样东西才值得留快照；三者皆空说明这条记忆本就不在结构化仓里
+        # （f0.3：向量点本身也算——FTS 索引缺腿的记忆照样留得住快照）
+        if not facts_row and not fts_content and not vector_text:
             logger.debug("tombstone 快照跳过（无结构化内容）: %s", memory_id)
             return None
 
-        content_snapshot = fts_content or (facts_row or {}).get("fact_value", "")
+        content_snapshot = fts_content or (facts_row or {}).get("fact_value", "") or vector_text
+        vector_meta = {k: v for k, v in vector_payload.items()
+                       if k not in _VECTOR_REBUILT_KEYS}
         conn = get_facts_conn()
         cur = conn.execute(
             """INSERT INTO tombstones
                (target_id, target_type, user_id, bank_id, content_snapshot, facts_snapshot,
-                reason, actor, tombstoned_at)
-               VALUES (?, 'memory', ?, ?, ?, ?, ?, ?, ?)""",
+                reason, actor, tombstoned_at, vector_snapshot)
+               VALUES (?, 'memory', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 memory_id,
                 scope.user_id,
@@ -246,6 +305,7 @@ def snapshot_before_delete(
                 reason or "",
                 actor or "system",
                 _now_iso(),
+                json.dumps(vector_meta, ensure_ascii=False, default=str) if vector_payload else None,
             ),
         )
         # 📒 事件账本（B5）：与快照同事务留痕
@@ -269,17 +329,209 @@ def snapshot_before_delete(
         return None
 
 
+def _load_vector_snapshot(row) -> dict:
+    try:
+        raw = row["vector_snapshot"]
+    except (IndexError, KeyError):
+        return {}
+    try:
+        data = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _facts_row_present(conn, fr: dict, valid: set) -> bool:
+    """A facts row equal to the snapshot's identity already exists (retry safety)."""
+    keys = [k for k in ("fact_key", "fact_value", "user_id", "bank_id")
+            if k in valid and fr.get(k) is not None]
+    if "fact_key" not in keys:
+        return False
+    sql = "SELECT 1 FROM facts WHERE " + " AND ".join(f"{k}=?" for k in keys) + " LIMIT 1"
+    return conn.execute(sql, tuple(fr[k] for k in keys)).fetchone() is not None
+
+
+def _restore_facts_row(conn, facts_snapshot: str) -> str:
+    """restored | already_present | failed:<why>.  Idempotent across retries:
+    a partial restore used to re-insert the same fact on every retry."""
+    try:
+        fr = json.loads(facts_snapshot)
+        # 剔除自增主键与快照元字段，让 facts 表重新分配 id
+        fr.pop("id", None)
+        # v21.1（WP-10）：cols 来自快照 JSON 键，若快照被污染则成标识符注入面——
+        # 用 facts 表实际列做白名单，剔除未知列（防御纵深）。
+        _valid = {r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
+        cols = [k for k in fr.keys() if k != "id" and k in _valid]
+        if not cols:
+            return "failed:empty"
+        if _facts_row_present(conn, fr, _valid):
+            return "already_present"
+        placeholders = ",".join("?" for _ in cols)
+        conn.execute(
+            f"INSERT INTO facts ({','.join(cols)}) VALUES ({placeholders})",
+            tuple(fr[c] for c in cols),
+        )
+        return "restored"
+    except Exception as fe:
+        logger.warning("tombstone facts 回插失败（本次不盖章，可重试）: %s", fe)
+        return f"failed:{type(fe).__name__}"
+
+
+def _bm25_text(content: str) -> str:
+    """Same BM25 text field mem0 writes (falls back to the raw text)."""
+    try:
+        from mem0.utils.lemmatization import lemmatize_for_bm25
+        return lemmatize_for_bm25(content) or content
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError) as exc:
+        logger.debug("tombstone 恢复：BM25 词形化不可用，用原文: %s", exc)
+        return content
+
+
+def _restore_payload(row, content: str, scope, snapshot: dict, now: str) -> dict:
+    """Payload in mem0's own write shape (data/hash/created_at/updated_at/
+    text_lemmatized + metadata keys at top level), plus provenance."""
+    payload = {k: v for k, v in snapshot.items() if k not in _VECTOR_REBUILT_KEYS}
+    payload.update({
+        "data": content,
+        "hash": hashlib.md5(content.encode("utf-8"), usedforsecurity=False).hexdigest(),
+        "created_at": snapshot.get("created_at") or row["tombstoned_at"] or now,
+        "updated_at": now,
+        "text_lemmatized": _bm25_text(content),
+        "user_id": scope.user_id,
+        "bank_id": scope.bank_id,
+        "restored_from_tombstone": int(row["tombstone_id"]),
+    })
+    return payload
+
+
+def _restore_cloud_point(mem, target_id: str, content: str, payload: dict, scope) -> str:
+    """Upsert the point with its ORIGINAL id through the service's own
+    embedder + vector store (the same insert mem0 and core-memory use).
+    Raises on backend failure; the caller turns that into a retryable status."""
+    existing = mem.vector_store.get(vector_id=target_id)
+    if existing is not None:
+        # Idempotent: a previous (partial) restore or a live point.  Never
+        # overwrite a point that belongs to another scope.
+        if not _payload_in_scope(_point_payload(existing), scope):
+            return "failed:id_owned_by_another_scope"
+        return "already_present"
+    vector = mem.embedding_model.embed(content, "add")
+    mem.vector_store.insert(vectors=[vector], payloads=[payload], ids=[target_id])
+    if mem.vector_store.get(vector_id=target_id) is None:
+        return "failed:not_readable_after_insert"
+    return "restored"
+
+
+def _restore_local_point(target_id: str, content: str, payload: dict) -> str:
+    """Same-id local copy (dual index; soft: a failure is queued for replay)."""
+    try:
+        from ducky.dual_index import upsert_local
+    except ImportError as exc:
+        return f"failed:{type(exc).__name__}"
+    return "restored" if upsert_local(target_id, content[:2000], payload) else "queued"
+
+
+def _restore_aux_layers(mem, target_id: str, content: str, scope) -> dict:
+    """Best-effort ledgers a normal write fills (not required for the stamp)."""
+    out: dict = {}
+    try:
+        from ducky.memory_types import classify_and_sync_memory
+        classify_and_sync_memory(target_id, content, user_id=scope.user_id,
+                                 bank_id=scope.bank_id)
+        out["memory_type"] = "restored"
+    except (ImportError, sqlite3.Error, ValueError, TypeError, RuntimeError,
+            AttributeError) as exc:
+        out["memory_type"] = f"failed:{type(exc).__name__}"
+    from ducky.mem0_runtime import register_salience_for_add
+    register_salience_for_add({"results": [{"id": target_id, "memory": content}]},
+                              user_id=scope.user_id, bank_id=scope.bank_id)
+    out["salience"] = "restored"
+    out["entities"] = _relink_entities(mem, target_id, content, scope)
+    return out
+
+
+def _relink_entities(mem, target_id: str, content: str, scope) -> str:
+    """mem0's entity collection links memories to extracted entities; normal
+    LLM writes populate it (needs spaCy).  Re-link through mem0's own upsert."""
+    upsert = getattr(mem, "_upsert_entity", None)
+    if not callable(upsert):
+        return "skipped:unsupported"
+    try:
+        from mem0.utils.entity_extraction import extract_entities
+        entities = extract_entities(content) or []
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError) as exc:
+        return f"skipped:{type(exc).__name__}"
+    for entity_type, entity_text in entities:
+        upsert(entity_text, entity_type, target_id, {"user_id": scope.user_id})
+    return f"linked:{len(entities)}"
+
+
+def _restore_vector_layers(row, content: str, scope) -> dict:
+    """f0.3 (C7): the vector layer of a memory tombstone.
+
+    Required (blocks the stamp) when the target is a vector point id and the
+    engine's cloud leg is enabled -- exactly when a normal write would have
+    created that point.  The local copy and aux ledgers are best-effort.
+    """
+    out = {"required": False, "ok": True, "layers": {}, "point_verified": None}
+    target_id = str(row["target_id"] or "").strip()
+    if (row["target_type"] or "memory") != "memory" or not _is_vector_point_id(target_id) \
+            or not content.strip():
+        out["layers"]["vector"] = "not_applicable"
+        return out
+    from ducky.engine_mode import cloud_leg_enabled, local_leg_enabled
+    payload = _restore_payload(row, content, scope, _load_vector_snapshot(row), _now_iso())
+    mem = None
+    if cloud_leg_enabled():
+        out["required"] = True
+        try:
+            from ducky.mem0_runtime import get_memory
+            mem = get_memory()
+            status = _restore_cloud_point(mem, target_id, content, payload, scope)
+        except Exception as exc:  # init / embed / insert: all retryable, all reported
+            logger.warning("tombstone 向量层恢复失败（本次不盖章，可重试）: %s", exc)
+            status = f"failed:{type(exc).__name__}"
+        out["layers"]["vector"] = status
+        out["ok"] = status in ("restored", "already_present")
+        out["point_verified"] = out["ok"]
+    else:
+        out["layers"]["vector"] = "skipped:engine_mode_local"
+    if local_leg_enabled():
+        out["layers"]["local_vector"] = _restore_local_point(target_id, content, payload)
+    if out["ok"] and mem is not None:
+        out["layers"].update(_restore_aux_layers(mem, target_id, content, scope))
+    return out
+
+
+def _verify_restore(conn, row, content: str, scope, vec: dict) -> dict:
+    """Read the layers back (what the batch tool reports; not a status echo)."""
+    check: dict = {"facts_row": None, "fts_row": None, "vector_point": vec.get("point_verified")}
+    if row["facts_snapshot"]:
+        try:
+            fr = json.loads(row["facts_snapshot"])
+            valid = {r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
+            check["facts_row"] = _facts_row_present(conn, fr, valid)
+        except (sqlite3.Error, TypeError, ValueError):
+            check["facts_row"] = False
+    if content:
+        check["fts_row"] = bool(_capture_fts_content(row["target_id"], scope.user_id,
+                                                     scope.bank_id))
+    return check
+
+
 def restore_tombstone(
     tombstone_id: int,
     user_id: str = DEFAULT_USER_ID,
     bank_id: str = DEFAULT_BANK_ID,
 ) -> dict:
-    """从 tombstones 快照恢复一条记忆：回插 facts + 重建 FTS 索引。
+    """从 tombstones 快照恢复一条记忆：回插 facts + 重建 FTS 索引 + 向量层（f0.3）。
 
-    返回 {restored, target_id, detail}。失败/无权限返回 restored=False。
-    恢复只认未 restored_at 的快照，且严格按 user_id 归属校验。
+    返回 {restored, target_id, detail, status, layers, verification}。
+    失败/无权限返回 restored=False。恢复只认未 restored_at 的快照，且严格按
+    user_id 归属校验。status: ok | partial（可原样重试）| noop | error。
     """
-    result = {"restored": False, "target_id": "", "detail": ""}
+    result = {"restored": False, "target_id": "", "detail": "", "status": "noop",
+              "layers": {}, "verification": {}}
     if not tombstone_id:
         result["detail"] = "tombstone_id 为空"
         return result
@@ -301,6 +553,7 @@ def restore_tombstone(
         facts_snapshot = row["facts_snapshot"] or ""
         content = row["content_snapshot"] or ""
         restored_cols = []
+        layers = result["layers"]
 
         # v20.4.0（三方审计 P2-5 · Codex P2-03）：恢复不再有「部分成功也
         # 盖章」的语义。此前 facts 与 FTS 分别容错，无论谁失败都写
@@ -308,36 +561,20 @@ def restore_tombstone(
         # 就永远缺着。现在：必需组件（有快照就必须回插成功、有正文就必须
         # 重建索引成功）全部到位才盖章；有缺失则不盖章、返回 partial 明细，
         # 调用方可以修复环境后原样重试。
-        required: list[str] = []
+        # f0.3（C7）：向量点也是必需组件 —— 只回 facts+FTS 的「恢复」让记忆
+        # 在向量召回里依旧不存在；每一层都幂等，partial 后原样重试是安全的。
         failed: list[str] = []
 
         # 1. 回插 facts（若有结构化快照）
         if facts_snapshot:
-            required.append("facts")
-            try:
-                fr = json.loads(facts_snapshot)
-                # 剔除自增主键与快照元字段，让 facts 表重新分配 id
-                fr.pop("id", None)
-                # v21.1（WP-10）：cols 来自快照 JSON 键，若快照被污染则成标识符注入面——
-                # 用 facts 表实际列做白名单，剔除未知列（防御纵深）。
-                _valid = {r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
-                cols = [k for k in fr.keys() if k != "id" and k in _valid]
-                if cols:
-                    placeholders = ",".join("?" for _ in cols)
-                    conn.execute(
-                        f"INSERT INTO facts ({','.join(cols)}) VALUES ({placeholders})",
-                        tuple(fr[c] for c in cols),
-                    )
-                    restored_cols.append("facts")
-                else:
-                    failed.append("facts(空快照列)")
-            except Exception as fe:
-                failed.append("facts")
-                logger.warning("tombstone facts 回插失败（本次不盖章，可重试）: %s", fe)
+            layers["facts"] = _restore_facts_row(conn, facts_snapshot)
+            if layers["facts"] in ("restored", "already_present"):
+                restored_cols.append("facts")
+            else:
+                failed.append("facts(空快照列)" if layers["facts"] == "failed:empty" else "facts")
 
         # 2. 重建 FTS 索引（让混合召回能再搜到）
         if content:
-            required.append("fts")
             try:
                 from ducky.text_fts import _index_memory
                 _index_memory(
@@ -347,21 +584,31 @@ def restore_tombstone(
                     bank_id=scope.bank_id,
                 )
                 restored_cols.append("fts")
+                layers["fts"] = "restored"
             except Exception as ie:
                 failed.append("fts")
+                layers["fts"] = f"failed:{type(ie).__name__}"
                 feature_failed("index_memory", ie)
                 logger.warning("tombstone FTS 重建失败（本次不盖章，可重试）: %s", ie)
 
+        # 3. 向量层（f0.3 C7：原 id 重嵌入 + 同源写入，幂等）
+        vec = _restore_vector_layers(row, content, scope)
+        layers.update(vec["layers"])
+        if vec["required"]:
+            (restored_cols if vec["ok"] else failed).append("vector")
+        result["verification"] = _verify_restore(conn, row, content, scope, vec)
+
         if failed:
-            conn.commit()  # 已成功的半边保留（回插幂等性由重试路径的既有快照保证）
+            conn.commit()  # 已成功的半边保留（每层都幂等，重试不重复写）
             result["restored"] = False
+            result["status"] = "partial"
             result["target_id"] = target_id
             result["detail"] = (f"partial：成功 {','.join(restored_cols) or '无'}；"
                                 f"失败 {','.join(failed)} —— 未盖 restored_at，可原样重试")
             logger.warning("🪦 tombstone #%s 恢复不完整（%s），保留可重试状态", tombstone_id, result["detail"])
             return result
 
-        # 3. 标记已恢复（只有全部必需组件成功才走到这里）
+        # 4. 标记已恢复（只有全部必需组件成功才走到这里）
         conn.execute(
             "UPDATE tombstones SET restored_at=? WHERE tombstone_id=?",
             (_now_iso(), tombstone_id),
@@ -378,6 +625,7 @@ def restore_tombstone(
         conn.commit()
 
         result["restored"] = bool(restored_cols)
+        result["status"] = "ok" if restored_cols else "noop"
         result["target_id"] = target_id
         result["detail"] = ",".join(restored_cols) if restored_cols else "无可恢复内容"
         logger.info("🪦→♻️ tombstone #%s 恢复 (target=%s via %s)", tombstone_id, target_id, result["detail"])
@@ -385,6 +633,7 @@ def restore_tombstone(
     except Exception as exc:
         feature_failed("index_memory", exc)
         logger.warning("tombstone 恢复失败: %s", exc)
+        result["status"] = "error"
         result["detail"] = str(exc)[:120]
         return result
 
@@ -401,8 +650,10 @@ def list_tombstones(
         scope = make_scope(user_id, bank_id)
         ensure_tombstone_schema()
         conn = get_facts_conn()
+        # f0.3 (C8): target_type is part of the listing so batch restore
+        # tooling can select memory tombstones without reading the database.
         rows = conn.execute(
-            "SELECT tombstone_id, target_id, content_snapshot, reason, actor, "
+            "SELECT tombstone_id, target_id, target_type, content_snapshot, reason, actor, "
             "tombstoned_at, restored_at, user_id, bank_id "
             "FROM tombstones WHERE user_id=? AND bank_id=? "
             "ORDER BY tombstone_id DESC LIMIT ?",
