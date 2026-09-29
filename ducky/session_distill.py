@@ -242,6 +242,10 @@ def distill_session(session_id: str, *, user_id: str = "",
     # 那是 preference 泳道的语义，不是这里的。
     initial = min(0.60 + 0.05 * emo, 0.85)
 
+    # f0.3 (C1 / S-1): the summary names its sources, so deleting any one of
+    # them can cascade to this derived record (right to delete).  Bounded to
+    # the /add metadata value budget; truncation is flagged, never silent.
+    source_refs, refs_truncated = _bounded_refs([r["ref"] for r in rows])
     meta = {
         "kind": "session_distill",
         "lane": "distill",
@@ -251,11 +255,345 @@ def distill_session(session_id: str, *, user_id: str = "",
         "distill_mode": mode,              # llm | fallback，不冒充
         "distill_source_count": len(rows),
         "distill_source_fingerprint": source_fingerprint,
+        "distill_source_refs": source_refs,
         "distill_emotion_hits": emo,       # 词表在 salience/config.LANE_KEYWORDS
         "distill_initial_salience": round(initial, 4),
     }
+    if refs_truncated:
+        meta["distill_source_refs_truncated"] = True
     return {"status": "ok", "session_id": session_id, "summary": summary,
             "mode": mode, "source_count": len(rows), "emotion_hits": emo,
             "source_fingerprint": source_fingerprint,
+            "source_refs": source_refs,
             "initial_salience": round(initial, 4), "metadata": meta,
             "user_id": uid, "bank_id": bid}
+
+
+# -- f0.3 (C1): derived-summary provenance -----------------------------------
+#
+# A session summary is a *derived* record: its text is built from the
+# session's committed turns (fallback mode copies up to 120 characters of the
+# two longest ones verbatim).  Deleting a source used to leave the summary
+# behind because nothing linked the two.  Two links now exist:
+#   1. metadata["distill_source_refs"] travels with the summary into the
+#      vector payload (cloud/auto gear);
+#   2. the `distill_sources` ledger (facts.db) is written by /add in every
+#      engine mode, including local/lite where no vector payload exists.
+# On deletion, wal_engine asks :func:`find_derived_summaries` which summaries
+# included the deleted item and deletes them through the normal cascade.
+
+_REFS_VALUE_BUDGET = 3800        # < api_models._METADATA_MAX_VALUE_CHARS (4096)
+_REF_MAX_CHARS = 256
+_LEGACY_MIN_PREFIX = 10          # fallback-summary containment probe length
+
+_DISTILL_SOURCES_DDL = (
+    "CREATE TABLE IF NOT EXISTS distill_sources ("
+    " user_id TEXT NOT NULL,"
+    " bank_id TEXT NOT NULL DEFAULT 'default',"
+    " session_id TEXT NOT NULL DEFAULT '',"
+    " summary_hash TEXT NOT NULL,"
+    " source_ref TEXT NOT NULL,"
+    " created_at TEXT,"
+    " PRIMARY KEY (user_id, bank_id, summary_hash, source_ref))"
+)
+_DISTILL_SOURCES_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_distill_sources_ref "
+    "ON distill_sources(user_id, bank_id, source_ref)"
+)
+
+
+def _bounded_refs(refs: list) -> tuple[list[str], bool]:
+    out: list[str] = []
+    used = 2
+    for ref in refs:
+        text = str(ref or "").strip()[:_REF_MAX_CHARS]
+        if not text or text in out:
+            continue
+        cost = len(repr(text)) + 2
+        if used + cost > _REFS_VALUE_BUDGET:
+            return out, True
+        out.append(text)
+        used += cost
+    return out, False
+
+
+def _normalize_refs(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [v for v in value.split(",")]
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for ref in value[:512]:
+        text = str(ref or "").strip()[:_REF_MAX_CHARS]
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def summary_text_hash(text: str) -> str:
+    """Same fingerprint as verbatim_turns.content_hash (sha256 of stripped text)."""
+    return hashlib.sha256((text or "").strip().encode("utf-8", errors="ignore")).hexdigest()
+
+
+def ensure_distill_sources_schema(conn) -> None:
+    conn.execute(_DISTILL_SOURCES_DDL)
+    conn.execute(_DISTILL_SOURCES_INDEX)
+
+
+def record_summary_sources(user_id: str, bank_id: str, metadata: dict | None,
+                           summary_text: str) -> int:
+    """/add hook: remember which sources a session summary was built from.
+
+    No-op (0) for anything that is not a session summary.  Never raises: a
+    failed ledger write is logged loudly and the vector payload still carries
+    the refs.
+    """
+    from ducky.origin_context import is_session_summary
+    md = metadata if isinstance(metadata, dict) else {}
+    if not is_session_summary(md):
+        return 0
+    refs = _normalize_refs(md.get("distill_source_refs"))
+    text = (summary_text or "").strip()
+    if not refs or not text:
+        return 0
+    try:
+        from ducky.bank_contract import make_scope
+        from datetime import datetime, timezone
+        scope = make_scope(user_id, bank_id)
+        digest = summary_text_hash(text)
+        now = datetime.now(timezone.utc).isoformat()
+        sid = str(md.get("_origin_session_id") or "")[:_REF_MAX_CHARS]
+        conn = get_facts_conn()
+        ensure_distill_sources_schema(conn)
+        conn.executemany(
+            "INSERT OR IGNORE INTO distill_sources "
+            "(user_id, bank_id, session_id, summary_hash, source_ref, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            [(scope.user_id, scope.bank_id, sid, digest, ref, now) for ref in refs])
+        conn.commit()
+        return len(refs)
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        logger.warning("session summary source ledger write failed "
+                       "(vector payload still carries the refs): %s", exc)
+        return 0
+
+
+def delete_scope_sources(user_id: str, bank_id: str) -> int:
+    """delete_all leg for the ledger (exact (user_id, bank_id))."""
+    conn = get_facts_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='distill_sources'").fetchone():
+            return 0
+        cur = conn.execute("DELETE FROM distill_sources WHERE user_id=? AND bank_id=?",
+                           (user_id, bank_id))
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def forget_summary_sources(user_id: str, bank_id: str, summary_hashes) -> int:
+    """Drop ledger rows of summaries that were just deleted."""
+    hashes = [h for h in (summary_hashes or []) if h]
+    if not hashes:
+        return 0
+    conn = get_facts_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='distill_sources'").fetchone():
+            return 0
+        cur = conn.executemany(
+            "DELETE FROM distill_sources WHERE user_id=? AND bank_id=? AND summary_hash=?",
+            [(user_id, bank_id, h) for h in hashes])
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def source_keys_before_delete(memory_id: str, user_id: str, bank_id: str,
+                              content: str = "") -> dict:
+    """Keys a summary may use to name the item about to be deleted.
+
+    Must run *before* the physical delete: afterwards the verbatim rows that
+    share the item's content (deleted by content hash) cannot be resolved.
+    Returns {"refs": set, "sessions": set, "content": str}.
+    """
+    from ducky.bank_contract import make_scope
+    scope = make_scope(user_id, bank_id)
+    mid = str(memory_id or "").strip()
+    refs = {mid} if mid else set()
+    sessions: set = set()
+    text = (content or "").strip()
+    conn = get_facts_conn()
+    try:
+        vid = mid.split(":", 1)[1].strip() if mid.lower().startswith("verbatim:") else ""
+        if vid.isdigit():
+            refs.add(f"verbatim:{int(vid)}")
+            row = conn.execute(
+                "SELECT content, session_id FROM verbatim_turns "
+                "WHERE id=? AND user_id=? AND bank_id=?",
+                (int(vid), scope.user_id, scope.bank_id)).fetchone()
+            if row:
+                text = text or str(row[0] or "").strip()
+                sessions.add(str(row[1] or ""))
+        if text:
+            for row in conn.execute(
+                    "SELECT id, session_id FROM verbatim_turns "
+                    "WHERE user_id=? AND bank_id=? AND content_hash=?",
+                    (scope.user_id, scope.bank_id, summary_text_hash(text))).fetchall():
+                refs.add(f"verbatim:{row[0]}")
+                sessions.add(str(row[1] or ""))
+        try:
+            for row in conn.execute(
+                    "SELECT origin_session_id FROM memory_epistemic "
+                    "WHERE memory_ref=? AND user_id=? AND bank_id=?",
+                    (mid, scope.user_id, scope.bank_id)).fetchall():
+                sessions.add(str(row[0] or ""))
+        except sqlite3.Error as exc:
+            logger.debug("sidecar session lookup skipped: %s", exc)
+    except sqlite3.Error as exc:
+        logger.debug("derived-summary key lookup degraded: %s", exc)
+    finally:
+        conn.close()
+    sessions.discard("")
+    return {"refs": refs, "sessions": sessions, "content": text}
+
+
+def _ledger_summaries(scope, refs: set) -> dict[str, str]:
+    """summary_hash -> session_id for ledger rows naming any of ``refs``."""
+    if not refs:
+        return {}
+    conn = get_facts_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='distill_sources'").fetchone():
+            return {}
+        out: dict[str, str] = {}
+        for ref in sorted(refs):          # a handful of refs; indexed lookups
+            for row in conn.execute(
+                    "SELECT summary_hash, session_id FROM distill_sources "
+                    "WHERE user_id=? AND bank_id=? AND source_ref=?",
+                    (scope.user_id, scope.bank_id, ref)).fetchall():
+                out[str(row[0])] = str(row[1] or "")
+        return out
+    finally:
+        conn.close()
+
+
+def _item_metadata(item: dict) -> dict:
+    md = item.get("metadata") if isinstance(item, dict) else None
+    return md if isinstance(md, dict) else {}
+
+
+def _legacy_fallback_contains(summary: str, content: str) -> bool:
+    probe = (content or "").strip().replace("\n", " ")[:120]
+    return len(probe) >= _LEGACY_MIN_PREFIX and probe in (summary or "")
+
+
+def _classify_vector_summaries(items: list, keys: dict, ledger: dict) -> dict:
+    """Split the scope's summary points into derived / unverified."""
+    from ducky.origin_context import is_session_summary
+    refs = keys.get("refs") or set()
+    derived: dict[str, str] = {}
+    unverified: list[str] = []
+    for item in items or []:
+        md = _item_metadata(item)
+        mid = str(item.get("id") or item.get("memory_id") or "").strip()
+        if not mid or not is_session_summary(md):
+            continue
+        text = str(item.get("memory") or item.get("data") or "")
+        digest = summary_text_hash(text)
+        item_refs = set(_normalize_refs(md.get("distill_source_refs")))
+        if (item_refs & refs) or digest in ledger:
+            derived[mid] = digest
+        elif item_refs:
+            continue            # names its sources, and the deleted item is not one
+        elif (md.get("distill_mode") == "fallback"
+              and _legacy_fallback_contains(text, keys.get("content", ""))):
+            derived[mid] = digest   # legacy fallback summary quoting the content
+        elif str(md.get("_origin_session_id") or "") in (keys.get("sessions") or set()):
+            unverified.append(mid)  # legacy LLM summary of the same session
+    return {"derived": derived, "unverified": unverified}
+
+
+def summary_verbatim_ids(scope, hashes) -> list[int]:
+    """verbatim_turns ids holding a summary's text (its raw-layer replica)."""
+    hashes = sorted({h for h in (hashes or []) if h})
+    if not hashes:
+        return []
+    conn = get_facts_conn()
+    try:
+        ids: set = set()
+        for digest in hashes:
+            ids.update(int(r[0]) for r in conn.execute(
+                "SELECT id FROM verbatim_turns WHERE user_id=? AND bank_id=? "
+                "AND content_hash=?", (scope.user_id, scope.bank_id, digest)).fetchall())
+        return sorted(ids)
+    except sqlite3.Error as exc:
+        logger.debug("summary verbatim lookup skipped: %s", exc)
+        return []
+    finally:
+        conn.close()
+
+
+def _pending_summary_ids(scope, keys: dict, hashes) -> list[int]:
+    """Deferred (lite gear) summary writes that would resurrect deleted content."""
+    from ducky.origin_context import is_session_summary
+    refs = keys.get("refs") or set()
+    wanted = set(hashes or [])
+    out: list[int] = []
+    conn = get_facts_conn()
+    try:
+        rows = conn.execute(
+            "SELECT pending_id, payload FROM pending_embeddings "
+            "WHERE user_id=? AND bank_id=? AND side='cloud' AND replayed_at IS NULL",
+            (scope.user_id, scope.bank_id)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    for pid, payload in rows:
+        try:
+            data = json.loads(payload or "{}")
+        except (TypeError, ValueError):
+            continue
+        md = data.get("metadata") if isinstance(data, dict) else None
+        if not isinstance(md, dict) or not is_session_summary(md):
+            continue
+        msgs = data.get("messages")
+        text = msgs if isinstance(msgs, str) else ""
+        if (set(_normalize_refs(md.get("distill_source_refs"))) & refs) or (
+                text and summary_text_hash(text) in wanted):
+            out.append(int(pid))
+    return out
+
+
+def find_derived_summaries(mem: Any, scope, keys: dict,
+                           items: list | None = None) -> dict:
+    """Which session summaries in ``scope`` include the deleted item?
+
+    ``items`` is the scope's vector enumeration (mem0 get_all shape); when it
+    is None and ``mem`` is available the scope is enumerated here.
+    Returns {"vector_ids": [...], "verbatim_ids": [...], "pending_ids": [...],
+             "summary_hashes": [...], "unverified": [...],
+             "vector_enumeration": bool}.  ``verbatim_ids`` is the pre-delete
+    view of the summaries' raw replicas (callers re-query after deleting the
+    vector points, which already take the replica with them).
+    """
+    ledger = _ledger_summaries(scope, keys.get("refs") or set())
+    enumerated = items is not None
+    if items is None and mem is not None:
+        from ducky.wal_engine import _scoped_vector_items
+        items, enumerated = _scoped_vector_items(mem, scope)
+    split = _classify_vector_summaries(items or [], keys, ledger)
+    hashes = set(ledger) | set(split["derived"].values())
+    return {
+        "vector_ids": sorted(split["derived"]),
+        "verbatim_ids": summary_verbatim_ids(scope, hashes),
+        "pending_ids": _pending_summary_ids(scope, keys, hashes),
+        "summary_hashes": sorted(hashes),
+        "unverified": sorted(split["unverified"]),
+        "vector_enumeration": bool(enumerated),
+    }

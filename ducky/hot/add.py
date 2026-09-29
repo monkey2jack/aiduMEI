@@ -371,6 +371,13 @@ def register_add_routes(app: FastAPI) -> None:
                 feature_failed("store_verbatim", _ve)
                 logger.debug(f"📼 [VerbatimVault] 原文落库跳过: {_ve}")
 
+            # f0.3 (C1 / S-1): a session summary records which sources it was
+            # derived from, in every engine mode (local/lite never create a
+            # vector payload), so deleting a source can cascade to it.
+            # No-op for ordinary writes; never raises.
+            from ducky.session_distill import record_summary_sources
+            record_summary_sources(req.user_id, req.bank_id, md, _full_text)
+
             # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
             try:
                 from ducky.conflict_resolver import scan_and_resolve_text_conflicts
