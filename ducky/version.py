@@ -8,6 +8,22 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.3.0 (对外 f0.3 · 四份审计合并整改 · 2026-09-29)
+    用例总数 2385 → 2858（`pytest --collect-only` 实测：行为 2385 + 脚本/钩子 327 + 守卫 146）。
+    主题：**先停止误删，再让判据说真话，最后修功能。** 依据四份互相独立的审计
+    （内部自审、生产用户视角审计、两份外部审计），逐条核实后收录，详见 CHANGELOG。
+    1. 止血：consolidator 淘汰默认只预览；矛盾检测去掉单字反义词、默认只告警；
+       /delete 四态如实记账（此前按 status=="ok" 判，日志恒报「删除 0/N」而实际在删）。
+    2. 判据归真：授权 /health 增 consolidator 探针与 git_sha；进程级 LLM 并发闸门；
+       验收脚本认 venv/、对账真实 crontab、编译全部 .py；cron 按「任务名+仓库根」认主人。
+    3. 插件：萃取不再依附易失的 /session/end；降级时仍可用；永久拒收的轮次不拖垮整场。
+    4. 服务端：精华随源删除级联、幂等回执按终态结清、合并队列认 _origin_session_id、
+       flush 保留 infer 并兜底、类型查询不再把 UUID 当 fact id、原文库提交顺序与回滚、
+       墓碑恢复补回向量层。
+    5. 公开面与交付：身份闸扫所有 ref 与 tag、容器健康检查与可写配置、系统级端点默认关、
+       无凭据公网监听须逐字确认（REST 与 MCP SSE）、谱系措辞归真、运行依赖锁版本。
+    每条修复自带负向对照（退回原代码即红）。
+
 v0.2.0 (对外 f0.2 · 接线整改 · 2026-09-28)
     同版维护（2026-09-29）：主动审计整改，不改 f0.2 / 0.2.0 版本号。
     用例总数 2243 → 2385（当前维护树 `pytest --collect-only`；历史发布时的数字见下）。
@@ -419,8 +435,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.2.0"
-FULL_VERSION = "f0.2"
+SERVICE_VERSION = "0.3.0"
+FULL_VERSION = "f0.3"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
@@ -433,6 +449,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.3.0", "", "f0.3", "四份审计合并整改 · 停止误删/判据归真/插件萃取三修/服务端五修/身份闸与容器交付 · 2026-09-29"),
     ("0.2.0", "", "f0.2", "接线整改（外部用户反馈）· 读线补 session_id 令 M2 回声抑制生效 / 推荐插件路径补萃取线 / 验收脚本 cron 数动态对齐 · 2026-09-28"),
     ("0.1.0", "", "f0.1", "f 世代首版 · LoCoMo 跑分整改：verbatim 事件时间根因修复（写线/读线/时间衰减防回归）· 2026-09-23"),
     ("22.0.0", "", "v22.0", "雷霆审计整改 · 众神殿鉴权/绑定 strict/注入边界/逃逸门组合闸/治理多语言/有界评估池/依赖合一/产品面收口 · 2026-09-20"),
