@@ -10,11 +10,13 @@
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
 import platform
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -36,6 +38,14 @@ logger = logging.getLogger("aiduMEM.wal")
 
 WAL_DIR = os.path.join(DATA_DIR, "wal")
 WAL_FILE = os.path.join(WAL_DIR, "mem_mutations.wal")
+
+# f0.3 (C1): tombstone attribution for deletes issued *by* the delete chain
+# itself (a derived session summary removed because its source was deleted).
+# A context variable rather than a new parameter: cascade_delete_memory's
+# public signature is pinned by test doubles and by the WAL replay contract.
+# Being set also means "already inside a derived cascade" -- no recursion.
+_CASCADE_ORIGIN: "contextvars.ContextVar[tuple | None]" = contextvars.ContextVar(
+    "aidumei_cascade_origin", default=None)
 
 # mem0 exposes ``delete_all(user_id=...)`` but has no bank-aware variant.  A
 # v20 caller must therefore enumerate the exact vector scope and delete the
@@ -513,6 +523,12 @@ def cascade_delete_memory(
         except Exception as ce:
             logger.debug("原文定位内容抓取跳过: %s", ce)
 
+        # 0b. f0.3 (C1): keys a derived session summary may use to name this
+        #     item -- resolved *before* the physical delete (the verbatim rows
+        #     sharing its content are gone afterwards).
+        _derived_keys = _derived_source_keys(memory_id, user_id, bank_id,
+                                             _content_for_verbatim)
+
         # 0. 🪦 tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
         #    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。
         _snapshot_before_cascade_delete(memory_id, user_id, bank_id, res)
@@ -539,8 +555,10 @@ def cascade_delete_memory(
             _layer_failed("mem0_vector", e)
             mem = None
 
+        _scope_items = None
         if mem is not None:
-            _cascade_single_vector(mem, scope, memory_id, _raw_hash, res, _layer_failed)
+            _scope_items = _cascade_single_vector(mem, scope, memory_id, _raw_hash,
+                                                  res, _layer_failed)
 
         # 2. FTS5 索引剔除（带 user_id 作用域）
         _cascade_single_fts(scope, memory_id, res, _layer_failed)
@@ -559,6 +577,15 @@ def cascade_delete_memory(
         _cascade_single_workspace(user_id, bank_id, memory_id, res, _layer_failed)
         _cascade_single_local_vector(memory_id, res)
         _cascade_single_verbatim_local(user_id, bank_id, _content_for_verbatim, res)
+
+        # 9. f0.3 (C1): session summaries derived from this item go too
+        #    (right to delete covers derived records; tombstoned, restorable).
+        #    (backend_ok: mem0 present, or its typed absence -- which alone
+        #    sets vector_enumeration_complete before any vector work.)
+        _cascade_single_derived(mem, scope, memory_id, _derived_keys, res,
+                                _layer_failed, items=_scope_items,
+                                backend_ok=(mem is not None
+                                            or "vector_enumeration_complete" in res))
 
         # ── 三态判决 + 命中判定（v20.2.5-b：与 cascade_delete_all 同一套判据）──
         outcome = _single_delete_verdict(wal, wal_id, res, _failed_layers,
@@ -605,6 +632,9 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "memory_epistemic": ("clean", "v21.0 收口：mem0 腿出身 sidecar（§16）：(user_id, bank_id) 谓词删除——出身标签随记忆同属租户数据"),
     "pantheon_halls":   ("exempt", "v21.1 众神殿殿注册表：行是「殿存在过」的元数据（显示名/描述/启停），不含记忆正文；删殿走软删（active=0，deactivate_hall）不注销殿名——同 memory_banks 语义，避免删后同名殿复用造成审计断代；记忆本身按 (user_id,bank_id) 谓词经上列各表清理"),
     "hall_grants":      ("exempt", "v21.1 众神殿跨殿借阅凭据（grantor/grantee/actions，无记忆正文）：随殿停用撤销、随借阅生命周期管理——同 federation_grants 语义"),
+    "distill_sources":  ("clean",  "f0.3（C1）会话精华来源账本（summary_hash/source_ref，无正文）：(user_id, bank_id) 谓词删除（§17）；单删某条来源时先据此级联删掉引用它的派生精华（走墓碑），再清掉对应行"),
+    "idempotency_keys": ("clean",  "f0.3（C2）幂等回执：(user_id, bank_id) 谓词删除（§18）。新回执已脱敏不含正文，旧版回执可能带预览原文；另按 AIDUMEI_IDEMPOTENCY_TTL_DAYS 过期清理"),
+    "skill_crystals":   ("exempt", "f0.3（C9）技能结晶表：全局表、无 user_id/bank_id 列，内容由 fact_key/类目统计派生（不存记忆正文）；无归属列故 delete_all 无法按域清理，列入 not_cleared 并附现存行数，让调用方看见残留规模"),
     # ── facts.db 之外的存储 ──
     "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
     "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),
@@ -631,6 +661,74 @@ def delete_chain_exemptions() -> Dict[str, str]:
     """
     return {name: reason for name, (verdict, reason) in DELETE_CHAIN_MATRIX.items()
             if verdict == "exempt"}
+
+
+def _count_facts_table(conn: Any, table: str, scope: Any) -> tuple:
+    """(rows, rows_scope) for one exempt facts.db table; never widens a count
+    beyond what the table can attribute (tenant > user > whole table)."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (table,)).fetchone():
+        return 0, "absent"
+    from ducky.bank_contract import visible_user_clause
+    from ducky.scope_sql import scope_clause
+    cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    count_sql = f'SELECT COUNT(*) FROM "{table}" WHERE 1=1'
+    if {"user_id", "bank_id"} <= cols:
+        frag, params = scope_clause(scope, flavor="canonical")
+        return int(conn.execute(count_sql + frag, params).fetchone()[0]), "tenant"
+    if "user_id" in cols:
+        owner_sql, owner_params = visible_user_clause(scope.user_id)
+        return int(conn.execute(count_sql + " AND " + owner_sql,
+                                owner_params).fetchone()[0]), "user"
+    return int(conn.execute(count_sql).fetchone()[0]), "table"
+
+
+def _count_persona_store() -> tuple:
+    """Rows left in the separate persona.db (opened read-only, never created)."""
+    import pathlib
+    from ducky.persona_memory import PERSONA_DB
+    path = pathlib.Path(PERSONA_DB)
+    if not path.exists():
+        return 0, "absent"
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        total = 0
+        for table in ("persona_banks", "persona_memories"):
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                            (table,)).fetchone():
+                total += int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        return total, "table"
+    finally:
+        conn.close()
+
+
+def not_cleared_with_counts(scope: Any) -> Dict[str, Dict[str, Any]]:
+    """f0.3 (C9): the exemption list with each entry's *current* row count.
+
+    ``rows_scope`` says what the number counts: ``tenant`` (this user/bank),
+    ``user`` (table has no bank axis), ``table`` (no tenant axis at all --
+    rows of every tenant, the caller cannot attribute them), ``absent``
+    (store never created), ``error`` (count unavailable; rows is None).
+    Counting never fails the delete.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    conn = None
+    try:
+        conn = get_facts_conn()
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("not_cleared 计数跳过（facts.db 不可用）: %s", exc)
+    for name, reason in delete_chain_exemptions().items():
+        rows, rows_scope = None, "error"
+        try:
+            if name == "store:persona":
+                rows, rows_scope = _count_persona_store()
+            elif not name.startswith("store:") and conn is not None:
+                rows, rows_scope = _count_facts_table(conn, name, scope)
+        except (sqlite3.Error, OSError, ImportError, ValueError, TypeError) as exc:
+            logger.debug("not_cleared 计数跳过 %s: %s", name, exc)
+            rows, rows_scope = None, "error"
+        out[name] = {"reason": reason, "rows": rows, "rows_scope": rows_scope}
+    return out
 
 
 def cascade_delete_all(
@@ -771,6 +869,10 @@ def cascade_delete_all(
         # 16. v21 治理新表（反思候选 / 权重学习）
         _cascade_all_v21_governance(scope, res, _layer_failed)
 
+        # 17. f0.3 会话精华来源账本 / 18. 幂等回执
+        _cascade_all_distill_sources(scope, res, _layer_failed)
+        _cascade_all_idempotency(scope, res, _layer_failed)
+
         # 核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。
         # 辅助层残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
         outcome = _cascade_all_verdict(wal, wal_id, res, _failed_layers, user_id)
@@ -784,9 +886,11 @@ def cascade_delete_all(
         # `failed_layers`（本次**实际**失败）与 `not_cleared`（矩阵**预声明**的
         # 豁免项）必须分开报：混在一起会让后者加重误导 —— 调用方以为
         # not_cleared 就是全部没清的东西，而真正失败的层不在里面。
+        # f0.3 (C9): each exempt entry now carries its *current* row count so
+        # the caller sees how much was left behind, not only why.
         return {"status": outcome, "details": res,
                 "failed_layers": _failed_layers,
-                "not_cleared": delete_chain_exemptions()}
+                "not_cleared": not_cleared_with_counts(scope)}
     except Exception as exc:
         wal.mark_status(wal_id, "failed", error=str(exc))
         logger.error("级联清空全部记忆失败: %s", exc)
@@ -814,15 +918,24 @@ def _cascade_single_verbatim_handle(
     layer_failed: Any,
     failed_layers: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """``verbatim:<n>`` 句柄的早退分支：只清原文层并留墓碑，然后直接返回。"""
+    """``verbatim:<n>`` 句柄的早退分支：只清原文层并留墓碑，然后直接返回。
+
+    f0.3 (C1): a verbatim turn is the source of session summaries, so this
+    branch also cascades to the summaries derived from it, and removes the
+    turn's content-derived local vector point (§8b; the handle branch used to
+    leave it recallable in the lite/local gear).
+    """
+    # Resolved before the delete: content and session of the row.
+    keys = _derived_source_keys(memory_id, user_id, bank_id, "")
+    reason, actor = _CASCADE_ORIGIN.get() or ("cascade_delete_verbatim", "wal_engine")
     try:
         from ducky.tombstone import snapshot_before_delete
         res["tombstone_id"] = snapshot_before_delete(
             memory_id,
             user_id=user_id,
             bank_id=bank_id,
-            reason="cascade_delete_verbatim",
-            actor="wal_engine",
+            reason=reason,
+            actor=actor,
         )
     except Exception as te:
         logger.debug("tombstone 快照跳过: %s", te)
@@ -832,6 +945,12 @@ def _cascade_single_verbatim_handle(
     except Exception as ve:
         logger.warning("原文层按 id 删除失败: %s", ve)
         layer_failed("verbatim", ve)
+    if int(res.get("verbatim") or 0) > 0 and (keys or {}).get("content"):
+        _cascade_single_verbatim_local(user_id, bank_id, keys["content"], res)
+    if int(res.get("verbatim") or 0) > 0:
+        mem, backend_ok = _derived_lookup_memory()
+        _cascade_single_derived(mem, make_scope(user_id, bank_id), memory_id, keys,
+                                res, layer_failed, backend_ok=backend_ok)
     # v20.2.5-b：这条早退分支同样不许硬写 ok —— 两个出口一个改一个不改，
     # 就是本版反复记过的「链路的另一端断掉」。
     res["matched"] = int(res.get("verbatim") or 0) > 0
@@ -853,15 +972,19 @@ def _snapshot_before_cascade_delete(
     memory_id: str, user_id: str, bank_id: str, res: Dict[str, Any]
 ) -> None:
     """tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
-    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。"""
+    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。
+
+    f0.3 (C1): a delete issued by the derived-summary cascade is attributed
+    as ``cascade_delete_derived`` so restore tooling can select it."""
+    reason, actor = _CASCADE_ORIGIN.get() or ("cascade_delete", "wal_engine")
     try:
         from ducky.tombstone import snapshot_before_delete
         res["tombstone_id"] = snapshot_before_delete(
             memory_id,
             user_id=user_id,
             bank_id=bank_id,
-            reason="cascade_delete",
-            actor="wal_engine",
+            reason=reason,
+            actor=actor,
         )
     except Exception as te:
         logger.debug("tombstone 快照跳过: %s", te)
@@ -874,13 +997,19 @@ def _cascade_single_vector(
     raw_hash: str,
     res: Dict[str, Any],
     layer_failed: Any,
-) -> None:
+) -> Optional[list]:
     """§1 mem0 向量单删：先同域枚举确认归属，再执行单条删除。
 
     mem0.delete(memory_id) 本身没有 user/bank 参数，直接调用会让拿到另一域
     id 的请求越过 v20 作用域。因此先在同一作用域枚举并确认 id，再执行单条
     删除；枚举失败时宁可留向量孤儿，绝不把一个未验证的 id 交给全局删除原语。
+
+    f0.3: returns the (complete) scoped enumeration so the derived-summary
+    step can reuse it instead of enumerating the scope a second time; None
+    when the enumeration failed or the layer raised.
     """
+    _items: Optional[list] = None
+    enumeration_ok = False
     try:
         _items, enumeration_ok = _scoped_vector_items(mem, scope)
         scoped_ids = [
@@ -912,6 +1041,136 @@ def _cascade_single_vector(
         # 拿到后端之后的失败：一律算关键层失败，不做任何降级（F-02 纪律）。
         logger.warning("mem0.delete 失败: %s", e)
         layer_failed("mem0_vector", e)
+        return None
+    return _items if enumeration_ok else None
+
+
+def _derived_source_keys(memory_id: str, user_id: str, bank_id: str,
+                         content: str) -> Optional[Dict[str, Any]]:
+    """f0.3 (C1): refs / sessions / content naming the item about to go."""
+    try:
+        from ducky.session_distill import source_keys_before_delete
+        return source_keys_before_delete(memory_id, user_id, bank_id, content)
+    except (ImportError, sqlite3.Error, ValueError, TypeError, AttributeError) as exc:
+        logger.warning("派生精华来源键解析失败（按裸 id 继续级联）: %s", exc)
+        return {"refs": {str(memory_id)}, "sessions": set(),
+                "content": content or "", "error": str(exc)[:160]}
+
+
+def _derived_lookup_memory() -> tuple:
+    """Vector backend for the verbatim-handle branch's derived lookup.
+
+    Returns (mem | None, backend_ok).  A deployment without mem0 (typed
+    absence) is ok -- no vector replica can exist; any other init failure
+    means summary points could not be checked.
+    """
+    try:
+        from ducky.mem0_runtime import Mem0NotConfiguredError, get_memory
+    except ImportError as exc:
+        logger.debug("派生精华查找：mem0 运行时不可导入: %s", exc)
+        return None, False
+    try:
+        return get_memory(), True
+    except Mem0NotConfiguredError:
+        return None, True
+    except Exception as exc:
+        logger.warning("派生精华查找：向量后端不可用（仅按账本/原文层级联）: %s", exc)
+        return None, False
+
+
+def _delete_one_derived(target: str, scope: Any) -> Dict[str, Any]:
+    try:
+        out = cascade_delete_memory(target, user_id=scope.user_id, bank_id=scope.bank_id)
+    except Exception as exc:
+        return {"id": target, "status": "failed", "error": str(exc)[:160]}
+    det = out.get("details") or {}
+    return {"id": target, "status": out.get("status"),
+            "tombstone_id": det.get("tombstone_id")}
+
+
+def _delete_pending_ids(scope: Any, ids: list) -> int:
+    ids = [int(i) for i in (ids or [])]
+    if not ids:
+        return 0
+    from ducky.scope_sql import scope_clause
+    frag, params = scope_clause(scope, flavor="canonical")
+    conn = get_facts_conn()
+    try:
+        cur = conn.executemany(
+            "DELETE FROM pending_embeddings WHERE pending_id=?" + frag,
+            [(i, *params) for i in ids])
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def _cascade_single_derived(
+    mem: Any,
+    scope: Any,
+    memory_id: str,
+    keys: Optional[Dict[str, Any]],
+    res: Dict[str, Any],
+    layer_failed: Any,
+    *,
+    items: Optional[list] = None,
+    backend_ok: bool = True,
+) -> None:
+    """§9 f0.3 (C1): delete the session summaries derived from ``memory_id``.
+
+    Each summary goes through the normal single-delete chain (tombstone
+    ``cascade_delete_derived``, every layer, restorable).  Runs only for a
+    first-level delete: inside a derived cascade _CASCADE_ORIGIN is set.
+    Legacy LLM summaries (no source refs) of the same session cannot be
+    attributed; they are reported as ``derived_unverified``, never deleted.
+    """
+    if not keys or _CASCADE_ORIGIN.get() is not None:
+        return
+    try:
+        from ducky.session_distill import (
+            find_derived_summaries,
+            forget_summary_sources,
+            summary_verbatim_ids,
+        )
+        found = find_derived_summaries(mem, scope, keys, items=items)
+    except (ImportError, sqlite3.Error, ValueError, TypeError, AttributeError,
+            KeyError) as exc:
+        logger.warning("派生精华查找失败 id=%s: %s", memory_id, exc)
+        layer_failed("derived_summaries", exc)
+        return
+    if not (found["summary_hashes"] or found["pending_ids"] or found["unverified"]):
+        return
+    results: List[Dict[str, Any]] = []
+    token = _CASCADE_ORIGIN.set(("cascade_delete_derived",
+                                 f"derived_of:{str(memory_id)[:120]}"))
+    try:
+        for vid in found["vector_ids"]:
+            results.append(_delete_one_derived(vid, scope))
+        # Replicas still present after the vector cascades (local/lite gear
+        # summaries live only here).
+        for tid in summary_verbatim_ids(scope, found["summary_hashes"]):
+            results.append(_delete_one_derived(f"verbatim:{tid}", scope))
+    finally:
+        _CASCADE_ORIGIN.reset(token)
+    try:
+        res["derived_pending_deleted"] = _delete_pending_ids(scope, found["pending_ids"])
+        forget_summary_sources(scope.user_id, scope.bank_id, found["summary_hashes"])
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        logger.warning("派生精华欠账/账本清理失败 id=%s: %s", memory_id, exc)
+        layer_failed("derived_summaries", exc)
+    res["derived_summaries"] = results
+    if found["unverified"]:
+        res["derived_unverified"] = found["unverified"]
+    complete = bool(found["vector_enumeration"]) or (mem is None and backend_ok)
+    res["derived_lookup_complete"] = complete
+    bad = [r for r in results if r.get("status") not in ("committed", "not_found")]
+    if bad:
+        layer_failed("derived_summaries", RuntimeError(
+            f"{len(bad)} derived summaries not fully deleted: "
+            + ",".join(str(r.get("id")) for r in bad)[:120]))
+    elif not complete and found["summary_hashes"]:
+        layer_failed("derived_summaries", RuntimeError(
+            "derived summaries named in the ledger, vector replicas unverifiable"))
 
 
 def _cascade_single_vector_by_raw_hash(
@@ -1662,6 +1921,27 @@ def _cascade_all_v21_governance(scope: Any, res: Dict[str, Any], layer_failed: A
         except Exception as e:
             logger.warning("%s delete_all 清理失败: %s", table, e)
             layer_failed(table, e)
+
+
+def _cascade_all_distill_sources(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§17 f0.3 会话精华来源账本（refs/hash，无正文）：(user_id, bank_id) 谓词删除。
+    精华本体与来源同域，已随 §1/§2/§6 清掉；这里清的是指向它们的账。"""
+    try:
+        from ducky.session_distill import delete_scope_sources
+        res["distill_sources_deleted"] = delete_scope_sources(scope.user_id, scope.bank_id)
+    except (ImportError, sqlite3.Error, OSError) as e:
+        logger.warning("distill_sources delete_all 清理失败: %s", e)
+        layer_failed("distill_sources", e)
+
+
+def _cascade_all_idempotency(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§18 f0.3 幂等回执：旧版回执可能带预览原文 —— 擦除承诺覆盖它。"""
+    try:
+        from ducky.idempotency import delete_scope
+        res["idempotency_keys_deleted"] = delete_scope(scope.user_id, scope.bank_id)
+    except (ImportError, sqlite3.Error, OSError) as e:
+        logger.warning("idempotency_keys delete_all 清理失败: %s", e)
+        layer_failed("idempotency_keys", e)
 
 
 def _cascade_all_local_vectors(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
