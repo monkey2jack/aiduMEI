@@ -1,15 +1,11 @@
 """aiduMEM speed · 异步 job 状态"""
 from __future__ import annotations
 
-import logging
-import sqlite3
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from typing import Optional
-
-logger = logging.getLogger("aiduMEM.speed")
 
 _jobs_lock = threading.Lock()
 _jobs: "OrderedDict[str, dict]" = OrderedDict()
@@ -21,8 +17,6 @@ _JOBS_MAX = 200
 _job_idem: "OrderedDict[str, dict]" = OrderedDict()
 _JOB_IDEM_MAX = 2000
 _TERMINAL = ("done", "error")
-_SETTLE_ERRORS = (ImportError, sqlite3.Error, OSError, ValueError, TypeError,
-                  KeyError, AttributeError)
 
 
 def _result_failed(result) -> bool:
@@ -32,13 +26,11 @@ def _result_failed(result) -> bool:
 
 def _settle_idempotency(binding: dict, job_id: str, status: str, fields: dict) -> None:
     """A finished job settles the claim it inherited from its /add request."""
+    from ducky import idempotency
     result = fields.get("result")
-    ok = status == "done" and not _result_failed(result)
-    try:
-        from ducky import idempotency
-        idempotency.settle_job(binding, ok=ok, result=result, job_id=job_id)
-    except _SETTLE_ERRORS as exc:  # settlement must never break the job itself
-        logger.warning("idempotency settle failed job=%s: %s", job_id, exc)
+    # settle_job_quietly never raises: settlement must not break the job itself.
+    idempotency.settle_job_quietly(binding, ok=status == "done" and not _result_failed(result),
+                                   result=result, job_id=job_id)
 
 
 def job_create(payload: dict) -> str:
