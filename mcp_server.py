@@ -584,20 +584,28 @@ def mem_reflect(topic: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAU
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def core_memory_list() -> str:
-    """列出所有核心记忆块（高优先级、永不过期的结构化事实）。"""
-    result = _api_get("/api/core-memory")
+def core_memory_list(user_id: str = DEFAULT_USER_ID,
+                     bank_id: str = DEFAULT_BANK_ID) -> str:
+    """列出指定记忆域的核心记忆块（默认当前配置的记忆域）。"""
+    result = _api_get("/api/core-memory", {
+        "user_id": user_id, "bank_id": bank_id, "caller_user_id": user_id,
+    })
     return _ok(result)
 
 
 @mcp.tool()
-def core_memory_get(block_key: str) -> str:
+def core_memory_get(block_key: str, user_id: str = DEFAULT_USER_ID,
+                    bank_id: str = DEFAULT_BANK_ID) -> str:
     """获取指定核心记忆块。
 
     Args:
         block_key: 记忆块键名（如 user_profile / preferences / identity）
+        user_id: 记忆所属用户；默认当前配置的用户
+        bank_id: 记忆所属库；默认 default
     """
-    result = _api_get(f"/api/core-memory/{urllib.parse.quote(block_key)}")
+    result = _api_get(f"/api/core-memory/{urllib.parse.quote(block_key)}", {
+        "user_id": user_id, "bank_id": bank_id, "caller_user_id": user_id,
+    })
     return _ok(result)
 
 

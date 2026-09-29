@@ -346,15 +346,15 @@ def _candidate_content_text(item: dict) -> str:
 
 
 def _resolve_memory_type(item: dict, type_map: Dict[str, str]) -> str:
-    """六型判定：候选自带 > metadata > 类型账本 > FACTS 兜底。
+    """六型判定：账本实存标签 > 候选自带 > metadata > FACTS 兜底。
 
     类型账本对存量记忆覆盖不全（2026-08-27 生产实测覆盖率 29%），查不到
     回退 "FACTS" —— 与 TYPE_DECAY 注释里「未分类存量行为逐字不变」互为前提。
     """
     from ducky.memory_types import memory_type_ref as _mt_ref
-    return (item.get("memory_type")
+    return (type_map.get(_mt_ref(item))
+            or item.get("memory_type")
             or (item.get("metadata") or {}).get("memory_type")
-            or type_map.get(_mt_ref(item))
             or "FACTS")
 
 
@@ -612,7 +612,10 @@ def _load_type_map(candidates: List[dict], user_id: str, bank_id: str) -> Dict[s
         # 类型账本的键与 salience 的键**不同源**：账本认 fact:{fact_id} 或 UUID，
         # salience 只认 UUID。共用一个列表就会让带 fact_id 的记忆查不到类型。
         type_refs = [r for r in (memory_type_ref(it) for it in candidates) if r]
-        type_map = get_batch_memory_types(type_refs, user_id=user_id, bank_id=bank_id)
+        type_map = get_batch_memory_types(
+            type_refs, user_id=user_id, bank_id=bank_id,
+            include_missing=False,
+        )
     except Exception as e:
         logger.debug(f"批量查询 memory_types 跳过: {e}")
     return type_map

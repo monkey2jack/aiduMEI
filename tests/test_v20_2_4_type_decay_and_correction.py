@@ -125,15 +125,16 @@ class TestThreshold3SingleBatchQuery:
     """门槛 3 · 类型查询不得逐条打库。"""
 
     def _run(self, monkeypatch, n=25):
-        calls = {"count": 0, "sizes": [], "scopes": []}
+        calls = {"count": 0, "sizes": [], "scopes": [], "include_missing": []}
         import ducky.memory_types as mt
 
         # 替身签名**逐参数对齐生产**（外审 F-15 的教训：窄替身会把
         # 「生产不传 scope」这个缺陷整个吃掉）。而且顺手把 scope 记下来断言。
-        def _spy(ids, *, user_id="default", bank_id="default"):
+        def _spy(ids, *, user_id="default", bank_id="default", include_missing=True):
             calls["count"] += 1
             calls["sizes"].append(len(list(ids)))
             calls["scopes"].append((user_id, bank_id))
+            calls["include_missing"].append(include_missing)
             return {}
 
         monkeypatch.setattr(mt, "get_batch_memory_types", _spy)
@@ -153,6 +154,7 @@ class TestThreshold3SingleBatchQuery:
         calls = self._run(monkeypatch, n=25)
         assert calls["count"] == 1, f"25 条候选必须只发 1 次类型查询，实测 {calls['count']} 次"
         assert calls["sizes"] == [25], f"必须一次带齐全部 id，实测 {calls['sizes']}"
+        assert calls["include_missing"] == [False]
 
     def test_switch_on_does_not_add_queries(self, monkeypatch):
         """承重对照：开启分档**不得**引入任何新的类型查询。

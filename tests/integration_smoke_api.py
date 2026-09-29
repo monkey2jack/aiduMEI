@@ -304,6 +304,7 @@ def test_07_search_read_path() -> bool:
     code, body, ms = _http("POST", "/search", {
         "query": "冒烟探针",
         "user_id": _SMOKE_USER,
+        "caller_user_id": _SMOKE_USER,
         "bank_id": _SMOKE_BANK,
         "limit": 5,
     })

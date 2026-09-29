@@ -154,9 +154,13 @@ def test_matrix_verdicts_are_well_formed():
 
 
 def test_checkpoints_exemption_is_explicit_not_silent():
-    """checkpoints 的豁免是显式裁决（会话轴遗产子系统），矩阵必须写明。"""
+    """用户/bank 内的会话快照显式保留，并列入响应的豁免清单。"""
+    from ducky.wal_engine import delete_chain_exemptions
+
     action, reason = DELETE_CHAIN_MATRIX["checkpoints"]
-    assert action == "exempt" and "会话轴" in reason
+    assert action == "exempt"
+    assert "user_id/bank_id" in reason
+    assert delete_chain_exemptions()["checkpoints"] == reason
 
 
 # ══════════════════════════════════════════════════════════════════

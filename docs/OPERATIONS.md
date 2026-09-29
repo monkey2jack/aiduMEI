@@ -3,6 +3,9 @@
 ## Scheduled jobs
 
 Use `scripts/update_crontab.sh --list` to inspect the intended maintenance set. Install with `scripts/update_crontab.sh`.
+Use `scripts/update_crontab.sh --installed` to compare each installed aiduMEI
+job's name, schedule, and full command with that list. A matching count alone
+does not prove that the maintenance jobs are running as intended.
 
 | Job | Frequency | Command | Output |
 |---|---|---|---|

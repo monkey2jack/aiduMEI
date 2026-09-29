@@ -61,6 +61,11 @@ def check(name: str, ok: bool, data):
         raise AssertionError(f"{name} failed: {data}")
 
 
+def scoped_path(path: str, **params: str) -> str:
+    """POST routes such as CoreMemory inject and session start read query only."""
+    return f"{path}?{urllib.parse.urlencode(params)}"
+
+
 # 与 /health 的 ingest_liveness 探针同一口径（两处判据必须同源，
 # 否则「脚本说通过、探针说降级」会让人无所适从）。
 try:
@@ -90,26 +95,43 @@ def main() -> int:
         status, added = request("POST", "/add", {
             "messages": [{"role": "user", "content": f"{nonce} is the integration handshake."}],
             "user_id": tenant, "bank_id": "default", "infer": False,
+            "metadata": {"force_sync": True},
         })
-        check("add", status == 200, added)
+        check("add", status == 200 and added.get("status") == "ok"
+              and added.get("durable") is not False, added)
         status, gate = request("GET", "/gate", {"query": f"remember {nonce}", "user_id": tenant, "bank_id": "default"})
         # v20.3.1：只看 200 是假绿灯 —— empty_query 也是 200。闸门必须
         # 真的对本次 nonce 做过相关性判定。
         check("gate",
               status == 200 and gate.get("needs_memory") is True and gate.get("reason") != "empty_query",
               gate)
-        status, searched = request("POST", "/search", {"query": nonce, "user_id": tenant, "bank_id": "default", "limit": 5})
-        check("search", status == 200 and searched.get("recall_verdict") == "found", searched)
+        status, searched = request("POST", "/search", {
+            "query": nonce, "user_id": tenant, "caller_user_id": tenant,
+            "bank_id": "default", "limit": 5,
+        })
+        check("search", status == 200 and searched.get("status") == "ok"
+              and searched.get("recall_verdict") == "found", searched)
         status, raw = request("POST", "/add/raw", {"content": f"integration raw {nonce}", "user_id": tenant, "bank_id": "default"})
         check("raw", status == 200 and raw.get("status") in {"ok", "partial"}, raw)
-        status, injected = request("POST", "/api/core-memory/inject", {"query": nonce, "user_id": tenant, "bank_id": "default"})
-        check("core-inject", status == 200, injected)
-        status, session_start = request("POST", "/session/start", {"user_id": tenant, "bank_id": "default"})
-        check("session-start", status == 200, session_start)
+        status, injected = request("POST", scoped_path(
+            "/api/core-memory/inject", user_id=tenant, bank_id="default",
+            caller_user_id=tenant))
+        check("core-inject", status == 200 and injected.get("status") == "ok"
+              and injected.get("user_id") == tenant
+              and injected.get("bank_id") == "default", injected)
+        status, session_start = request("POST", scoped_path(
+            "/session/start", user_id=tenant, bank_id="default"))
+        check("session-start", status == 200 and session_start.get("status") == "ok"
+              and bool(session_start.get("session_id"))
+              and session_start.get("user_id") == tenant
+              and session_start.get("bank_id") == "default", session_start)
         session_id = session_start.get("session_id") if isinstance(session_start, dict) else None
-        if session_id:
-            status, session_end = request("POST", f"/session/end?session_id={session_id}&user_id={tenant}&bank_id=default")
-            check("session-end", status == 200, session_end)
+        status, session_end = request("POST", scoped_path(
+            "/session/end", session_id=session_id, user_id=tenant, bank_id="default"))
+        check("session-end", status == 200 and session_end.get("status") == "ok"
+              and session_end.get("session_id") == session_id
+              and session_end.get("user_id") == tenant
+              and session_end.get("bank_id") == "default", session_end)
         results = searched.get("results", [])
         values = [r.get("memory") or r.get("content") or r.get("fact_value") for r in results]
         # v20.3.1：整串相等改为子串包含 —— 写入的是 f"{nonce} is the handshake."，
