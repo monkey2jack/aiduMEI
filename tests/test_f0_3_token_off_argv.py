@@ -8,7 +8,6 @@ snippet of one script under bash to prove the file is private and complete.
 import os
 import pathlib
 import re
-import stat
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
