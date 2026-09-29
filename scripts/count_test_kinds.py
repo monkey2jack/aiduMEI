@@ -31,6 +31,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 # 格式：文件名 → 理由。新增文件进名单必须带理由；名单该缩就缩。
 _GUARD_FILES: dict[str, str] = {
     "test_env_example_is_complete.py": ".env.example 与 env_registry 的口径一致性",
+    "test_f0_2_wiring.py": "f0.2 插件与安装脚本接线的 AST/文本守卫",
     "test_v19_4_2_brand_surface.py": "品牌字面量在公开面的出现位置",
     "test_v19_4_2_hermes_host_resolution.py": "宿主路径解析的文档口径核对",
     "test_v20_1_1_source_guards.py": "源码文本级守卫（脱敏/口径字面量）",
@@ -52,6 +53,12 @@ _GUARD_FILES: dict[str, str] = {
 
 # ── 脚本/钩子行为名单（不 import 产品包，但真执行脚本/钩子/产物）────────
 _SCRIPT_BEHAVIOR_FILES: dict[str, str] = {
+    "test_f0_2_commit_metadata_scan.py": "合成 Git 仓执行提交身份脱敏门禁的正反行为",
+    "test_f0_2_ops_audit.py": "钩子、cron 与升级脚本的实际命令行为",
+    "test_f0_2_release_scan_public_policy.py": "完整词表扫描与公开基线策略的命令行为",
+    "test_f0_2_shell_distill_idempotency.py": "会话萃取 shell 钩子真实执行",
+    "test_f0_2_shell_ingest_receipts.py": "写入 shell 钩子的回执与自检行为",
+    "test_f0_2_shell_scope.py": "shell 钩子作用域传递行为",
     "test_hermes_plugin.py": "宿主插件契约（真实调用宿主基类签名核对）",
     "test_inject_hook.py": "注入钩子脚本行为",
     "test_memory_gate_entities.py": "实体门槛脚本行为",

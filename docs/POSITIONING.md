@@ -23,7 +23,7 @@
 > 它**不是**用来把互不信任的外部客户放进同一台机器的隔离层。想要那种隔离，请一个客户一个部署实例。
 > 我们把这句写在这里，是因为「租户」这个词很容易被过度理解 —— 而过度理解会带来真实的安全误判。
 
-[^tenant-note]: 精确边界：`checkpoints` / 人格库 / 观察库三类系统存储**不在** `(user_id, bank_id)` 二维轴上（各自的轴与理由见 `docs/SECURITY-AUDIT-LEDGER.md`「精确边界」一节）；`delete_all` 响应会以 `not_cleared` 字段如实列出未清理项。
+[^tenant-note]: 精确边界：Checkpoint 已按 `(user_id, bank_id)` 归属并校验 caller；`delete_all` 沿用会话快照保留策略，通过 `not_cleared` 明列，`/api/checkpoint/cleanup` 仅按域清理旧快照。人格库与观察库的系统轴见 `docs/SECURITY-AUDIT-LEDGER.md`「精确边界」一节。
 
 ### 我们连外部模型换到了什么
 

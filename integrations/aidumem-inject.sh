@@ -13,6 +13,7 @@
 #   AIDUMEM_URL             服务地址，默认 http://127.0.0.1:8767
 #   AIDUMEM_USER_ID         记忆归属用户，可由 .env 兜底，默认 default
 #   AIDUMEM_DEFAULT_USER_ID AIDUMEM_USER_ID 缺省时的回落值（服务端同名键）
+#   AIDUMEI_BANK_ID         记忆库，可由 .env 兜底，默认 default
 #   AIDUMEM_MIN_HISTORY     少于 N 条历史不注入检索，默认 4
 #   AIDUMEM_NEW_SESSION_MAX 历史 ≤ N 条视为新会话（注入 checkpoint），默认 8
 #   AIDUMEM_SEARCH_LIMIT    检索条数，默认 5
@@ -23,6 +24,7 @@
 #   AIDUMEM_ENV_FILE        指定 .env 路径，优先级最高
 #   AIDUMEM_HOME            部署根目录，会找 $AIDUMEM_HOME/.env
 #   AIDUMEM_HOOK_QUIET      置 1 关闭 stderr 诊断（默认开启，见「设计原则」）
+#   TMPDIR                 熔断状态目录，未配置时沿用 /tmp
 #
 # 安装：
 #   cp integrations/aidumem-inject.sh ~/.hermes/agent-hooks/
@@ -34,10 +36,9 @@
 # ── v22.1 熔断旁路（建议三）──────────────────────────────────────────
 # 服务升级/高并发时，1~2 秒抖动会让飞书聊天卡顿。
 # 0.15 秒探测失败即熔断，5 秒冷却期内所有 Hook 直接返回空上下文。
-# 熔断标记：/tmp/.aidumem_circuit_broken（时间戳）
-# 失败计数：/tmp/.aidumem_fuse_count
-_CIRCUIT_FILE="/tmp/.aidumem_circuit_broken"
-_FUSE_COUNT_FILE="/tmp/.aidumem_fuse_count"
+# 熔断标记与失败计数跟随 TMPDIR，允许同机沙箱与生产隔离。
+_CIRCUIT_FILE="${TMPDIR:-/tmp}/.aidumem_circuit_broken"
+_FUSE_COUNT_FILE="${TMPDIR:-/tmp}/.aidumem_fuse_count"
 
 # 冷却窗检查（脚本第一行，最快路径）。
 # selftest 是诊断路径，跳过熔断——诊断要真实状态，不要被熔断掩盖。
@@ -174,6 +175,11 @@ if [ -z "$_uid" ]; then
         || _uid="default"
 fi
 export AIDUMEM_USER_ID="$_uid"
+_bid="${AIDUMEI_BANK_ID:-}"
+if [ -z "$_bid" ]; then
+    _bid=$(_lookup_env_key AIDUMEI_BANK_ID) || _bid="default"
+fi
+export AIDUMEI_BANK_ID="$_bid"
 export AIDUMEM_HOOK_QUIET="${AIDUMEM_HOOK_QUIET:-}"
 
 # ── 自检模式（v19.4.2）────────────────────────────────────────────
@@ -183,6 +189,7 @@ if [ "${1:-}" = "--selftest" ]; then
 import json, os
 print(json.dumps({'query': os.environ['AIDUMEM_MSG'],
                   'user_id': os.environ['AIDUMEM_USER_ID'],
+                  'bank_id': os.environ['AIDUMEI_BANK_ID'],
                   'caller_user_id': os.environ['AIDUMEM_USER_ID'],
                   'session_id': 'inject-selftest',
                   'limit': 1, 'metadata': {}}, ensure_ascii=False))
@@ -381,13 +388,23 @@ _wrap_block() {
     printf '%s\n<memory>\n%s\n</memory>' "$INJECT_FRAME_TOP" "$block"
 }
 
+# CoreMemory/Checkpoint 从 query 取域；POST body 里的同名字段会被忽略。
+_SCOPE_QUERY=$(python3 -c '
+import os, urllib.parse
+print(urllib.parse.urlencode({
+    "user_id": os.environ["AIDUMEM_USER_ID"],
+    "bank_id": os.environ["AIDUMEI_BANK_ID"],
+    "caller_user_id": os.environ["AIDUMEM_USER_ID"],
+}))
+')
+
 # 1. CoreMemory（每轮）
-CORE_CTX=$(_fetch_ctx "/api/core-memory/inject" "")
+CORE_CTX=$(_fetch_ctx "/api/core-memory/inject?$_SCOPE_QUERY" "")
 [ -n "$CORE_CTX" ] && BLOCKS+=("$(_wrap_block "$CORE_CTX")")
 
 # 2. Checkpoint（仅新会话首轮）
 if [ "$MSG_COUNT" -le "$AIDUMEM_NEW_SESSION_MAX" ]; then
-    CP_CTX=$(_fetch_ctx "/api/checkpoint/inject" "")
+    CP_CTX=$(_fetch_ctx "/api/checkpoint/inject?$_SCOPE_QUERY" "")
     [ -n "$CP_CTX" ] && BLOCKS+=("$(_wrap_block "$CP_CTX")")
 fi
 
@@ -397,6 +414,7 @@ import json, os
 print(json.dumps({
     'query': os.environ['AIDUMEM_MSG'],
     'user_id': os.environ['AIDUMEM_USER_ID'],
+    'bank_id': os.environ['AIDUMEI_BANK_ID'],
     # v22.0（雷霆审计 A3）：钩子经 API token 调用，空 caller 不再放行。
     # 本钩子只读自己殿，caller==user_id 即「读自己」，语义与收紧前逐字一致。
     'caller_user_id': os.environ['AIDUMEM_USER_ID'],

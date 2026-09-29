@@ -21,13 +21,13 @@ if [[ -n "${AIDUMEM_API_TOKEN:-}" ]]; then
   AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
 fi
 
-TESTS_DIR="${REPO_ROOT}/tests"
-# v20：统一用仓库自己的解释器（.venv 由 uv 创建，没有 pip；系统 python3
-# 看不见仓库依赖）。找不到 .venv 时退化到 python3 并明示。
-VENV_PY="${REPO_ROOT}/.venv/bin/python"
-if [[ ! -x "${VENV_PY}" ]]; then
-  VENV_PY="python3"
-fi
+source "$(dirname "${BASH_SOURCE[0]}")/upgrade_gate_common.sh"
+# 生产树常用 venv/bin/python3，开发树常用 .venv/bin/python；统一从
+# 目标仓解释器执行计时、依赖检查与 live E2E。
+VENV_PY="$(upgrade_python_for_repo "${REPO_ROOT}")" || {
+  echo "missing Python interpreter for upgrade gate" >&2
+  exit 1
+}
 
 # --- 统计 --------------------------------------------------------------------
 PASS=0
@@ -83,9 +83,9 @@ check_service "card-webhook"
 # ============================================================================
 step "步骤 2/4 — mem0 API stats 真发一次"
 
-STATS_T0=$(date +%s%3N)
+STATS_T0=$(upgrade_now_ms)
 STATS_RESP=$(curl -s "${AUTH_ARGS[@]}" -w "\n__HTTP_CODE__:%{http_code}" "${API_BASE}/stats" || echo "__HTTP_CODE__:000")
-STATS_T1=$(date +%s%3N); STATS_MS=$((STATS_T1 - STATS_T0))
+STATS_T1=$(upgrade_now_ms); STATS_MS=$((STATS_T1 - STATS_T0))
 STATS_CODE=$(echo "${STATS_RESP}" | tail -1 | sed 's/.*://')
 STATS_BODY=$(echo "${STATS_RESP}" | sed '$d')
 
@@ -112,20 +112,14 @@ else
 fi
 
 # ============================================================================
-# 步骤 3: facts 召回率测试
+# 步骤 3: 实际写入与召回验证
 # ============================================================================
-step "步骤 3/4 — facts 召回率测试"
+step "步骤 3/4 — 实际 E2E 写入与召回验证"
 
-RECALL_TEST="${TESTS_DIR}/test_facts_recall.py"
-if [[ -f "${RECALL_TEST}" ]]; then
-  echo "  🧪 ${RECALL_TEST}"
-  if "${VENV_PY}" "${RECALL_TEST}" 2>&1 | tail -20; then
-    ok "test_facts_recall.py 跑完"
-  else
-    bad "test_facts_recall.py 失败"
-  fi
+if run_upgrade_smoke | tail -20; then
+  ok "live E2E smoke PASS（写入、召回、trace、清理）"
 else
-  warn "TODO: ${RECALL_TEST} 不存在，跳过（建议补一个召回率测试）"
+  bad "live E2E smoke 未通过或脚本缺失"
 fi
 
 # ============================================================================

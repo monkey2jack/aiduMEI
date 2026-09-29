@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+from functools import partial
 
 import pytest
 
@@ -71,6 +72,9 @@ class TestRateGuard:
 
         monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
         monkeypatch.setattr(rg, "delete_all_rate_limit", lambda: 1)
+        # Both requests must use the same natural-minute rate window even
+        # when the first request's real pipeline takes several seconds.
+        monkeypatch.setattr(rg, "check_rate", partial(rg.check_rate, now=1_700_000_040.0))
         reset_rate_windows()
 
         app = FastAPI()
@@ -93,6 +97,7 @@ class TestRateGuard:
 
         monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
         monkeypatch.setattr(rg, "add_rate_limit", lambda: 1)
+        monkeypatch.setattr(rg, "check_rate", partial(rg.check_rate, now=1_700_000_040.0))
         reset_rate_windows()
 
         app = FastAPI()
