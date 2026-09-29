@@ -397,12 +397,12 @@ def test_report_exit_codes_prefer_installed_over_intended():
                                               "crontab_installed_count": 1,
                                               "latest_backup": {"verified": True}}}
     assert module._exit_code(lying) == 2
-    # 实装拿不到时退回意图数（升级中的过渡态），不给恒 2 的假警报
+    # 实装核验拿不到时不得退回意图数签绿灯。
     fallback = {"health_status": "ok", "degraded": [], "warming_up": [],
                 "anomalies": {}, "maintenance": {"crontab_task_count": 8,
                                                   "crontab_installed_count": None,
                                                   "latest_backup": {"verified": True}}}
-    assert module._exit_code(fallback) == 0
+    assert module._exit_code(fallback) == 2
     warn = {"health_status": "ok", "degraded": [], "warming_up": ["x"],
             "anomalies": {}, "maintenance": dict(base_maint)}
     assert module._exit_code(warn) == 2

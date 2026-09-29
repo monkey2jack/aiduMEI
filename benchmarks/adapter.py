@@ -366,6 +366,7 @@ class AiduMEIBenchmarkAdapter:
         payload = {
             "query": str(query),
             "user_id": user_id,
+            "caller_user_id": user_id,
             "bank_id": bank_id,
             # /search 同时接受两个字段；都传，杜绝「哪个生效」的歧义
             "limit": int(top_k),

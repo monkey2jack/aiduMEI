@@ -89,7 +89,7 @@ def _base() -> str:
 def _read_env_key(path: str, key: str) -> str:
     """从 .env 取一个键。容忍 `export ` 前缀、引号、CRLF、# 注释。"""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             for raw in fh:
                 line = raw.strip().lstrip("﻿")
                 if line.startswith("export "):
@@ -181,7 +181,7 @@ def _last_turn(transcript_path: str) -> tuple[str, str, int]:
     """
     user_text, asst_text = "", ""
     try:
-        with open(transcript_path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(transcript_path, encoding="utf-8", errors="replace") as fh:
             rows = [ln for ln in fh if ln.strip()]
     except OSError as exc:
         _diag("[aidumem-stop] transcript unreadable err=%s\n" % type(exc).__name__)
@@ -286,6 +286,7 @@ def _selftest() -> int:
     for _ in range(8):      # 异步落库，回读要给足耐心
         try:
             res = _call("/search", {"query": marker, "user_id": uid,
+                                    "caller_user_id": uid,
                                     "limit": 5, "metadata": {}})
         except Exception:                          # noqa: BLE001
             break

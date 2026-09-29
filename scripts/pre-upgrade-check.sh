@@ -29,7 +29,11 @@ fi
 
 BACKUP_ROOT="${AIDUMEM_BACKUP_ROOT:-${REPO_ROOT}/backups}"
 SCRIPTS_DIR="${REPO_ROOT}/scripts"
-TESTS_DIR="${REPO_ROOT}/tests"
+source "$(dirname "${BASH_SOURCE[0]}")/upgrade_gate_common.sh"
+VENV_PY="$(upgrade_python_for_repo "${REPO_ROOT}")" || {
+  echo "missing Python interpreter for upgrade gate" >&2
+  exit 1
+}
 
 # --- 统计 --------------------------------------------------------------------
 PASS=0
@@ -123,7 +127,7 @@ smoke() {
   local path="$3"
   local extra="${4:-}"
   local t0 t1 ms
-  t0=$(date +%s%3N)
+  t0=$(upgrade_now_ms)
   local code
   if [[ "${method}" == "GET" ]]; then
     code=$(curl -s "${AUTH_ARGS[@]}" -o /tmp/pre_upg_body -w "%{http_code}" "${API_BASE}${path}" || echo "000")
@@ -132,7 +136,7 @@ smoke() {
               -H "Content-Type: application/json" -d "${extra}" \
               "${API_BASE}${path}" || echo "000")
   fi
-  t1=$(date +%s%3N); ms=$((t1 - t0))
+  t1=$(upgrade_now_ms); ms=$((t1 - t0))
   if [[ "${code}" =~ ^2 ]]; then
     ok "${method} ${path} → ${code} (${ms}ms)"
   else
@@ -161,7 +165,7 @@ dry_run() {
   # 先看脚本是否声明 --dry-run
   if grep -q -- "--dry-run" "${path}" 2>/dev/null; then
     echo "  🧪 ${script} --dry-run"
-    if python3 "${path}" --dry-run 2>&1 | tail -5; then
+    if "${VENV_PY}" "${path}" --dry-run 2>&1 | tail -5; then
       ok "${script} --dry-run 完成"
     else
       bad "${script} --dry-run 失败"
@@ -180,16 +184,10 @@ dry_run "recompute_trust.py"
 # ============================================================================
 step "步骤 5/5 — 端到端集成测试"
 
-E2E_TEST="${TESTS_DIR}/test_e2e_smoke.py"
-if [[ -f "${E2E_TEST}" ]]; then
-  echo "  🧪 ${E2E_TEST}"
-  if python3 "${E2E_TEST}" 2>&1 | tail -20; then
-    ok "test_e2e_smoke.py 跑完"
-  else
-    bad "test_e2e_smoke.py 失败"
-  fi
+if run_upgrade_smoke | tail -20; then
+  ok "live E2E smoke PASS（写入、召回、trace、清理）"
 else
-  warn "TODO: ${E2E_TEST} 不存在，跳过端到端测试（建议补上）"
+  bad "live E2E smoke 未通过或脚本缺失"
 fi
 
 # ============================================================================

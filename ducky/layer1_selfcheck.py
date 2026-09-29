@@ -499,9 +499,8 @@ def _classify_memory_type_on_add(memory_id: str, content: str, *, user_id: str =
     环境变量控制是否用 LLM；失败静默降级不阻断写入。
     """
     try:
-        enabled = os.getenv("AIDUMEM_TYPE_CLASSIFY_ENABLED", "false").lower() in {"1", "true", "yes"}
-        from ducky.memory_types import classify_and_record
-        classify_and_record(memory_id, content, use_llm=enabled, user_id=user_id, bank_id=bank_id)
+        from ducky.memory_types import classify_and_sync_memory
+        classify_and_sync_memory(memory_id, content, user_id=user_id, bank_id=bank_id)
     except Exception as e:
         feature_failed("memory_type_classify", e)
         logger.debug(f"写时六型分类跳过: {e}")

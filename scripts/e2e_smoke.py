@@ -25,6 +25,8 @@ if str(_REPO) not in sys.path:
 from ducky.utils import api_auth_headers as auth_headers  # noqa: E402
 from ducky.utils import mem0_config_path  # noqa: E402
 from ducky.env_config import int_env  # noqa: E402
+from ducky.engine_mode import configured_mode  # noqa: E402
+from ducky.mem0_runtime import _resolve_api_keys  # noqa: E402
 
 
 def _default_api() -> str:
@@ -49,6 +51,7 @@ class Smoke:
         self.results: list[dict[str, Any]] = []
         self.failures = 0
         self.warnings = 0
+        self.health_data: dict[str, Any] = {}
 
     def record(self, name: str, status: str, detail: str = "", data: Any = None) -> bool:
         item = {
@@ -80,6 +83,7 @@ class Smoke:
         try:
             response = self.request("GET", "/health")
             data = self._get_json(response)
+            self.health_data = data
         except Exception as exc:
             self.record("health", "FAIL", f"cannot reach /health: {exc}")
             return
@@ -104,6 +108,16 @@ class Smoke:
     def config(self) -> None:
         data_path = Path(mem0_config_path())
         config_source = "AIDUMEM_CONFIG_FILE" if os.environ.get("AIDUMEM_CONFIG_FILE") else "repo_default"
+        server_mode = ((self.health_data.get("probes") or {})
+                       .get("engine_mode_policy") or {}).get("configured")
+        mode = server_mode if server_mode in {"auto", "cloud", "local"} else configured_mode()
+        if mode == "local":
+            # Local gear has no cloud credentials by design. The live health,
+            # write, recall and cleanup steps in run() verify actual readiness.
+            self.record("config", "PASS", "local mode requires no cloud keys", {
+                "mode": mode, "config_path": str(data_path), "config_source": config_source,
+            })
+            return
         if not data_path.exists():
             self.record("config", "WARN", "mem0 config is absent; cloud gears may be unavailable", {
                 "config_path": str(data_path),
@@ -112,48 +126,50 @@ class Smoke:
             return
         try:
             config = json.loads(data_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("top-level config must be an object")
+            config = _resolve_api_keys(config)
         except Exception as exc:
             self.record("config", "FAIL", f"mem0 config is invalid: {exc}", {
                 "config_path": str(data_path),
                 "config_source": config_source,
             })
             return
-        llm_key = str((config.get("llm") or {}).get("config", {}).get("api_key") or "")
-        embed_key = str((config.get("embedder") or {}).get("config", {}).get("api_key") or "")
+        llm_key = str((config.get("llm") or {}).get("config", {}).get("api_key") or "").strip()
+        embed_key = str((config.get("embedder") or {}).get("config", {}).get("api_key") or "").strip()
         placeholder_keys = sorted(
             name for name, value in (("llm", llm_key), ("embedder", embed_key))
             if self._is_placeholder(value)
         )
-        if placeholder_keys:
+        missing_keys = sorted(
+            name for name, value in (("llm", llm_key), ("embedder", embed_key))
+            if not value
+        )
+        if placeholder_keys or missing_keys:
             self.record(
                 "config",
                 "WARN",
-                "mem0 config still contains placeholder keys; cloud gears are not configured. "
-                "Use AIDUMEI_ENGINE_MODE=local for a no-key smoke, or fill real credentials.",
+                "cloud credentials contain placeholder keys or are absent; "
+                "set real keys or use AIDUMEI_ENGINE_MODE=local.",
                 {
                     "config_path": str(data_path),
                     "config_source": config_source,
                     "placeholder_keys": placeholder_keys,
+                    "missing_keys": missing_keys,
+                    "mode": mode,
                 },
             )
             return
-        if not llm_key or not embed_key:
-            self.record("config", "WARN", "LLM or embedding key is empty; semantic recall may be unavailable", {
-                "config_path": str(data_path),
-                "config_source": config_source,
-                "llm_key_present": bool(llm_key),
-                "embedding_key_present": bool(embed_key),
-            })
-            return
-        self.record("config", "PASS", "cloud model configuration has non-placeholder keys", {
+        self.record("config", "PASS", "effective cloud credentials are non-placeholder", {
             "config_path": str(data_path),
             "config_source": config_source,
+            "mode": mode,
         })
 
     @staticmethod
     def _is_placeholder(value: str) -> bool:
         normalized = (value or "").strip().lower()
-        hints = ("your_", "replace_", "change_me", "<", "xxx", "sk-xxx", "placeholder")
+        hints = ("your_", "replace_", "change_me", "<", "xxx", "placeholder", "__llm_key__", "__sf_key__")
         return bool(normalized) and any(hint in normalized for hint in hints)
 
     def add_and_recall(self) -> None:
@@ -230,6 +246,7 @@ class Smoke:
             response = self.request("POST", "/search_trace", json={
                 "query": f"aidumei-smoke-{dt.datetime.now().strftime('%Y%m%d')}",
                 "user_id": self.tenant,
+                "caller_user_id": self.tenant,
                 "bank_id": "default",
                 "limit": 5,
             })

@@ -17,7 +17,7 @@
     python3 scripts/check_hook_deployment.py --json     # 机读
     python3 scripts/check_hook_deployment.py --config <path> --repo <dir>
 
-退出码：0=全部一致；1=存在漂移/缺失（可直接挂进 cron 或 CI）。
+退出码：0=全部一致或声明的非钩子接入 N/A；1=漂移、缺线或适用范围不明。
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ import sys
 
 # 宿主 config.yaml 里挂钩子的事件名。新增事件时在这里加。
 HOOK_EVENTS = ("pre_llm_call", "post_llm_call", "on_session_end")
+REQUIRED_EVENTS = ("pre_llm_call", "post_llm_call", "on_session_end")
 
 # 事件 → 仓库里的真源文件。**按事件而不是按文件名认源**是本脚本的关键：
 # 宿主的脚本可能是早期安装留下的别名（如 mem0-inject.sh），按文件名找会找不到，
@@ -88,9 +89,58 @@ def parse_hook_commands(config_path: str) -> dict[str, list[str]]:
     return {k: v for k, v in found.items() if v}
 
 
-def check(config_path: str, repo_dir: str) -> dict:
+def _provider_selected(config_path: str) -> bool:
+    """Recognize the documented Hermes memory.provider=aidumem config shape."""
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return False
+    memory_indent: int | None = None
+    for line in lines:
+        code = line.split("#", 1)[0].rstrip()
+        if not code.strip():
+            continue
+        if re.match(r"^\s*memory\.provider\s*:\s*['\"]?aidumem\b", code):
+            return True
+        indent = len(code) - len(code.lstrip())
+        if memory_indent is not None and indent <= memory_indent:
+            memory_indent = None
+        if re.match(r"^\s*memory\s*:\s*$", code):
+            memory_indent = indent
+        elif memory_indent is not None and re.match(r"^\s*provider\s*:\s*['\"]?aidumem\b", code):
+            return True
+    return False
+
+
+def _is_aidumem_hook(path: str, event: str, repo_dir: str) -> bool:
+    """Other Hermes hooks do not make a plugin/API install a shell-hook install."""
+    name = os.path.basename(path).lower()
+    if "aidumem" in name or "aidumei" in name or name in {
+        "mem0-inject.sh", "mem0-ingest.sh", "mem0-distill.sh",
+    }:
+        return True
+    source = EVENT_TO_SOURCE.get(event)
+    host_md5 = _md5(path)
+    return bool(source and host_md5 and
+                host_md5 == _md5(os.path.join(repo_dir, "integrations", source)))
+
+
+def check(config_path: str, repo_dir: str, *, integration: str = "auto") -> dict:
     """比对宿主实际调用的每个脚本与仓库同名源文件的 md5。"""
-    commands = parse_hook_commands(config_path)
+    if integration not in {"auto", "hooks", "plugin", "api"}:
+        raise ValueError(f"invalid integration mode: {integration}")
+    declared = parse_hook_commands(config_path)
+    selected = "plugin" if integration == "auto" and _provider_selected(config_path) else integration
+    if selected in {"plugin", "api"}:
+        commands = {event: relevant for event, paths in declared.items()
+                    if (relevant := [p for p in paths if _is_aidumem_hook(p, event, repo_dir)])}
+    else:
+        commands = declared
+    ignored_hooks = sum(map(len, declared.values())) - sum(map(len, commands.values()))
+    not_applicable = not commands and selected in {"plugin", "api"}
+    applicability = ("hooks" if commands or selected == "hooks" else
+                     "not_applicable" if not_applicable else "unknown")
     items = []
     for event, paths in sorted(commands.items()):
         for host_path in paths:
@@ -124,14 +174,20 @@ def check(config_path: str, repo_dir: str) -> dict:
                 "status": status,
             })
     bad = [i for i in items if i["status"] != "ok"]
+    missing_events = ([] if not_applicable else
+                      [event for event in REQUIRED_EVENTS if event not in commands])
     return {
         "config": config_path,
         "repo": repo_dir,
         "items": items,
-        "ok": not bad and bool(items),
+        "ok": None if not_applicable else (not bad and not missing_events and bool(items)),
         "checked": len(items),
         "drifted": len(bad),
+        "missing_events": missing_events,
         "no_hooks_found": not items,
+        "applicability": applicability,
+        "integration": selected,
+        "ignored_other_hooks": ignored_hooks,
     }
 
 
@@ -154,13 +210,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="钩子部署一致性自检")
     ap.add_argument("--config", default=os.path.expanduser("~/.hermes/config.yaml"))
     ap.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    ap.add_argument("--integration", choices=("auto", "hooks", "plugin", "api"),
+                    default=os.environ.get("AIDUMEI_INTEGRATION_MODE", "auto"),
+                    help="接入方式；纯 API 部署用 api 明示钩子检查不适用")
     ap.add_argument("--json", action="store_true", help="输出 JSON 供机器消费")
     args = ap.parse_args()
 
-    rep = check(args.config, args.repo)
+    rep = check(args.config, args.repo, integration=args.integration)
     if args.json:
         print(json.dumps(rep, ensure_ascii=False, indent=2))
-        return 0 if rep["ok"] else 1
+        return 0 if rep["ok"] or rep["applicability"] == "not_applicable" else 1
+
+    if rep["applicability"] == "not_applicable":
+        print(f"⬜ 钩子部署检查 N/A：{rep['integration']} 接入未声明 Hermes shell hooks。"
+              "插件/API 的读写接线需用各自验收或 check_ingest_wiring.py 验证。")
+        return 0
 
     if rep["no_hooks_found"]:
         print(f"⚠️  在 {rep['config']} 里没找到任何钩子声明")
@@ -180,10 +244,15 @@ def main() -> int:
         elif i["status"] == "unknown_source":
             print("      仓库 integrations/ 里找不到对应源文件，无法判定新旧（人工确认）")
 
+    if rep["missing_events"]:
+        print("  🔴 必需钩子未声明: " + ", ".join(rep["missing_events"]))
+        print("      读线与写线必须同时接上；只有文件 MD5 一致不足以证明部署完成")
+
     if rep["ok"]:
         print(f"\n总计: 已比对 {rep['checked']} 个 · 🟢 宿主执行的就是本仓库这一版")
         return 0
-    print(f"\n总计: 已比对 {rep['checked']} 个 · 🔴 {rep['drifted']} 个不一致 —— 升级后忘了重新部署？")
+    print(f"\n总计: 已比对 {rep['checked']} 个 · 🔴 {rep['drifted']} 个不一致，"
+          f"{len(rep['missing_events'])} 条必需线缺席")
     return 1
 
 

@@ -1,6 +1,7 @@
 """aiduMEM speed · 会话合并队列（Mnemosyne 潮浪并忆）"""
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -19,7 +20,7 @@ from ducky.speed.stats import (
 
 logger = logging.getLogger("aiduMEM.speed")
 
-# 设计：仅 async；键=user+session+profile；idle/window/满额冲刷；潮浪统计
+# 仅 async；键完整编码 user/bank/session/profile/infer；idle/window/满额冲刷
 _coalesce_lock = threading.Lock()
 _coalesce_buf: dict[str, dict] = {}
 _coalesce_worker_started = False
@@ -27,7 +28,7 @@ _coalesce_worker_lock = threading.Lock()
 _coalesce_flush_cb: Optional[Callable] = None
 
 def _coalesce_key(user_id: str, metadata: Optional[dict] = None, profile: str = "default",
-                  bank_id: str = "default") -> str:
+                  bank_id: str = "default", infer: bool = True) -> str:
     """缓冲键 = user + **bank** + session + profile，避免亲密/技术短句混批。
 
     v20.2.4（外审 F-04）：此前键里**没有 bank** —— 同 user、同 session 的
@@ -45,10 +46,10 @@ def _coalesce_key(user_id: str, metadata: Optional[dict] = None, profile: str = 
     sid = str(sid).strip()
     prof = (profile or "default").strip() or "default"
     bank = (bank_id or "default").strip() or "default"
-    base = f"{user_id}@{bank}::{sid}" if sid else f"{user_id or DEFAULT_USER_ID}@{bank}"
-    if prof and prof != "default":
-        return f"{base}::{prof}"
-    return base
+    # Scope IDs are opaque and may contain @ or ::. Delimiter concatenation
+    # can collapse different owners into one queue, so encode each axis.
+    return json.dumps([user_id or DEFAULT_USER_ID, bank, sid, prof, bool(infer)],
+                      ensure_ascii=False, separators=(",", ":"))
 
 
 def resolve_coalesce_profile(metadata: Optional[dict] = None) -> str:
@@ -139,6 +140,7 @@ def _buf_snapshot(key: str, buf: dict) -> dict:
         "user_id": buf.get("user_id"),
         # batch 自带的**不可变** scope —— 冲刷时只用这个，绝不回头读全局状态
         "bank_id": buf.get("bank_id") or "default",
+        "infer": bool(buf.get("infer", True)),
         "profile": buf.get("profile") or "default",
         "messages": [{"role": "user", "content": text}],
         "metadata": dict(buf.get("metadata") or {}),
@@ -225,6 +227,7 @@ def coalesce_enqueue(
     # 全局 _coalesce_flush_cb 会被后一个请求覆盖，闭包里那个 bank_id 是
     # 「最后一次注册时的」，冲刷时可能把 A 域的内容写进 B 域。
     bank_id: str = "default",
+    infer: bool = True,
 ) -> dict:
     """
     把一条短句放入合并缓冲。
@@ -238,7 +241,7 @@ def coalesce_enqueue(
     text = messages_to_text(messages_json)
     # 写入 metadata 便于落库/调试
     md.setdefault("coalesce_profile", profile)
-    key = _coalesce_key(user_id, md, profile, bank_id=bank_id)
+    key = _coalesce_key(user_id, md, profile, bank_id=bank_id, infer=infer)
     now = time.time()
     ready_batch = None
 
@@ -258,6 +261,7 @@ def coalesce_enqueue(
             _coalesce_buf[key] = {
                 "user_id": user_id,
                 "bank_id": (bank_id or "default").strip() or "default",
+                "infer": bool(infer),
                 "profile": profile,
                 "first_ts": now,
                 "last_ts": now,
@@ -333,6 +337,8 @@ def coalesce_enqueue(
         out["job_ids"] = batch["job_ids"]
         out["flush_reason"] = batch["reason"]
         out["user_id"] = batch["user_id"]
+        out["bank_id"] = batch["bank_id"]
+        out["infer"] = batch["infer"]
         out["profile"] = bprof
         # 即时/顺带冲刷 → 记潮浪
         try:
@@ -360,6 +366,8 @@ def coalesce_enqueue(
                 logger.debug(f"record also_ready wave skip: {e}")
             out["also_ready"] = [{
                 "user_id": ready_batch["user_id"],
+                "bank_id": ready_batch["bank_id"],
+                "infer": ready_batch["infer"],
                 "messages": ready_batch["messages"],
                 "metadata": {
                     **ready_batch["metadata"],
@@ -387,25 +395,22 @@ def coalesce_flush_due(
 
     v20.2.4（外审 F-04）：
     · 新增 bank_id 过滤 —— 手动冲刷不该把一个域的内容交给另一个域处理；
-    · **键格式已变**（`{user}@{bank}[::sid][::prof]`），这里的前缀匹配同步改掉。
-      改了键的构造却忘了改读取方，症状是「冲刷不到任何东西且不报错」。
+    · 域过滤必须比较 batch 的独立归属字段；opaque ID 的字符串前缀不等于归属。
     """
     now = time.time()
     out: list[dict] = []
     with _coalesce_lock:
         if key:
             keys = [key]
-        elif user_id and bank_id:
-            _pfx = f"{user_id}@{(bank_id or 'default').strip() or 'default'}"
-            keys = [k for k in _coalesce_buf.keys() if k == _pfx or k.startswith(f"{_pfx}::")]
-        elif user_id:
-            _pfx = f"{user_id}@"
-            keys = [k for k in _coalesce_buf.keys() if k.startswith(_pfx)]
         else:
             keys = list(_coalesce_buf.keys())
         for k in keys:
             buf = _coalesce_buf.get(k)
             if not buf:
+                continue
+            if user_id and buf.get("user_id") != user_id:
+                continue
+            if bank_id is not None and buf.get("bank_id") != (bank_id.strip() or "default"):
                 continue
             reason = "force" if force else _should_flush_locked(buf, now)
             if not reason:
@@ -419,6 +424,7 @@ def coalesce_flush_due(
                 # F-04：scope 随 batch 走 —— 这一处此前漏了，于是 _buf_snapshot
                 # 带上了 bank 而 flush_due 又把它丢掉，冲刷方拿到 None。
                 "bank_id": snap.get("bank_id") or "default",
+                "infer": snap["infer"],
                 "profile": bprof,
                 "messages": snap["messages"],
                 "metadata": {
@@ -471,12 +477,13 @@ def coalesce_status(user_id: Optional[str] = None) -> dict:
     items = []
     with _coalesce_lock:
         for k, buf in _coalesce_buf.items():
-            if user_id and not (k == user_id or k.startswith(f"{user_id}::")):
+            if user_id and buf.get("user_id") != user_id:
                 continue
             parts = list(buf.get("parts") or [])
             items.append({
                 "key": k,
                 "user_id": buf.get("user_id"),
+                "bank_id": buf.get("bank_id"),
                 "profile": buf.get("profile") or "default",
                 "count": len(parts),
                 "chars": sum(len(p) for p in parts),
@@ -505,7 +512,7 @@ def coalesce_status(user_id: Optional[str] = None) -> dict:
 
 
 def register_coalesce_flusher(cb: Callable) -> None:
-    """注册冲刷回调：cb(user_id, messages, metadata, job_ids, *, bank_id)。
+    """注册冲刷回调：cb(user_id, messages, metadata, job_ids, *, bank_id, infer)。
 
     v20.2.4（外审 F-04）：bank_id 是**参数**而不是闭包变量 —— 这个回调是
     进程级单例，后注册的会覆盖先注册的，闭包里捕获的 scope 属于「最后那次
@@ -537,6 +544,7 @@ def _coalesce_worker_loop() -> None:
                             batch["metadata"],
                             jids,
                             bank_id=batch.get("bank_id") or "default",
+                            infer=bool(batch.get("infer", True)),
                         )
                     except Exception as e:
                         logger.error(f"coalesce flush cb failed: {e}")
@@ -575,4 +583,3 @@ def ensure_coalesce_worker() -> None:
 def coalesce_note(user_id: str, messages_json, metadata: dict) -> dict:
     """旧接口兼容 → coalesce_enqueue（不创建 job）。"""
     return coalesce_enqueue(user_id, messages_json, metadata or {})
-

@@ -11,9 +11,10 @@ OBSERVATIONS / REFLECTIONS / DECISIONS 六类显式分离。这里提供：
 from __future__ import annotations
 
 import logging
+from typing import Annotated, Literal
 
 from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ducky.api_models import (
     ID_FIELD_MAX_CHARS,
@@ -28,9 +29,16 @@ logger = logging.getLogger("aiduMEM.routes_p1")
 class BackfillRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    limit: int = 2000
+    limit: int = Field(default=2000, ge=1, le=5000)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    source: Literal["facts", "mem0"] = "facts"
+    after_id: int = Field(default=0, ge=0)
+    # Qdrant point offsets are UUID strings or unsigned integer ids.  Bound
+    # both variants before handing a public request to the scroll backend.
+    cursor: (Annotated[str, StringConstraints(strict=True, max_length=128)] |
+             Annotated[int, Field(ge=0, le=18446744073709551615, strict=True)] | None) = None
+    apply: bool = False
 
 
 class TypeResetRequest(BaseModel):
@@ -84,6 +92,7 @@ def register_p1_routes(app: FastAPI) -> None:
     from ducky.memory_types import (
         VALID_TYPES,
         backfill_from_facts,
+        backfill_from_mem0,
         ensure_memory_types_schema,
         list_types,
         reset_all_types,
@@ -165,13 +174,22 @@ def register_p1_routes(app: FastAPI) -> None:
 
     @app.post("/memory/types/backfill")
     def memory_types_backfill(req: BackfillRequest):
-        """对存量 facts 做规则判型重建账本（不调用 LLM）。"""
+        """分页预览存量六型分类；显式 apply 才落盘（不调用 LLM）。"""
         try:
             scope = make_scope(req.user_id, req.bank_id)
-            result = backfill_from_facts(
-                limit=req.limit, user_id=scope.user_id, bank_id=scope.bank_id
-            )
-            return {"status": "ok", "user_id": scope.user_id, "bank_id": scope.bank_id, **result}
+            if req.source == "mem0":
+                result = backfill_from_mem0(
+                    limit=req.limit, user_id=scope.user_id, bank_id=scope.bank_id,
+                    cursor=req.cursor, apply=req.apply,
+                )
+            else:
+                result = backfill_from_facts(
+                    limit=req.limit, user_id=scope.user_id, bank_id=scope.bank_id,
+                    after_id=req.after_id, apply=req.apply,
+                )
+            partial = result.get("failed", 0) or result.get("conflicts", 0)
+            return {"status": "partial" if partial else "ok", "source": req.source,
+                    "user_id": scope.user_id, "bank_id": scope.bank_id, **result}
         except Exception as e:
             logger.error(f"/memory/types/backfill 失败: {e}")
             return {"status": "error", "detail": str(e)}

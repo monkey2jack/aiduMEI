@@ -273,25 +273,48 @@ def compute_recall_verdict(
     return "found", "scored"
 
 
-def register_search_routes(app: FastAPI) -> None:
-    def _req_session_id(req) -> str:
-        """v21.2 M2：从请求面取本次会话 id。
+def _req_session_id(req) -> str:
+    """Read the current session from the request or its origin metadata."""
+    sid = str(getattr(req, "session_id", "") or "")
+    if sid:
+        return sid
+    try:
+        from ducky.origin_context import extract_origin_fields
+        _agent, sid2, _turn = extract_origin_fields(
+            getattr(req, "__pydantic_extra__", None) or {},
+            getattr(req, "metadata", None))
+        return sid2
+    except (ImportError, KeyError, AttributeError, ValueError, TypeError):
+        return ""
 
-        顶层 session_id 优先，其次 metadata / extra 里的同名片段 —— 口径
-        与写入侧 origin_context.extract_origin_fields 完全一致，否则写进去的
-        session 和查出来的对不上，回声抑制会静默失效（本仓最怕的那种「改了
-        等于没改」）。读不到一律空串 = 不过滤。"""
-        sid = str(getattr(req, "session_id", "") or "")
-        if sid:
-            return sid
-        try:
-            from ducky.origin_context import extract_origin_fields
-            _agent, sid2, _turn = extract_origin_fields(
-                getattr(req, "__pydantic_extra__", None) or {},
-                getattr(req, "metadata", None))
-            return sid2
-        except Exception:
-            return ""
+
+def _log_search_result(req, results: list, started_at: float) -> None:
+    """Count each completed /search once, including the Workspace fast path."""
+    import time as _t
+    try:
+        from ducky.evolve_mem import log_search_quality as _log_sq
+        _log_sq(req.query, results,
+                latency_ms=int((_t.time() - started_at) * 1000),
+                gate_passed=True,
+                origin_session_id=_req_session_id(req))
+    except (ImportError, sqlite3.Error, OSError, ValueError, TypeError):
+        # Observability must not turn an otherwise successful read into a 500.
+        pass
+
+
+def _bound_workspace_hits(hits: list, *, before: str, after: str,
+                          limit: int) -> dict | None:
+    """Apply Hybrid's time, score and count bounds to a Workspace candidate set."""
+    if not hits:
+        return None
+    _filter_results_by_time(hits, before, after)
+    strength = annotate_recall_strength(hits)
+    if hits:
+        del hits[limit:]
+    return strength
+
+
+def register_search_routes(app: FastAPI) -> None:
 
     @app.post("/search", response_model=SearchResponse)
     def search(req: SearchRequest):
@@ -352,6 +375,7 @@ def register_search_routes(app: FastAPI) -> None:
             uid = _normalize_user_id(scope.user_id)
             bank_id = scope.bank_id
             ensure_bank_registered(make_scope(uid, bank_id))
+            effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
 
             try:
                 from ducky.memory_workspace import ws_lookup, ws_feed_from_results
@@ -371,12 +395,23 @@ def register_search_routes(app: FastAPI) -> None:
                         ws_hits = _drop_echo(
                             ws_hits, _load_echo_refs(ws_hits, _ws_sid, uid, bank_id))
                         _ws_echo_dropped = _before - len(ws_hits)
+                # A rejected cache candidate must fall through to Hybrid.
+                ws_strength = _bound_workspace_hits(
+                    ws_hits, before=req.before, after=req.after,
+                    limit=effective_limit)
                 if ws_hits:
                     boost_salience_for_results(ws_hits)
+                    _annotate_memory_types(ws_hits, user_id=uid, bank_id=bank_id)
                     # v20.1 整改轮（R-06 · 外审 z P2-04）：本分支的三态字段集
                     # 必须与 hybrid 分支一致 —— 上层按「有 confidence 才信」
                     # 决策时，缺字段的 found 会被漏判或误判。
-                    ws_strength = annotate_recall_strength(ws_hits)
+                    ws_verdict, ws_basis = compute_recall_verdict(
+                        ws_hits, ws_strength["top_score"], _verdict_threshold(),
+                        recall_path="workspace",
+                    )
+                    if ws_verdict == "found":
+                        ws_basis = "workspace_hit"
+                    _log_search_result(req, ws_hits, _search_t0)
                     return {
                         "status": "ok", "results": ws_hits,
                         "_workspace_hit": True,
@@ -389,9 +424,9 @@ def register_search_routes(app: FastAPI) -> None:
                         "_bypassed": {"scoring": True, "mmr": True, "errsig": True,
                                       "echo_suppress": False,
                                       "echo_dropped": _ws_echo_dropped},
-                        # workspace 命中 = 热缓存里真有 —— found，无歧义。
-                        "recall_verdict": "found",
-                        "verdict_basis": "workspace_hit",
+                        # 热缓存命中仍须经过分数下限和判语阈值。
+                        "recall_verdict": ws_verdict,
+                        "verdict_basis": ws_basis,
                         "engine_mode": __import__("ducky.gear", fromlist=["current_mode"]).current_mode(),
                         "recall_confidence": ws_strength["top_score"],
                     }
@@ -400,7 +435,6 @@ def register_search_routes(app: FastAPI) -> None:
 
             results = []
             # v20.3.2：模型层已 le=100，这里再 clamp 一次 —— 内部调用方可能绕过 Pydantic。
-            effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
             try:
                 results = lazy_import_hybrid()(
                     mem, req.query, uid, effective_limit,
@@ -528,16 +562,7 @@ def register_search_routes(app: FastAPI) -> None:
             # 探针拿这张表当「有人在用」的证据，读到的却全是自己的巡检心跳。
             # （同一课第三次：挂钩要落在真实缝位上，不是看着像的那个地方。）
             # 失败静默：观测不该拖垮被观测的东西。
-            try:
-                from ducky.evolve_mem import log_search_quality as _log_sq
-                _log_sq(req.query, results,
-                        latency_ms=int((_t.time() - _search_t0) * 1000),
-                        gate_passed=True,
-                        origin_session_id=_req_session_id(req))
-            except (ImportError, sqlite3.Error, OSError, ValueError, TypeError):
-                # 收窄到「埋点自己可能出的错」：模块缺失 / 库写失败 / 参数异常。
-                # 观测不该拖垮被观测的东西，但也不该拿宽捕获盖住真 bug。
-                pass
+            _log_search_result(req, results, _search_t0)
             return resp
         except HTTPException:
             # P1-4 教训：HTTPException 必须先放行 —— 否则上面跨殿借阅拒绝

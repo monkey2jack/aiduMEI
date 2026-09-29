@@ -17,6 +17,7 @@ import sqlite3
 
 from ducky.utils import DEFAULT_USER_ID, get_text_conn
 from ducky.bank_contract import DEFAULT_BANK_ID, make_scope, raw_storage_key, scoped_storage_key
+from ducky.scope_sql import scope_clause
 from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.text_fts")
@@ -30,6 +31,7 @@ _MEMORIES_DDL = """
     user_id TEXT,
     bank_id TEXT NOT NULL DEFAULT 'default',
     category TEXT,
+    memory_type TEXT NOT NULL DEFAULT 'FACTS',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, user_id, bank_id)
 """
@@ -75,11 +77,19 @@ def _migrate_memories_pk(conn: sqlite3.Connection) -> bool:
     conn.execute(f"CREATE TABLE memories_v20 ({_MEMORIES_DDL})")
     # 旧主键（单列 id）比新主键更严，理论上一行都不会被 IGNORE 掉；
     # 但「理论上」不是验收标准，下面按条数实测。
-    conn.execute(
-        "INSERT OR IGNORE INTO memories_v20 (id,content,user_id,bank_id,category,created_at) "
+    old_columns = {r[1] for r in info}
+    # Both SELECT shapes are fixed SQL. A legacy row gets a storage fallback;
+    # the keyword read side checks any recorded type in the ledger.
+    selected_rows = (
         "SELECT id, content, user_id, "
-        "       COALESCE(NULLIF(TRIM(bank_id),''), 'default'), category, created_at "
-        "FROM memories"
+        "COALESCE(NULLIF(TRIM(bank_id),''), 'default'), category, "
+        + ("memory_type, created_at FROM memories" if "memory_type" in old_columns
+           else "'FACTS', created_at FROM memories")
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO memories_v20 "
+        "(id,content,user_id,bank_id,category,memory_type,created_at) "
+        + selected_rows
     )
     moved = conn.execute("SELECT COUNT(*) FROM memories_v20").fetchone()[0]
     if moved < origin:
@@ -111,6 +121,9 @@ def _ensure_trigram_fts(conn: sqlite3.Connection):
         logger.debug("memories bank_id migration skipped: %s", exc)
     # ② 主键迁移。重建过就必须连带重建 FTS —— rowid 全变了，旧索引全部错位。
     pk_migrated = _migrate_memories_pk(conn)
+    if "memory_type" not in {r[1] for r in conn.execute("PRAGMA table_info(memories)")}:
+        # Additive on existing f0.2 databases; category retains its own meaning.
+        conn.execute("ALTER TABLE memories ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'FACTS'")
 
     need_rebuild = pk_migrated
     row = conn.execute(
@@ -256,7 +269,8 @@ def _init_text_fts():
     threading.Thread(target=_delayed_backfill, daemon=True, name="aiduMEM-fts-backfill").start()
 
 
-def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category=None, bank_id=DEFAULT_BANK_ID):
+def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category=None,
+                  bank_id=DEFAULT_BANK_ID, memory_type=None):
     """把一条记忆写进外挂 FTS。
 
     category 用 None 当哨兵，它和空串是两个意思，不许塌成同一个默认值：
@@ -274,21 +288,82 @@ def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category=None, ba
     scope = make_scope(user_id, bank_id)
     storage_id = scoped_storage_key(memory_id, scope)
     conn = get_text_conn()
-    if category is None:
-        # 只有「没说」才回查；说了分类的调用方一律不付这次 SELECT 的代价。
+    if category is None or memory_type is None:
+        # Unspecified fields preserve the prior row independently.
         prev = conn.execute(
-            "SELECT category FROM memories WHERE id=? AND user_id=? AND bank_id=?",
+            "SELECT category, memory_type FROM memories WHERE id=? AND user_id=? AND bank_id=?",
             (storage_id, scope.user_id, scope.bank_id),
         ).fetchone()
-        category = prev[0] if prev is not None else ""
+        if category is None:
+            category = prev[0] if prev is not None else ""
+        if memory_type is None:
+            memory_type = prev[1] if prev is not None else "FACTS"
     # 先删再插，保证 content= 外挂 FTS 与 rowid 同步（避免 REPLACE 残留）
     conn.execute("DELETE FROM memories WHERE id=? AND user_id=? AND bank_id=?", (storage_id, scope.user_id, scope.bank_id))
     conn.execute(
-        "INSERT INTO memories (id,content,user_id,bank_id,category) VALUES (?,?,?,?,?)",
-        (storage_id, content, scope.user_id, scope.bank_id, category or ""),
+        "INSERT INTO memories (id,content,user_id,bank_id,category,memory_type) VALUES (?,?,?,?,?,?)",
+        (storage_id, content, scope.user_id, scope.bank_id, category or "", memory_type),
     )
     conn.commit()
     conn.close()
+
+
+def _set_memory_type(memory_id, memory_type, *, user_id=DEFAULT_USER_ID,
+                     bank_id=DEFAULT_BANK_ID) -> int:
+    """Update one existing FTS row's type without changing its category/text."""
+    scope = make_scope(user_id, bank_id)
+    conn = get_text_conn()
+    scope_sql, scope_params = scope_clause(scope, flavor="canonical")
+    try:
+        cur = conn.execute(
+            "UPDATE memories SET memory_type=? WHERE id=?" + scope_sql,
+            (memory_type, scoped_storage_key(memory_id, scope), *scope_params),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _upsert_typed_memory(memory_id, content, memory_type, *, user_id=DEFAULT_USER_ID,
+                         bank_id=DEFAULT_BANK_ID, category=None) -> bool:
+    """Fill a historical type without replacing a newer FTS text/category."""
+    scope = make_scope(user_id, bank_id)
+    storage_id = scoped_storage_key(memory_id, scope)
+    conn = get_text_conn()
+    scope_sql, scope_params = scope_clause(scope, flavor="canonical")
+    try:
+        row = conn.execute(
+            "SELECT memory_type FROM memories "
+            "WHERE id=?" + scope_sql,
+            (storage_id, *scope_params),
+        ).fetchone()
+        if row is not None:
+            # A vector payload can lag a corrected FTS row in both text and
+            # category. The backfill owns only the six-type label.
+            if row[0] == memory_type:
+                return False
+            conn.execute(
+                "UPDATE memories SET memory_type=? WHERE id=?" + scope_sql,
+                (memory_type, storage_id, *scope_params),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO memories (id,content,user_id,bank_id,category,memory_type) "
+                "VALUES (?,?,?,?,?,?)",
+                (storage_id, content, scope.user_id, scope.bank_id,
+                 category if category is not None else "", memory_type),
+            )
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _unindex_memory(memory_id, user_id=DEFAULT_USER_ID, bank_id=DEFAULT_BANK_ID):
@@ -341,6 +416,7 @@ def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID, bank_i
                 user_id=item.get("user_id", user_id),
                 category=meta.get("category"),
                 bank_id=meta.get("bank_id", DEFAULT_BANK_ID),
+                memory_type=meta.get("memory_type"),
             )
             n += 1
         logger.info(f"✅ FTS 回填完成: {n} 条")
@@ -357,14 +433,14 @@ def _like_search(terms, user_id, top_k, conn=None, bank_id=DEFAULT_BANK_ID):
     scope = make_scope(user_id, bank_id)
     if not terms:
         rows = conn.execute(
-            "SELECT id,content,category,bank_id FROM memories WHERE user_id=? AND bank_id=? LIMIT ?",
+            "SELECT id,content,category,memory_type,bank_id FROM memories WHERE user_id=? AND bank_id=? LIMIT ?",
             (scope.user_id, scope.bank_id, top_k),
         ).fetchall()
     else:
         clauses = ["content LIKE ?" for _ in terms]
         params = [f"%{t}%" for t in terms] + [scope.user_id, scope.bank_id, top_k]
         rows = conn.execute(
-            f"SELECT id,content,category,bank_id FROM memories WHERE ({' OR '.join(clauses)}) AND user_id=? AND bank_id=? LIMIT ?",
+            f"SELECT id,content,category,memory_type,bank_id FROM memories WHERE ({' OR '.join(clauses)}) AND user_id=? AND bank_id=? LIMIT ?",
             params,
         ).fetchall()
     if should_close:
@@ -428,7 +504,7 @@ def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USE
         try:
             rows = conn.execute(
                 """
-                SELECT m.id, m.content, m.category, m.bank_id
+                SELECT m.id, m.content, m.category, m.memory_type, m.bank_id
                 FROM memories_fts
                 JOIN memories m ON m.rowid = memories_fts.rowid
                 WHERE memories_fts MATCH ? AND m.user_id = ? AND m.bank_id = ?
@@ -453,7 +529,24 @@ def _bm25_keyword_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USE
 
     conn.close()
     # P1-4 降级可观测：调用方（含测试）可自证这次召回真走的是索引还是全表扫。
-    return [{**dict(r), "id": raw_storage_key(r["id"], scope), "_recall_path": recall_path} for r in rows]
+    results = [{**dict(r), "id": raw_storage_key(r["id"], scope),
+                "_recall_path": recall_path} for r in rows]
+    if results:
+        # A legacy FTS row stores synthetic FACTS even when the scoped type
+        # ledger has a real label. Resolve only these hits, never scan/rewrite
+        # the table during startup. Missing ledger rows keep their FTS value.
+        try:
+            from ducky.memory_types import get_batch_memory_types
+            recorded = get_batch_memory_types(
+                [item["id"] for item in results], user_id=scope.user_id,
+                bank_id=scope.bank_id, include_missing=False,
+            )
+            for item in results:
+                if item["id"] in recorded:
+                    item["memory_type"] = recorded[item["id"]]
+        except Exception as exc:
+            logger.debug("FTS type ledger annotation skipped: %s", exc)
+    return results
 
 
 def _hybrid_search(query: str, top_k: int = 10, user_id: str = DEFAULT_USER_ID,

@@ -153,11 +153,29 @@ def rig(monkeypatch, tmp_path):
     import ducky.utils as utils
     from ducky.schema_bootstrap import ensure_core_schema
     from ducky.text_fts import _init_text_fts
+    import threading
+
+    # Foreground route tests own their recovery signals. A probe started by
+    # another test may legally provide the second success during the first add.
+    # The timer itself is exercised separately by test_v20_3_1_gear_probe.py.
+    monkeypatch.setattr(gear, "_schedule_probe_timer", lambda: None)
+    probes = [thread for thread in threading.enumerate()
+              if thread.name == "aiduMEI-gear-probe"]
+    for probe in probes:
+        probe.cancel()
+    for probe in probes:
+        probe.join(timeout=45)
+        assert not probe.is_alive(), "recovery probe survived its test environment"
+    with gear._PROBE_LOCK:
+        gear._PROBE_TIMER = None
 
     monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
     monkeypatch.setattr(utils, "TEXT_FTS_DB", str(tmp_path / "text_fts.db"))
     gear.reset_gear_for_tests()
-    monkeypatch.setenv("AIDUMEI_GEAR_COOLDOWN_SEC", "60")
+    for prefix in ("AIDUMEI_GEAR_", "AIDUMEI_LLM_GEAR_"):
+        for suffix, value in (("TRIP_FAILURES", "3"), ("RECOVER_SUCCESSES", "2"),
+                              ("COOLDOWN_SEC", "60")):
+            monkeypatch.setenv(prefix + suffix, value)
 
     client = _FakeQdrant()
     fake = _FakeMemory(client)
@@ -833,22 +851,31 @@ class TestLLMGearWriteWiring:
             "非 LLM 故障的降级分支必须透传 infer（v20 纪律）"
 
     def test_half_open_recovers_via_real_adds(self, rig, monkeypatch):
-        import time as _time
+        from types import SimpleNamespace
         import ducky.hot.add as hot_add
         client, fake, http, di = rig
-        t0 = _time.time() - 120
+        now = 1_700_000_040.0
+        monkeypatch.setattr(gear, "time", SimpleNamespace(time=lambda: now))
+        t0 = now - 120
         for i in range(3):
             gear.record_llm_failure("旧断供", now=t0 + i)
         assert gear.llm_gear_status()["breaker"] == "half_open"
 
+        writes = []
+
         def healthy_layer1():
             def _w(mem, msgs, uid, meta, bank_id="default", infer=True):
+                writes.append((uid, bank_id, infer))
                 return {"status": "ok", "action": "indexed"}
             return _w
         monkeypatch.setattr(hot_add, "lazy_import_layer1", healthy_layer1)
-        http.post("/add", json={"messages": "恢复探测一", "user_id": "u_rec"})
+        first = http.post("/add", json={"messages": "恢复探测一", "user_id": "u_rec"})
+        assert first.status_code == 200, first.text
+        assert len(writes) == 1
         assert gear.llm_current_mode() == "lite", "单次成功不许升挡"
-        http.post("/add", json={"messages": "恢复探测二", "user_id": "u_rec"})
+        second = http.post("/add", json={"messages": "恢复探测二", "user_id": "u_rec"})
+        assert second.status_code == 200, second.text
+        assert len(writes) == 2
         assert gear.llm_current_mode() == "full", \
             "半开两次真实写入成功仍未升挡——恢复链断了"
 
@@ -967,3 +994,107 @@ class TestEngineModeOnRig:
         assert di.pending_counts()["cloud"] == 0, "本地档不该产生云欠账"
         # 但确定性层必须照落：本地向量在
         assert client.cols.get(di.LOCAL_COLLECTION), "本地档没写本地向量——档位形同虚设"
+
+
+def test_coalesce_callback_uses_batch_bank_for_every_direct_write_sidecar(rig, monkeypatch):
+    """The process-global callback may belong to a later request in another bank."""
+    import ducky.add_speed as speed
+    import ducky.epistemic as epistemic
+    import ducky.evolve_mem as evolve
+    import ducky.hot.add as hot_add
+    import ducky.speed.coalesce as coalesce
+    import ducky.text_fts as fts
+
+    _, _, http, _ = rig
+    calls = []
+    coalesce._coalesce_buf.clear()
+    monkeypatch.setattr(speed, "ensure_coalesce_worker", lambda: None)
+    monkeypatch.setattr(speed, "coalesce_should_buffer", lambda *a, **kw: (True, "test"))
+    monkeypatch.setattr(gear, "should_try_llm", lambda *, now=None: False)
+    monkeypatch.setattr(hot_add, "register_salience_for_add",
+                        lambda *a, **kw: calls.append(("salience", kw["bank_id"])))
+    monkeypatch.setattr(epistemic, "stamp_memory_refs",
+                        lambda *a, **kw: calls.append(("epistemic", kw["bank_id"])))
+    monkeypatch.setattr(evolve, "record_episode_step",
+                        lambda *a, **kw: calls.append(("episode", kw["bank_id"])))
+    monkeypatch.setattr(fts, "_index_memory",
+                        lambda *a, **kw: calls.append(("fts", kw["bank_id"])))
+
+    for bank in ("bank-a", "bank-b"):
+        response = http.post("/add", json={
+            "messages": "短句待合并", "user_id": "batch-u", "bank_id": bank,
+            "async_mode": True, "metadata": {"session_id": "same"},
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["action"] == "coalesce_buffered"
+
+    batch, = coalesce.coalesce_flush_due(user_id="batch-u", bank_id="bank-a", force=True)
+    coalesce._coalesce_flush_cb(batch["user_id"], batch["messages"],
+                                batch["metadata"], batch["job_ids"],
+                                bank_id=batch["bank_id"])
+    assert calls
+    assert {name for name, _ in calls} == {"salience", "epistemic", "episode", "fts"}
+    assert {bank for _, bank in calls} == {"bank-a"}, calls
+    coalesce._coalesce_buf.clear()
+
+
+def test_coalesce_callback_uses_batch_infer_after_later_request(rig, monkeypatch):
+    import ducky.add_speed as speed
+    import ducky.hot.add as hot_add
+    import ducky.speed.coalesce as coalesce
+
+    _, _, http, _ = rig
+    seen = []
+    coalesce._coalesce_buf.clear()
+    monkeypatch.setattr(speed, "ensure_coalesce_worker", lambda: None)
+    monkeypatch.setattr(speed, "coalesce_should_buffer", lambda *a, **kw: (True, "test"))
+    monkeypatch.setattr(gear, "should_try_llm", lambda *, now=None: True)
+    monkeypatch.setattr(hot_add, "lazy_import_layer1", lambda: (
+        lambda mem, msgs, uid, meta, **kw: seen.append(kw["infer"]) or
+        {"status": "ok", "action": "indexed"}))
+
+    for bank, infer in (("bank-a", True), ("bank-b", False)):
+        response = http.post("/add", json={
+            "messages": "短句待合并", "user_id": "infer-u", "bank_id": bank,
+            "async_mode": True, "infer": infer,
+            "metadata": {"session_id": "same"},
+        })
+        assert response.status_code == 200, response.text
+    batch, = coalesce.coalesce_flush_due(user_id="infer-u", bank_id="bank-a", force=True)
+    coalesce._coalesce_flush_cb(batch["user_id"], batch["messages"],
+                                batch["metadata"], batch["job_ids"],
+                                bank_id=batch["bank_id"], infer=batch["infer"])
+    assert seen == [True], "后注册的 infer=False 不得改变旧批次的抽取语义"
+    coalesce._coalesce_buf.clear()
+
+
+@pytest.mark.parametrize('scopes', [
+    [('opaque', 'bank@other', ''), ('opaque@bank', 'other', '')],
+    [('opaque', 'bank', 'segment'), ('opaque', 'bank::segment', '')],
+])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_add_coalesce_keeps_punctuation_scopes_separate(rig, monkeypatch, scopes, reverse):
+    import ducky.add_speed as speed
+    import ducky.speed.coalesce as coalesce
+
+    _, _, http, _ = rig
+    monkeypatch.setattr(coalesce, '_coalesce_buf', {})
+    monkeypatch.setattr(speed, 'ensure_coalesce_worker', lambda: None)
+    monkeypatch.setattr(speed, 'coalesce_should_buffer', lambda *a, **kw: (True, 'test'))
+    scopes = list(reversed(scopes)) if reverse else scopes
+    for index, (user, bank, session) in enumerate(scopes):
+        response = http.post('/add', json={
+            'messages': f'isolated-marker-{index}', 'user_id': user, 'bank_id': bank,
+            'async_mode': True, 'metadata': {'session_id': session},
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()['action'] == 'coalesce_buffered'
+    first_user, first_bank, _ = scopes[0]
+    batches = coalesce.coalesce_flush_due(user_id=first_user, bank_id=first_bank, force=True)
+    assert len(batches) == 1
+    assert batches[0]['count'] == 1
+    assert 'isolated-marker-0' in str(batches[0]['messages'])
+    assert 'isolated-marker-1' not in str(batches[0]['messages'])
+    remaining = coalesce.coalesce_flush_due(force=True)
+    assert len(remaining) == 1
+    assert (remaining[0]['user_id'], remaining[0]['bank_id']) == scopes[1][:2]

@@ -44,6 +44,7 @@ check "drill_autoshift contract exists" bash -c 'test -x scripts/drill_autoshift
 check "drill --run actually passes against a real health shape" bash -c 'test -f tests/test_v20_3_1_drill_autoshift.py && grep -q "test_drill_run_passes_against_real_health_shape" tests/test_v20_3_1_drill_autoshift.py'
 check "restore_gate exists and rejects invalid path" bash -c 'test -x scripts/restore_gate.sh && ! bash scripts/restore_gate.sh --dry-run /tmp/does-not-exist >/dev/null 2>&1'
 check "crontab intent list matches TASKS array declaration (count auto-tracked, ghost-free)" bash -c 'decl=$(grep -cE "^[[:space:]]+\"[a-z0-9_]+\|" scripts/update_crontab.sh); listed=$(bash scripts/update_crontab.sh --list | python3 -c "import json,sys; print(len(json.load(sys.stdin)[\"tasks\"]))"); test "$decl" -gt 0 && test "$decl" -eq "$listed"'
+check "canonical install prompt cron count matches actual manifest" bash -c 'listed=$(bash scripts/update_crontab.sh --list | python3 -c "import json,sys; print(len(json.load(sys.stdin)[\"tasks\"]))"); test "$listed" -gt 0 && grep -q "安装 $listed 项定时任务" prompts/install.txt && grep -q "实文 $listed 条" prompts/install.txt && cmp -s prompts/install.txt ONE_LINE_INSTALL.md'
 check "crontab every task target script exists" bash -c 'bash scripts/update_crontab.sh --dry-run >/dev/null' 
 check "deploy prompt is present and canonical" bash -c 'test -f prompts/install.txt && test -f ONE_LINE_INSTALL.md && cmp -s prompts/install.txt ONE_LINE_INSTALL.md && grep -q "report.py" prompts/install.txt && grep -q "e2e_smoke.py" prompts/install.txt && grep -q "agent_integration_check.py" prompts/install.txt && grep -q "update_crontab.sh" prompts/install.txt'
 # v20.3.1（九份审计 P0-8 · 用户审计 🔴-4）：展示区与 canonical 的对账。
@@ -67,11 +68,13 @@ check "capacity and restore docs exist" bash -c 'test -f docs/CAPACITY.md && tes
 # 有人记得改尺子。
 VER="$(python3 -c 'import re;print(re.search(r"SERVICE_VERSION = \"([^\"]+)\"", open("ducky/version.py").read()).group(1))' 2>/dev/null || true)"
 MAJOR_MINOR="$(printf '%s' "${VER}" | cut -d. -f1-2)"
-check "README versions match version.py ($VER)" bash -c '
-  test -n "'"$VER"'" &&
-  grep -q "v'"${MAJOR_MINOR}"'" README.md &&
-  grep -q "v'"${MAJOR_MINOR}"'" README_EN.md
-'
+PUBLIC_VER="$(python3 -c 'import re; m=re.search(r"^FULL_VERSION = \"([^\"]+)\"", open("ducky/version.py").read(), re.M); print(m.group(1) if m else "")' 2>/dev/null || true)"
+if [[ -z "${PUBLIC_VER}" ]]; then PUBLIC_VER="v${MAJOR_MINOR}"; fi
+check "README versions match version.py (${PUBLIC_VER} / ${VER})" bash -c '
+  test -n "$1" && test -n "$2" &&
+  head -n 20 README.md | grep -Fq "当前公开版本 $2" &&
+  head -n 20 README_EN.md | grep -Fq "current public release is **$2**"
+' _ "${VER}" "${PUBLIC_VER}"
 check "dependency declarations match" bash -c 'test -x scripts/dependency_audit.py && python3 scripts/dependency_audit.py >/dev/null'
 check "service units have memory limits" bash -c 'grep -q "MemoryHigh=768M" deploy/aidumem-api.service && grep -q "MemoryMax=1G" deploy/aidumem-api.service'
 check "integration smoke script exists" bash -c 'test -x scripts/agent_integration_check.py && grep -q "/api/core-memory/inject" scripts/agent_integration_check.py'

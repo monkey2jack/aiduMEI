@@ -289,7 +289,7 @@ def test_index_fts_after_add_updated_branch_reindexes_existing(monkeypatch):
     calls: list = []
     import ducky.text_fts as tf
     monkeypatch.setattr(tf, "_index_memory",
-                        lambda memory_id, content, user_id="default", category=None, bank_id="default":
+                        lambda memory_id, content, user_id="default", category=None, bank_id="default", memory_type=None:
                         calls.append((memory_id, content, user_id, category, bank_id)))
     timing: dict = {}
     sp._index_fts_after_add("updated", "mid-9", None, "新文本", {"category": "goal"}, "u1", "work", timing)
@@ -304,7 +304,7 @@ def test_index_fts_after_add_new_results_field_order(monkeypatch):
     calls: list = []
     import ducky.text_fts as tf
     monkeypatch.setattr(tf, "_index_memory",
-                        lambda memory_id, content, user_id="default", category=None, bank_id="default":
+                        lambda memory_id, content, user_id="default", category=None, bank_id="default", memory_type=None:
                         calls.append((memory_id, content)))
     add_result = {"results": [
         {"id": "a", "memory": "正文A"},

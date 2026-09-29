@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -19,6 +20,36 @@ from ducky.failure_ledger import feature_failed
 from ducky.api_errors import api_error_detail
 
 logger = logging.getLogger("aiduMEM.hot")
+
+
+def _index_direct_results(add_result, *, user_id: str, bank_id: str,
+                          category: str | None) -> None:
+    """Index every direct-write result in the batch's own bank and type ledger."""
+    results = add_result if isinstance(add_result, list) else (
+        add_result.get("results") if isinstance(add_result, dict) else [])
+    for item in (results if isinstance(results, list) else []):
+        if not isinstance(item, dict):
+            continue
+        memory_id = item.get("id") or item.get("memory_id")
+        content = item.get("memory") or item.get("data") or ""
+        if not (memory_id and content):
+            continue
+        try:
+            from ducky.text_fts import _index_memory
+            _index_memory(memory_id, content, user_id=user_id,
+                          category=category, bank_id=bank_id)
+        except (ImportError, sqlite3.Error, OSError, RuntimeError,
+                ValueError, TypeError) as exc:
+            feature_failed("index_memory", exc)
+            logger.debug("FTS index on add 跳过: %s", exc)
+        try:
+            from ducky.memory_types import classify_and_sync_memory
+            classify_and_sync_memory(memory_id, content, user_id=user_id,
+                                     bank_id=bank_id)
+        except (ImportError, sqlite3.Error, OSError, RuntimeError,
+                ValueError, TypeError, AttributeError) as exc:
+            feature_failed("memory_type_classify", exc)
+            logger.debug("六型分类跳过: %s", exc)
 
 
 def register_add_routes(app: FastAPI) -> None:
@@ -175,7 +206,7 @@ def register_add_routes(app: FastAPI) -> None:
             # v20: bank scope is carried as explicit metadata for mem0/Qdrant
             # payloads and for every downstream storage layer.  It is never
             # inferred from a table name or a free-form user string.
-            md.setdefault("bank_id", req.bank_id)
+            md["bank_id"] = req.bank_id
 
             # 🧬 v21 F2：溯源三件套进 md 保留键（调用方显式传了优先；
             # 缺省留空——如实，不编造）。同步/async job/coalesce 三条
@@ -210,7 +241,7 @@ def register_add_routes(app: FastAPI) -> None:
                             if not _features.get("vision", True):
                                 logger.info("多模态 Vision 模块已禁用，跳过解析")
                                 media_url = None  # 置空，走普通文本路径
-                except Exception as _fe:
+                except (ImportError, OSError, ValueError, TypeError) as _fe:
                     logger.warning(f"读取 features 配置失败: {_fe}")
 
             if media_url:
@@ -387,7 +418,7 @@ def register_add_routes(app: FastAPI) -> None:
             except Exception as _ge:
                 logger.warning(f"⚙️ [Gear] 挡位分流异常（回落 full 路径）: {_ge}")
 
-            def _direct_write(uid, msgs, meta, infer_effective, note=None):
+            def _direct_write(uid, msgs, meta, infer_effective, *, bank_id, note=None):
                 """确定性直写（layer1 之外的兜底通路）。infer_effective 由
                 调用方决定：非 LLM 故障透传调用方的 infer（v20 纪律——显式
                 免抽取不许偷偷变回 LLM 抽取）；LLM 故障/挡位 open 强制
@@ -431,7 +462,7 @@ def register_add_routes(app: FastAPI) -> None:
                     _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective else "user_provided")
                     stamp_memory_refs([r for r in _refs if r],
                                       _mode,
-                                      user_id=uid, bank_id=req.bank_id,
+                                      user_id=uid, bank_id=bank_id,
                                       source=str((meta or {}).get("_origin_agent") or "add"),
                                       origin=_origin_snapshot)
                     # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。
@@ -441,29 +472,16 @@ def register_add_routes(app: FastAPI) -> None:
                         from ducky.evolve_mem import record_episode_step
                         record_episode_step([r for r in _refs if r],
                                             session_id=_origin_snapshot[1],
-                                            user_id=uid, bank_id=req.bank_id)
+                                            user_id=uid, bank_id=bank_id)
                     except Exception as _ee:
                         logger.debug(f"episode step 登记跳过: {_ee}")
                 except Exception as _se:
                     logger.debug(f"epistemic sidecar 打标跳过: {_se}")
-                register_salience_for_add(add_result, user_id=uid, bank_id=req.bank_id)
-                try:
-                    from ducky.text_fts import _index_memory
-                    results = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
-                    if isinstance(results, list):
-                        for r in results:
-                            if not isinstance(r, dict):
-                                continue
-                            mid = r.get("id") or r.get("memory_id")
-                            content = r.get("memory") or r.get("data") or ""
-                            if mid and content:
-                                # 🔴v20：降级路径曾漏传 bank_id——向量进了
-                                # work 域、FTS 行落在 default 域，命名域的
-                                # 关键词召回永远查不到这条。此处必须带域。
-                                _index_memory(mid, content, user_id=uid, category=(meta or {}).get("category"), bank_id=req.bank_id)
-                except Exception as ie:
-                    feature_failed("index_memory", ie)
-                    logger.debug(f"FTS index on add 跳过: {ie}")
+                register_salience_for_add(add_result, user_id=uid, bank_id=bank_id)
+                # A queued batch owns this bank, regardless of which later
+                # request registered the process-global callback.
+                _index_direct_results(add_result, user_id=uid, bank_id=bank_id,
+                                      category=(meta or {}).get("category"))
                 out = {"status": "ok", "action": "direct"}
                 if note:
                     # 诚实注记（additive，不动既有契约）：这条写入没做蒸馏。
@@ -483,7 +501,7 @@ def register_add_routes(app: FastAPI) -> None:
                         out["distillation_note"] = _human
                 return out
 
-            def _run_pipeline(uid, msgs, meta, *, bank_id=None):
+            def _run_pipeline(uid, msgs, meta, *, bank_id=None, infer=None):
                 # v20.2.4（外审 F-04）：bank 走**参数**，默认回退闭包里的
                 # req.bank_id（同请求内的同步调用行为不变）。跨请求的 coalesce
                 # 冲刷必须显式传 batch 自带的 scope —— 全局回调是进程级单例，
@@ -492,6 +510,8 @@ def register_add_routes(app: FastAPI) -> None:
                 # 确定性直写秒回（原文/硬事实/云向量照落，内容照样可召回；
                 # 欠的只是蒸馏精修，故障账本与事件账本可查）。closed/half-open
                 # 走真实蒸馏，半开拿真实写入当探针（命门教训）。
+                bank_id = bank_id or req.bank_id
+                batch_infer = infer_flag if infer is None else bool(infer)
                 from ducky.origin_context import set_origin_from_metadata, reset_origin
                 _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
                 from ducky.gear import record_llm_failure, record_llm_success, should_try_llm
@@ -499,17 +519,17 @@ def register_add_routes(app: FastAPI) -> None:
                     _try_llm = should_try_llm()
                 except Exception:
                     _try_llm = True
-                if not _try_llm and infer_flag:
-                    return _direct_write(uid, msgs, meta, False,
+                if not _try_llm and batch_infer:
+                    return _direct_write(uid, msgs, meta, False, bank_id=bank_id,
                                          note="skipped_llm_gear_open")
                 try:
                     _r = lazy_import_layer1()(
                         mem, msgs, uid, meta,
-                        bank_id=(bank_id or req.bank_id), infer=infer_flag,
+                        bank_id=bank_id, infer=batch_infer,
                     )
                     # 成功信号只在 LLM 真被使用过时上报（infer=False 的
                     # layer1 整段跳过 LLM——记成功就是假信号）。
-                    if infer_flag:
+                    if batch_infer:
                         record_llm_success()
                     # 🏷️ v21.0 收口：主链路打标在 layer1 _index_after_add
                     # （本包装器吞掉 results，路由层拿不到 ref）
@@ -521,22 +541,23 @@ def register_add_routes(app: FastAPI) -> None:
                     # LLM 腿；FTS/salience 等非 LLM 崩溃不许污染挡位。
                     if type(e).__name__ == "LLMError":
                         record_llm_failure(str(e))
-                        return _direct_write(uid, msgs, meta, False,
+                        return _direct_write(uid, msgs, meta, False, bank_id=bank_id,
                                              note="skipped_llm_error")
                     # v20：非 LLM 故障的降级分支照旧尊重 infer —— 否则
                     # 调用方显式要的免抽取写入会在降级时偷偷变回 LLM 抽取，
                     # 确定性通路就成了「大部分时候确定」。
-                    return _direct_write(uid, msgs, meta, infer_flag)
+                    return _direct_write(uid, msgs, meta, batch_infer, bank_id=bank_id)
                 finally:
                     reset_origin(_origin_token)  # 🟢-1：配对复位（含降级分支返回前）
 
-            def _execute_batch(uid, msgs, meta, job_ids, *, bank_id=None):
+            def _execute_batch(uid, msgs, meta, job_ids, *, bank_id=None, infer=None):
                 """合并包 / 单条异步包统一执行，并把结果回写到所有关联 job。"""
                 jids = list(job_ids or [])
                 for jid in jids:
                     job_update(jid, status="running")
                 try:
-                    result = _run_pipeline(uid, msgs, meta or {}, bank_id=bank_id)
+                    result = _run_pipeline(uid, msgs, meta or {}, bank_id=bank_id,
+                                           infer=infer)
                     # 标注 coalesce 信息到 result.details
                     if isinstance(result, dict):
                         details = dict(result.get("details") or {})
@@ -568,9 +589,9 @@ def register_add_routes(app: FastAPI) -> None:
                     raise
 
             # 注册 coalesce 冲刷回调 + 后台 worker（只一次）
-            def _coalesce_cb(uid, msgs, meta, job_ids, *, bank_id="default"):
+            def _coalesce_cb(uid, msgs, meta, job_ids, *, bank_id="default", infer=True):
                 # v20.2.4（F-04）：scope 从 batch 参数来，**不读闭包里的 req**
-                _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id)
+                _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id, infer=infer)
 
             register_coalesce_flusher(_coalesce_cb)
             ensure_coalesce_worker()
@@ -590,12 +611,15 @@ def register_add_routes(app: FastAPI) -> None:
                     enq = coalesce_enqueue(
                         req.user_id, messages_json, md, job_id=job_id,
                         bank_id=req.bank_id,          # F-04：scope 随 batch 落库
+                        infer=infer_flag,
                     )
                     # 若顺带带出已到期的旧包 / 满额包，立刻后台执行
                     batches = []
                     if enq.get("merged_ready") and enq.get("messages"):
                         batches.append({
                             "user_id": enq.get("user_id") or req.user_id,
+                            "bank_id": enq.get("bank_id") or req.bank_id,
+                            "infer": bool(enq.get("infer", infer_flag)),
                             "messages": enq["messages"],
                             "metadata": enq.get("metadata") or md,
                             "job_ids": enq.get("job_ids") or [job_id],
@@ -610,6 +634,8 @@ def register_add_routes(app: FastAPI) -> None:
                             b["messages"],
                             b.get("metadata") or {},
                             b.get("job_ids") or [],
+                            bank_id=b.get("bank_id") or req.bank_id,
+                            infer=bool(b.get("infer", infer_flag)),
                         )
 
                     if enq.get("buffered"):
@@ -663,8 +689,9 @@ def register_add_routes(app: FastAPI) -> None:
                     })
 
                 # 不进合并：单条异步
-                def _bg_job(jid=job_id, msgs=messages_json, meta=md, uid=req.user_id):
-                    _execute_batch(uid, msgs, meta, [jid])
+                def _bg_job(jid=job_id, msgs=messages_json, meta=md,
+                            uid=req.user_id, bid=req.bank_id, inf=infer_flag):
+                    _execute_batch(uid, msgs, meta, [jid], bank_id=bid, infer=inf)
 
                 background_tasks.add_task(_bg_job)
                 return _finalize_and({

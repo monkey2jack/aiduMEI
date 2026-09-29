@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Optional
 
@@ -36,6 +37,7 @@ from ducky.bank_contract import (
     scoped_storage_key,
     raw_storage_key,
     visible_user_clause,
+    vector_item_in_bank,
 )
 
 logger = logging.getLogger("aiduMEM.memory_types")
@@ -217,6 +219,35 @@ def _storage_ref(memory_ref: str, scope) -> str:
     return scoped_storage_key(memory_ref, scope)
 
 
+def _write_storage_ref(conn, memory_ref: str, scope) -> str:
+    """Choose an unused PK if another scope owns the default bank's bare id.
+
+    The old single-column PK cannot represent two owners of the same bare id.
+    Keep existing rows and their keys untouched; only the later owner receives
+    an internal scoped key.  Readers and deletion use ``memory_ref_raw``.
+    """
+    raw_ref = str(memory_ref)
+    candidate = _storage_ref(raw_ref, scope)
+    row = conn.execute(
+        "SELECT user_id, bank_id, memory_ref_raw FROM memory_types WHERE memory_ref=?",
+        (candidate,),
+    ).fetchone()
+    if row is None or tuple(row) == (scope.user_id, scope.bank_id, raw_ref):
+        return candidate
+    base = f"{scope.user_id}\x1f{scope.bank_id}\x1f{raw_ref}"
+    candidate = base
+    suffix = 1
+    while True:
+        row = conn.execute(
+            "SELECT user_id, bank_id, memory_ref_raw FROM memory_types WHERE memory_ref=?",
+            (candidate,),
+        ).fetchone()
+        if row is None or tuple(row) == (scope.user_id, scope.bank_id, raw_ref):
+            return candidate
+        candidate = f"{base}\x1f{suffix}"
+        suffix += 1
+
+
 def _readable_owners(scope) -> tuple[str, list[str]]:
     """🔴v20.0：账本**读**侧的租户口径。返回 (sql_fragment, params)。
 
@@ -334,8 +365,6 @@ def classify_and_record(
     raw_ref = str(memory_ref or "").strip()
     if not raw_ref:
         raise ValueError("memory_ref 不能为空")
-    storage_ref = _storage_ref(raw_ref, scope)
-
     confidence = 0.5
     source = "rule"
     memory_type = classify_text(text)
@@ -349,6 +378,7 @@ def classify_and_record(
 
     conn = get_facts_conn()
     try:
+        storage_ref = _write_storage_ref(conn, raw_ref, scope)
         alt = None
         if raw_ref.startswith("fact:"):
             alt = raw_ref[5:]
@@ -367,8 +397,10 @@ def classify_and_record(
              scope.user_id, scope.bank_id, raw_ref),
         )
         conn.commit()
-    except Exception as e:
-        logger.warning(f"记忆类型落账失败: {e}")
+    except Exception as exc:
+        conn.rollback()
+        logger.error("记忆类型落账失败；未同步向量/FTS 分类：%s", type(exc).__name__)
+        raise
     finally:
         conn.close()
 
@@ -380,6 +412,34 @@ def classify_and_record(
         "bank_id": scope.bank_id,
         "memory_ref": raw_ref,
     }
+
+
+def classify_and_sync_memory(
+    memory_ref: str, text: str, *, user_id: str, bank_id: str,
+) -> dict:
+    """Classify a newly written mem0 memory and update its two read replicas."""
+    use_llm = os.getenv("AIDUMEM_TYPE_CLASSIFY_ENABLED", "false").lower() in {
+        "1", "true", "yes"}
+    result = classify_and_record(memory_ref, text, use_llm=use_llm,
+                                 user_id=user_id, bank_id=bank_id)
+    try:
+        from ducky.mem0_runtime import get_memory
+        store = get_memory().vector_store
+        client = store.client
+        collection = str(getattr(store, "collection_name", "") or "")
+        if collection and callable(getattr(client, "set_payload", None)):
+            client.set_payload(collection_name=collection,
+                               payload={"memory_type": result["memory_type"]},
+                               points=[memory_ref])
+    except Exception as exc:
+        logger.debug("mem0 六型 metadata 同步跳过 ref=%s: %s", memory_ref, exc)
+    try:
+        from ducky.text_fts import _set_memory_type
+        _set_memory_type(memory_ref, result["memory_type"],
+                         user_id=user_id, bank_id=bank_id)
+    except Exception as exc:
+        logger.debug("FTS 六型标签同步跳过 ref=%s: %s", memory_ref, exc)
+    return result
 
 
 def memory_type_ref(item: dict) -> str:
@@ -403,9 +463,10 @@ def get_batch_memory_types(
     *,
     user_id: str = DEFAULT_USER_ID,
     bank_id: str = DEFAULT_BANK_ID,
+    include_missing: bool = True,
 ) -> dict[str, str]:
     """批量查询多条记忆的类型（0 N+1 数据库往返）。
-    未记录的默认返回 FACTS。
+    未记录的默认返回 FACTS；include_missing=False 时只返回账本实存类型。
     """
     if not memory_refs:
         return {}
@@ -415,7 +476,8 @@ def get_batch_memory_types(
     unique_refs = list(set(str(r) for r in memory_refs if r))
     if not unique_refs:
         return {}
-    result: dict[str, str] = {r: "FACTS" for r in unique_refs}
+    result: dict[str, str] = ({r: "FACTS" for r in unique_refs}
+                              if include_missing else {})
     try:
         placeholders = ",".join("?" for _ in unique_refs)
         storage_refs = [_storage_ref(ref, scope) for ref in unique_refs]
@@ -540,22 +602,38 @@ def reset_all_types(
         conn.close()
 
 
+def _backfill_bank_filter(columns: set[str], scope) -> tuple[str, list[str]]:
+    """Return a bank predicate for old tables that may lack the bank column.
+
+    Both backfill readers use this same structural choice; the bank value
+    always remains a bound parameter.
+    """
+    if "bank_id" in columns:
+        return "bank_id=?", [scope.bank_id]
+    if scope.bank_id == DEFAULT_BANK_ID:
+        return "1=1", []
+    return "0=1", []
+
+
 def backfill_from_facts(
     limit: int = 2000,
     *,
     user_id: str = DEFAULT_USER_ID,
     bank_id: str = DEFAULT_BANK_ID,
+    after_id: int = 0,
+    apply: bool = False,
 ) -> dict:
-    """从 facts.db 现有数据重建类型账本（存量数据 P1-1 迁移）。
-
-    规则：memory_ref = "fact:{id}"，用 fact_key + fact_value 判型。
-    返回 {scanned, classified}。
-    """
-    ensure_memory_types_schema()
-    scope = _scope(user_id, bank_id)
+    """Keyset-page facts into the six-type ledger; preview writes with apply=False."""
+    if apply:
+        ensure_memory_types_schema()
+    scope = make_scope(user_id, bank_id)
     conn = get_facts_conn()
     classified = 0
     scanned = 0
+    would_classify = 0
+    conflicts = 0
+    next_cursor = max(0, int(after_id))
+    has_more = False
     try:
         # ``ensure_memory_banks_schema`` adds these columns to old facts
         # tables.  A bank must never be a substring/LIKE filter, and the LIMIT
@@ -575,35 +653,169 @@ def backfill_from_facts(
         # 精确相等。原来写死 ``user_id=?``，存量行在改过名的部署上一条都扫不
         # 到，scanned=0、classified=0 —— 迁移工具静默空跑，不报错，只是什么都
         # 没干。
-        owner_sql, owner_params = _readable_owners(scope)
+        fact_columns = _table_columns(conn, "facts")
+        if "user_id" in fact_columns:
+            owner_sql, owner_params = _readable_owners(scope)
+        else:
+            # A preview must not ALTER a legacy database merely to count it.
+            owner_sql, owner_params = (
+                ("1=1", []) if scope.user_id == DEFAULT_USER_ID else ("0=1", []))
+        bank_sql, bank_params = _backfill_bank_filter(fact_columns, scope)
         rows = conn.execute(
             "SELECT id, fact_key, fact_value FROM facts "
-            f"WHERE archived=0 AND {owner_sql} AND bank_id=? "
+            "WHERE archived=0 AND " + owner_sql + " AND " + bank_sql + " AND id>? "
             "ORDER BY id LIMIT ?",
-            (*owner_params, scope.bank_id, max(1, min(int(limit), 5000))),
+            (*owner_params, *bank_params, next_cursor,
+             max(1, min(int(limit), 5000)) + 1),
         ).fetchall()
+        page_size = max(1, min(int(limit), 5000))
+        has_more = len(rows) > page_size
+        rows = rows[:page_size]
         scanned = len(rows)
         for r in rows:
+            next_cursor = int(r["id"])
             ref = f"fact:{r['id']}"
-            mem_type = classify_text(f"{r['fact_key']} {r['fact_value']}")
-            storage_ref = _storage_ref(ref, scope)
-            conn.execute(
-                "INSERT INTO memory_types "
-                "(memory_ref, memory_type, source, confidence, updated_at, user_id, bank_id, memory_ref_raw) "
-                "VALUES (?,?,?,?,CURRENT_TIMESTAMP,?,?,?) "
-                # v20.2.4 F-16：冲突目标 = 三列唯一约束，不再是单列 memory_ref
-                "ON CONFLICT(user_id, bank_id, memory_ref_raw) DO UPDATE SET "
-                "memory_type=excluded.memory_type, source='backfill', confidence=0.5, "
-                "updated_at=CURRENT_TIMESTAMP, user_id=excluded.user_id, "
-                "bank_id=excluded.bank_id, memory_ref_raw=excluded.memory_ref_raw",
-                (storage_ref, mem_type, "backfill", 0.5,
-                 scope.user_id, scope.bank_id, ref),
-            )
-            classified += 1
-        conn.commit()
-    except Exception as e:
-        logger.warning(f"backfill_from_facts 失败: {e}")
+            existing = _existing_backfill_type(conn, ref, scope)
+            if existing is not None:
+                continue
+            would_classify += 1
+            if apply:
+                mem_type = classify_text(f"{r['fact_key']} {r['fact_value']}")
+                if _insert_backfill_type(conn, ref, mem_type, scope):
+                    classified += 1
+                else:
+                    conflicts += 1
+        if apply:
+            conn.commit()
     finally:
         conn.close()
-    logger.info("P1-1 backfill: scanned=%d classified=%d", scanned, classified)
-    return {"scanned": scanned, "classified": classified}
+    logger.info("P1-1 facts backfill: scanned=%d classified=%d apply=%s",
+                scanned, classified, apply)
+    return {"apply": apply, "scanned": scanned, "classified": classified,
+            "would_classify": would_classify, "conflicts": conflicts,
+            "next_cursor": next_cursor, "has_more": has_more}
+
+
+def _existing_backfill_type(conn, memory_ref: str, scope) -> str | None:
+    """Read the ledger without treating a missing label as FACTS."""
+    cols = _table_columns(conn, "memory_types")
+    if not cols:
+        return None
+    if "memory_type" not in cols or "memory_ref" not in cols:
+        raise RuntimeError("旧 memory_types 缺必需列，无法安全预览回填")
+    if "user_id" in cols:
+        owner_sql, owner_params = _readable_owners(scope)
+    elif scope.user_id == DEFAULT_USER_ID:
+        owner_sql, owner_params = "1=1", []
+    else:
+        raise RuntimeError("旧 memory_types 无 user_id，无法确认具名用户归属")
+    if "bank_id" not in cols and scope.bank_id != DEFAULT_BANK_ID:
+        raise RuntimeError("旧 memory_types 无 bank_id，无法确认具名 bank 归属")
+    bank_sql, bank_params = _backfill_bank_filter(cols, scope)
+    ref_col = "memory_ref_raw" if "memory_ref_raw" in cols else "memory_ref"
+    row = conn.execute(
+        "SELECT memory_type FROM memory_types WHERE " + owner_sql +
+        " AND " + bank_sql + " AND " + ref_col + "=? LIMIT 1",
+        (*owner_params, *bank_params, memory_ref),
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def _insert_backfill_type(conn, memory_ref: str, memory_type: str, scope) -> bool:
+    """Insert only missing labels; existing LLM/rule decisions are immutable here."""
+    raw_ref = str(memory_ref)
+    alt = raw_ref[5:] if raw_ref.startswith("fact:") else None
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO memory_types "
+        "(memory_ref, ref_alt, memory_type, source, confidence, updated_at, "
+        "user_id, bank_id, memory_ref_raw) "
+        "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?)",
+        (_write_storage_ref(conn, raw_ref, scope), alt, memory_type, "backfill", 0.5,
+         scope.user_id, scope.bank_id, raw_ref),
+    )
+    return bool(cur.rowcount)
+
+
+def backfill_from_mem0(
+    limit: int = 2000,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+    cursor: str | int | None = None,
+    apply: bool = False,
+) -> dict:
+    """Page Qdrant's mem0 collection and sync UUID labels to vector/FTS.
+
+    The cursor is Qdrant's raw scroll offset.  Page size counts raw points,
+    including other scopes, so a caller can always advance to completion.
+    If ``failed`` or ``conflicts`` is nonzero, retry ``page_cursor`` before
+    advancing to ``next_cursor``; completed replicas are idempotent.
+    """
+    from ducky.mem0_runtime import get_memory
+
+    scope = make_scope(user_id, bank_id)
+    store = get_memory().vector_store
+    client = store.client
+    collection = str(getattr(store, "collection_name", "") or "")
+    if not collection or not callable(getattr(client, "scroll", None)):
+        raise RuntimeError("mem0 回填需要支持 scroll 的向量后端及明确 collection_name")
+    size = max(1, min(int(limit), 5000))
+    points, next_offset = client.scroll(
+        collection_name=collection, limit=size, offset=cursor,
+        with_payload=True, with_vectors=False,
+    )
+    if not isinstance(points, list):
+        raise RuntimeError("mem0 scroll 返回形态异常，无法证明本页完整")
+    if apply:
+        ensure_memory_types_schema()
+    conn = get_facts_conn()
+    report = {"apply": apply, "scanned": len(points), "eligible": 0,
+              "classified": 0, "would_classify": 0, "vector_synced": 0,
+              "fts_synced": 0, "failed": 0, "conflicts": 0,
+              "page_cursor": cursor,
+              "next_cursor": (next_offset if isinstance(next_offset, (str, int))
+                              else str(next_offset) if next_offset is not None else None),
+              "has_more": next_offset is not None}
+    try:
+        for point in points:
+            payload = dict(getattr(point, "payload", None) or {})
+            if payload.get("user_id") != scope.user_id:
+                continue
+            if not vector_item_in_bank({"payload": payload}, scope.bank_id):
+                continue
+            ref = str(getattr(point, "id", "") or "")
+            content = payload.get("data") or payload.get("memory") or payload.get("content") or ""
+            if not ref or not isinstance(content, str) or not content.strip():
+                continue
+            report["eligible"] += 1
+            existing = _existing_backfill_type(conn, ref, scope)
+            mem_type = existing or classify_text(content)
+            if existing is None:
+                report["would_classify"] += 1
+            if not apply:
+                continue
+            try:
+                if existing is None:
+                    if _insert_backfill_type(conn, ref, mem_type, scope):
+                        report["classified"] += 1
+                        conn.commit()
+                    else:
+                        report["conflicts"] += 1
+                        continue
+                if payload.get("memory_type") != mem_type:
+                    client.set_payload(collection_name=collection,
+                                       payload={"memory_type": mem_type},
+                                       points=[point.id])
+                    report["vector_synced"] += 1
+                from ducky.text_fts import _upsert_typed_memory
+                if _upsert_typed_memory(
+                    ref, content, mem_type, user_id=scope.user_id,
+                    bank_id=scope.bank_id, category=payload.get("category"),
+                ):
+                    report["fts_synced"] += 1
+            except Exception as exc:
+                report["failed"] += 1
+                logger.warning("mem0 六型回填失败 ref=%s: %s", ref, exc)
+    finally:
+        conn.close()
+    return report

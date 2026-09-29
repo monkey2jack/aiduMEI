@@ -59,6 +59,7 @@ _DEFAULT_SPEED = {
         "romance": "intimate",
         "personal": "intimate",
         "hermes": "tech",
+        "hermes_turn": "tech",
         "hermes_memory": "tech",
         "mem0_sync": "tech",
         "auto_memory": "tech",

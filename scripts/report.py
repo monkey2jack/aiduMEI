@@ -97,10 +97,8 @@ def _crontab_task_count() -> int | None:
         return None
 
 
-def _crontab_installed_count() -> int | None:
-    """实装数（数真实 crontab 里本仓条目）。v20.3.1（九份审计 P0-1/用户审计 🔴-5）：
-    此前 report 只报意图数，把「装了 1 条」报成「9 条全在」——每层仪器都在读
-    上一层输出，没有一层去读世界。"""
+def _crontab_install_status() -> dict[str, Any] | None:
+    """Read the real crontab and verify each task's name, schedule and command."""
     try:
         result = subprocess.run(
             [str(Path(__file__).resolve().parent / "update_crontab.sh"), "--installed"],
@@ -112,7 +110,7 @@ def _crontab_installed_count() -> int | None:
         if result.returncode != 0:
             return None
         data = json.loads(result.stdout or "{}")
-        return data.get("installed")
+        return data
     except Exception:
         return None
 
@@ -125,9 +123,12 @@ def _maintenance_block() -> dict[str, Any]:
     假警报和假绿灯是同一种病：它替你签了字，但字没有信息量。
     同时缓存子进程结果——此前同一表达式调两次，一次报告 fork 三个
     update_crontab.sh。"""
+    cron = _crontab_install_status()
     return {
         "crontab_task_count": _crontab_task_count(),
-        "crontab_installed_count": _crontab_installed_count(),
+        "crontab_installed_count": cron.get("installed") if cron else None,
+        "crontab_verified": bool(cron and cron.get("ok")),
+        "crontab_tasks": cron.get("tasks", {}) if cron else {},
         "latest_backup": _latest_backup(Path(os.environ.get("AIDUMEM_BACKUP_ROOT", "backups"))),
     }
 
@@ -165,14 +166,9 @@ def _safe_next_actions(health: dict[str, Any], maintenance: dict[str, Any] | Non
     maintenance = maintenance or _maintenance_block()
     intended = maintenance.get("crontab_task_count")
     installed = maintenance.get("crontab_installed_count")
-    # 实装数优先于意图数（v20.3.1）：装了 1 条报「9 条全在」是上一版被
-    # 用户审计实锤的病。实装拿不到时才退回意图数，并如实说明。
-    effective = installed if installed is not None else intended
-    # 门槛跟着清单走，不写字面量。v21.2.0 把任务数 8 → 9 时，原来的
-    # `< 8` 会让「装了 8 条、少了写线哨兵」这种情况判成装齐——数字漂移
-    # 造的假绿灯，和探针不在场是同一种病。intended 读不到才退回 8 兜底。
+    effective = installed
     _required = intended if isinstance(intended, int) and intended > 0 else 8
-    if effective is None or effective < _required:
+    if effective is None or effective < _required or maintenance.get("crontab_verified") is False:
         actions.append(
             "Run bash scripts/update_crontab.sh install to install maintenance jobs "
             "(maintenance is NOT fully installed; this is based on the real crontab)."
@@ -248,12 +244,12 @@ def _exit_code(report: dict[str, Any]) -> int:
     maintenance = report.get("maintenance", {}) or {}
     intended = maintenance.get("crontab_task_count")
     installed = maintenance.get("crontab_installed_count")
-    effective = installed if installed is not None else intended
+    effective = installed
     # 门槛跟着清单走，不写字面量。v21.2.0 把任务数 8 → 9 时，原来的
     # `< 8` 会让「装了 8 条、少了写线哨兵」这种情况判成装齐——数字漂移
     # 造的假绿灯，和探针不在场是同一种病。intended 读不到才退回 8 兜底。
     _required = intended if isinstance(intended, int) and intended > 0 else 8
-    if effective is None or effective < _required:
+    if effective is None or effective < _required or maintenance.get("crontab_verified") is False:
         return 2
     if not (maintenance.get("latest_backup") or {}).get("verified"):
         return 2

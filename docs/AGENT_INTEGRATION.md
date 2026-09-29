@@ -65,6 +65,7 @@ or two sentences and stores that as its own memory:
 | Host | Hook | Ready-made script |
 |---|---|---|
 | Hermes | `on_session_end` | `integrations/aidumem-distill.sh` |
+| Hermes (plugin route) | `MemoryProvider.on_session_end` — already wired | `integrations/hermes-plugin/aidumem/` |
 | Anything else | Whatever fires when a conversation closes | call `POST /session/distill`, then `POST /add` with what it returns |
 
 Three properties worth knowing before you wire it:
@@ -111,15 +112,20 @@ Then prove both ends work, in this order:
 
 ```bash
 ~/.hermes/agent-hooks/aidumem-inject.sh --selftest   # read wire
-~/.hermes/agent-hooks/aidumem-ingest.sh --selftest   # write wire: writes one memory, reads it back
+~/.hermes/agent-hooks/aidumem-ingest.sh --selftest   # write wire: isolated test user, readback, scoped cleanup
 ~/.hermes/agent-hooks/aidumem-distill.sh --selftest  # distill wire: endpoint present, verdict working
 # ...have 5 real conversation turns, then:
 python3 scripts/check_ingest_wiring.py               # non-zero exit = still not wired
 ```
 
-The third command is the only one that proves the *host* is calling the script.
-The first two only prove the script itself runs — in the incident that produced
-this section, the scripts were fine the whole time; nobody had hooked the write one.
+The three selftests prove the scripts work when invoked directly. They do not
+prove the host invokes them. Check the actual hook paths with
+`python3 scripts/check_hook_deployment.py`, then have real conversation turns
+and run `scripts/check_ingest_wiring.py --require-judgment`.
+For a plugin-only installation, the hook checker reports N/A when Hermes
+selects `memory.provider: aidumem`. For a pure HTTP API integration, set
+`AIDUMEI_INTEGRATION_MODE=api` so the scheduled health check reports the shell
+hook check as N/A. Both still need a real read/write wiring check.
 
 In CI or a release gate, add `--require-judgment`. Without it the check returns 0
 when there is not enough traffic to judge — deliberately, so a brand-new install
@@ -185,6 +191,14 @@ Catching the gap is the point; back-filling is the bonus.
 - Session: conversation-scoped reporting and lifecycle; it is not a tenant replacement.
 
 Write and search must use the same `(user_id, bank_id)`. If a write omitted `bank_id`, it belongs to `default`.
+
+CoreMemory and Checkpoint requests also use this pair. Their HTTP endpoints
+take `user_id` and `bank_id` in the **query string** (Checkpoint writes carry
+them in the typed JSON payload). A caller borrowing another hall must declare
+`caller_user_id`; the server checks the relevant hall grant for reads. Writes
+remain limited to the same declared caller and the owner-direct path. This is
+the single-owner, shared-token trust model: the caller value is self-declared
+and is not bound to a separate credential.
 
 ## Avoid double injection
 

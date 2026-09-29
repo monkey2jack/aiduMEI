@@ -20,9 +20,10 @@
 #   AIDUMEM_URL              服务地址，默认 http://127.0.0.1:8767
 #   AIDUMEM_USER_ID          记忆归属用户，可由 .env 兜底，默认 default
 #   AIDUMEM_DEFAULT_USER_ID  AIDUMEM_USER_ID 缺省时的回落值（服务端同名键）
+#   AIDUMEI_BANK_ID          记忆库，可由 .env 兜底，默认 default
 #   AIDUMEM_API_TOKEN        鉴权门禁 token，可由 .env 兜底
 #   AIDUMEM_ENV_FILE / AIDUMEM_HOME   .env 查找入口，同 inject
-#   AIDUMEI_INGEST_TIMEOUT   单次 HTTP 超时秒数，默认 6.0（写比读慢，给足）
+#   AIDUMEI_INGEST_TIMEOUT   正常写入 HTTP 超时秒数，默认 6.0；自检同步写至少 45 秒
 #   AIDUMEI_INGEST_MIN_CHARS 用户消息短于 N 字不写，默认 8
 #   AIDUMEM_HOOK_QUIET       置 1 关闭 stderr 诊断
 #
@@ -33,8 +34,8 @@
 #   ~/.hermes/agent-hooks/aidumem-ingest.sh --selftest   # 装完必跑
 #
 # 自检：
-#   `--selftest` 真写一条带自检标记的记忆并回读确认，成功 exit 0，
-#   401/403 exit 3，连不上 exit 4，写了但回读不到 exit 6。
+#   `--selftest` 在独立临时用户里真写、回读、清理，成功 exit 0，
+#   401/403 exit 3，连不上 exit 4，写了但回读不到 exit 6，清理失败 exit 7。
 #   写线的「静默失败」比读线更毒，所以这条能吵起来的路径是必需品。
 #
 # 设计原则（与 inject 同源）：
@@ -101,6 +102,11 @@ if [ -z "$_uid" ]; then
         || _uid="default"
 fi
 export AIDUMEM_USER_ID="$_uid"
+_bid="${AIDUMEI_BANK_ID:-}"
+if [ -z "$_bid" ]; then
+    _bid=$(_lookup_env_key AIDUMEI_BANK_ID) || _bid="default"
+fi
+export AIDUMEI_BANK_ID="$_bid"
 export AIDUMEM_HOOK_QUIET="${AIDUMEM_HOOK_QUIET:-}"
 
 # ── 写入实现 ─────────────────────────────────────────────────────
@@ -125,7 +131,7 @@ try:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(
             req, timeout=float(os.environ["AIDUMEI_INGEST_TIMEOUT"])) as resp:
-        json.loads(resp.read().decode("utf-8"))
+        receipt = json.loads(resp.read().decode("utf-8"))
 except urllib.error.HTTPError as e:
     if e.code in (401, 403):
         _diag("[aidumem-ingest] auth_failed status=%d token=%s "
@@ -139,6 +145,16 @@ except Exception as exc:
     _diag("[aidumem-ingest] unreachable err=%s (本轮对话没有写进记忆库)\n"
           % type(exc).__name__)
     sys.exit(0)
+
+# HTTP 200 只表示请求抵达路由；/add 的业务回执还可能是 error，
+# 或 accepted/durable:false（原文已提交、语义写入仍在后台）。
+status = receipt.get("status") if isinstance(receipt, dict) else None
+if status == "accepted" or (isinstance(receipt, dict) and receipt.get("durable") is False):
+    _diag("[aidumem-ingest] queued job=%s (本轮请求已接收，语义写入尚未确认)\n"
+          % (receipt.get("job_id") or "unknown"))
+elif status != "ok":
+    _diag("[aidumem-ingest] write_unconfirmed status=%s "
+          "(HTTP 200 但本轮没有写入成功回执；请跑 --selftest)\n" % status)
 '
 }
 
@@ -146,81 +162,105 @@ except Exception as exc:
 # 必须在 `PAYLOAD=$(cat)` 之前处理：那一行会阻塞等 stdin。
 if [ "${1:-}" = "--selftest" ]; then
     python3 -c '
-import json, os, sys, time, urllib.error, urllib.request
+import json, os, sys, uuid, urllib.error, urllib.request
 
 base = os.environ["AIDUMEM_URL"].rstrip("/")
 tok = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
-uid = os.environ["AIDUMEM_USER_ID"]
+uid = "aidumei-ingest-selftest-" + uuid.uuid4().hex
+bid = "default"
 tmo = float(os.environ["AIDUMEI_INGEST_TIMEOUT"])
 headers = {"Content-Type": "application/json"}
 if tok:
     headers["Authorization"] = "Bearer " + tok
 
-marker = "aidumem ingest hook selftest %d" % int(time.time())
-sid = "ingest-selftest-%d" % int(time.time())
+marker = "aidumem ingest hook selftest " + uid
+sid = "ingest-selftest-" + uid
 
 
-def _call(path, payload):
+def _call(path, payload, timeout=None):
     req = urllib.request.Request(
         base + path, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=tmo) as resp:
+    with urllib.request.urlopen(req, timeout=timeout or tmo) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-try:
-    _call("/add", {
-        "messages": [{"role": "user", "content": marker}],
-        "user_id": uid,
-        "async_mode": True,
-        "metadata": {"_origin_agent": "aidumem-ingest-selftest",
-                     "_origin_session_id": sid,
-                     "_origin_turn": 1,
-                     "channel": "selftest"},
-    })
-except urllib.error.HTTPError as e:
-    if e.code in (401, 403):
-        sys.stderr.write(
-            "[aidumem-ingest] selftest FAILED auth_failed status=%d url=%s token=%s user_id=%s\n"
-            "  → 门禁已开启但 hook 没拿到有效 token；每一轮对话都会静默不写。\n"
-            "  → 检查 AIDUMEM_API_TOKEN，或让 .env 对本 hook 的运行用户可读。\n"
-            % (e.code, base, "present" if tok else "MISSING", uid))
-        sys.exit(3)
-    sys.stderr.write("[aidumem-ingest] selftest FAILED http_error status=%d url=%s user_id=%s\n"
-                     % (e.code, base, uid))
-    sys.exit(5)
-except Exception as exc:
-    sys.stderr.write("[aidumem-ingest] selftest FAILED unreachable url=%s user_id=%s err=%s\n"
-                     % (base, uid, exc))
-    sys.exit(4)
-
-# 写完必须回读。只看 /add 返回 200 是不够的：历史上出过「请求收下了、
-# 落库没发生」的形态，而那正是本 hook 要防的那类静默。
-found = False
-for _ in range(8):          # 异步落库，回读要给足耐心
+def _run():
     try:
-        res = _call("/search", {"query": marker, "user_id": uid, "caller_user_id": uid,
+        add_receipt = _call("/add", {
+            "messages": [{"role": "user", "content": marker}],
+            "user_id": uid,
+            "bank_id": bid,
+            "async_mode": False,
+            "metadata": {"force_sync": True,
+                         "_origin_agent": "aidumem-ingest-selftest",
+                         "_origin_session_id": sid,
+                         "_origin_turn": 1,
+                         "channel": "selftest"},
+        }, timeout=max(tmo, 45.0))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            sys.stderr.write(
+                "[aidumem-ingest] selftest FAILED auth_failed status=%d token=%s\n"
+                "  → 门禁已开启但 hook 没拿到有效 token；每一轮对话都会静默不写。\n"
+                "  → 检查 AIDUMEM_API_TOKEN，或让 .env 对本 hook 的运行用户可读。\n"
+                % (e.code, "present" if tok else "MISSING"))
+            return 3
+        sys.stderr.write("[aidumem-ingest] selftest FAILED http_error status=%d\n"
+                         % e.code)
+        return 5
+    except Exception as exc:
+        sys.stderr.write("[aidumem-ingest] selftest FAILED unreachable err=%s\n"
+                         % type(exc).__name__)
+        return 4
+
+    add_status = add_receipt.get("status") if isinstance(add_receipt, dict) else None
+    if add_status != "ok" or add_receipt.get("durable") is False:
+        sys.stderr.write(
+            "[aidumem-ingest] selftest FAILED write_unconfirmed status=%s "
+            "(同步 /add 未确认落库，停止回读)\n" % add_status)
+        return 5
+
+    # 同步写成功后仍需真回读，防止 200 回执和召回索引分裂。
+    try:
+        res = _call("/search", {"query": marker, "user_id": uid, "bank_id": bid,
+                                "caller_user_id": uid,
                                 "limit": 5, "metadata": {}})
-    except Exception:
-        break
-    for r in (res.get("results") or []):
-        if marker in (r.get("memory") or r.get("text") or ""):
-            found = True
-            break
-    if found:
-        break
-    time.sleep(1.5)
+    except Exception as exc:
+        sys.stderr.write("[aidumem-ingest] selftest FAILED readback_error err=%s\n"
+                         % type(exc).__name__)
+        return 6
+    found = any(marker in (r.get("memory") or r.get("text") or "")
+                for r in ((res.get("results") or []) if isinstance(res, dict) else [])
+                if isinstance(r, dict))
+    if not found:
+        sys.stderr.write(
+            "[aidumem-ingest] selftest FAILED write_not_readable\n"
+            "  → /add 声称写入成功，但随后搜不到刚写的内容。\n")
+        return 6
+    return 0
 
-if not found:
-    sys.stderr.write(
-        "[aidumem-ingest] selftest FAILED write_not_readable url=%s user_id=%s\n"
-        "  → /add 接受了请求，但随后搜不到刚写的内容。\n"
-        "  → 可能是异步落库还没完成（稍后重试一次），也可能写入通路本身断了。\n"
-        % (base, uid))
-    sys.exit(6)
 
-print("[aidumem-ingest] selftest OK url=%s token=%s user_id=%s （写入并回读成功）"
-      % (base, "present" if tok else "absent(门禁未开启)", uid))
+result = 5
+try:
+    result = _run()
+finally:
+    # 即使写入回执或回读失败，服务端仍可能已提交某些层；只清这个随机域。
+    try:
+        cleanup = _call("/delete_all", {"user_id": uid, "bank_id": bid,
+                                       "confirm": True}, timeout=max(tmo, 30.0))
+        if not isinstance(cleanup, dict) or cleanup.get("status") != "committed":
+            raise RuntimeError("cleanup_not_committed")
+    except Exception as exc:
+        sys.stderr.write("[aidumem-ingest] selftest FAILED cleanup_unconfirmed err=%s\n"
+                         % type(exc).__name__)
+        if result == 0:
+            result = 7
+
+if result == 0:
+    print("[aidumem-ingest] selftest OK token=%s（隔离写入、回读与清理成功）"
+          % ("present" if tok else "absent"))
+sys.exit(result)
 '
     exit $?
 fi
@@ -234,6 +274,7 @@ PAYLOAD=$(cat)
 #             "conversation_history":[...],"model":"...","platform":"..."}}
 # 顶层同名键也认，兼容别的宿主与将来的形状变化。
 INGEST_BODY=$(printf '%s' "$PAYLOAD" | _INGEST_UID_PIPE="$AIDUMEM_USER_ID" \
+        _INGEST_BANK_PIPE="$AIDUMEI_BANK_ID" \
         _INGEST_MIN_PIPE="$AIDUMEI_INGEST_MIN_CHARS" python3 -c '
 import json, os, sys
 
@@ -331,6 +372,7 @@ messages = [
 print(json.dumps({
     "messages": messages,
     "user_id": os.environ["_INGEST_UID_PIPE"],
+    "bank_id": os.environ["_INGEST_BANK_PIPE"],
     # async_mode 不是优化，是正确性：同步 /add 要跑完整抽取管线（生产实测
     # p50 约 4 秒，长尾未知），而宿主给 hook 的超时通常是个位数秒。超时被杀
     # 的钩子 = 静默不写，正是本文件要防的那件事。异步下服务端先收下再后台

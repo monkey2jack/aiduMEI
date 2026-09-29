@@ -112,7 +112,9 @@ def _delete_via_api(memory_id: str) -> bool:
 
 
 def _get_all_via_api(user_id: str, limit: int = 5000) -> list:
-    result = _api_post("/search", {"query": "aiduMEM 记忆 升级 配置", "user_id": user_id, "limit": limit})
+    result = _api_post("/search", {"query": "aiduMEM 记忆 升级 配置",
+                                   "user_id": user_id, "caller_user_id": user_id,
+                                   "limit": limit})
     return result.get("results", [])
 
 

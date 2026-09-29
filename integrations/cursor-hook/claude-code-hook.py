@@ -195,6 +195,7 @@ def cmd_search(args: argparse.Namespace) -> None:
     result = _post("/search", {
         "query": args.query,
         "user_id": AIDUMEM_USER_ID,
+        "caller_user_id": AIDUMEM_USER_ID,
         "top_k": args.top_k,
     })
     if "error" in result:

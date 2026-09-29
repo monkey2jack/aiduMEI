@@ -24,6 +24,8 @@ emotion 是 150% 快衰减 —— 那是给「今天有点烦」这类波动用�
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import sqlite3
 from typing import Any
@@ -50,39 +52,84 @@ def _emotion_hits(text: str) -> int:
     return sum(1 for kw in LANE_KEYWORDS.get("emotion", []) if kw in text)
 
 
-def collect_session_memories(session_id: str, *, user_id: str = "",
-                             bank_id: str = "") -> list[dict[str, Any]]:
-    """取这个会话写进来的记忆原文（按 sidecar 的 origin_session_id）。
+def _collect_raw_session_turns(session_id: str, user_id: str,
+                               bank_id: str) -> list[dict[str, Any]]:
+    """Read only committed verbatim turns for this exact session and scope.
 
-    只认 `origin_session_id` —— 那是写线透传进来的、唯一能把「这一程」圈出来
-    的键。读不到就返回空，不去猜时间窗（按时间圈会把并发的别的会话卷进来）。
+    /add stores these before dispatching an async job, including local/lite
+    engine paths that may never create a mem0 sidecar.  A bounded recent
+    window retains the end of a long session where the final decision often
+    occurs.
     """
-    if not session_id:
-        return []
-    uid = user_id or DEFAULT_USER_ID
-    bid = bank_id or DEFAULT_BANK_ID
-    rows: list[dict[str, Any]] = []
     conn = get_facts_conn()
     try:
-        # 租户/库作用域走单一真源 scope_clause()，不手拼 —— 本仓有一条棘轮
-        # 盯着这件事：手拼的 where 片段迟早会漏掉一个轴，而漏掉的表现是
-        # 「查到了别人的数据」，不会报错。
         from ducky.bank_contract import make_scope
         from ducky.scope_sql import scope_clause
-        _scope, _params = scope_clause(make_scope(uid, bid), flavor="canonical")
-        cur = conn.execute(
+        _scope, _params = scope_clause(make_scope(user_id, bank_id), flavor="canonical")
+        rows = conn.execute(
+            "SELECT id, content, recorded_at, created_at FROM verbatim_turns "
+            f"WHERE session_id=?{_scope} "
+            "ORDER BY id DESC LIMIT ?",
+            (session_id, *_params, MAX_SOURCE),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        logger.debug("会话原文候补不可用 session=%s: %s", session_id[:32], exc)
+        return []
+    finally:
+        conn.close()
+    rows.reverse()
+    return [
+        {"ref": f"verbatim:{row[0]}", "turn": index,
+         "created_at": row[2] or row[3], "text": str(row[1] or "").strip()}
+        for index, row in enumerate(rows, 1) if str(row[1] or "").strip()
+    ]
+
+
+def _collect_sidecar_refs(session_id: str, user_id: str,
+                          bank_id: str) -> list[tuple[Any, Any, Any]]:
+    """Read semantic refs for one session, excluding prior distill outputs."""
+    conn = get_facts_conn()
+    try:
+        from ducky.bank_contract import make_scope
+        from ducky.scope_sql import scope_clause
+        _scope, _params = scope_clause(make_scope(user_id, bank_id), flavor="canonical")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_epistemic)")}
+        sql = (
             "SELECT memory_ref, origin_turn, created_at FROM memory_epistemic "
-            f"WHERE origin_session_id = ?{_scope} "
-            "ORDER BY origin_turn ASC, created_at ASC LIMIT ?",
-            (session_id, *_params, MAX_SOURCE))
-        refs = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+            f"WHERE origin_session_id = ?{_scope}"
+        )
+        if "origin_agent" in cols:
+            sql += " AND COALESCE(origin_agent, '')!='session-distill'"
+        sql += " ORDER BY origin_turn ASC, created_at ASC LIMIT ?"
+        cur = conn.execute(sql, (session_id, *_params, MAX_SOURCE))
+        return [(r[0], r[1], r[2]) for r in cur.fetchall()]
     except sqlite3.Error as exc:
         logger.warning("会话记忆取用失败 session=%s: %s", session_id[:32], exc)
         return []
     finally:
         conn.close()
-    if not refs:
+
+
+def collect_session_memories(session_id: str, *, user_id: str = "",
+                             bank_id: str = "") -> list[dict[str, Any]]:
+    """取这个会话已提交的原文；旧写线才回退到语义 sidecar。
+
+    /add 在异步语义抽取前已提交 verbatim。sidecar 的条数与轮次并非一一
+    对应，无法凭其达到 MIN_MEMORIES 就认定最新轮次也已完成。原文达到
+    萃取门槛时优先使用完整的已提交窗口；没有原文的旧写线仍可使用 sidecar。
+    两路都用精确的 session/user/bank 作用域，不猜时间窗。
+    """
+    if not session_id:
         return []
+    uid = user_id or DEFAULT_USER_ID
+    bid = bank_id or DEFAULT_BANK_ID
+    raw_rows = _collect_raw_session_turns(session_id, uid, bid)
+    if len(raw_rows) >= MIN_MEMORIES:
+        return raw_rows
+    rows: list[dict[str, Any]] = []
+    refs = _collect_sidecar_refs(session_id, uid, bid)
+    if not refs:
+        return raw_rows
 
     # 原文取用分两步，顺序是有讲究的：
     #   ① salience 的 content_preview —— 本地 SQLite、一次批量 SQL 拿完。
@@ -129,7 +176,7 @@ def collect_session_memories(session_id: str, *, user_id: str = "",
     elif missing:
         logger.info("会话 %s 萃取：%d/%d 条原文取不到，按现有的提炼",
                     session_id[:32], missing, len(refs))
-    return rows
+    return rows if len(rows) >= len(raw_rows) else raw_rows
 
 
 def _fallback_summary(rows: list[dict[str, Any]]) -> str:
@@ -181,6 +228,15 @@ def distill_session(session_id: str, *, user_id: str = "",
         return {"status": "skipped", "reason": "empty_after_fallback",
                 "session_id": session_id, "source_count": len(rows)}
 
+    # Same committed sources must keep the same write generation even if the
+    # LLM phrases its summary differently on a repeated session-end event.
+    # Including refs as well as text lets the bounded latest-turn window move
+    # forward after MAX_SOURCE rows without reusing an old idempotency key.
+    source_fingerprint = hashlib.sha256(json.dumps(
+        [(r["ref"], r["text"]) for r in rows], ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
     # 情感成分给初始显著性一个**有界**加成：0 命中 0.60，命中越多越高，
     # 上限 0.85。不设 1.0 —— 精华已经走慢衰减泳道，再给满分等于永不遗忘，
     # 那是 preference 泳道的语义，不是这里的。
@@ -194,10 +250,12 @@ def distill_session(session_id: str, *, user_id: str = "",
         "_origin_turn": max((r["turn"] or 0) for r in rows),
         "distill_mode": mode,              # llm | fallback，不冒充
         "distill_source_count": len(rows),
+        "distill_source_fingerprint": source_fingerprint,
         "distill_emotion_hits": emo,       # 词表在 salience/config.LANE_KEYWORDS
         "distill_initial_salience": round(initial, 4),
     }
     return {"status": "ok", "session_id": session_id, "summary": summary,
             "mode": mode, "source_count": len(rows), "emotion_hits": emo,
+            "source_fingerprint": source_fingerprint,
             "initial_salience": round(initial, 4), "metadata": meta,
             "user_id": uid, "bank_id": bid}

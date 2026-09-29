@@ -213,16 +213,29 @@ def test_f01_hook_deployment_checker_detects_drift():
         assert rep["checked"] == 1, f"没解析到钩子路径，守卫射程为 0：{rep}"
         assert not rep["ok"] and rep["items"][0]["status"] == "drift", f"旧版未判漂移：{rep}"
 
-        # ② 部署到位 → 必须判 ok（负向对照：证明 ① 不是恒红）
+        # ② 只有读线即使内容一致，也不能报部署完成（写线缺席）。
         import shutil
         shutil.copyfile(repo_src, host)
         rep2 = chk.check(cfg, repo)
-        assert rep2["ok"] and rep2["items"][0]["status"] == "ok", f"一致却未判通过：{rep2}"
+        assert not rep2["ok"] and rep2["items"][0]["status"] == "ok", rep2
+        assert rep2["missing_events"] == ["post_llm_call", "on_session_end"], rep2
 
-        # ③ 宿主声明的文件不存在 → 判 missing，不许当成通过
-        os.remove(host)
+        # ③ 三条必需线齐全且逐文件一致，才是真正部署完成。
+        ingest = os.path.join(td, "ingest.sh")
+        distill = os.path.join(td, "distill.sh")
+        shutil.copyfile(os.path.join(repo, "integrations", "aidumem-ingest.sh"), ingest)
+        shutil.copyfile(os.path.join(repo, "integrations", "aidumem-distill.sh"), distill)
+        open(cfg, "w").write(
+            "hooks:\n  pre_llm_call:\n    - command: \"%s\"\n"
+            "  post_llm_call:\n    - command: \"%s\"\n"
+            "  on_session_end:\n    - command: \"%s\"\n" % (host, ingest, distill))
         rep3 = chk.check(cfg, repo)
-        assert not rep3["ok"] and rep3["items"][0]["status"] == "missing", f"缺文件未判红：{rep3}"
+        assert rep3["ok"] and rep3["missing_events"] == [], rep3
+
+        # ④ 宿主声明的文件不存在 → 判 missing，不许当成通过
+        os.remove(host)
+        rep4 = chk.check(cfg, repo)
+        assert not rep4["ok"] and any(i["status"] == "missing" for i in rep4["items"]), f"缺文件未判红：{rep4}"
 
     # ④ 空配置不报绿（「没测到」≠「通过」）
     rep4 = chk.check(os.devnull, repo)
@@ -263,7 +276,8 @@ def test_f01_hook_checker_catches_renamed_stale_hook():
         # 负向对照：别名但内容是新的 → 必须判 ok（证明上面判的是内容不是名字）
         shutil.copyfile(os.path.join(repo, "integrations", "aidumem-inject.sh"), host)
         rep2 = chk.check(cfg, repo)
-        assert rep2["ok"], "别名但内容一致却被判红——判的是名字不是内容：%s" % rep2
+        assert rep2["items"][0]["status"] == "ok", "别名但内容一致应判文件一致：%s" % rep2
+        assert not rep2["ok"] and rep2["missing_events"] == ["post_llm_call", "on_session_end"], rep2
 
 
 def test_no_merge_conflict_markers_in_tracked_files():

@@ -9,7 +9,7 @@ scripts/release_scan.py — 发布前七面敏感内容扫描器
 只解决了第一面。其余六面里有一半是**发出去就改不回来的历史快照**：
 
     ① 工作区        —— 受控文件的内容（可改）
-    ② 提交信息      —— 全部提交的 message（可重写，但重写后旧 SHA 仍可直连）
+    ② 提交信息      —— message 与作者/提交者元数据（可重写，旧 SHA 仍可直连）
     ③ 标签注释      —— 全部 tag 的 annotation（可重写，同上）
     ④ 发布说明      —— 代码托管平台上的 Release 正文（可编辑）
     ⑤ 发行包内容    —— 上传到包索引的 sdist / wheel 解包后的文件（**不可覆盖**）
@@ -68,26 +68,31 @@ scripts/release_scan.py — 发布前七面敏感内容扫描器
 ──────
     0  自检通过，且全部目标零硬命中
     1  自检通过，但存在硬命中（**不允许发布**）
-    2  词表缺失或为空（拒绝运行）
+    2  词表/仓外策略无效，或存在未扫描文件（拒绝运行）
     3  自检失败 —— 扫描器本身不可信，结果作废
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import subprocess
 import sys
 import tempfile
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # ── 自检用的合成词。故意长、故意无意义，不可能在真实内容里自然出现。 ──
 # 它们是**假词**，因此这个文件本身可以安全入仓 —— 这正是词表外置的意义。
 CANARY = "AIDUMEI-SELFTEST-CANARY-7F3A9C21"
 CANARY_CLEAN = "AIDUMEI-SELFTEST-BENIGN-0000"
+CANARY_PRIVATE = "SCAN-SELFTEST-PRIVATE-4E8B61D2"
 
 # 七个公开面的规范名称。测试会断言这份清单不被悄悄缩短。
 SURFACES = (
     "① 工作区",
-    "② 提交信息",
+    "② 提交信息与作者元数据",
     "③ 标签注释",
     "④ 发布说明",
     "⑤ 发行包内容",
@@ -129,6 +134,115 @@ class WordlistMissing(RuntimeError):
 
 class SelfTestFailed(RuntimeError):
     """自检未通过。扫描器本身不可信，本次结果全部作废。"""
+
+
+class PublicPolicyError(RuntimeError):
+    """仓外公开标识策略不完整；绝不能把硬命中默默当成继承。"""
+
+
+@dataclass(frozen=True)
+class PublicPolicy:
+    repo_root: Path
+    baseline_sha: str
+    words: frozenset[str]
+    reviewed: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+def _load_reviewed_public(
+    env: dict[str, str], repo: Path, baseline_sha: str, full_digest: str,
+) -> dict[str, dict[str, int]]:
+    """Read manually reviewed path + exact-line hashes from a private file."""
+    raw_path = env.get("AIDUMEI_SCAN_REVIEWED_PUBLIC", "").strip()
+    if not raw_path:
+        return {}
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file() or path.is_relative_to(repo) or path.stat().st_mode & 0o077:
+        raise PublicPolicyError("逐行复核策略须位于仓库外，且权限最多为 0600")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    markers = [line.partition("=")[2].strip() for line in lines
+               if line.startswith("# baseline=")]
+    digests = [line.partition("=")[2].strip() for line in lines
+               if line.startswith("# full_wordlist_sha256=")]
+    if markers != [baseline_sha] or digests != [full_digest]:
+        raise PublicPolicyError("逐行复核策略与公开基线或全量词表不匹配")
+    reviewed: dict[str, dict[str, int]] = {}
+    for entry in lines:
+        if not entry.strip() or entry.startswith("#"):
+            continue
+        parts = entry.split("\t")
+        if len(parts) != 3:
+            raise PublicPolicyError("逐行复核策略条目须为路径、行指纹和次数")
+        rel, digest, raw_count = parts
+        rel_path = Path(rel)
+        if (not rel or rel_path.is_absolute() or ".." in rel_path.parts
+                or rel_path.as_posix() != rel or "\n" in rel):
+            raise PublicPolicyError("逐行复核策略含非法相对路径")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise PublicPolicyError("逐行复核策略含非法行指纹")
+        try:
+            count = int(raw_count)
+        except ValueError as exc:
+            raise PublicPolicyError("逐行复核策略次数非法") from exc
+        if count < 1 or str(count) != raw_count:
+            raise PublicPolicyError("逐行复核策略次数非法")
+        if digest in reviewed.setdefault(rel, {}):
+            raise PublicPolicyError("逐行复核策略含重复的路径与行指纹")
+        reviewed[rel][digest] = count
+    return reviewed
+
+
+def load_public_policy(words: list[str], env: dict[str, str] | None = None) -> PublicPolicy | None:
+    """Load a private, exact-word policy pinned to a previously public commit."""
+    env = os.environ if env is None else env
+    raw_path = env.get("AIDUMEI_SCAN_PUBLIC_WORDLIST", "").strip()
+    if not raw_path:
+        if env.get("AIDUMEI_SCAN_REVIEWED_PUBLIC", "").strip():
+            raise PublicPolicyError("逐行复核策略不能脱离公开基线使用")
+        return None
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file():
+        raise PublicPolicyError("公开标识策略文件不存在")
+    if path.stat().st_mode & 0o077:
+        raise PublicPolicyError("公开标识策略文件权限须为 0600")
+    try:
+        repo = Path(subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()).resolve()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise PublicPolicyError("找不到 Git 工作树，无法核验公开基线") from exc
+    if path.is_relative_to(repo):
+        raise PublicPolicyError("公开标识策略必须位于仓库外")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    markers = [line.partition("=")[2].strip() for line in lines
+               if line.startswith("# baseline=")]
+    if len(markers) != 1 or not re.fullmatch(r"[0-9a-f]{40}", markers[0]):
+        raise PublicPolicyError("公开标识策略须有唯一的完整 baseline SHA")
+    baseline_sha = markers[0]
+    digests = [line.partition("=")[2].strip() for line in lines
+               if line.startswith("# full_wordlist_sha256=")]
+    expected_digest = hashlib.sha256("\0".join(words).encode("utf-8")).hexdigest()
+    if len(digests) != 1 or digests[0] != expected_digest:
+        raise PublicPolicyError("全量词表与公开基线策略不匹配，拒绝缩减扫描射程")
+    public_words = frozenset(line.strip() for line in lines
+                             if line.strip() and not line.lstrip().startswith("#"))
+    if not public_words or not public_words.issubset(set(words)):
+        raise PublicPolicyError("公开标识策略为空或含有全量词表外的词")
+    try:
+        object_type = subprocess.run(
+            ["git", "cat-file", "-t", baseline_sha], cwd=repo,
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", baseline_sha, "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise PublicPolicyError("公开基线提交不可读取") from exc
+    if object_type != "commit" or ancestor.returncode != 0:
+        raise PublicPolicyError("公开基线不是当前 HEAD 的祖先提交")
+    reviewed = _load_reviewed_public(env, repo, baseline_sha, expected_digest)
+    return PublicPolicy(repo, baseline_sha, public_words, reviewed)
 
 
 def load_words(env: dict[str, str] | None = None) -> list[str]:
@@ -198,6 +312,107 @@ def scan_bytes(raw: bytes, words: list[str]) -> tuple[dict[str, int], dict[str, 
     return hits, exempt
 
 
+def scan_bytes_with_public_baseline(
+    raw: bytes, words: list[str], public_words: frozenset[str], baseline_raw: bytes,
+    reviewed_lines: dict[str, int] | None = None,
+) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
+    """Classify public words only on byte-identical inherited lines.
+
+    A Counter prevents one old line from excusing extra copies in the new tree.
+    New or edited lines containing a public word remain hard hits, even if they
+    carry the normal inline fixture waiver marker.
+    """
+    hard: dict[str, int] = {}
+    waived: dict[str, int] = {}
+    inherited: dict[str, int] = {}
+    reviewed: dict[str, int] = {}
+    remaining = Counter(baseline_raw.split(b"\n"))
+    reviewed_remaining = Counter(reviewed_lines or {})
+    for line in raw.split(b"\n"):
+        line_hard, line_waived = scan_bytes(line, words)
+        was_public = remaining[line] > 0
+        if was_public:
+            remaining[line] -= 1
+        line_digest = hashlib.sha256(line).hexdigest()
+        was_reviewed = not was_public and reviewed_remaining[line_digest] > 0
+        if was_reviewed:
+            reviewed_remaining[line_digest] -= 1
+        public_present = False
+        for word in public_words:
+            n = line_hard.pop(word, 0) + line_waived.pop(word, 0)
+            if n:
+                public_present = True
+                target = inherited if was_public else reviewed if was_reviewed else hard
+                target[word] = target.get(word, 0) + n
+        # A public-name review never waives any private word or structured hit
+        # appearing on that same line, even if a fixture waiver is present.
+        for source, target in ((line_hard, hard),
+                               (line_waived, hard if public_present else waived)):
+            for label, n in source.items():
+                target[label] = target.get(label, 0) + n
+    return hard, waived, inherited, reviewed
+
+
+def _public_baseline_bytes(path: Path, policy: PublicPolicy) -> bytes:
+    """Missing paths are new files: none of their hits may be inherited."""
+    try:
+        rel = path.resolve().relative_to(policy.repo_root).as_posix()
+    except ValueError:
+        return b""
+    result = subprocess.run(
+        ["git", "show", f"{policy.baseline_sha}:{rel}"],
+        cwd=policy.repo_root, capture_output=True,
+    )
+    return result.stdout if result.returncode == 0 else b""
+
+
+def scan_tree_with_public_baseline(
+    root: str | Path, words: list[str], policy: PublicPolicy,
+) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]],
+           dict[str, dict[str, int]], dict[str, dict[str, int]], int, int]:
+    """Scan every word, then account for byte-identical published lines."""
+    root = Path(root)
+    found: dict[str, dict[str, int]] = {}
+    waived: dict[str, dict[str, int]] = {}
+    inherited: dict[str, dict[str, int]] = {}
+    reviewed: dict[str, dict[str, int]] = {}
+    scanned = skipped = 0
+    paths = [root] if root.is_file() and not root.is_symlink() else root.rglob("*")
+    for path in paths:
+        if path.is_symlink():
+            skipped += 1
+            continue
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            skipped += 1
+            continue
+        if b"\x00" in raw[:_BINARY_SNIFF]:
+            skipped += 1
+            continue
+        scanned += 1
+        rel = path.name if root.is_file() else str(path.relative_to(root))
+        # Most files cannot inherit any public-word hit. Avoid a git show for
+        # each of those files while keeping the byte comparison exact for hits.
+        lower_text = raw.decode("utf-8", "ignore").lower()
+        contains_public = any(word.lower() in lower_text for word in policy.words)
+        baseline_raw = _public_baseline_bytes(path, policy) if contains_public else b""
+        try:
+            repo_rel = path.resolve().relative_to(policy.repo_root).as_posix()
+        except ValueError:
+            repo_rel = ""
+        h, e, inherited_here, reviewed_here = scan_bytes_with_public_baseline(
+            raw, words, policy.words, baseline_raw, policy.reviewed.get(repo_rel),
+        )
+        for source, target in ((h, found), (e, waived),
+                               (inherited_here, inherited), (reviewed_here, reviewed)):
+            for label, n in source.items():
+                target.setdefault(label, {})[rel] = n
+    return found, waived, inherited, reviewed, scanned, skipped
+
+
 def scan_tree(root: str | Path, words: list[str]) -> tuple[
         dict[str, dict[str, int]], dict[str, dict[str, int]], int, int]:
     """递归扫一个目录，**或**扫单个文件。返回 (命中, 已豁免, 已扫文件数, 跳过数)。
@@ -231,7 +446,10 @@ def scan_tree(root: str | Path, words: list[str]) -> tuple[
         return found, waived, 1, 0
 
     for p in root.rglob("*"):
-        if p.is_symlink() or not p.is_file():
+        if p.is_symlink():
+            skipped += 1
+            continue
+        if not p.is_file():
             continue
         try:
             raw = p.read_bytes()
@@ -253,7 +471,7 @@ def scan_tree(root: str | Path, words: list[str]) -> tuple[
 
 
 def selftest(words: list[str]) -> None:
-    """三向负向对照，全部成立才准出结果，否则整轮作废。
+    """负向对照全部成立才准出结果，否则整轮作废。
 
     正向：合成的脏样本**必须**被报出来 —— 防「扫描器坏了，什么都不报」。
     反向：合成的干净样本**必须**不被报出来 —— 防「扫描器疯了，什么都报」。
@@ -295,6 +513,24 @@ def selftest(words: list[str]) -> None:
                 "自检失败：豁免标记**溢出到了同文件的其他行**。"
                 "这正是文件级/目录级豁免的病灶，绝不允许。")
 
+    # 公开基线只赦免同路径里的原封不动旧行；新增副本、改写行均须报警。
+    hard, _, inherited, reviewed = scan_bytes_with_public_baseline(
+        f"{CANARY}\n{CANARY}\n{CANARY} extra # {ALLOW_MARK}\n".encode(),
+        [CANARY], frozenset({CANARY}), f"{CANARY}\n".encode(),
+    )
+    if hard.get(CANARY) != 2 or inherited.get(CANARY) != 1 or reviewed:
+        raise SelfTestFailed("公开基线负向对照失败：新增副本或改写行被豁免")
+    approved = f"approved {CANARY}".encode()
+    hard, _, inherited, reviewed = scan_bytes_with_public_baseline(
+        approved + b"\n" + approved + b"\nmodified " + approved
+        + b"\n" + approved + b" " + CANARY_PRIVATE.encode() + b"\n",
+        [CANARY, CANARY_PRIVATE], frozenset({CANARY}), b"",
+        {hashlib.sha256(approved).hexdigest(): 1},
+    )
+    if (hard.get(CANARY) != 3 or hard.get(CANARY_PRIVATE) != 1
+            or reviewed.get(CANARY) != 1 or inherited):
+        raise SelfTestFailed("逐行复核负向对照失败：改动、额外副本或私有词被放行")
+
 
 def _hard_only(d: dict[str, dict[str, int]], words: list[str]) -> dict[str, dict[str, int]]:
     return {k: v for k, v in d.items()
@@ -303,8 +539,8 @@ def _hard_only(d: dict[str, dict[str, int]], words: list[str]) -> dict[str, dict
 
 def format_report(name: str, found: dict[str, dict[str, int]],
                   waived: dict[str, dict[str, int]], words: list[str],
-                  scanned: int, skipped: int) -> tuple[str, int]:
-    """渲染成人能读的报告。**永不只给一个总数** —— 逐词、逐文件都要摊开。
+                  scanned: int, skipped: int, *, redact: bool = False) -> tuple[str, int]:
+    """渲染成人能读的报告；脱敏模式保留逐项计数并隐藏所有路径。
 
     一个坏掉的扫描器和一个干净的包，光看总数长得一模一样。
     """
@@ -313,14 +549,24 @@ def format_report(name: str, found: dict[str, dict[str, int]],
     total = sum(sum(v.values()) for v in hard.values())
     ex_total = sum(sum(v.values()) for v in ex.values())
 
-    lines = [f"=== {name} ===",
+    lines = [f"=== {'扫描目标（路径已隐藏）' if redact else name} ===",
              f"    已扫 {scanned} 个文件，跳过（二进制/符号链接/不可读）{skipped} 个",
              f"    硬敏感命中 = {total} 次，分布在 {len(hard)} 个词上"]
-    if not hard:
+    if not hard and not skipped:
         lines.append("    ✅ 无硬敏感命中")
+    elif not hard:
+        lines.append("    ⚠️ 有文件未扫描，不能给出无命中结论")
     for k in sorted(hard):
         files = hard[k]
-        lines.append(f"    ❌ {k} —— {sum(files.values())} 次 / {len(files)} 个文件")
+        if redact:
+            label = (f"词表项#{words.index(k) + 1}" if k in words
+                     else next((name for name, _ in PATTERNS if k.startswith(name + ":")),
+                               "结构化命中"))
+        else:
+            label = k
+        lines.append(f"    ❌ {label} —— {sum(files.values())} 次 / {len(files)} 个文件")
+        if redact:
+            continue
         for f in sorted(files)[:10]:
             lines.append(f"         {f} ×{files[f]}")
         if len(files) > 10:
@@ -330,12 +576,21 @@ def format_report(name: str, found: dict[str, dict[str, int]],
     if ex:
         lines.append(f"    ⚪ 另有 {ex_total} 次已标注豁免（{ALLOW_MARK}），不计入失败：")
         for k in sorted(ex):
+            if redact:
+                label = (f"词表项#{words.index(k) + 1}" if k in words
+                         else next((name for name, _ in PATTERNS if k.startswith(name + ":")),
+                                   "结构化命中"))
+            else:
+                label = k
+            if redact:
+                lines.append(f"         {label} ×{sum(ex[k].values())}（路径已隐藏）")
+                continue
             for f in sorted(ex[k]):
-                lines.append(f"         {k} @ {f} ×{ex[k][f]}")
+                lines.append(f"         {label} @ {f} ×{ex[k][f]}")
     return "\n".join(lines), total
 
 
-KNOWN_FLAGS = ("--selftest",)
+KNOWN_FLAGS = ("--selftest", "--redact-report")
 
 
 def main(argv: list[str]) -> int:
@@ -353,6 +608,7 @@ def main(argv: list[str]) -> int:
 
     targets = [a for a in argv if not a.startswith("-")]
     only_selftest = "--selftest" in argv
+    redact = "--redact-report" in argv
 
     try:
         words = load_words()
@@ -366,9 +622,19 @@ def main(argv: list[str]) -> int:
         print(f"[自检失败] {e}", file=sys.stderr)
         return 3
 
-    print(f"[自检通过] 三向对照成立（脏样本报警 / 干净样本不报 / 豁免不外溢）；"
+    try:
+        policy = load_public_policy(words)
+    except PublicPolicyError as e:
+        print(f"[拒绝运行] {e}", file=sys.stderr)
+        return 2
+
+    print(f"[自检通过] 五类对照成立（脏样本报警 / 干净样本不报 / 豁免不外溢 / "
+          "公开基线只继承原行 / 逐行复核改字变红）；"
           f"词表 {len(words)} 条（内容不回显）")
     print(f"[覆盖面] {' / '.join(SURFACES)}")
+    if policy:
+        print(f"[公开基线] {policy.baseline_sha[:12]} · 已公开标识 {len(policy.words)} 条"
+              "（只继承同路径同整行同次数；内容不回显）")
     if only_selftest:
         return 0
 
@@ -389,17 +655,32 @@ def main(argv: list[str]) -> int:
               f"不存在的目标会报出与「真的干净」无法区分的 0。", file=sys.stderr)
         return 2
 
-    grand = 0
+    grand = inherited_total = reviewed_total = skipped_total = 0
     empty: list[str] = []
+    incomplete: list[str] = []
     for t in targets:
-        found, waived, scanned, skipped = scan_tree(t, words)
-        report, n = format_report(t, found, waived, words, scanned, skipped)
+        if policy:
+            found, waived, inherited, reviewed, scanned, skipped = scan_tree_with_public_baseline(
+                t, words, policy)
+            inherited_total += sum(sum(v.values()) for v in inherited.values())
+            reviewed_total += sum(sum(v.values()) for v in reviewed.values())
+        else:
+            found, waived, scanned, skipped = scan_tree(t, words)
+        report, n = format_report(t, found, waived, words, scanned, skipped,
+                                  redact=redact)
         print(report)
         grand += n
+        skipped_total += skipped
         if scanned == 0:
             empty.append(t)
+        if skipped:
+            incomplete.append(t)
 
-    print(f"\n总计硬敏感命中 = {grand} 次")
+    if policy:
+        print(f"\n总计基线继承公开标识 = {inherited_total} 次（完整词表已扫描）")
+        print(f"总计逐行复核公开标识 = {reviewed_total} 次（路径、整行指纹与次数绑定）")
+    print(f"总计扫描覆盖跳过 = {skipped_total} 个文件")
+    print(f"总计硬敏感命中 = {grand} 次")
 
     # 一个文件都没读到的目标，不许换来一行绿色。
     # 这条是**结构性兜底**：前面两条（未知选项、目标不存在）各自只堵住一个
@@ -410,6 +691,12 @@ def main(argv: list[str]) -> int:
         print(f"[拒绝运行] 以下目标一个文件都没扫到：{' '.join(empty)}；"
               f"扫了 0 个文件的「无命中」与「真的干净」无法区分，本轮结论作废。",
               file=sys.stderr)
+        return 2
+
+    if incomplete:
+        detail = f"{len(incomplete)} 个目标" if redact else "、".join(incomplete)
+        print(f"[拒绝运行] {detail} 含二进制、符号链接或不可读文件；"
+              "存在扫描覆盖缺口，不能发放通过结论。", file=sys.stderr)
         return 2
 
     return 1 if grand else 0

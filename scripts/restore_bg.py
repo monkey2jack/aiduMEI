@@ -21,10 +21,6 @@ rows = conn.execute(
 ).fetchall()
 conn.close()
 
-# 快速check当前Qdrant有多少条了
-resp = requests.post('http://127.0.0.1:8767/search', json={'query':'test','user_id':'default','limit':1}, timeout=15, headers=_auth_headers())
-already = 0  # 不好直接查，直接全量覆盖写
-
 api = 'http://127.0.0.1:8767'
 success = fail = 0
 total = len(rows)

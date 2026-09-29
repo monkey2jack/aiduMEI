@@ -155,12 +155,24 @@ def _body_model(endpoint: Any) -> type[BaseModel] | None:
 def _uncapped_text_fields(model: type[BaseModel]) -> list[str]:
     """模型里无 max_length 的文本/集合字段（str / list / dict / Messages）。"""
     out = []
+    properties = model.model_json_schema().get("properties", {})
     for fname, field in model.model_fields.items():
         ann = str(model.__annotations__.get(fname, ""))
         is_text = any(k in ann for k in ("str", "List", "Dict", "list", "dict", "Messages"))
         if not is_text:
             continue
         capped = any(getattr(md, "max_length", None) for md in (field.metadata or []))
+        if not capped:
+            # A constrained str inside ``str | int | None`` lives in the
+            # union branch, not field.metadata. Read the compiled Pydantic
+            # schema so a genuinely bounded cursor does not appear uncapped.
+            prop = properties.get(fname, {})
+            branches = prop.get("anyOf", [prop])
+            text_branches = [part for part in branches if part.get("type") == "string"]
+            capped = bool(text_branches) and all(
+                isinstance(part.get("maxLength"), int) and part["maxLength"] > 0
+                for part in text_branches
+            )
         if not capped:
             out.append(fname)
     return out

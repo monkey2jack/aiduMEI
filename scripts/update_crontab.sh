@@ -85,18 +85,13 @@ if [[ "${MODE}" == "--list" ]]; then
   exit 0
 fi
 
-if [[ "${MODE}" == "--installed" ]]; then
-  # 数真实 crontab 里本仓拥有的条目，不是数我们打算装什么。
-  installed="$(crontab -l 2>/dev/null | grep -c '^# aiduMEI:' || true)"
-  printf '{"installed": %s, "expected": %s}\n' "${installed:-0}" "${#TASKS[@]}"
-  exit 0
-fi
-
 entries=()
 for row in "${TASKS[@]}"; do
   IFS='|' read -r name schedule command log owner failure <<< "$row"
   # 守卫：拒绝宣告任何背后没有真实文件的任务。
-  if [[ "${command}" == "\"${PY}\" "* ]]; then
+  if [[ "${MODE}" == "--installed" ]]; then
+    :  # verifier emits target_missing per task in JSON instead of exiting early
+  elif [[ "${command}" == "\"${PY}\" "* ]]; then
     [[ -x "${PY}" ]] || { echo "missing executable: ${PY}" >&2; exit 1; }
     target="${command#*\"${PY}\" }"; target="${target%% *}"
     [[ -f "${REPO_ROOT}/${target}" ]] || { echo "missing target script: ${REPO_ROOT}/${target}" >&2; exit 1; }
@@ -112,6 +107,16 @@ for row in "${TASKS[@]}"; do
 ${schedule} cd \"${REPO_ROOT}\" && ${command} >> \"${LOG_DIR}/${log}\" 2>&1")
 done
 
+MANIFEST_CHECK="${REPO_ROOT}/scripts/cron_manifest.py"
+[[ -f "${MANIFEST_CHECK}" ]] || { echo "missing cron verifier: ${MANIFEST_CHECK}" >&2; exit 1; }
+
+if [[ "${MODE}" == "--installed" ]]; then
+  # Only count a unique task when its declared name, schedule and full command
+  # match this release's manifest. Unknown/duplicate owned entries keep ok=false.
+  (crontab -l 2>/dev/null || true) | python3 "${MANIFEST_CHECK}" verify "${REPO_ROOT}" "${entries[@]}"
+  exit 0
+fi
+
 if [[ "${MODE}" == "--dry-run" ]]; then
   printf '%s\n' "DRY-RUN: would install ${#entries[@]} aiduMEI maintenance tasks."
   printf '%s\n' "${entries[@]}"
@@ -121,26 +126,20 @@ fi
 BACKUP_FILE="${LOG_DIR}/crontab_backup_$(date +%Y%m%d_%H%M%S).txt"
 crontab -l > "${BACKUP_FILE}" 2>/dev/null || true
 TMP=$(mktemp)
+MERGED=$(mktemp)
+trap 'rm -f "${TMP}" "${MERGED}"' EXIT
 crontab -l 2>/dev/null > "${TMP}" || true
-added=0
-for entry in "${entries[@]}"; do
-  name="$(sed -n 's/^# aiduMEI:\([^|]*\)|.*/\1/p' <<< "$entry")"
-  # 同时认新格式（aiduMEI:NAME|）与旧格式（aiduMEI: … | NAME|），重跑不重复。
-  if ! grep -qE "^# aiduMEI:.*${name}\|" "${TMP}"; then
-    printf '\n%s\n' "$entry" >> "${TMP}"
-    added=$((added + 1))
-  fi
-done
-crontab "${TMP}"
-rm -f "${TMP}"
+python3 "${MANIFEST_CHECK}" merge "${REPO_ROOT}" "${entries[@]}" < "${TMP}" > "${MERGED}"
+crontab "${MERGED}"
 
 # 与世界对账，而不是与自己数组里的数字对账。
-installed="$(crontab -l 2>/dev/null | grep -c '^# aiduMEI:' || true)"
-installed="${installed:-0}"
+result="$(crontab -l 2>/dev/null | python3 "${MANIFEST_CHECK}" verify "${REPO_ROOT}" "${entries[@]}")"
+installed="$(printf '%s' "${result}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["installed"])')"
 expected="${#entries[@]}"
-echo "Installed aiduMEI maintenance tasks: ${installed}/${expected} (added ${added} this run)"
+verified="$(printf '%s' "${result}" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["ok"]))')"
+echo "Installed aiduMEI maintenance tasks: ${installed}/${expected} (verified against schedule and command)"
 echo "Crontab backup: ${BACKUP_FILE}"
-if [[ "${installed}" -ne "${expected}" ]]; then
-  echo "FAIL: crontab holds ${installed} aiduMEI entries, expected ${expected}" >&2
+if [[ "${verified}" -ne 1 ]]; then
+  echo "FAIL: crontab does not match the aiduMEI maintenance manifest: ${result}" >&2
   exit 1
 fi
