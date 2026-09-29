@@ -669,23 +669,23 @@ def _count_facts_table(conn: Any, table: str, scope: Any) -> tuple:
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                         (table,)).fetchone():
         return 0, "absent"
+    from ducky.bank_contract import visible_user_clause
+    from ducky.scope_sql import scope_clause
     cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    count_sql = f'SELECT COUNT(*) FROM "{table}" WHERE 1=1'
     if {"user_id", "bank_id"} <= cols:
-        row = conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE user_id=? AND bank_id=?',
-                           (scope.user_id, scope.bank_id)).fetchone()
-        return int(row[0]), "tenant"
+        frag, params = scope_clause(scope, flavor="canonical")
+        return int(conn.execute(count_sql + frag, params).fetchone()[0]), "tenant"
     if "user_id" in cols:
-        row = conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE user_id=?',
-                           (scope.user_id,)).fetchone()
-        return int(row[0]), "user"
-    row = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
-    return int(row[0]), "table"
+        owner_sql, owner_params = visible_user_clause(scope.user_id)
+        return int(conn.execute(count_sql + " AND " + owner_sql,
+                                owner_params).fetchone()[0]), "user"
+    return int(conn.execute(count_sql).fetchone()[0]), "table"
 
 
 def _count_persona_store() -> tuple:
     """Rows left in the separate persona.db (opened read-only, never created)."""
     import pathlib
-    import sqlite3
     from ducky.persona_memory import PERSONA_DB
     path = pathlib.Path(PERSONA_DB)
     if not path.exists():
@@ -1092,11 +1092,13 @@ def _delete_pending_ids(scope: Any, ids: list) -> int:
     ids = [int(i) for i in (ids or [])]
     if not ids:
         return 0
+    from ducky.scope_sql import scope_clause
+    frag, params = scope_clause(scope, flavor="canonical")
     conn = get_facts_conn()
     try:
         cur = conn.executemany(
-            "DELETE FROM pending_embeddings WHERE pending_id=? AND user_id=? AND bank_id=?",
-            [(i, scope.user_id, scope.bank_id) for i in ids])
+            "DELETE FROM pending_embeddings WHERE pending_id=?" + frag,
+            [(i, *params) for i in ids])
         conn.commit()
         return int(cur.rowcount or 0)
     finally:
