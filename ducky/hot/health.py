@@ -1,10 +1,13 @@
 """ducky.hot.health — GET /health & /metrics（v19.2.0 可观测性升级版）"""
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import socket
 import sqlite3
+import subprocess
 import time
 
 from fastapi import FastAPI, Request
@@ -130,6 +133,119 @@ _PUBLIC_CACHE: dict = {"ts": 0.0, "full": None}
 
 # v20.4 P2-17：/livez 的 uptime 基准。模块加载时刻 ≈ 进程起服务的时刻。
 _START_TS = time.time()
+
+
+# ── f0.3（A6）：consolidator 运行摘要探针 + git_sha（**只进授权视图**）──────
+#
+# 两者都是模块级函数、在 _run_full_probe 里各占一行无分支调用：
+#   · 放进 probes["consolidator"]（dict，键名不以 _ok/_error/_degraded 结尾）——
+#     不参与 degraded 汇总，所以匿名公开视图（_public_view 白名单）连 status 都
+#     不会因它变化；告警只进 warnings（授权视图才有）。
+#   · git_sha 是完整载荷的顶层字段，_public_view 不转发它。
+# 探针自身的失败一律收成 error 字段，绝不许把 /health 打炸。
+_CONSOLIDATOR_STALE_HOURS = 36.0
+_BUILD_SHA_ENV = "AIDUMEI_BUILD_SHA"
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+_GIT_SHA_CACHE: dict = {}
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _resolve_git_sha() -> str:
+    """AIDUMEI_BUILD_SHA（部署时写入）> `git rev-parse HEAD`（短超时）> "unknown"。"""
+    raw = (os.environ.get(_BUILD_SHA_ENV) or "").strip()
+    if raw:
+        if _SHA_RE.match(raw):
+            return raw.lower()
+        logger.warning("%s=%r 不是 7~64 位十六进制提交号，忽略它改用 git 解析", _BUILD_SHA_ENV, raw[:80])
+    try:
+        proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=_REPO_ROOT,
+                              capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git rev-parse 不可用: %s", exc)
+        return "unknown"
+    sha = (proc.stdout or "").strip()
+    return sha.lower() if proc.returncode == 0 and _SHA_RE.match(sha) else "unknown"
+
+
+def _git_sha() -> str:
+    """进程内只解析一次（首个授权 /health 付最多 2 秒，之后 O(1)）。"""
+    if "sha" not in _GIT_SHA_CACHE:
+        _GIT_SHA_CACHE["sha"] = _resolve_git_sha()
+    return _GIT_SHA_CACHE["sha"]
+
+
+def _int_or_none(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _read_consolidator_summary(path: str) -> tuple:
+    """(摘要 dict | None, 读取错误 | None)。文件不在不算错误。"""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"[:160]
+    if not isinstance(data, dict):
+        return None, "摘要不是 JSON 对象"
+    return data, None
+
+
+def _consolidator_verdicts(data: dict, now: float) -> dict:
+    """从摘要算探针字段与告警文案（纯函数，不碰磁盘）。"""
+    deletion = data.get("deletion") if isinstance(data.get("deletion"), dict) else {}
+    counts = {k: _int_or_none(deletion.get(k)) for k in ("deleted", "already_gone", "partial", "failed")}
+    conflicts = data.get("conflicts") if isinstance(data.get("conflicts"), dict) else {}
+    ts = data.get("timestamp")
+    age_h = round((now - ts) / 3600, 2) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
+    mode, candidates = data.get("mode"), _int_or_none(data.get("candidates"))
+    mismatch = None
+    if mode == "apply" and candidates is not None:
+        mismatch = candidates != (counts["deleted"] or 0) + (counts["already_gone"] or 0)
+    notes = []
+    if age_h is None or age_h > _CONSOLIDATOR_STALE_HOURS:
+        notes.append(f"consolidator 运行摘要已陈旧（{age_h if age_h is not None else '?'}h，"
+                     f"阈值 {_CONSOLIDATOR_STALE_HOURS:.0f}h）：定时合并可能停了（cron 没装 / 脚本启动即崩）")
+    if data.get("status") != "ok":
+        notes.append(f"consolidator 最近一轮没有正常结束：status={data.get('status')} "
+                     f"{data.get('abort_reason') or data.get('error') or ''}".rstrip())
+    if mismatch:
+        notes.append(f"consolidator 淘汰对账不平（apply）：候选 {candidates} ≠ 已删除 {counts['deleted']}"
+                     f" + 本来就不在 {counts['already_gone']}（部分失败 {counts['partial']} / 失败 {counts['failed']}）")
+    if data.get("mode_error"):
+        notes.append(f"consolidator 淘汰档位配置无效：{data.get('mode_error')}")
+    probe = {
+        "present": True, "status": data.get("status"), "mode": mode, "candidates": candidates,
+        "deletion": counts, "mismatch": mismatch, "finished_at": data.get("finished_at"),
+        "age_hours": age_h, "stale": age_h is None or age_h > _CONSOLIDATOR_STALE_HOURS,
+        "conflicts": {k: conflicts.get(k) for k in ("mode", "pairs_found", "pairs_applied",
+                                                    "memories_penalized", "truncated")},
+    }
+    return {"probe": probe, "warnings": notes}
+
+
+def _consolidator_probe(warnings: list) -> dict:
+    """/health 授权视图：consolidator 最近一轮在做什么、做成了没有、多久没跑了。"""
+    try:
+        from ducky.salience.metrics import consolidator_last_run_path
+        data, error = _read_consolidator_summary(consolidator_last_run_path())
+        if error is not None:
+            warnings.append(f"consolidator 运行摘要读不出：{error}")
+            return {"present": True, "error": error}
+        if data is None:
+            # 装完还没到第一次定时点不算故障；服务都跑了 36h 还一次没写过才告警
+            # （v19.4.1 教训：consolidator 启动即崩了三周，没有任何一处变红）。
+            uptime_h = (time.time() - _START_TS) / 3600
+            if uptime_h > _CONSOLIDATOR_STALE_HOURS:
+                warnings.append(f"服务已运行 {uptime_h:.0f}h，consolidator 却从没写过运行摘要："
+                                "定时合并多半没装或启动即崩")
+            return {"present": False, "stale": uptime_h > _CONSOLIDATOR_STALE_HOURS}
+        verdict = _consolidator_verdicts(data, time.time())
+        warnings.extend(verdict["warnings"])
+        return verdict["probe"]
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:160]}
 
 
 def _auth_gate_enabled() -> bool:
@@ -927,6 +1043,9 @@ def register_health_routes(app: FastAPI) -> None:
         _pc_warn = ((probes.get("runtime_paths") or {}).get("path_consistency") or {}).get("warning")
         if _pc_warn:
             warnings.append(_pc_warn)
+        # f0.3（A6）：consolidator 最近一轮的运行摘要（只进授权视图；告警进 warnings，
+        # 不进 degraded —— 匿名公开视图不因它有任何变化）。模块级函数、零分支调用。
+        probes["consolidator"] = _consolidator_probe(warnings)
         try:
             from ducky.pipeline.memory_gate import entity_keywords_status
             ek = entity_keywords_status()
@@ -1233,6 +1352,8 @@ def register_health_routes(app: FastAPI) -> None:
         full = te_ok(
             service=f"aiduMEM-v{_version_info['service_version']}",
             version=f"{_version_info['service_version']}",
+            # f0.3（A6）：发布溯源。只在完整载荷里，_public_view 不转发。
+            git_sha=_git_sha(),
             codename=_version_info["codename"],
             codename_zh=_version_info["codename_zh"],
             modules=module_ok,
