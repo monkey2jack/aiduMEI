@@ -228,9 +228,27 @@ def test_manual_flush_partial_is_207(rig, monkeypatch):
 def test_manual_flush_without_executor_does_not_drain_the_queue(monkeypatch, queue):
     import ducky.hot.add as hot_add
     monkeypatch.setattr(coalesce, "_coalesce_flush_cb", None)
+    monkeypatch.setattr(hot_add, "get_memory", lambda: _Mem())   # backend ready
     queue.coalesce_enqueue("alice", "buffered turn", _hook_md("s-1", 1), bank_id="work")
     app = FastAPI()
     hot_add.register_add_routes(app)
     r = TestClient(app).post("/add/coalesce/flush", params={"user_id": "alice"})
     assert r.status_code == 503 and r.json()["status"] == "unavailable"
     assert len(queue._coalesce_buf) == 1, "queue drained with nobody to run the batch"
+
+
+def test_manual_flush_on_an_unconfigured_backend_is_the_standard_503(monkeypatch, queue):
+    """Zero-credential deployments keep the actionable 503 (what to configure)."""
+    import ducky.hot.add as hot_add
+    from fastapi import HTTPException
+
+    def _unconfigured():
+        raise HTTPException(503, "memory backend not ready: see /health, or use /add/raw")
+
+    monkeypatch.setattr(hot_add, "get_memory", _unconfigured)
+    queue.coalesce_enqueue("alice", "buffered turn", _hook_md("s-1", 1), bank_id="work")
+    app = FastAPI()
+    hot_add.register_add_routes(app)
+    r = TestClient(app).post("/add/coalesce/flush", params={"user_id": "alice"})
+    assert r.status_code == 503 and "/health" in r.text
+    assert len(queue._coalesce_buf) == 1

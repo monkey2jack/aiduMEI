@@ -830,6 +830,9 @@ def register_add_routes(app: FastAPI) -> None:
         """
         try:
             from ducky.speed.coalesce import flush_now
+            # Backend readiness first: an unconfigured deployment gets the
+            # standard actionable 503 (what to configure, /health, /add/raw).
+            get_memory()
             report = flush_now(user_id=(user_id or None), force=force,
                                bank_id=(bank_id or None))
             return _flush_http_response(report)
