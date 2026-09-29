@@ -251,7 +251,7 @@ fi
 
 PAYLOAD=$(cat)
 
-# Hermes session_end payload：session_id 在顶层；非顶层键在 extra 下。
+# Hermes on_session_end payload：session_id 在顶层；非顶层键在 extra 下。
 SESSION_ID=$(printf '%s' "$PAYLOAD" | python3 -c '
 import json, sys
 try:

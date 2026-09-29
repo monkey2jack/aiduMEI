@@ -37,7 +37,7 @@ has been searching but not writing.
 | Before turn | Call `/gate`; if relevant, search or request context and inject once | READ |
 | **After turn** | **Write user facts or durable decisions with `/add` — this is the WRITE wire; it is not optional** | **WRITE** |
 | Before compression | Save at-risk raw dialogue with `/add/raw` | WRITE |
-| Session end | Call `/session/end` to archive/report the session | — |
+| Session end | Call `/session/end` to archive/report the session (best effort), then distill it (see below) | DISTILL |
 | Restore or migration | Import only durable facts and raw records, not transient working state | — |
 
 ### Where the write hook goes
@@ -87,7 +87,17 @@ Three properties worth knowing before you wire it:
 Missing this wire is quieter than missing the write wire: memories still arrive,
 you just never get the "this stretch" layer. `/health` watches for it with
 `distill_liveness_ok` — sessions arriving but zero distills means the hook is not
-attached.
+attached. It is still a required wire: `scripts/check_hook_deployment.py` fails a
+shell-hook deployment without `on_session_end` (the Hermes event is
+`on_session_end`, not `session_end`).
+
+Distill does not depend on `/session/end`. The server keeps its session table in
+memory (30-minute TTL, evicted by any later `/session/start`, lost on restart),
+so a long or restarted session legitimately ends as "not found"; the plugin and
+the shell hook still distill it from the turns they wrote. The plugin also skips
+a turn the server rejected permanently (400 from the injection guard, 422 from
+the request model) instead of letting it block the whole session's end and
+distill; transient failures are retried within a bounded budget.
 
 Do **not** put the write on the pre-turn hook. That hook runs *before* the
 answer exists, so you would be recording half a conversation.
@@ -126,6 +136,13 @@ For a plugin-only installation, the hook checker reports N/A when Hermes
 selects `memory.provider: aidumem`. For a pure HTTP API integration, set
 `AIDUMEI_INTEGRATION_MODE=api` so the scheduled health check reports the shell
 hook check as N/A. Both still need a real read/write wiring check.
+
+Pick **one** route. The plugin already covers read (`prefetch`), write
+(`sync_turn`) and distill (`on_session_end`); registering the aiduMEI shell
+hooks next to `memory.provider: aidumem` injects twice, writes every turn twice
+and distills every session twice. The hook checker reports that combination as
+a yellow `double_install` warning (exit code 2, `ok: false`) even when every
+file matches the repository.
 
 In CI or a release gate, add `--require-judgment`. Without it the check returns 0
 when there is not enough traffic to judge — deliberately, so a brand-new install

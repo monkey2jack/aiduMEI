@@ -40,12 +40,48 @@
 _CIRCUIT_FILE="${TMPDIR:-/tmp}/.aidumem_circuit_broken"
 _FUSE_COUNT_FILE="${TMPDIR:-/tmp}/.aidumem_fuse_count"
 
+# f0.3 (H-1): both state files live in a shared, world-writable directory, so
+# their content is untrusted input. Bash arithmetic evaluates the *content* of
+# a variable as an expression -- a file holding `a[$(cmd)]` runs cmd inside
+# $(( )) -- so nothing read from them may reach arithmetic unvalidated.
+# Only 1-12 ASCII digits count; anything else is 0 and the file is rewritten.
+# A symlink, FIFO or directory planted there is neither read nor written
+# (writing to a FIFO would hang the hook). Both helpers run in the current
+# shell: no subshell or fork on the hot path. Portable to bash 3.2.
+_aidumem_state_write() {
+    [ -L "$1" ] && return 0
+    if [ -e "$1" ] && [ ! -f "$1" ]; then
+        return 0
+    fi
+    printf '%s\n' "$2" > "$1" 2>/dev/null || true
+}
+_aidumem_state_read() {
+    _AIDUMEM_STATE=0
+    local _raw=""
+    [ -L "$1" ] && return 0
+    [ -f "$1" ] || return 0
+    IFS= read -r -n 32 _raw < "$1" 2>/dev/null || true
+    # Explicit digits: bash 3.2 resolves [0-9] through the locale's collation.
+    case "$_raw" in
+        ''|*[!0123456789]*) _raw="" ;;
+    esac
+    if [ -z "$_raw" ] || [ "${#_raw}" -gt 12 ]; then
+        _aidumem_state_write "$1" 0
+        return 0
+    fi
+    _AIDUMEM_STATE=$((10#$_raw))
+}
+
 # 冷却窗检查（脚本第一行，最快路径）。
 # selftest 是诊断路径，跳过熔断——诊断要真实状态，不要被熔断掩盖。
 if [ "${1:-}" != "--selftest" ] && [ -f "$_CIRCUIT_FILE" ]; then
-    _broken_at=$(cat "$_CIRCUIT_FILE" 2>/dev/null || echo 0)
+    _aidumem_state_read "$_CIRCUIT_FILE"
+    _broken_at=$_AIDUMEM_STATE
     _now=$(date +%s)
-    if [ $((_now - _broken_at)) -lt 5 ]; then
+    case "$_now" in ''|*[!0123456789]*) _now=0 ;; esac
+    # A timestamp from the future is as untrusted as garbage: a planted
+    # 9999999999 would otherwise hold every hook in cooldown for good.
+    if [ "$_broken_at" -le "$_now" ] && [ $((_now - _broken_at)) -lt 5 ]; then
         echo "{}"
         exit 0
     else
@@ -53,25 +89,31 @@ if [ "${1:-}" != "--selftest" ] && [ -f "$_CIRCUIT_FILE" ]; then
     fi
 fi
 
-# 极速探测（0.15 秒连接超时）。带 token（若 env 有）——/health 未鉴权也通，
-# 但守卫要求所有 curl 带 AUTH_ARGS；且将来若 /health 要鉴权，探测仍通。
-# selftest 跳过：诊断要真实状态。
+# 极速探测（0.15 秒连接超时）。selftest 跳过：诊断要真实状态。
+# f0.3：探的是 O(1) 的 /livez（不碰磁盘、数据库、单例，永久免凭据），
+# 不再是完整探针 /health —— 生产实测 /health 40~157 ms，0.2 秒预算下
+# 慢一点就被误判成熔断。token 不再上 curl 的命令行（ps 对本机所有用户可见）：
+# 头部行经 stdin 交给 curl（-H @-，curl >= 7.55；更老的 curl 会忽略它，
+# 而 /livez 本就不要凭据，探活结论不受影响）。守卫要求 curl 带 AUTH_ARGS。
 if [ "${1:-}" != "--selftest" ]; then
-    _FUSE_AUTH_ARGS=()
+    _FUSE_AUTH_ARGS=(-H @-)
+    _fuse_header=""
     if [ -n "${AIDUMEM_API_TOKEN:-}" ]; then
-        _FUSE_AUTH_ARGS=(-H "Authorization: Bearer ${AIDUMEM_API_TOKEN}")
+        _fuse_header="Authorization: Bearer ${AIDUMEM_API_TOKEN}"
     fi
-    if ! curl -s --connect-timeout 0.15 -m 0.2 "${_FUSE_AUTH_ARGS[@]}" "${AIDUMEM_URL:-http://127.0.0.1:8767}/health" >/dev/null 2>&1; then
-        _fail_count=$(cat "$_FUSE_COUNT_FILE" 2>/dev/null || echo 0)
-        _fail_count=$((_fail_count + 1))
-        echo "$_fail_count" > "$_FUSE_COUNT_FILE"
+    if ! printf '%s\n' "$_fuse_header" | curl -s --connect-timeout 0.15 -m 0.2 \
+            "${_FUSE_AUTH_ARGS[@]}" "${AIDUMEM_URL:-http://127.0.0.1:8767}/livez" >/dev/null 2>&1; then
+        _aidumem_state_read "$_FUSE_COUNT_FILE"
+        _fail_count=$((_AIDUMEM_STATE + 1))
+        _aidumem_state_write "$_FUSE_COUNT_FILE" "$_fail_count"
         if [ "$_fail_count" -ge 2 ]; then
-            date +%s > "$_CIRCUIT_FILE"
+            _aidumem_state_write "$_CIRCUIT_FILE" "$(date +%s)"
         fi
         echo "{}"
         exit 0
     fi
-    echo 0 > "$_FUSE_COUNT_FILE"
+    _fuse_header=""
+    _aidumem_state_write "$_FUSE_COUNT_FILE" 0
 fi
 #   详见 integrations/INTEGRATION_GUIDE.md
 #

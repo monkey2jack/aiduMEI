@@ -239,13 +239,18 @@ def test_unconfirmed_turn_never_reports_a_false_short_session(plugin, monkeypatc
     p._client.try_request = request
     p.sync_turn("one", "reply", session_id="uncertain-turn")
     p.on_session_end([])
-    assert calls == ["/add", "/add", "/add"]
+    # f0.3 (H-4): one unconfirmed turn no longer blocks end + distill, but a
+    # "skipped" verdict reached while it is unconfirmed must not be final.
+    assert [urlsplit(path).path for path in calls] == [
+        "/add", "/add", "/add", "/session/end", "/session/distill"]
     assert "unconfirmed" in caplog.text
     assert "uncertain-turn" in p._pending_turns
+    assert "uncertain-turn" not in p._completed_sessions
     ready = True
     p.on_session_end([])
-    assert any(path.startswith("/session/end") for path in calls)
-    assert any(path.startswith("/session/distill") for path in calls)
+    assert calls.count("/add") == 4  # the queued write, retried with its own key
+    assert sum(path.startswith("/session/distill") for path in calls) == 2
+    assert "uncertain-turn" in p._completed_sessions
 
 
 def test_distill_store_retry_reuses_summary_and_key(plugin):
