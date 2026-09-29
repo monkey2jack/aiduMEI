@@ -31,15 +31,18 @@ classifiers = [
 dependencies = [
     "mem0ai==2.2.1",
     "fastapi>=0.136.3,<1.0",
-    "uvicorn[standard]>=0.30,<1.0",
+    # f0.3：uvicorn / python-multipart / httpx / requests / inotify_simple 的下限
+    # 抬到 requirements.txt 的精确锁（= 生产实跑版本），同上面「下限对齐实锁」的
+    # 约定；tests/test_f0_3_dependency_pins.py 盯着两份清单不许互相矛盾。
+    "uvicorn[standard]>=0.52.3,<1.0",
     "pydantic>=2.13.4,<3.0",
     "qdrant-client>=1.18.0,<2.0",
-    "python-multipart>=0.0.9",
-    "httpx>=0.27",
-    "requests>=2.31",
+    "python-multipart>=0.0.32",
+    "httpx>=0.28.1",
+    "requests>=2.34.2",
     "pydantic-settings==2.14.2",
     "pydantic_core==2.46.4",
-    "inotify_simple>=1.3.5",
+    "inotify_simple>=2.0.1",
 ]
 
 [project.optional-dependencies]
@@ -51,10 +54,10 @@ local-embed = ["fastembed>=0.8"]
 mcp = ["mcp>=1.0.0,<2"]
 # sync: mem0_sync.py 守护模式（inotify 监听 MEMORY.md）。仅 Linux 有 inotify。
 # v19.4.2 补：此前该依赖从未在任何清单里声明，照仓库部署 sync 必然崩溃循环。
-sync = ["inotify_simple>=1.3.5; sys_platform == 'linux'"]
+sync = ["inotify_simple>=2.0.1; sys_platform == 'linux'"]
 full = [
     "mcp>=1.0.0,<2",   # v20.2.4 F-21：同上，2.x 的 fastmcp 路径已变
-    "inotify_simple>=1.3.5; sys_platform == 'linux'",
+    "inotify_simple>=2.0.1; sys_platform == 'linux'",
 ]
 
 # dev: 跑测试用。requirements-dev.txt 是这一组的镜像，两边必须同步
