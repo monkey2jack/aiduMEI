@@ -73,7 +73,8 @@ def _wrapper(path: Path, *, with_pytest: bool) -> Path:
 def _detect(shell: str, tree: Path, path_dir: Path) -> str:
     body = 'ROOT="$1"\n' + _block("gate-interpreter") + 'printf "PY=%s\\n" "${PY}"\n'
     # PATH holds only the stand-ins: no system python can decide the verdict.
-    env = {"PATH": str(path_dir), "HOME": str(tree)}
+    env = {"PATH": str(path_dir), "HOME": str(tree),
+           "AIDUMEM_DATA_DIR": str(tree / "data"), "AIDUMEM_LOG_DIR": str(tree / "logs")}
     result = _run_block(shell, body, cwd=tree, env=env, args=(str(tree),))
     assert result.returncode == 0, result.stderr
     return re.search(r"^PY=(.*)$", result.stdout, re.M).group(1)
@@ -114,7 +115,8 @@ def _git_tree(tmp_path: Path, good: int, bad_names=()) -> Path:
     for name in bad_names:
         (tree / "pkg" / name).write_text("def broken(:\n", encoding="utf-8")
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "GIT_CONFIG_NOSYSTEM": "1",
-           "GIT_CONFIG_GLOBAL": os.devnull}
+           "GIT_CONFIG_GLOBAL": os.devnull, "AIDUMEM_DATA_DIR": str(tmp_path / "data"),
+           "AIDUMEM_LOG_DIR": str(tmp_path / "logs")}
     subprocess.run(["git", "init", "-q"], cwd=tree, env=env, check=True)
     subprocess.run(["git", "add", "-A"], cwd=tree, env=env, check=True)
     return tree
@@ -123,7 +125,8 @@ def _git_tree(tmp_path: Path, good: int, bad_names=()) -> Path:
 def _py_compile(shell: str, tree: Path):
     body = 'PY="$1"\n' + _block("gate-py-compile")
     env = {"PATH": os.environ["PATH"], "HOME": str(tree), "GIT_CONFIG_NOSYSTEM": "1",
-           "GIT_CONFIG_GLOBAL": os.devnull}
+           "GIT_CONFIG_GLOBAL": os.devnull, "AIDUMEM_DATA_DIR": str(tree.parent / "data"),
+           "AIDUMEM_LOG_DIR": str(tree.parent / "logs")}
     return _run_block(shell, body, cwd=tree, env=env, args=(sys.executable,))
 
 
@@ -198,7 +201,9 @@ def _cron_env(tmp_path: Path, repo: Path) -> dict[str, str]:
     crontab.chmod(0o755)
     env = {k: v for k, v in os.environ.items() if k != "AIDUMEI_CRON_RUN_AS"}
     env.update({"PATH": f"{fake}:{os.environ['PATH']}", "CRON_STATE": str(tmp_path / "crontab.txt"),
-                "AIDUMEM_HOME": str(repo), "AIDUMEM_PYTHON": sys.executable})
+                "AIDUMEM_HOME": str(repo), "AIDUMEM_PYTHON": sys.executable,
+                "AIDUMEM_DATA_DIR": str(tmp_path / "data"),
+                "AIDUMEM_LOG_DIR": str(tmp_path / "logs")})
     return env
 
 

@@ -93,6 +93,7 @@ def _env(tmp_path: Path, base: str, **extra: str) -> dict[str, str]:
         "AIDUMEM_API_TOKEN": "", "AIDUMEM_HOOK_QUIET": "1",
         "AIDUMEM_MIN_HISTORY": "0", "AIDUMEM_TIMEOUT": "2",
         "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+        "AIDUMEM_DATA_DIR": str(tmp_path / "data"), "AIDUMEM_LOG_DIR": str(tmp_path / "logs"),
     }
     env.update(extra)
     return env
@@ -223,7 +224,8 @@ def _argv_log_after(shell: str, tmp_path: Path, script: Path, stdin: str, base: 
                     token_via_env_file: bool) -> str:
     log = tmp_path / "argv.log"
     fake = _fake_bin(tmp_path, ("curl", "python3"), log)
-    extra = {"PATH": f"{fake}:{os.environ.get('PATH', '')}"}
+    extra = {"PATH": f"{fake}:{os.environ.get('PATH', '')}",
+             "AIDUMEM_DATA_DIR": str(tmp_path / "data"), "AIDUMEM_LOG_DIR": str(tmp_path / "logs")}
     if token_via_env_file:
         env_file = tmp_path / "hook.env"
         env_file.write_text("AIDUMEM_API_TOKEN=f03-argv-secret\n", encoding="utf-8")
@@ -266,6 +268,7 @@ def test_argv_check_has_discriminating_power(shell, tmp_path):
     fake = _fake_bin(tmp_path, ("curl",), log)
     subprocess.run([shell, "-c", 'curl -s -m 1 -H "Authorization: Bearer $T" "$U" >/dev/null'],
                    env={"PATH": f"{fake}:{os.environ.get('PATH', '')}", "T": "f03-argv-secret",
-                        "U": "http://127.0.0.1:9/livez"},
+                        "U": "http://127.0.0.1:9/livez",
+                        "AIDUMEM_DATA_DIR": str(tmp_path / "data")},
                    capture_output=True, text=True, timeout=10)
     assert "f03-argv-secret" in log.read_text(encoding="utf-8")
