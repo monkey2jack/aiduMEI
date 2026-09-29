@@ -30,6 +30,9 @@ _PREFIX_RE = re.compile(r"^AIDUME[IM]_[A-Z0-9_]+$")
 KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_ALLOW_IMPLICIT_CALLER",
     "AIDUMEI_BANK_ID",
+    # f0.3 (O-3)：维护 cron 的可选降权用户（scripts/update_crontab.sh，
+    # root 安装时给写数据的任务加 runuser -u <user> --）
+    "AIDUMEI_CRON_RUN_AS",
     "AIDUMEI_CALLER_BINDINGS",
     # v22.0（雷霆审计 A2）：caller↔凭据绑定第三态（strict/permissive/off）
     "AIDUMEI_CALLER_BINDING_MODE",

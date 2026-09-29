@@ -168,16 +168,23 @@ def test_cron_bogus_headers_and_stale_commands_are_not_installed(tmp_path):
 
 def test_cron_install_replaces_stale_entries_and_preserves_unrelated(tmp_path):
     script, state, env = _cron_fixture(tmp_path)
+    repo = env["AIDUMEM_HOME"]
     unrelated = "MAILTO=ops@example.test\n0 0 * * * /usr/bin/true\n"
-    state.write_text(unrelated + "# aiduMEI:report|owner=old\n"
-                     "* * * * * cd /missing && python scripts/report.py\n",
+    # f0.3 (O-3): an entry is owned by name + root. A stale entry of *this*
+    # root is replaced; one of another root (/missing) is not ours to move.
+    other_root = "# aiduMEI:report|owner=old\n* * * * * cd /missing && python scripts/report.py\n"
+    state.write_text(unrelated + other_root + "# aiduMEI:report|owner=old\n"
+                     f'* * * * * cd "{repo}" && python scripts/report.py\n',
                      encoding="utf-8")
     first = _cron(script, env, "install")
     assert first.returncode == 0, first.stderr
     one = state.read_text(encoding="utf-8")
-    assert one.startswith(unrelated)
-    assert "cd /missing" not in one
-    assert json.loads(_cron(script, env, "--installed").stdout)["ok"]
+    assert one.startswith(unrelated + other_root)
+    assert f'* * * * * cd "{repo}" && python scripts/report.py' not in one
+    data = json.loads(_cron(script, env, "--installed").stdout)
+    assert data["ok"]
+    assert data["foreign"] == [{"line": 3, "task": "report", "root": "/missing",
+                                "root_present": False}]
     second = _cron(script, env, "install")
     assert second.returncode == 0, second.stderr
     assert state.read_text(encoding="utf-8") == one

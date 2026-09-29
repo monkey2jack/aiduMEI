@@ -166,11 +166,11 @@ def test_failed_probe_counts_only_in_private_tmpdir(tmp_path):
     circuit, count = (tmp_path / name for name in STATE_NAMES)
     with _probe_server() as (_, base, seen):
         assert _run_ordinary_hook(base, tmp_path) == {}
-        assert seen == [("GET", "/health")]
+        assert seen == [("GET", "/livez")]
         assert count.read_text().strip() == "1"
         assert not circuit.exists()
         assert _run_ordinary_hook(base, tmp_path) == {}
-        assert seen == [("GET", "/health")] * 2
+        assert seen == [("GET", "/livez")] * 2
         assert count.read_text().strip() == "2"
         assert abs(int(time.time()) - int(circuit.read_text())) <= 2
     assert {path.name for path in tmp_path.iterdir()} == set(STATE_NAMES)
@@ -189,7 +189,7 @@ def test_private_cooldown_blocks_requests_until_it_expires(tmp_path):
         # Advance the stored timestamp instead of sleeping across the boundary.
         circuit.write_text(str(int(time.time()) - 5))
         assert "private-hook-memory" in _run_ordinary_hook(base, tmp_path)["context"]
-        assert seen[0] == ("GET", "/health")
+        assert seen[0] == ("GET", "/livez")
         assert any(method == "POST" and path == "/search" for method, path in seen)
         assert count.read_text().strip() == "0"
         assert not circuit.exists()
