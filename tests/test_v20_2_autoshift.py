@@ -155,6 +155,22 @@ def rig(monkeypatch, tmp_path):
     from ducky.text_fts import _init_text_fts
     import threading
 
+    # A coalesce worker from an earlier route test can flush its old batch
+    # through this test's newly registered callback and add extra write signals.
+    import ducky.add_speed as speed
+    import ducky.speed.coalesce as coalesce
+    monkeypatch.setattr(coalesce, "_shutdown_sleep", lambda seconds: False)
+    workers = [thread for thread in threading.enumerate()
+               if thread.name == "aiduMEM-coalesce-flush"]
+    for worker in workers:
+        worker.join(timeout=45)
+        assert not worker.is_alive(), "coalesce worker survived its test environment"
+    coalesce._coalesce_worker_started = False
+    monkeypatch.setattr(speed, "ensure_coalesce_worker", lambda: None)
+    with coalesce._coalesce_lock:
+        coalesce._coalesce_buf.clear()
+    coalesce._coalesce_flush_cb = None
+
     # Foreground route tests own their recovery signals. A probe started by
     # another test may legally provide the second success during the first add.
     # The timer itself is exercised separately by test_v20_3_1_gear_probe.py.
@@ -203,6 +219,9 @@ def rig(monkeypatch, tmp_path):
     # 收尾：重放守护线程不许活过本测试的猴补丁世界（活过去=在别人的
     # caplog 窗口里打日志、摸别人的库——全轴序闪烁红灯的根）。
     di.join_replay_for_tests()
+    with coalesce._coalesce_lock:
+        coalesce._coalesce_buf.clear()
+    coalesce._coalesce_flush_cb = None
 
 
 # ══════════════════════════════════════════════════════════════════
