@@ -52,6 +52,16 @@ def _index_direct_results(add_result, *, user_id: str, bank_id: str,
             logger.debug("六型分类跳过: %s", exc)
 
 
+def _flush_http_response(report: dict):
+    """f0.3 (C4): HTTP status follows the flush outcome (same idiom as /delete)."""
+    from fastapi.responses import JSONResponse
+    status = report.get("status")
+    if status == "ok":
+        return report
+    code = {"partial": 207, "unavailable": 503}.get(status, 500)
+    return JSONResponse(status_code=code, content=report)
+
+
 def register_add_routes(app: FastAPI) -> None:
     @app.post("/add")
     def add(req: AddRequest, background_tasks: BackgroundTasks = None, request: Request = None):
@@ -598,7 +608,10 @@ def register_add_routes(app: FastAPI) -> None:
             # 注册 coalesce 冲刷回调 + 后台 worker（只一次）
             def _coalesce_cb(uid, msgs, meta, job_ids, *, bank_id="default", infer=True):
                 # v20.2.4（F-04）：scope 从 batch 参数来，**不读闭包里的 req**
-                _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id, infer=infer)
+                # f0.3 (C4): return the outcome -- the manual flush endpoint
+                # reports per-batch action/fallback instead of a bare "ok".
+                return _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id,
+                                      infer=infer)
 
             register_coalesce_flusher(_coalesce_cb)
             ensure_coalesce_worker()
@@ -794,43 +807,20 @@ def register_add_routes(app: FastAPI) -> None:
                            # v20.2.4（外审 F-04）：手动冲刷也必须接受作用域 ——
                            # 否则一个域的 preview 会被交给另一个域处理。
                            bank_id: str = ""):
-        """手动冲刷合并队列（调试）"""
+        """手动冲刷合并队列（调试）
+
+        f0.3 (C4): batches run through the *same* executor as the normal /add
+        worker (the registered flusher -> _execute_batch -> _run_pipeline), so
+        a batch keeps its own infer flag and an LLM failure falls back to the
+        deterministic direct write.  The response is honest per batch:
+        200 ok / 207 partial / 500 failed; 503 (queue untouched) when no
+        executor is registered in this process.
+        """
         try:
-            from ducky.add_speed import coalesce_flush_due, ensure_coalesce_worker
-            from ducky.add_speed import job_update, patch_llm_for_speed
-
-            mem = get_memory()
-            patch_llm_for_speed(mem)
-
-            def _run_pipeline(uid, msgs, meta, *, bank_id="default"):
-                # F-04：bank 从 batch 自带的 scope 来，不猜、不读全局
-                return lazy_import_layer1()(mem, msgs, uid, meta or {}, bank_id=bank_id)
-
-            flushed = []
-            batches = coalesce_flush_due(user_id=(user_id or None), force=force,
-                                         bank_id=(bank_id or None))
-            for b in batches:
-                jids = b.get("job_ids") or []
-                for jid in jids:
-                    job_update(jid, status="running")
-                try:
-                    result = _run_pipeline(b["user_id"], b["messages"], b.get("metadata") or {},
-                                           bank_id=b.get("bank_id") or "default")
-                    for jid in jids:
-                        job_update(jid, status="done", result=result)
-                    flushed.append({
-                        "key": b.get("key"),
-                        "count": b.get("count"),
-                        "reason": b.get("reason"),
-                        "job_ids": jids,
-                        "action": (result or {}).get("action") if isinstance(result, dict) else None,
-                    })
-                except Exception as e:
-                    for jid in jids:
-                        job_update(jid, status="error", error=str(e)[:300])
-                    flushed.append({"key": b.get("key"), "error": str(e)[:200]})
-            ensure_coalesce_worker()
-            return {"status": "ok", "flushed": flushed, "n": len(flushed)}
+            from ducky.speed.coalesce import flush_now
+            report = flush_now(user_id=(user_id or None), force=force,
+                               bank_id=(bank_id or None))
+            return _flush_http_response(report)
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
