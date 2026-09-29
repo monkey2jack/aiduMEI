@@ -218,6 +218,10 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/verbatim_vault.py", "' OR '.join(clauses)"), ("ducky/verbatim_vault.py", "col"),
     ("ducky/verbatim_vault.py", "ddl"), ("ducky/verbatim_vault.py", "placeholders"),
     ("ducky/wal_engine.py", "ref_ph"), ("ducky/wal_engine.py", "scope_sql"),
+    # f0.3（C9）：not_cleared 行数统计的表名插值。来源核对：只取自
+    # DELETE_CHAIN_MATRIX 的 exempt 键（本文件字面量常量），且先经
+    # sqlite_master 精确存在性校验；值（user_id/bank_id）一律走 ? 参数。
+    ("ducky/wal_engine.py", "table"),
 }
 
 
@@ -361,6 +365,9 @@ _MIGRATION_LEDGER = {
     ("ducky/verbatim_vault.py", "ALTER", "verbatim_turns"),
     ("ducky/verbatim_vault.py", "CREATE", "verbatim_fts_map"),
     ("ducky/verbatim_vault.py", "CREATE", "verbatim_turns"),
+    # f0.3：幂等回执补 state 列（additive，NULL=旧行）；会话精华来源账本新表。
+    ("ducky/idempotency.py", "ALTER", "idempotency_keys"),
+    ("ducky/session_distill.py", "CREATE", "distill_sources"),
 }
 
 

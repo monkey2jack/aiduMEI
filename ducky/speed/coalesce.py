@@ -44,11 +44,21 @@ def _coalesce_key(user_id: str, metadata: Optional[dict] = None, profile: str = 
         or ""
     )
     sid = str(sid).strip()
+    # f0.3 (C3 / S-3): the production shell hook sends only
+    # `_origin_session_id`.  Without this axis every hook turn had sid="" and
+    # turns of *different* sessions were merged into one batch whose
+    # provenance was the first turn's.  The origin axes are encoded next to
+    # the legacy session axis (not instead of it), so a difference in any of
+    # them keeps the batches apart.
+    origin_sid = str(md.get("_origin_session_id") or md.get("hermes_session_id")
+                     or md.get("origin_session_id") or "").strip()
+    origin_agent = str(md.get("_origin_agent") or "").strip()
     prof = (profile or "default").strip() or "default"
     bank = (bank_id or "default").strip() or "default"
     # Scope IDs are opaque and may contain @ or ::. Delimiter concatenation
     # can collapse different owners into one queue, so encode each axis.
-    return json.dumps([user_id or DEFAULT_USER_ID, bank, sid, prof, bool(infer)],
+    return json.dumps([user_id or DEFAULT_USER_ID, bank, sid, origin_sid,
+                       origin_agent, prof, bool(infer)],
                       ensure_ascii=False, separators=(",", ":"))
 
 
@@ -520,6 +530,59 @@ def register_coalesce_flusher(cb: Callable) -> None:
     """
     global _coalesce_flush_cb
     _coalesce_flush_cb = cb
+
+
+def _run_one_batch(cb: Callable, batch: dict) -> dict:
+    """Execute one drained batch through the registered executor; never raise."""
+    jids = batch.get("job_ids") or []
+    entry = {"key": batch.get("key"), "user_id": batch.get("user_id"),
+             "bank_id": batch.get("bank_id") or "default",
+             "count": batch.get("count"), "reason": batch.get("reason"),
+             "infer": bool(batch.get("infer", True)), "job_ids": jids}
+    try:
+        result = cb(
+            batch["user_id"], batch["messages"], batch.get("metadata") or {}, jids,
+            bank_id=batch.get("bank_id") or "default",
+            infer=bool(batch.get("infer", True)),
+        )
+    except Exception as exc:
+        logger.error(f"coalesce manual flush failed key={batch.get('key')}: {exc}")
+        # The /add executor marks its jobs itself; a foreign executor may not.
+        # Marking twice is harmless (terminal settlement happens once).
+        for jid in jids:
+            job_update(jid, status="error", error=f"coalesce flush: {exc}"[:300])
+        return {**entry, "ok": False, "error": str(exc)[:200]}
+    res = result if isinstance(result, dict) else {}
+    ok = str(res.get("status") or "ok").lower() not in ("error", "failed")
+    out = {**entry, "ok": ok, "action": res.get("action")}
+    if res.get("distillation"):
+        out["distillation"] = res["distillation"]
+    return out
+
+
+def flush_now(user_id: Optional[str] = None, *, force: bool = True,
+              bank_id: Optional[str] = None) -> dict:
+    """Manual flush with the same executor as the worker (f0.3 C4).
+
+    Returns {"status": ok|partial|failed|unavailable, "flushed", "n", "failed"}.
+    With no registered executor the queue is **not drained** -- draining
+    without anyone to run the batch would silently drop buffered writes.
+    """
+    cb = _coalesce_flush_cb
+    if cb is None:
+        return {"status": "unavailable", "reason": "flusher_not_registered",
+                "detail": "no /add request has registered the batch executor in this "
+                          "process; the queue was left untouched (see /health)",
+                "flushed": [], "n": 0, "failed": 0}
+    batches = coalesce_flush_due(user_id=user_id, force=force, bank_id=bank_id)
+    flushed = [_run_one_batch(cb, b) for b in batches]
+    failed = sum(1 for f in flushed if not f.get("ok"))
+    ensure_coalesce_worker()
+    if not failed:
+        status = "ok"
+    else:
+        status = "failed" if failed == len(flushed) else "partial"
+    return {"status": status, "flushed": flushed, "n": len(flushed), "failed": failed}
 
 
 def _coalesce_worker_loop() -> None:
