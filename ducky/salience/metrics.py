@@ -2,12 +2,24 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from ducky.salience.config import SALIENCE_FLOOR
 from ducky.utils import get_salience_conn
 
 logger = logging.getLogger("aiduMEM.salience")
+
+# f0.3（A1/A6）：consolidator 每轮的机器可读运行摘要。写的一方是
+# scripts/consolidator.py，读的一方是 /health 授权视图的 consolidator 探针 ——
+# 两边都经这一个函数取路径，数据目录的解析与全仓一致（ducky.utils.DATA_DIR，
+# 调用时现读，测试可钉到临时目录）。
+CONSOLIDATOR_LAST_RUN_FILE = "consolidator_last_run.json"
+
+
+def consolidator_last_run_path() -> str:
+    from ducky import utils as _utils
+    return os.path.join(_utils.DATA_DIR, CONSOLIDATOR_LAST_RUN_FILE)
 
 def record_daily_metrics(decayed: int = 0, evicted: int = 0) -> dict:
     """v8.3.0: 记录每日生长指标到 daily_metrics 表"""
