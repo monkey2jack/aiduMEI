@@ -21,9 +21,14 @@ restores each tombstone with its own user_id/bank_id, verifies the result
 then restored_at in a fresh /tombstones listing), writes a JSON receipt and
 exits 1 if anything failed.
 
-Credentials: AIDUMEM_API_BASE and AIDUMEM_API_TOKEN from the environment, or
-from a .env file given by --env-file / AIDUMEM_ENV_FILE.  The file is PARSED
-(KEY=VALUE lines), never sourced or executed.  The token is never printed.
+Credentials come from the repository's single credential source,
+ducky.utils.api_auth_headers(): AIDUMEM_API_TOKEN from the environment, else
+the .env file named by --env-file (exported to that chain as AIDUMEM_ENV_FILE),
+else AIDUMEM_ENV_FILE, else the repository root .env.  AIDUMEM_API_BASE follows
+the same chain (ducky.utils.env_or_env_file) unless --base is given.  The .env
+file is PARSED by ducky.utils.parse_env_file (KEY=VALUE lines), never sourced
+or executed.  The token is never printed.  Importing ducky runs the package's
+usual idempotent schema bootstrap on DATA_DIR, exactly like every other script.
 
 Exit codes: 0 ok (or dry run), 1 at least one restore failed, 2 usage /
 configuration / selection error.
@@ -42,6 +47,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# cron / systemd / an operator's shell: the cwd is not the repository root, so
+# the root must be put on sys.path explicitly before `import ducky`.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+
+# Single credential source (tests/test_v19_4_1_auth_gate.py): no private
+# token reader and no private .env parser in this script.
+from ducky.utils import api_auth_headers, env_or_env_file  # noqa: E402
+
 DEFAULT_BASE = "http://127.0.0.1:8767"
 _PREVIEW = 40
 _LIST_LIMIT = 100000
@@ -53,42 +68,24 @@ class UsageError(Exception):
 
 # -- configuration --------------------------------------------------------
 
-def parse_env_file(path: str) -> dict:
-    """KEY=VALUE parser for .env files (no expansion, no execution)."""
-    out: dict = {}
-    text = pathlib.Path(path).read_text(encoding="utf-8")
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].lstrip()
-        key, sep, value = line.partition("=")
-        key = key.strip()
-        if not sep or not key.replace("_", "").isalnum():
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        else:
-            value = value.split(" #", 1)[0].rstrip()
-        out[key] = value
-    return out
+def resolve_config(args) -> tuple:
+    """(base_url, auth_headers) through the shared chain in ducky.utils.
 
-
-def resolve_config(args, environ=None) -> tuple:
-    """(base_url, token) -- explicit flag > environment > parsed .env file."""
-    env = os.environ if environ is None else environ
-    file_vals: dict = {}
-    env_file = args.env_file or env.get("AIDUMEM_ENV_FILE") or ""
-    if env_file:
-        if not os.path.isfile(env_file):
-            raise UsageError(f"env file not found: {env_file}")
-        file_vals = parse_env_file(env_file)
-    base = (args.base or env.get("AIDUMEM_API_BASE") or file_vals.get("AIDUMEM_API_BASE")
-            or DEFAULT_BASE).rstrip("/")
-    token = (env.get("AIDUMEM_API_TOKEN") or file_vals.get("AIDUMEM_API_TOKEN") or "").strip()
-    return base, token
+    --env-file is handed to that chain as AIDUMEM_ENV_FILE (its own knob), so
+    the precedence stays the repository-wide one: environment > .env file.
+    An explicit --env-file that does not exist is a usage error, not a silent
+    fall-through to another file.
+    """
+    if args.env_file:
+        if not os.path.isfile(args.env_file):
+            raise UsageError(f"env file not found: {args.env_file}")
+        os.environ["AIDUMEM_ENV_FILE"] = os.path.abspath(args.env_file)
+    base = (args.base or env_or_env_file("AIDUMEM_API_BASE", DEFAULT_BASE)).rstrip("/")
+    headers = api_auth_headers()
+    if not headers:
+        print("warning: no AIDUMEM_API_TOKEN in the environment or the .env chain; "
+              "requests are sent without credentials", file=sys.stderr)
+    return base, headers
 
 
 # -- time filters ----------------------------------------------------------
@@ -203,9 +200,9 @@ def rows_from_db(path: str, user_id: str = "", bank_id: str = "") -> list:
 class Api:
     """Minimal JSON client for the running service (stdlib only)."""
 
-    def __init__(self, base: str, token: str, timeout: float = 120.0):
+    def __init__(self, base: str, headers: dict, timeout: float = 120.0):
         self.base = base
-        self.token = token
+        self.headers = dict(headers or {})     # from api_auth_headers(); never printed
         self.timeout = timeout
         host = urllib.parse.urlparse(base).hostname or ""
         handlers = []
@@ -222,8 +219,8 @@ class Api:
         req.add_header("Accept", "application/json")
         if data is not None:
             req.add_header("Content-Type", "application/json")
-        if self.token:
-            req.add_header("Authorization", "Bearer " + self.token)
+        for name, value in self.headers.items():
+            req.add_header(name, value)
         try:
             with self._opener.open(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8") or "{}")
@@ -346,11 +343,11 @@ def _print_selection(chosen: list, as_json: bool) -> None:
     print(f"selected {len(chosen)} tombstone(s)")
 
 
-def main(argv=None, environ=None) -> int:
+def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        base, token = resolve_config(args, environ)
-        api = Api(base, token, timeout=args.timeout)
+        base, headers = resolve_config(args)
+        api = Api(base, headers, timeout=args.timeout)
         if args.db:
             rows = rows_from_db(args.db, args.user_id, args.bank_id)
         else:

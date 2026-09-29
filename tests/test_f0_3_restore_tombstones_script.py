@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import sqlite3
 import threading
@@ -38,6 +39,28 @@ ROWS = [
      "wal_engine", "2026-09-21T18:26:00+00:00", "2026-09-22T00:00:00+00:00"),  # restored
 ]
 TEXT = "a deleted memory whose preview is longer than forty characters in total"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env(tmp_path_factory):
+    """The shared credential chain reads os.environ and load_env_file() injects
+    .env keys into it: snapshot and restore, and never consult the repo .env."""
+    saved = dict(os.environ)
+    empty = tmp_path_factory.mktemp("envchain") / "empty.env"
+    empty.write_text("", encoding="utf-8")
+    for key in ("AIDUMEM_API_TOKEN", "AIDUMEM_API_BASE"):
+        os.environ.pop(key, None)
+    os.environ["AIDUMEM_ENV_FILE"] = str(empty)
+    yield
+    for key in set(os.environ) - set(saved):
+        del os.environ[key]
+    os.environ.update(saved)
+
+
+@pytest.fixture
+def token(monkeypatch):
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", TOKEN)
+    return TOKEN
 
 
 def _listing(user, bank):
@@ -102,8 +125,8 @@ FILTERS = ["--user-id", "alice", "--reason", "cascade_delete",
            "--utc-windows", "18:25-18:40,19:55-20:10"]
 
 
-def test_dry_run_prints_the_selection_and_changes_nothing(server, capsys):
-    rc = tool.main(["--base", server["base"], *FILTERS], environ={"AIDUMEM_API_TOKEN": TOKEN})
+def test_dry_run_prints_the_selection_and_changes_nothing(server, token, capsys):
+    rc = tool.main(["--base", server["base"], *FILTERS])
     out = capsys.readouterr().out
     assert rc == 0
     assert "#1 " in out and "#2 " in out
@@ -116,10 +139,10 @@ def test_dry_run_prints_the_selection_and_changes_nothing(server, capsys):
     assert TOKEN not in out
 
 
-def test_apply_restores_each_in_its_own_scope_and_writes_a_receipt(server, tmp_path, capsys):
+def test_apply_restores_each_in_its_own_scope_and_writes_a_receipt(server, token, tmp_path,
+                                                                   capsys):
     receipt = tmp_path / "receipt.json"
-    rc = tool.main(["--base", server["base"], *FILTERS, "--apply", "--receipt", str(receipt)],
-                   environ={"AIDUMEM_API_TOKEN": TOKEN})
+    rc = tool.main(["--base", server["base"], *FILTERS, "--apply", "--receipt", str(receipt)])
     assert rc == 0, capsys.readouterr()
     posts = [r[3] for r in server["requests"] if r[0] == "POST"]
     assert posts == [{"tombstone_id": 1, "user_id": "alice", "bank_id": "default"},
@@ -130,7 +153,7 @@ def test_apply_restores_each_in_its_own_scope_and_writes_a_receipt(server, tmp_p
     assert TEXT not in receipt.read_text(), "the receipt must not copy deleted content"
 
 
-def test_apply_fails_loudly_on_partial_or_unverified_restores(server, tmp_path):
+def test_apply_fails_loudly_on_partial_or_unverified_restores(server, token, tmp_path):
     server["answers"][1] = {"status": "partial", "details": {
         "restored": False, "detail": "partial: vector failed",
         "layers": {"vector": "failed:RuntimeError"},
@@ -139,8 +162,7 @@ def test_apply_fails_loudly_on_partial_or_unverified_restores(server, tmp_path):
         "restored": True, "detail": "fts", "layers": {"fts": "restored"},
         "verification": {"fts_row": True, "vector_point": False}}}
     receipt = tmp_path / "receipt.json"
-    rc = tool.main(["--base", server["base"], *FILTERS, "--apply", "--receipt", str(receipt)],
-                   environ={"AIDUMEM_API_TOKEN": TOKEN})
+    rc = tool.main(["--base", server["base"], *FILTERS, "--apply", "--receipt", str(receipt)])
     assert rc == 1
     data = json.loads(receipt.read_text())
     assert data["failed"] == 2
@@ -158,12 +180,41 @@ def test_env_file_is_parsed_never_executed(server, tmp_path, capsys):
         f"AIDUMEM_API_TOKEN=\"{TOKEN}\"\n"
         f"EVIL=$(touch {pwned})\n"
         f"`touch {pwned}`\n", encoding="utf-8")
-    rc = tool.main(["--env-file", str(env_file), *FILTERS], environ={})
+    rc = tool.main(["--env-file", str(env_file), *FILTERS])
     out = capsys.readouterr().out
     assert rc == 0 and "selected 2" in out
     assert not pwned.exists(), ".env content was executed"
+    assert os.environ.get("EVIL") == f"$(touch {pwned})", "value must be kept literally"
     assert all(r[2] == f"Bearer {TOKEN}" for r in server["requests"])
     assert TOKEN not in out
+
+
+def test_environment_token_wins_over_the_env_file(server, tmp_path, monkeypatch):
+    env_file = tmp_path / "prod.env"
+    env_file.write_text(f"AIDUMEM_API_BASE={server['base']}\nAIDUMEM_API_TOKEN=from-file\n",
+                        encoding="utf-8")
+    monkeypatch.setenv("AIDUMEM_API_TOKEN", TOKEN)
+    assert tool.main(["--env-file", str(env_file), *FILTERS]) == 0
+    assert {r[2] for r in server["requests"]} == {f"Bearer {TOKEN}"}
+
+
+def test_credentials_come_from_the_shared_source(server, token, monkeypatch):
+    """Discriminating control: a private reader would still send TOKEN."""
+    monkeypatch.setattr(tool, "api_auth_headers",
+                        lambda: {"Authorization": "Bearer via-ducky-utils"})
+    assert tool.main(["--base", server["base"], *FILTERS]) == 0
+    assert {r[2] for r in server["requests"]} == {"Bearer via-ducky-utils"}
+
+
+def test_missing_env_file_is_a_usage_error(tmp_path, capsys):
+    rc = tool.main(["--env-file", str(tmp_path / "absent.env"), *FILTERS])
+    assert rc == 2 and "env file not found" in capsys.readouterr().err
+
+
+def test_no_token_anywhere_warns_and_sends_no_header(server, capsys):
+    assert tool.main(["--base", server["base"], *FILTERS]) == 0
+    assert "without credentials" in capsys.readouterr().err
+    assert {r[2] for r in server["requests"]} == {None}
 
 
 def _facts_db(path):
@@ -182,13 +233,12 @@ def _facts_db(path):
     conn.close()
 
 
-def test_db_source_reads_every_scope_read_only(server, tmp_path, capsys):
+def test_db_source_reads_every_scope_read_only(server, token, tmp_path, capsys):
     db = tmp_path / "facts.db"
     _facts_db(db)
     before = hashlib.sha256(db.read_bytes()).hexdigest()
     rc = tool.main(["--base", server["base"], "--db", str(db), "--reason", "cascade_delete",
-                    "--utc-windows", "18:25-18:40,19:55-20:10"],
-                   environ={"AIDUMEM_API_TOKEN": TOKEN})
+                    "--utc-windows", "18:25-18:40,19:55-20:10"])
     out = capsys.readouterr().out
     assert rc == 0 and "bob/work" in out and "alice/default" in out and "selected 3" in out
     assert hashlib.sha256(db.read_bytes()).hexdigest() == before
@@ -206,17 +256,15 @@ def test_utc_windows(spec, stamp, inside):
     assert tool.in_windows(tool.parse_iso(stamp), tool.parse_windows(spec)) is inside
 
 
-def test_since_until_and_include_restored(server, capsys):
+def test_since_until_and_include_restored(server, token, capsys):
     rc = tool.main(["--base", server["base"], "--user-id", "alice", "--since",
-                    "2026-09-20T18:00:00Z", "--until", "2026-09-20T19:00:00", "--include-restored"],
-                   environ={"AIDUMEM_API_TOKEN": TOKEN})
+                    "2026-09-20T18:00:00Z", "--until", "2026-09-20T19:00:00", "--include-restored"])
     out = capsys.readouterr().out
     assert rc == 0 and "selected 2" in out and "#1 " in out and "#4 " in out
 
 
-def test_bad_window_is_a_usage_error(server, capsys):
-    rc = tool.main(["--base", server["base"], "--utc-windows", "25:00-26:00"],
-                   environ={"AIDUMEM_API_TOKEN": TOKEN})
+def test_bad_window_is_a_usage_error(server, token, capsys):
+    rc = tool.main(["--base", server["base"], "--utc-windows", "25:00-26:00"])
     assert rc == 2 and "utc-windows" in capsys.readouterr().err
 
 
@@ -310,8 +358,7 @@ def test_end_to_end_restores_consolidator_deletes_through_the_service(tmp_path, 
     monkeypatch.setattr(tool.Api, "_call", via_testclient)
     receipt = tmp_path / "receipt.json"
     rc = tool.main(["--base", "http://127.0.0.1:1", "--user-id", "alice",
-                    "--reason", "cascade_delete", "--apply", "--receipt", str(receipt)],
-                   environ={})
+                    "--reason", "cascade_delete", "--apply", "--receipt", str(receipt)])
     data = json.loads(receipt.read_text())
     assert rc == 0, data
     assert data["restored"] == 2
