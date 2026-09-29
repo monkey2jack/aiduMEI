@@ -174,6 +174,24 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_SKILL_DRAFTS_ENABLED",
 ))
 
+# ── f0.3 整改（consolidator / 矛盾检测 / LLM 并发闸门 / 发布溯源）────────────
+# 单独成块再并入 KNOWN_ENV_VARS：几条整改线并行往本文件登记时互不改同一行。
+_F03_CONSOLIDATOR_ENV_VARS: frozenset[str] = frozenset((
+    # scripts/consolidator.py：淘汰档位 off | dry-run（默认）| apply
+    "AIDUMEI_CONSOLIDATOR_EVICT",
+    # ducky/salience/conflict.py：矛盾处置档位 off | warn（默认）| apply；每组比对上限
+    "AIDUMEI_CONFLICT_PENALTY_MODE",
+    "AIDUMEI_CONFLICT_MAX_PAIRS_PER_LANE",
+    # ducky/llm_client.py：进程级 LLM 并发上限与等位超时（call_llm 与 mem0 抽取共用）
+    "AIDUMEI_LLM_MAX_CONCURRENCY",
+    "AIDUMEI_LLM_SLOT_TIMEOUT_SEC",
+    # scripts/report.py：24h LLM 降级率告警阈值
+    "AIDUMEI_LLM_DEGRADED_WARN_RATIO",
+    # ducky/hot/health.py：授权 /health 的 git_sha 来源（部署时写入）
+    "AIDUMEI_BUILD_SHA",
+))
+KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F03_CONSOLIDATOR_ENV_VARS
+
 
 # ── 前缀学说（v20.4.0-alpha · P1-10，六方外审 Qwen 独见实锤）─────────────────
 # `AIDUMEM_` = 冻结兼容旧前缀，`AIDUMEI_` = 当前前缀。新变量一律 AIDUMEI_。

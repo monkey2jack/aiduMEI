@@ -169,7 +169,9 @@ def test_detect_conflicts_never_pairs_across_banks():
     assert same_bank[0]["bank_id"] == "bank_a"
 
     # 衰减只落在同库那一对身上，跨库两条毫发无损
-    resolved = conflict_mod.resolve_conflict_salience(same_bank)
+    # f0.3：默认档位改为 warn（只记摘要不减半），本条测的是 apply 档的作用域，
+    # 所以显式传 mode="apply"；warn 档一行不改的对照见 tests/test_f0_3_conflict_detection.py。
+    resolved = conflict_mod.resolve_conflict_salience(same_bank, mode="apply")
     assert resolved == 2
     assert _row("a-shua")["salience"] == pytest.approx(0.4)
     assert _row("a-bushua")["salience"] == pytest.approx(0.4)

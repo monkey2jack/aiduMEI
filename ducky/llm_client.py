@@ -8,6 +8,18 @@ key 文件回退），通过 requests 直发 OpenAI 兼容 chat/completions。
 
 铁律：密钥永远从占位符文件解析，不在源码里硬编码。
 失败一律返回 None，由调用方降级，不阻断主链路。
+
+f0.3（A4）：**进程级 LLM 并发闸门**。生产上游（StepFun）限并发 5，一天回
+「concurrency reached, current: 6, limit: 5」约 134 次 —— 服务里 call_llm 与
+mem0 抽取两条通道各自想发就发，进程内没有任何总量约束。现在两条通道共用本模块
+一个 BoundedSemaphore（AIDUMEI_LLM_MAX_CONCURRENCY，默认 4，给上游其他消费者
+留 1 个余量），等位带超时（AIDUMEI_LLM_SLOT_TIMEOUT_SEC，默认 120s）：等不到就
+按一次 LLM 失败处理（call_llm 回 None；mem0 通道抛 LLMConcurrencyTimeout，mem0
+会把它包成 LLMError，走写入链路既有的「LLM 故障 → 确定性直写」降级），绝不死锁。
+
+f0.3（A5）：两条通道每次调用的结局（ok / failed / gate_timeout）按小时记进
+<DATA_DIR>/llm_outcomes.json（跨进程文件锁 + 原子替换，保留 8 天），
+scripts/report.py 据此算「24h LLM 降级率」。
 """
 from __future__ import annotations
 
@@ -15,13 +27,169 @@ import json
 import logging
 import os
 import threading
+import time
+from contextlib import contextmanager
 from typing import Optional
 
 import requests
 
+from ducky.env_config import float_env, int_env
 from ducky.utils import BASE_DIR, mem0_config_path
 
+try:  # 跨进程文件锁（POSIX）；Windows 上退化为进程内线程锁
+    import fcntl
+except ImportError:  # pragma: no cover - 非 POSIX 平台
+    fcntl = None
+
 logger = logging.getLogger("aiduMEM.llm_client")
+
+# ── f0.3（A4）：进程级并发闸门 ────────────────────────────────────────────
+_MAX_CONCURRENCY_ENV = "AIDUMEI_LLM_MAX_CONCURRENCY"
+_SLOT_TIMEOUT_ENV = "AIDUMEI_LLM_SLOT_TIMEOUT_SEC"
+DEFAULT_LLM_MAX_CONCURRENCY = 4
+DEFAULT_LLM_SLOT_TIMEOUT_SEC = 120.0
+
+
+def llm_gate_limit_from_env() -> int:
+    """并发上限：有限整数且 ≥1；NaN / 小数 / 乱码 / 0 一律回退默认并出声（env_config 纪律）。"""
+    return int_env(_MAX_CONCURRENCY_ENV, DEFAULT_LLM_MAX_CONCURRENCY, minimum=1)
+
+
+def llm_slot_timeout_from_env() -> float:
+    return float_env(_SLOT_TIMEOUT_ENV, DEFAULT_LLM_SLOT_TIMEOUT_SEC, exclusive_minimum=0.0)
+
+
+LLM_MAX_CONCURRENCY = llm_gate_limit_from_env()
+LLM_SLOT_TIMEOUT_SEC = llm_slot_timeout_from_env()
+_LLM_SLOTS = threading.BoundedSemaphore(LLM_MAX_CONCURRENCY)
+
+
+class LLMConcurrencyTimeout(TimeoutError):
+    """在超时时间内没等到进程级 LLM 空位。调用方按「一次 LLM 失败」处理。"""
+
+
+@contextmanager
+def llm_slot(origin: str = "call_llm"):
+    """占一个进程级 LLM 空位；超时抛 LLMConcurrencyTimeout。
+
+    闸门与超时都在调用时读模块全局（测试可替换）；释放的一定是本次占到的那一个。
+    """
+    slots, timeout = _LLM_SLOTS, LLM_SLOT_TIMEOUT_SEC
+    if not slots.acquire(timeout=timeout):
+        logger.warning("⏳ LLM 并发闸门：%.1fs 内没等到空位（上限 %d，调用方 %s）—— 按一次 LLM 失败处理",
+                       timeout, LLM_MAX_CONCURRENCY, origin)
+        raise LLMConcurrencyTimeout(
+            f"no LLM slot within {timeout:.1f}s (limit {LLM_MAX_CONCURRENCY}, origin {origin})")
+    try:
+        yield
+    finally:
+        slots.release()
+
+
+# ── f0.3（A5）：LLM 调用结局账本（按小时分桶，跨进程） ──────────────────────
+LLM_OUTCOMES_FILE = "llm_outcomes.json"
+OUTCOME_KINDS = ("ok", "failed", "gate_timeout")
+_OUTCOME_KEEP_HOURS = 24 * 8
+_outcome_thread_lock = threading.Lock()
+
+
+def llm_outcomes_path() -> str:
+    from ducky import utils as _utils
+    return os.path.join(_utils.DATA_DIR, LLM_OUTCOMES_FILE)
+
+
+def _hour_key(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H", time.gmtime(ts))
+
+
+@contextmanager
+def _outcome_file_lock(path: str):
+    """进程内线程锁 + 跨进程 flock。锁文件以只读打开：flock 不需要写权限，
+    另一身份（例如 root 的 cron）建出来的锁文件也照样锁得上。"""
+    with _outcome_thread_lock:
+        fd = None
+        if fcntl is not None:
+            try:
+                fd = os.open(path + ".lock", os.O_RDONLY | os.O_CREAT, 0o644)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError as exc:
+                logger.debug("LLM 结局账本跨进程锁不可用，退化为进程内锁: %s", exc)
+                if fd is not None:
+                    os.close(fd)
+                fd = None
+        try:
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)  # 关闭即释放 flock
+
+
+def _read_outcomes(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        logger.debug("LLM 结局账本读不出（按空账处理）: %s", exc)
+        return {}
+    hours = data.get("hours") if isinstance(data, dict) else None
+    return hours if isinstance(hours, dict) else {}
+
+
+def _bump(hours: dict, key: str, origin: str, outcome: str) -> None:
+    bucket = hours.get(key)
+    if not isinstance(bucket, dict):
+        bucket = hours[key] = {}
+    counts = bucket.get(origin)
+    if not isinstance(counts, dict):
+        counts = bucket[origin] = {}
+    counts[outcome] = int(counts.get(outcome) or 0) + 1
+
+
+def record_llm_outcome(outcome: str, *, origin: str, now: Optional[float] = None) -> None:
+    """记一次 LLM 调用结局。记账失败只降级为 debug，绝不影响调用本身。"""
+    if outcome not in OUTCOME_KINDS:
+        outcome = "failed"
+    ts = time.time() if now is None else now
+    path = llm_outcomes_path()
+    try:
+        with _outcome_file_lock(path):
+            hours = _read_outcomes(path)
+            _bump(hours, _hour_key(ts), str(origin or "unknown"), outcome)
+            cutoff = _hour_key(ts - _OUTCOME_KEEP_HOURS * 3600)
+            kept = {k: v for k, v in hours.items() if str(k) >= cutoff}
+            tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"schema": 1, "hours": kept}, fh, sort_keys=True)
+            os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as exc:
+        logger.debug("LLM 结局记账跳过: %s", exc)
+
+
+def llm_outcome_window(hours: int = 24, *, now: Optional[float] = None,
+                       path: Optional[str] = None) -> dict:
+    """最近 `hours` 个小时桶（含当前小时）的结局汇总，给 report.py 用。"""
+    ts = time.time() if now is None else now
+    target = path or llm_outcomes_path()
+    buckets = _read_outcomes(target)
+    totals = {k: 0 for k in OUTCOME_KINDS}
+    by_origin: dict = {}
+    for key in {_hour_key(ts - h * 3600) for h in range(max(int(hours), 1))}:
+        bucket = buckets.get(key)
+        if not isinstance(bucket, dict):
+            continue
+        for origin, counts in bucket.items():
+            if not isinstance(counts, dict):
+                continue
+            mine = by_origin.setdefault(str(origin), {k: 0 for k in OUTCOME_KINDS})
+            for kind in OUTCOME_KINDS:
+                n = counts.get(kind)
+                n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
+                mine[kind] += n
+                totals[kind] += n
+    return {"window_hours": int(hours), **totals, "total": sum(totals.values()),
+            "by_origin": by_origin, "ledger_present": os.path.exists(target)}
 
 MEM0_CONFIG = mem0_config_path()   # v20.2.4 F-22：支持 AIDUMEM_CONFIG_FILE
 
@@ -263,22 +431,34 @@ def call_llm(
     else:
         endpoint = f"{base}/chat/completions"
 
+    # f0.3：每一次真实外呼都先占进程级空位（与 mem0 抽取通道共用一个闸门），
+    # 结局记进小时账本。上面几个早退（本地档阻断 / 未配置）是配置选择，不是降级，不记账。
+    outcome = "failed"
     try:
-        content, reasoning_truncated = _post_completion(
-            endpoint, cfg["api_key"], cfg["model"], messages,
-            max_tokens, temperature, timeout)
+        with llm_slot("call_llm"):
+            content, reasoning_truncated = _post_completion(
+                endpoint, cfg["api_key"], cfg["model"], messages,
+                max_tokens, temperature, timeout)
         if content:
+            outcome = "ok"
             return content
         if reasoning_truncated:
             retry_budget = min(max_tokens * 4, 4096)
             logger.info("LLM 推理截断（思考耗尽预算），放大预算重试: %d → %d",
                         max_tokens, retry_budget)
-            content, _ = _post_completion(
-                endpoint, cfg["api_key"], cfg["model"], messages,
-                retry_budget, temperature, timeout)
+            with llm_slot("call_llm"):
+                content, _ = _post_completion(
+                    endpoint, cfg["api_key"], cfg["model"], messages,
+                    retry_budget, temperature, timeout)
             if content:
+                outcome = "ok"
                 return content
+        return None
+    except LLMConcurrencyTimeout:
+        outcome = "gate_timeout"   # 闸门已打过 warning；契约不变：失败回 None
         return None
     except Exception as e:
         logger.warning(f"LLM 直接调用异常: {e}")
         return None
+    finally:
+        record_llm_outcome(outcome, origin="call_llm")
