@@ -317,6 +317,15 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
     # 在函数口上盖一次，下面 update/add 三个出口全部继承。
     metadata = stamp_bank_metadata(metadata, bank_id)
 
+    # A summary is already derived. Store it as its own record: another
+    # extraction can return NONE, and fact deduplication would replace a source.
+    from ducky.origin_context import is_session_summary
+    session_summary = is_session_summary(metadata)
+    if session_summary:
+        infer = False
+        details["infer"] = False
+        details["session_summary"] = True
+
     # 提取文本用于去重
     text = ""
     if isinstance(messages_json, list):
@@ -359,7 +368,7 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
         details["self_edit_skipped"] = "infer=false"
 
     # Step 1: 去重检查
-    existing_id = dedup_check(memory, user_id, text, bank_id=bank_id)
+    existing_id = None if session_summary else dedup_check(memory, user_id, text, bank_id=bank_id)
     if existing_id:
         try:
             # Lethe v9.2.0: 触发演化追踪 (在更新前运行，便于捕获相似关系)
@@ -400,7 +409,8 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
         import hashlib
         try:
             new_id_placeholder = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-            track_knowledge_evolution(memory, user_id, text, new_id_placeholder, bank_id=bank_id, metadata=metadata)
+            if not session_summary:
+                track_knowledge_evolution(memory, user_id, text, new_id_placeholder, bank_id=bank_id, metadata=metadata)
         except Exception as e:
             logger.warning(f"写入前演化追踪失败: {e}")
 
@@ -435,7 +445,7 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
     # infer=False（确定性直写）→ user_provided。失败静默降级不阻断写入。
     try:
         from ducky.epistemic import stamp_memory_refs
-        from ducky.origin_context import origin_from_metadata
+        from ducky.origin_context import is_session_summary, origin_from_metadata
         _refs = [
             r.get("id") or r.get("memory_id")
             for r in (add_result if isinstance(add_result, list)
@@ -448,7 +458,7 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
         _origin = origin_from_metadata(metadata)
         stamp_memory_refs(
             [r for r in _refs if r],
-            "reasoned" if infer else "user_provided",
+            "reasoned" if infer or is_session_summary(metadata) else "user_provided",
             user_id=user_id, bank_id=bank_id, source="add:layer1",
             origin=_origin,
         )
