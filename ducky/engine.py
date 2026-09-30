@@ -134,7 +134,8 @@ class RecallEngine:
                 # 下推只用于命名域，默认域靠下面的 Python 复筛保证隔离。
                 from ducky.bank_contract import vector_scope_filters
                 try:
-                    raw_res = mem.search(query, filters=vector_scope_filters(user_id, bank_id), limit=cand_limit)
+                    from ducky.search_candidates import search_candidates
+                    raw_res = search_candidates(mem, query, filters=vector_scope_filters(user_id, bank_id), limit=cand_limit)
                     record_cloud_success()
                 except Exception as _cloud_exc:
                     record_cloud_failure(str(_cloud_exc))

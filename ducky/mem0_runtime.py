@@ -187,7 +187,7 @@ def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) ->
     if tokens:
         _track_rerank_tokens(input_tokens=tokens.get("input_tokens", 0),
                              total_tokens=tokens.get("input_tokens", 0))
-    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score")} for x in results]
 
 
 def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
@@ -214,7 +214,7 @@ def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dic
     if usage.get("total_tokens"):
         _track_rerank_tokens(input_tokens=usage["total_tokens"],
                              total_tokens=usage["total_tokens"])
-    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score")} for x in results]
 
 
 def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
@@ -243,7 +243,7 @@ def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[d
     units = (data.get("meta") or {}).get("billed_units", {}).get("search_units", 0)
     if units:
         _track_rerank_tokens(input_tokens=0, total_tokens=int(units))
-    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score")} for x in results]
 
 
 def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
@@ -270,7 +270,7 @@ def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int
     if usage and usage.get("total_tokens"):
         _track_rerank_tokens(input_tokens=usage["total_tokens"],
                              total_tokens=usage["total_tokens"])
-    return [{"index": x["index"], "relevance_score": x.get("relevance_score", 0)} for x in results]
+    return [{"index": x["index"], "relevance_score": x.get("relevance_score")} for x in results]
 
 
 RERANK_PROVIDERS = {
@@ -332,6 +332,11 @@ def reset_rerank_telemetry() -> None:
 
 def last_rerank_telemetry() -> Optional[dict]:
     return getattr(_rerank_tls, "last", None)
+
+
+def restore_rerank_telemetry(telemetry: dict) -> None:
+    """Keep primary and supplemental rerank stages independently observable."""
+    _rerank_tls.last = telemetry
 
 
 def rerank_config_status() -> dict:

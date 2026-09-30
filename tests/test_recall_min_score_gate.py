@@ -372,6 +372,8 @@ class TestWithRerankAlive:
         这条是本组的地基 —— 后面两条都建立在「融合后分数会变」这个事实上。
         数字现算，不写死。
         """
+        # Isolate the fusion formula; rejection itself has dedicated regressions.
+        monkeypatch.setenv("AIDUMEI_RERANK_MIN_RELEVANCE", "0")
         monkeypatch.setattr("ducky.mem0_runtime.rerank",
                             self._fake_rerank([0.0]), raising=False)
         item = _mk("real", vec=0.8, bm25=0.5)
@@ -416,6 +418,8 @@ class TestWithRerankAlive:
         这条正是「沙箱绿部署机红」那个缺陷的正面形态：如果门槛卡在融合前，
         它在有重排的环境里就形同虚设。
         """
+        # Keep the relevance veto from masking the hybrid threshold under test.
+        monkeypatch.setenv("AIDUMEI_RERANK_MIN_RELEVANCE", "0")
         item = _mk("borderline", vec=0.8, bm25=0.5)
         raw = _score_of(item)                       # 无重排时的原值
         fused = raw * (1 - scoring.RERANK_WEIGHT)   # 重排给 0 分时的融合值
