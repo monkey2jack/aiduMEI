@@ -254,12 +254,36 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 
 | 层 | 能力 |
 |---|---|
-| 检索 | bge-m3 向量 + FTS5 中文 BM25/trigram + cross-encoder 真重排（**需配 reranker key 才生效，默认不开**，见 `.env.example` 的 `AIDUMEI_RERANKER_API_KEY`）；相关性闸门（闲聊不检索，省 token） |
+| 检索 | bge-m3 向量 + FTS5 中文 BM25/trigram + cross-encoder 真重排（**通道配置一次，之后检索自动重排**；未配置不调用，见下方说明）；相关性闸门（闲聊不检索，省 token） |
 | 记忆语义 | 三轨遗忘（身份永不衰减/情感加速/标准曲线）· 双时间轴（记忆**过期**而非删除）· 六型分类 |
 | 治理 | 写入双审 + 冲突消解 + 注入防护；事件账本全路径留痕；谱系一致性校验链（无密钥 SHA-256 串链：查得出意外损坏与只改一处的编辑，挡不住能改写整个数据库的人） |
 | 进化 | 反思（主动/定时）· 本能升格技能（人工审批闸门）· 检索自进化反馈环 |
 | 协作 | 联邦：多 Agent 共享一套记忆（MoE 门控 + 细粒度授权 grants）· 多 bot / 多 profile 各据一域，记忆人格独立、跨域默认隔离 |
 | 周边 | 多模态视觉记忆 · 代码图谱 · 原文保真抽屉 · Obsidian 双链 |
+
+### Reranker：配置一次，检索时自动使用
+
+在控制台的模型配置中填好 reranker 的 provider、模型、服务地址和 API Key，并开启 `enabled`；也可编辑 `mem0_config_local.json` 的 `rerank` 段。之后无需用户逐次手动开启、发送指令或传搜索开关。有候选结果、走正常评分链路且引擎允许云调用（`auto` / `cloud`）时，系统自动重排。
+
+- `enabled: true` 开启；`false` 停止调用；旧配置没有该字段时保持自动使用。只有开关、没有可用通道配置，也不会调用。修改模型或密钥时会保留原有开关。
+- 控制台保存成功后，**下一次符合条件的检索就读取新配置，无需 `/reload` 或重启**；直接修改配置文件建议原子替换。在途请求可能使用已经读取的旧配置。密钥也可通过 `AIDUMEI_RERANKER_API_KEY` 提供（优先于文件）；修改服务环境变量须重启进程才能继承新值。
+- Workspace 热缓存命中、没有候选、显式 `local` 模式或降级检索绕过评分链路时，不调用云重排。通道异常会保留原排序，并在遥测中报告失败。
+- `/health` 的 `probes.rerank_enabled` 表示开关，`rerank_configured` 表示通道配置齐备；某次检索是否真的重排，以 `/search` 返回的 `_rerank.status: "ok"` 和 `_rerank.applied: true` 为准。健康探针不试调用付费模型。
+- 重排提高相关性，**与记忆数量告警线无关**。数量越过配置的告警线仍会报警；reranker 不删除记忆，也不充当容量缓冲。
+
+嵌入配置文件的示例（替换为自己的服务信息；不要把密钥提交到 Git）：
+
+```json
+"rerank": {
+  "enabled": true,
+  "provider": "openai_compatible",
+  "config": {
+    "model": "your-rerank-model",
+    "api_key": "",
+    "openai_base_url": "https://rerank.example.com/v1"
+  }
+}
+```
 
 ## 测试与质量
 
@@ -268,8 +292,8 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **2858**（`pytest --collect-only` 实测，2026-09-29，f0.3 树）＝ **行为用例 2385（产品代码直测）+ 脚本/钩子行为 327 + 守卫用例 146（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——头条不用混合数 |
-| 独立开发机 | 2846 通过 · **12 跳过** —— **2026-09-29 收集口径**（f0.3 树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 用例总数 | **2873**（`pytest --collect-only` 实测，2026-09-30，f0.3 树）＝ **行为用例 2400（产品代码直测）+ 脚本/钩子行为 327 + 守卫用例 146（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——头条不用混合数 |
+| 独立开发机 | 2861 通过 · **12 跳过** —— **2026-09-30 收集口径**（f0.3 树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，Python 3.12） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（本树 `de09794`，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
@@ -285,7 +309,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **为什么要把 2846 和 1967 都写出来**：2846 是本树开发环境 2026-09-29 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 2861 和 1967 都写出来**：2861 是本树开发环境 2026-09-30 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条不是玄学，自己就能验**：十三条跳过轴（宿主、工具、可选依赖、模型文件）全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
@@ -294,12 +318,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：2846 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2858 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2846 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：2861 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2873 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2861 passed, 12 skipped
 > ```
 >
-> 上面代码块里的 `有宿主：2858 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
+> 上面代码块里的 `有宿主：2873 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
 
 > **跳过轴全量登记**（门控条数与实测逐行对账，改一条这里就红）：
 >
