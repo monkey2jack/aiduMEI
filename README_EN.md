@@ -264,12 +264,36 @@ The complete environment variable registry is `ducky/env_registry.py` (code is t
 
 | Layer | Capability |
 |---|---|
-| Retrieval | bge-m3 vectors + FTS5 Chinese BM25/trigram + a real cross-encoder reranker (**requires a reranker key to take effect, off by default** — see `AIDUMEI_RERANKER_API_KEY` in `.env.example`); relevance gate (small talk skips retrieval, saving tokens) |
+| Retrieval | bge-m3 vectors + FTS5 Chinese BM25/trigram + a real cross-encoder reranker (**configure the channel once; retrieval then reranks automatically**; no calls when unconfigured — see below); relevance gate (small talk skips retrieval, saving tokens) |
 | Memory semantics | Three-track forgetting (identity never decays / emotional accelerates / standard curve) · dual timeline (memories **expire** rather than get deleted) · six-type classification |
 | Governance | Dual review on write + conflict resolution + injection defence; event ledger across all paths; lineage consistency chain (an unkeyed SHA-256 hash chain: it detects accidental corruption and partial edits, but does not stop anyone who can rewrite the database) |
 | Evolution | Reflection (on-demand and scheduled) · instinct-to-skill promotion (human approval gate) · retrieval self-evolution feedback loop |
 | Collaboration | Federation: multiple agents share one memory store (MoE gating + fine-grained grants) · multiple bots/profiles each in their own domain, independent memory personas, cross-domain isolation by default |
 | Periphery | Multimodal visual memory · code graph · verbatim drawer · Obsidian backlinks |
+
+### Reranker: configure once, use automatically
+
+In the console model settings, configure the reranker provider, model, service URL and API key, and turn on `enabled`; alternatively edit the `rerank` section in `mem0_config_local.json`. Users then need no per-query switch or special chat command. Reranking runs automatically when candidates reach the normal scoring path and the configured engine mode permits cloud calls (`auto` / `cloud`).
+
+- `enabled: true` enables calls; `false` stops them. Older configurations without this field remain automatic. A switch alone is insufficient without a usable channel. Editing a model or key preserves the existing switch.
+- After a successful console save, **the next eligible retrieval reads the new settings without `/reload` or a restart**. Use atomic replacement for direct file edits. In-flight requests may finish with settings already read. `AIDUMEI_RERANKER_API_KEY` can supply the key and takes precedence over the file; changing the service environment requires a process restart to inherit it.
+- Workspace hot-cache hits, empty candidates, explicit `local` mode and degraded retrieval that bypasses scoring skip cloud reranking. Provider failures retain the original ranking and appear in telemetry.
+- `/health` reports the switch as `probes.rerank_enabled` and channel configuration as `rerank_configured`. To confirm a particular search actually reranked, check its `/search` response for `_rerank.status: "ok"` and `_rerank.applied: true`. Health probes do not make paid model calls.
+- Reranking improves relevance and is **independent of the memory-count warning threshold**. Counts exceeding that threshold still produce warnings; reranking neither deletes memories nor buffers storage capacity.
+
+Example section to insert in the configuration file (use your own service settings; keep keys out of Git):
+
+```json
+"rerank": {
+  "enabled": true,
+  "provider": "openai_compatible",
+  "config": {
+    "model": "your-rerank-model",
+    "api_key": "",
+    "openai_base_url": "https://rerank.example.com/v1"
+  }
+}
+```
 
 ## Testing & quality
 
@@ -278,8 +302,8 @@ The complete environment variable registry is `ducky/env_registry.py` (code is t
 
 | Dimension | Current |
 |------|------|
-| Total cases | **2858** (measured via `pytest --collect-only`, 2026-09-29, f0.3 tree) = **2385 behavior (product code under direct test) + 327 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 2846 passed · **12 skipped** — **collected 2026-09-29** (f0.3 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **2873** (measured via `pytest --collect-only`, 2026-09-30, f0.3 tree) = **2400 behavior (product code under direct test) + 327 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 2861 passed · **12 skipped** — **collected 2026-09-30** (f0.3 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
@@ -295,7 +319,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2846 and 1821**: the first is the 2026-09-29 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 2861 and 1821**: the first is the 2026-09-30 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
 > **Those 12 skips are not hand-waving — you can verify them yourself**: all thirteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
@@ -304,12 +328,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2846 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2858 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2846 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2861 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2873 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2861 passed, 12 skipped
 > ```
 >
-> `2858 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2873 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

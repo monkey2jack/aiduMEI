@@ -146,7 +146,6 @@ def track_vision_usage(input_tokens: int = 0, output_tokens: int = 0, total_toke
 # ═══════════════════════════════════════════════
 # §1b Reranker（懒加载配置 + requests 直发）
 # ═══════════════════════════════════════════════
-_RERANK_CONFIG_CACHE: Optional[dict] = None
 
 # ---------------------------------------------------------------------------
 # Reranker provider registry
@@ -292,43 +291,32 @@ DEFAULT_RERANK_PROVIDER = "openai_compatible"
 
 
 def _load_rerank_config() -> dict:
-    """从 mem0_config 或环境读 reranker 配置，返回 {provider, api_key, base_url, model}"""
-    global _RERANK_CONFIG_CACHE
-    if _RERANK_CONFIG_CACHE is not None:
-        return _RERANK_CONFIG_CACHE
-    cfg = {}
+    """Read the latest small config file on every call, including across workers.
+
+    Atomic configuration saves take effect on the next request. Keeping no
+    process cache also makes direct file replacement and key rotation effective.
+    An in-flight request may finish with the configuration it already read.
+    """
     try:
+        raw = {}
         if os.path.exists(MEM0_CONFIG):
-            with open(MEM0_CONFIG) as f:
-                j = json.load(f)
-            rerank = j.get("rerank") or j.get("reranker") or {}
-            rc = rerank.get("config", {})
-            cfg["provider"] = rerank.get("provider", DEFAULT_RERANK_PROVIDER)
-            cfg["model"] = rc.get("model", "")
-            cfg["base_url"] = rc.get("openai_base_url", "")
-            api_key = rc.get("api_key", "")
-            if api_key == "__SF_KEY__" or not api_key:
-                kp = os.path.join(BASE_DIR, ".sf_key")
-                if os.path.exists(kp):
-                    with open(kp) as fk:
-                        api_key = fk.read().strip()
-            cfg["api_key"] = api_key
-        else:
-            # 兜底：跟 embedding 一样
-            cfg = {
-                "provider": DEFAULT_RERANK_PROVIDER,
-                "model": "",
-                "base_url": "",
-                "api_key": "",
-            }
-            kp = os.path.join(BASE_DIR, ".sf_key")
-            if os.path.exists(kp):
-                with open(kp) as fk:
-                    cfg["api_key"] = fk.read().strip()
+            with open(MEM0_CONFIG, encoding="utf-8") as f:
+                raw = json.load(f)
+        section = raw.get("rerank") or raw.get("reranker") or {}
+        resolved = _resolve_api_keys({"rerank": {"config": section.get("config") or {}}})
+        rc = resolved["rerank"]["config"]
+        return {
+            # Older configurations without a switch remain automatic.
+            # Invalid non-boolean values fail closed instead of turning on.
+            "enabled": section.get("enabled", True) is True,
+            "provider": section.get("provider", DEFAULT_RERANK_PROVIDER),
+            "model": rc.get("model", ""),
+            "base_url": rc.get("openai_base_url", ""),
+            "api_key": rc.get("api_key", ""),
+        }
     except Exception as e:
-        logger.warning(f"rerank config load skip: {e}")
-    _RERANK_CONFIG_CACHE = cfg
-    return cfg
+        logger.warning("rerank config load failed: %s", type(e).__name__)
+        return {"enabled": False, "config_error": type(e).__name__}
 
 
 # v20 P0-4：rerank 逐请求遥测。线程本地——FastAPI 同步端点每个请求跑在
@@ -354,7 +342,9 @@ def rerank_config_status() -> dict:
     # 不需要 base_url。两处不一致会让 /health 报「未配置」而实际在跑。
     needs_base_url = provider.lower() not in ("jina", "cohere")
     configured = bool(cfg.get("api_key")) and (bool(cfg.get("base_url")) or not needs_base_url)
-    out = {"configured": configured}
+    out = {"configured": configured, "enabled": cfg.get("enabled", True)}
+    if cfg.get("config_error"):
+        out["error"] = cfg["config_error"]
     if configured:
         out["provider"] = cfg.get("provider", DEFAULT_RERANK_PROVIDER)
         out["model"] = cfg.get("model", "")
@@ -381,6 +371,12 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
         telem["status"] = "blocked_by_engine_mode"
         return []
     cfg = _load_rerank_config()
+    if cfg.get("config_error"):
+        telem.update(status="config_error", error=cfg["config_error"])
+        return []
+    if not cfg.get("enabled", True):
+        telem["status"] = "disabled"
+        return []
     api_key = cfg.get("api_key", "")
     base_url = cfg.get("base_url", "")
     provider = cfg.get("provider", DEFAULT_RERANK_PROVIDER)
@@ -891,14 +887,10 @@ def _mem0_unavailable_detail(exc: Exception) -> str:
 
 def reset_memory_singleton() -> None:
     """/reload 用：清空模块级 + sys 级单例。"""
-    global m, _RERANK_CONFIG_CACHE
+    global m
     m = None
     if hasattr(sys, "_aidumem_singleton"):
         sys._aidumem_singleton = None
-    # /reload 的语义是「配置改了，重读」。rerank 配置与 mem0 配置同源
-    # （mem0_config.json），不清这份缓存的话，换了 rerank key/base_url
-    # 之后 /reload 表面成功，重排序却继续用旧凭据直到进程重启。
-    _RERANK_CONFIG_CACHE = None
 
 
 def is_mem_ready() -> bool:

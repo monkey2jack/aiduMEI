@@ -41,8 +41,11 @@ _SECTION_FIELD_ALLOWLIST: dict[str, set] = {
 _URL_FIELDS = {"openai_base_url", "host"}
 
 
-def _validate_config_fields(section: str, cfg: dict) -> str | None:
+def _validate_config_fields(section: str, cfg: dict, body: dict | None = None) -> str | None:
     """返回错误文案；None = 通过。"""
+    if section == "rerank" and body is not None and "enabled" in body:
+        if not isinstance(body["enabled"], bool):
+            return "rerank.enabled must be a JSON boolean"
     allow = _SECTION_FIELD_ALLOWLIST.get(section)
     if allow is None:
         return None  # _features 走布尔合并分支，不进这里
@@ -130,11 +133,18 @@ def _atomic_write_config(raw: dict) -> None:
         raise
 
 
+def _config_section(raw: dict, section: str) -> dict:
+    value = raw.get(section)
+    if section == "rerank" and not value:
+        value = raw.get("reranker")
+    return dict(value or {})
+
+
 def _build_config_view() -> dict:
     raw = _load_raw_config()
     llm = raw.get("llm") or {}
     emb = raw.get("embedder") or {}
-    rer = raw.get("rerank") or {}
+    rer = raw.get("rerank") or raw.get("reranker") or {}
     vis = raw.get("vision") or {}
     vs = raw.get("vector_store") or {}
     lc = llm.get("config") or {}
@@ -174,7 +184,7 @@ def _build_config_view() -> dict:
             },
         },
         "rerank": {
-            "enabled": bool(rer.get("enabled")) if isinstance(rer, dict) else False,
+            "enabled": rer.get("enabled", True) is True if isinstance(rer, dict) else False,
             "provider": rer.get("provider") if isinstance(rer, dict) else None,
             "config": {
                 "model": rc.get("model"),
@@ -260,8 +270,8 @@ def register_config_routes(app: FastAPI) -> None:
         """UI 保存模型配置：PUT /config/llm|embedder|rerank|vector_store。
 
         body 与 GET /config 同构（provider + config）。合并语义：
-        api_key 传空视为不修改；rerank 未显式给 enabled 时按是否填了
-        model/base_url 自动判断。写回 mem0_config_local.json 后热生效。
+        api_key 传空视为不修改；rerank 未显式给 enabled 时保留原开关，
+        旧配置缺少开关时保持自动。rerank 保存后在下一次调用读取生效。
 
         v22.0（雷霆审计 B7）：配置面是权限升级面——任何持普通 API 凭据者
         都能改模型配置/口令。加 admin 校验：caller 须在 AIDUMEI_FEDERATION_ADMINS
@@ -289,10 +299,10 @@ def register_config_routes(app: FastAPI) -> None:
             except ConfigUnreadable as exc:
                 return JSONResponse({"status": "error", "code": "config_unreadable",
                                      "detail": str(exc)}, status_code=409)
-            old_section = dict(raw.get(section) or {})
+            old_section = _config_section(raw, section)
             old_cfg = dict(old_section.get("config") or {})
             new_cfg = dict((body.get("config") or {}))
-            _field_err = _validate_config_fields(section, new_cfg)
+            _field_err = _validate_config_fields(section, new_cfg, body)
             if _field_err:
                 return JSONResponse({"status": "error", "detail": _field_err},
                                     status_code=400)
@@ -302,10 +312,7 @@ def register_config_routes(app: FastAPI) -> None:
                 old_cfg[k] = v
             new_provider = body.get("provider") or old_section.get("provider")
             if section == "rerank":
-                if "enabled" in body:
-                    enabled = bool(body.get("enabled"))
-                else:
-                    enabled = bool(old_cfg.get("model") or old_cfg.get("openai_base_url"))
+                enabled = body.get("enabled", old_section.get("enabled", True)) is True
                 raw[section] = {"enabled": enabled, "provider": new_provider, "config": old_cfg}
             elif section == "_features" or section == "features":
                 # 模块开关：直接合并布尔值

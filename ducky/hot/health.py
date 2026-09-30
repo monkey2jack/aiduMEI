@@ -287,6 +287,25 @@ def _public_view(full: dict) -> dict:
     }
 
 
+def _rerank_probe() -> dict:
+    """Report current channel settings without making a paid provider call."""
+    try:
+        from ducky.mem0_runtime import rerank_config_status
+        status = rerank_config_status()
+        probes = {
+            "rerank_configured": bool(status.get("configured")),
+            "rerank_enabled": bool(status.get("enabled")),
+        }
+        if status.get("configured"):
+            probes["rerank_provider"] = status.get("provider")
+        if status.get("error"):
+            probes["rerank_error"] = status["error"]
+        return probes
+    except Exception as exc:
+        return {"rerank_configured": False, "rerank_enabled": False,
+                "rerank_error": type(exc).__name__}
+
+
 def register_health_routes(app: FastAPI) -> None:
     def _run_full_probe() -> dict:
         """B 档：lazy 预热 + 真实探针 + 反静默降级追踪 + 水位预警。
@@ -995,15 +1014,7 @@ def register_health_routes(app: FastAPI) -> None:
         # rerank 配置探针（v20 P0-4）：只报「配没配、配的谁」，不做真实外呼
         # （health 不该烧付费 API），调用期三态（ok/error/empty）在 /search
         # 响应的 _rerank 字段与 /usage 账本里。
-        try:
-            from ducky.mem0_runtime import rerank_config_status
-            _rr = rerank_config_status()
-            probes["rerank_configured"] = bool(_rr.get("configured"))
-            if _rr.get("configured"):
-                probes["rerank_provider"] = _rr.get("provider")
-        except Exception as e:
-            probes["rerank_configured"] = False
-            probes["rerank_error"] = str(e)[:120]
+        probes.update(_rerank_probe())
 
         # WAL 探针
         try:

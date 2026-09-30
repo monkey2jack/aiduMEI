@@ -8,7 +8,7 @@ tests/test_v20_observability.py — v20 P0-4 可观测性契约测试
   4. scoring 把 rerank_applied 回写进遥测
   5. /search 响应携带 _recall_path 与 _rerank（SearchResponse extra="allow" 实链路验证）
   6. /search 错误路径 detail 不被 response_model 剥掉
-  7. /reload 语义：reset_memory_singleton 清空 rerank 配置缓存
+  7. /reload 语义：reset_memory_singleton 清空后端单例
   8. /health 暴露 rerank_configured 探针；jina/cohere 无 base_url 也算已配置
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _set_rerank_cfg(monkeypatch, **kw):
     cfg = {"provider": "siliconflow", "model": "test-model",
            "base_url": "", "api_key": ""}
     cfg.update(kw)
-    monkeypatch.setattr(mr, "_RERANK_CONFIG_CACHE", cfg)
+    monkeypatch.setattr(mr, "_load_rerank_config", lambda: cfg)
     return cfg
 
 
@@ -328,13 +328,14 @@ def test_search_workspace_hit_recall_path(monkeypatch):
 
 
 # ──────────────────────────────────────────────
-# 5. /reload 清空 rerank 配置缓存
+# 5. /reload 清空后端单例；重排配置由每次调用直接读取
 # ──────────────────────────────────────────────
-def test_reset_memory_singleton_clears_rerank_cache(monkeypatch):
-    monkeypatch.setattr(mr, "_RERANK_CONFIG_CACHE",
-                        {"provider": "stale", "api_key": "old"})
+def test_reset_memory_singleton_clears_backend(monkeypatch):
+    monkeypatch.setattr(mr, "m", object())
+    monkeypatch.setattr(sys, "_aidumem_singleton", object(), raising=False)
     mr.reset_memory_singleton()
-    assert mr._RERANK_CONFIG_CACHE is None
+    assert mr.m is None
+    assert sys._aidumem_singleton is None
 
 
 # ──────────────────────────────────────────────
@@ -454,9 +455,8 @@ def test_rerank_example_uses_shape_the_runtime_reads(tmp_path):
     assert {"model", "api_key", "openai_base_url"} <= set(cfg), (
         "样例缺 rerank.config 必填提示字段"
     )
-    # 让真实 loader 吃这份样例：路径变量与全局缓存都要按 loader 的世界接管。
-    with patch.object(mr, "MEM0_CONFIG", str(example)), \
-         patch.object(mr, "_RERANK_CONFIG_CACHE", None):
+    # Exercise the real loader with the example configuration.
+    with patch.object(mr, "MEM0_CONFIG", str(example)):
         loaded = mr._load_rerank_config()
     assert loaded["model"] == cfg["model"]
     assert loaded["base_url"] == cfg["openai_base_url"]
