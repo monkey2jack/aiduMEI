@@ -90,6 +90,7 @@ WRITE_ROUTES_SCALAR = {
     "/api/checkpoint/inject",
     "/api/core-memory/inject",
     "/api/core-memory/{block_key}",
+    "/api/core-memory/core_current_project/refresh",
     "/auto-memory/trigger",
     "/broadcast_expand",
     "/config/_speed",

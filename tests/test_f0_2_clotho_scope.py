@@ -18,7 +18,7 @@ def test_clotho_cross_hall_read_grants_and_write_denials(monkeypatch):
     monkeypatch.setattr(clotho, "get_all_blocks", lambda user_id, bank_id: {"owner": f"{user_id}/{bank_id}"})
     monkeypatch.setattr(clotho, "get_block", lambda block_key, user_id, bank_id: {"owner": f"{user_id}/{bank_id}"})
     monkeypatch.setattr(clotho, "core_memory_context", lambda user_id, bank_id: f"core:{user_id}/{bank_id}")
-    monkeypatch.setattr(clotho, "put_block", lambda block_key, content, user_id, bank_id: {"owner": f"{user_id}/{bank_id}"})
+    monkeypatch.setattr(clotho, "put_block", lambda block_key, content, user_id, bank_id, **kwargs: {"owner": f"{user_id}/{bank_id}"})
     monkeypatch.setattr(clotho, "get_latest_checkpoint", lambda user_id, bank_id: {"owner": f"{user_id}/{bank_id}"})
     monkeypatch.setattr(clotho, "get_checkpoint", lambda sid, user_id, bank_id:
                         {"owner": f"{user_id}/{bank_id}"})

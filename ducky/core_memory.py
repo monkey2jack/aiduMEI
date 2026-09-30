@@ -508,6 +508,9 @@ def put_block(
     content: str,
     user_id: str = DEFAULT_USER_ID,
     bank_id: str = DEFAULT_BANK_ID,
+    *,
+    expected_content: str | None = None,
+    evidence_fact: dict | None = None,
 ) -> dict:
     """更新指定 bank 的单个 block（同时刷新验证时间）。"""
     if block_key not in BLOCK_KEYS:
@@ -547,6 +550,9 @@ def put_block(
     conn = _get_conn()
     owner_user, owner_bank = scope.user_id, scope.bank_id
     try:
+        from ducky.core_maintenance import record_revision
+        record_revision(conn, scope, block_key, content, now,
+                        expected_content=expected_content, evidence_fact=evidence_fact)
         storage_key = scoped_storage_key(block_key, scope)
         # 🔴甲1a（v20.0pre）：键的形状**一个字节不动**，隔离改由主键承担。
         #

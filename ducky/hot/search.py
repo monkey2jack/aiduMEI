@@ -189,7 +189,24 @@ def _score_floor() -> float:
     return v
 
 
-def annotate_recall_strength(results: list, floor: float | None = None) -> dict:
+def _fresh_rerank_allowed(recall_path: str) -> bool:
+    from ducky.mem0_runtime import last_rerank_telemetry
+    telemetry = last_rerank_telemetry() or {}
+    return (recall_path == "hybrid" and telemetry.get("status") == "ok"
+            and telemetry.get("applied") is True)
+
+
+def _final_recall_strength(results: list, main: dict, allow_rerank: bool) -> dict:
+    strength = annotate_recall_strength(results, allow_rerank=allow_rerank)
+    strength["dropped"] += main["dropped"]
+    if strength["top_score"] is None:
+        strength["top_score"] = main["top_score"]
+        strength["weak"] = main["weak"]
+    return strength
+
+
+def annotate_recall_strength(results: list, floor: float | None = None,
+                             *, allow_rerank: bool = False) -> dict:
     """给召回结果打强度标注，返回随响应下发的元信息。
 
     返回 `{"top_score", "floor", "weak", "dropped"}`：
@@ -203,19 +220,29 @@ def annotate_recall_strength(results: list, floor: float | None = None) -> dict:
     nums = [float(x) for x in scores if isinstance(x, (int, float))]
     top = max(nums) if nums else None
     dropped = 0
+    from ducky.recall_evidence import rerank_rescues
+    rescued = [r for r in results if isinstance(r, dict)
+               and rerank_rescues(r, f, enabled=allow_rerank)]
     if f > 0.0 and results:
         keep = [r for r in results
                 if not isinstance(r, dict)
                 or not isinstance(r.get("score"), (int, float))
-                or float(r["score"]) >= f]
+                or float(r["score"]) >= f or any(r is x for x in rescued)]
         dropped = len(results) - len(keep)
         results[:] = keep
-    return {
+    info = {
         "top_score": round(top, 4) if top is not None else None,
         "floor": f,
         "weak": bool(top is not None and f > 0.0 and top < f),
         "dropped": dropped,
     }
+    if rescued:
+        # Preserve raw top_score for diagnostics; the verdict uses the accepted
+        # evidence score, so a rescued result cannot also be labelled not_found.
+        info.update(rerank_rescued=len(rescued),
+                    decision_score=max([float(top or 0)] + [r["_hybrid_score"] for r in rescued]),
+                    decision_basis="vector_or_strong_rerank", weak=False)
+    return info
 
 
 # ── 召回弃答信号（v20.1 WP-C）─────────────────────────────────────────
@@ -460,6 +487,11 @@ def register_search_routes(app: FastAPI) -> None:
             _annotate_memory_types(results, user_id=_normalize_user_id(req.user_id),
                                    bank_id=getattr(req, "bank_id", "default") or "default")
 
+            # Reject weak main results before they consume the original-text
+            # quota. Only this request's successful rerank may rescue a result.
+            _allow_rr = _fresh_rerank_allowed(recall_path)
+            _main_strength = annotate_recall_strength(results, allow_rerank=_allow_rr)
+
             # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文证据融合
             # 在既有召回结果之上，并行检索原文层并融合返回（主干优先、保留配额、
             # 失败干净降级）。让召回的不只是蒸馏后的事实，还有说过的原话。
@@ -496,7 +528,7 @@ def register_search_routes(app: FastAPI) -> None:
             gate_telem = last_gate_telemetry()
             # v20：召回强度随响应下发。整改前「5 条 0.66」和「5 条 0.42」
             # 在响应里长得一模一样，调用方无从判断这批东西值不值得信。
-            strength = annotate_recall_strength(results)
+            strength = _final_recall_strength(results, _main_strength, _allow_rr)
             if strength["dropped"]:
                 logger.info("召回下限过滤掉 %d 条（floor=%s, top=%s）",
                             strength["dropped"], strength["floor"], strength["top_score"])
@@ -505,7 +537,7 @@ def register_search_routes(app: FastAPI) -> None:
             recall_telem = last_recall_telemetry()
             verdict, verdict_basis = compute_recall_verdict(
                 results,
-                strength["top_score"],
+                strength.get("decision_score", strength["top_score"]),
                 _verdict_threshold(),
                 # v20.2：云腿断但本请求已落本地腿——备胎拿出货就是 found
                 # （engine_mode=lite 如实标注）；备胎空手 = 系统能力受损，
@@ -548,7 +580,7 @@ def register_search_routes(app: FastAPI) -> None:
                 "_recall_legs": recall_telem,
                 "recall_verdict": verdict,
                 "verdict_basis": verdict_basis,
-                "recall_confidence": strength["top_score"],
+                "recall_confidence": strength.get("decision_score", strength["top_score"]),
                 "engine_mode": _this_mode,
             }
             if _this_mode == "lite":

@@ -105,9 +105,15 @@ class RecallEngine:
         t0 = time.time()
         mem = self._get_mem()
 
+        from ducky.query_aliases import resolve_query_aliases
+        original_query = query
+        query = resolve_query_aliases(query, user_id, bank_id)
+
         # 1. 向量初步候选召回（多取候选供加权和时效过滤）
         cand_limit = max(limit * 3, 30)
         _set_recall_telemetry(vector_leg="ok")
+        if query != original_query:
+            _set_recall_telemetry(alias_resolved=True)
         # 🪫 v20.2 自动挡（WP-G/WP-F）：切换逻辑是这台双引擎的命门 ——
         # ① open 态（熔断中）向量腿直接走本地索引，云一根手指都不碰；
         # ② closed / half-open 试云腿（半开就是拿真实流量当探针 ——

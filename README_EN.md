@@ -295,6 +295,14 @@ Example section to insert in the configuration file (use your own service settin
 }
 ```
 
+### Retrieval experience and core maintenance (f0.3 commits)
+
+- A weak raw retrieval score is rescued only when both the current reranker score and fused relevance clear their separate thresholds. `_recall_strength.rerank_rescued` reports the count; `decision_score` drives the verdict while raw `top_score` remains visible. `AIDUMEI_RERANK_RESCUE_THRESHOLD` defaults to 0.9 and needs positive/negative calibration for your model; it is not a probability. All candidates are reranked; cache hits and failed calls cannot reuse old rerank evidence.
+- Aliases come from registered `entities.aliases` or confirmed `entity_alias` facts in the exact user/bank scope. The fact key is the canonical name and the value a JSON alias array; require active user-provided evidence and confidence at least 90. Unknown or ambiguous identities are not guessed.
+- Fact/decision questions keep accepted ranked results; original text fills remaining slots. Explicit requests for original wording, conversations or diaries retain the original-text quota. No source records are deleted.
+- The host records a confirmed complete project state through the existing facts API with `category=core_memory`, `fact_key=core_current_project` and the full state as its value. The existing background maintenance cycle applies newer, scoped, user-provided evidence with confidence at least 90 that is not archived, superseded or expired. Inferences, diary fragments and conflicting states cannot overwrite the block or blindly renew its timestamp. Old content and evidence commit together, with concurrent-edit protection.
+- `POST /api/core-memory/core_current_project/refresh` processes confirmed evidence immediately; `GET /api/core-memory/{block_key}/history` exposes scoped revisions. Both retain caller/scope authorization. Missing evidence leaves staleness warnings visible until the state is confirmed.
+
 ## Testing & quality
 
 **Test levels, stated honestly**
@@ -302,8 +310,8 @@ Example section to insert in the configuration file (use your own service settin
 
 | Dimension | Current |
 |------|------|
-| Total cases | **2873** (measured via `pytest --collect-only`, 2026-09-30, f0.3 tree) = **2400 behavior (product code under direct test) + 327 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 2861 passed · **12 skipped** — **collected 2026-09-30** (f0.3 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **2913** (measured via `pytest --collect-only`, 2026-09-30, f0.3 tree) = **2440 behavior (product code under direct test) + 327 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 2901 passed · **12 skipped** — **collected 2026-09-30** (f0.3 tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
@@ -319,7 +327,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2861 and 1821**: the first is the 2026-09-30 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 2901 and 1821**: the first is the 2026-09-30 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
 > **Those 12 skips are not hand-waving — you can verify them yourself**: all thirteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
@@ -328,12 +336,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2861 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2873 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2861 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2901 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2913 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2901 passed, 12 skipped
 > ```
 >
-> `2873 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `2913 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

@@ -401,6 +401,11 @@ def _background_consolidation_loop():
     while True:
         try: _run_consolidation(max_obs=30)
         except Exception as e: logger.error(f"consolidation 后台失败: {e}")
+        try:
+            from ducky.core_maintenance import refresh_project_blocks
+            logger.info("Core project maintenance: %s", refresh_project_blocks())
+        except Exception as exc:
+            logger.warning("Core project maintenance unavailable: %s", type(exc).__name__)
         if not _shutdown_sleep(interval_s):
             return  # 停机请求（P2-20）：收尾退出
 
