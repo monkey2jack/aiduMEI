@@ -127,10 +127,17 @@ fi
 # 全量本地测试、静态、编译、完整词表扫描及生产实机验收仍是硬闸。
 # 查询失败继续按失败处理，不把未知状态冒充已核对。
 WF_STATE=$("$PY" - <<'EOF'
-import json, urllib.request
+import json, os, urllib.request
 try:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(
+        "https://api.github.com/repos/monkey2jack/aiduMEI/actions/workflows", headers=headers
+    )
     with urllib.request.urlopen(
-        "https://api.github.com/repos/monkey2jack/aiduMEI/actions/workflows", timeout=15
+        request, timeout=15
     ) as r:
         data = json.load(r)
     for wf in data.get("workflows", []):
