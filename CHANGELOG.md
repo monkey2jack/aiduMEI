@@ -1,12 +1,16 @@
 # aiduMEI 版本演进史
 
+## f0.3 retrieval rejection maintenance
+
+Reject freshly reranked low-relevance candidates before truncation, validate supplemental originals before allocating their quota, preserve unknown/failure telemetry, and feed only final results to the workspace. Correct current/legacy SDK candidate-budget keywords so the requested pool is not silently limited to the SDK default. Relevance thresholds are model-specific; retrieval success is not proof of answer correctness.
+
 ## v0.3.0（2026-09-30 · 对外版本号 **f0.3**）：四份审计合并整改 —— 停止误删 / 判据归真 / 插件萃取三修 / 服务端五修 / 公开面与容器交付
 
 同版维护（2026-09-30，体验优化）：召回出口采用本次有效重排证据，候选统一评分；同域已确认别名自动对齐，事实问法避免被后加原文挤占。核心项目块按明确确认的新状态自动维护，旧版和来源同事务留档，拒绝冲突及并发覆盖。版本保持 f0.3 / 0.3.0。
 
 同版维护（2026-09-30，reranker 自动生效）：修复显式关闭仍调用、配置缓存导致保存后不生效的问题；每次重排读取最新配置，保留旧配置自动使用语义与编辑时的关闭状态。配置接口拒绝非布尔开关，健康探针区分开启与配置齐备，中英 README 说明触发条件、跳过路径和数量告警边界。新增 15 条行为回归；版本保持 f0.3 / 0.3.0。初次发布时收集 2858 条，维护后收集 2873 条。
 
-依据四份互相独立的审计（内部自审、生产用户视角审计、两份外部审计），逐条核实后收录；外审里与既定裁决冲突、或经核实不成立的条目不进本版。用例总数 2385 → 2915（`pytest --collect-only` 实测：行为 2442 + 脚本/钩子 327 + 守卫 146），每条修复自带负向对照：把改动逐一退回原代码，对应用例全部变红。
+依据四份互相独立的审计（内部自审、生产用户视角审计、两份外部审计），逐条核实后收录；外审里与既定裁决冲突、或经核实不成立的条目不进本版。用例总数 2385 → 2936（`pytest --collect-only` 实测：行为 2463 + 脚本/钩子 327 + 守卫 146），既有审计修复保留逐条负向对照；本次召回补修另有旧服务复现、有效低分拒绝与缺分降级的回归证据。
 
 ### 止血：consolidator 不再在「删除 0/N」的日志下真删
 - **止血**：淘汰默认只预览、按 /delete 四态如实记账；矛盾检测重写并默认只告警；日志单写；墓碑恢复补回向量层。

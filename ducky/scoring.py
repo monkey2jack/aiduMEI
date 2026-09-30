@@ -911,6 +911,7 @@ def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
     # Scores from another query (or stored payload) are not current evidence.
     for item in scored:
         item.pop("_rerank_score", None)
+        item.pop("_rerank_original_verified", None)
     try:
         from ducky.mem0_runtime import rerank as do_rerank
         docs = [_candidate_content_text(it) for it in scored]
@@ -918,23 +919,15 @@ def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
         # otherwise retain their full old score and can outrank reranked hits.
         rr = do_rerank(query, docs, top_n=len(docs))
         if rr:
-            for r in rr:
-                idx = r.get("index", -1)
-                # v20.2.4（F-20）：reranker 送来非有限分时**丢弃这个信号**，
-                # 保留融合分原值 —— 不是当 0 处理（那会把一条好候选压到底，
-                # 等于让外部服务的一次抽风改变排序）。
-                raw_rr = r.get("relevance_score", 0)
-                if isinstance(raw_rr, bool) or not isinstance(raw_rr, (int, float)):
-                    continue
-                rr_score = finite_or(raw_rr, float("nan"))
-                if not math.isfinite(rr_score) or not 0 <= rr_score <= 1:
-                    logger.debug("rerank 返回非有限分，跳过该条回写: idx=%s raw=%r", idx, raw_rr)
-                    continue
-                if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(scored):
-                    old = scored[idx].get("_hybrid_score", 0) or 0
-                    scored[idx]["_hybrid_score"] = round(old * (1 - RERANK_WEIGHT) + rr_score * RERANK_WEIGHT, 4)
-                    scored[idx]["_rerank_score"] = round(rr_score, 4)
-                    rerank_applied = True
+            from ducky.recall_evidence import valid_rerank_scores, filter_rerank_relevance
+            scores = valid_rerank_scores(rr, len(scored))
+            for idx, rr_score in scores.items():
+                old = scored[idx].get("_hybrid_score", 0) or 0
+                scored[idx]["_hybrid_score"] = round(old * (1 - RERANK_WEIGHT) + rr_score * RERANK_WEIGHT, 4)
+                scored[idx]["_rerank_score"] = round(rr_score, 4)
+            rerank_applied = bool(scores)
+            scored[:], gate = filter_rerank_relevance(scored, scores)
+            _set_gate_telemetry(rerank_relevance=gate)
             rr_elapsed = round((time.time() - t_rr_start) * 1000, 1)
             logger.debug("🎯 [Scoring] rerank ok: %d docs -> top %d in %sms", len(docs), len(rr), rr_elapsed)
     except Exception as e:
