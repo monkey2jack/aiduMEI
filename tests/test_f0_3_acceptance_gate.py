@@ -28,6 +28,29 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 ACCEPT = ROOT / "scripts/acceptance_check.sh"
 
+
+def test_workflow_probe_authentication_preserves_the_state_and_error_contract(monkeypatch, capsys):
+    import io
+    import urllib.request
+    source = (ROOT / "scripts/push_gate.sh").read_text()
+    block = source.split('WF_STATE=$("$PY" - <<\'EOF\'\n', 1)[1].split('\nEOF', 1)[0]
+    for token, state in [("", "disabled_manually"), ("fixture-token", "active")]:
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", token)
+        def request(req, timeout):
+            assert req.full_url == "https://api.github.com/repos/monkey2jack/aiduMEI/actions/workflows"
+            assert timeout == 15
+            assert req.get_header("Authorization") == ("Bearer " + token if token else None)
+            return io.StringIO(json.dumps({"workflows": [{"path": ".github/workflows/test.yml", "state": state}]}))
+        monkeypatch.setattr(urllib.request, "urlopen", request)
+        exec(compile(block, "workflow-probe", "exec"), {})
+        assert capsys.readouterr().out == state + "\n"
+    def unavailable(*args, **kwargs):
+        raise OSError("network unavailable")
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    exec(compile(block, "workflow-probe", "exec"), {})
+    assert capsys.readouterr().out == "unreachable\n"
+
 _SHELLS = [pytest.param("/bin/bash", id="bin-bash")]
 if shutil.which("bash"):
     _SHELLS.append(pytest.param(shutil.which("bash"), id="path-bash"))
