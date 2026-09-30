@@ -59,12 +59,14 @@ def test_all_candidates_reranked_and_only_valid_indices_apply(monkeypatch):
     calls = []
     def rank(q, docs, top_n):
         calls.append(top_n)
-        return [{"index": True, "relevance_score": 0.99},
+        return [{"index": 0, "relevance_score": True},
+                {"index": True, "relevance_score": 0.99},
                 {"index": 3, "relevance_score": 0.95}]
     monkeypatch.setattr(runtime, "rerank", rank)
     rows = [candidate() for _ in range(4)]
     assert scoring._apply_rerank("new query", rows, 1)
     assert calls == [4] and "_rerank_score" not in rows[1]
+    assert "_rerank_score" not in rows[0]
     assert rows[3]["_rerank_score"] == 0.95
 
 

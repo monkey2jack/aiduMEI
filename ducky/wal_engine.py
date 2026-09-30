@@ -612,6 +612,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "facts":            ("clean",  "作用域谓词删除（§3）"),
     "memory_types":     ("clean",  "fact 引用 + 可见租户契约双路删除（§3/§3b）"),
     "core_memory":      ("clean",  "可见租户契约删除（§8，v20.1 整改轮补齐；此前正本残留且被 inject_context 持续注入 —— 外审 w P0 / 自报 4.1）"),
+    "core_memory_revisions": ("clean", "Full-text core history is erased by exact user/bank scope with core blocks (§8)"),
     "refined_memories": ("clean",  "user 轴删除（§9，v20.1 整改轮补齐）。该表无 bank 列（v20 已登记限制 9c）：清任一 bank 会清掉该租户全部整合账本，宁可域内多删不留隐私残留，已文档化"),
     "checkpoints":      ("exempt", "按 user_id/bank_id 归属的会话快照，delete_all 显式保留并在 not_cleared 列出；随每域 MAX_SESSIONS=5 滚动，/api/checkpoint/cleanup 按域清理旧快照。保留策略沿用既有裁决，租户轴已于 v20.4 接入"),
     "memory_banks":     ("exempt", "bank 注册表：行是「域存在过」的元数据不含记忆内容；删除域数据不注销域名，避免删除后同名域立刻复用造成审计断代"),
@@ -1772,6 +1773,8 @@ def _cascade_all_core_memory(scope: Any, res: Dict[str, Any], layer_failed: Any)
                 "DELETE FROM core_memory WHERE " + owner_sql + " AND bank_id=?",
                 (*owner_params, scope.bank_id),
             )
+            from ducky.core_maintenance import delete_revisions
+            res["core_memory_revisions_deleted"] = delete_revisions(cconn, scope)
             cconn.commit()
             res["core_memory_deleted"] = int(cur.rowcount or 0)
         finally:
