@@ -262,6 +262,7 @@ def test_cascade_delete_empty_user_rejected():
 
 def test_hooks_present_in_hot_paths():
     """/add /search wal_engine 三处钩子必须存在"""
+    import inspect
     with open(os.path.join(_REPO_ROOT, "ducky", "hot", "add.py"), encoding="utf-8") as f:
         add_src = f.read()
     assert "store_verbatim" in add_src
@@ -269,7 +270,9 @@ def test_hooks_present_in_hot_paths():
     with open(os.path.join(_REPO_ROOT, "ducky", "hot", "search.py"), encoding="utf-8") as f:
         search_src = f.read()
     assert "verbatim_search" in search_src
-    assert "fuse_verbatim" in search_src
+    assert "merge_originals" in search_src
+    from ducky import verbatim_relevance
+    assert "fuse_verbatim" in inspect.getsource(verbatim_relevance)
 
     with open(os.path.join(_REPO_ROOT, "ducky", "wal_engine.py"), encoding="utf-8") as f:
         wal_src = f.read()

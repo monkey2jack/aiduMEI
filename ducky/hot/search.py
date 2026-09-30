@@ -282,6 +282,7 @@ def compute_recall_verdict(
     *,
     vector_leg_failed: bool = False,
     recall_path: str = "hybrid",
+    verified_original: bool = False,
 ) -> tuple[str, str]:
     """三态判定：(verdict, basis)。判定顺序就是契约 —— degraded 先于 not_found。
 
@@ -295,6 +296,8 @@ def compute_recall_verdict(
         if vector_leg_failed or recall_path == "mem0_degraded":
             return "degraded", "empty_after_leg_failure"
         return "not_found", "empty_results"
+    if verified_original:
+        return "found", "rerank_verified_original"
     if threshold > 0.0 and (top_score is None or top_score < threshold):
         return "not_found", "below_threshold"
     return "found", "scored"
@@ -496,8 +499,8 @@ def register_search_routes(app: FastAPI) -> None:
             # 在既有召回结果之上，并行检索原文层并融合返回（主干优先、保留配额、
             # 失败干净降级）。让召回的不只是蒸馏后的事实，还有说过的原话。
             try:
-                from ducky.verbatim_vault import verbatim_search, fuse_verbatim
-                v_hits = verbatim_search(req.query, uid, limit=effective_limit, bank_id=bank_id)
+                from ducky.verbatim_vault import verbatim_search
+                v_hits = verbatim_search(req.query, uid, limit=max(20, effective_limit), bank_id=bank_id)
                 # v21.2 M2：原文腿在打分**之后**融合，绕过了 scoring 里的回声
                 # 抑制 —— 不在这里补一刀，向量腿滤掉的那句话会被原文腿原样送
                 # 回来（实机冒烟实测到的漏网）。verbatim 行自带 session_id，
@@ -509,15 +512,10 @@ def register_search_routes(app: FastAPI) -> None:
                         v_hits = [h for h in v_hits
                                   if str(h.get("session_id") or "") != _sid]
                 if v_hits:
-                    results = fuse_verbatim(results, v_hits, limit=effective_limit, query=req.query)
+                    from ducky.verbatim_relevance import merge_originals
+                    results = merge_originals(results, v_hits, req.query, effective_limit, uid, bank_id)
             except Exception as _ve:
                 logger.debug(f"📼 [VerbatimVault] 原文融合跳过: {_ve}")
-
-            try:
-                from ducky.memory_workspace import ws_feed_from_results
-                ws_feed_from_results(uid, results, bank_id=bank_id)
-            except ImportError:
-                pass
 
             # v20 P0-4：召回路径与 rerank 三态随响应返回——「降级裸搜」和
             # 「重排序其实没生效」此前只活在服务端日志里，调用方无从察觉。
@@ -529,6 +527,11 @@ def register_search_routes(app: FastAPI) -> None:
             # v20：召回强度随响应下发。整改前「5 条 0.66」和「5 条 0.42」
             # 在响应里长得一模一样，调用方无从判断这批东西值不值得信。
             strength = _final_recall_strength(results, _main_strength, _allow_rr)
+            try:
+                from ducky.memory_workspace import ws_feed_from_results
+                ws_feed_from_results(uid, results, bank_id=bank_id)
+            except ImportError:
+                pass
             if strength["dropped"]:
                 logger.info("召回下限过滤掉 %d 条（floor=%s, top=%s）",
                             strength["dropped"], strength["floor"], strength["top_score"])
@@ -548,6 +551,7 @@ def register_search_routes(app: FastAPI) -> None:
                         and not results)
                 ),
                 recall_path=recall_path,
+                verified_original=any(row.get("_rerank_original_verified") is True for row in results),
             )
             if verdict == "degraded":
                 logger.warning("召回判语 degraded：%s（vector_leg=%s）",

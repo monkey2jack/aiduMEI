@@ -41,7 +41,8 @@ def _fetch_candidate_pool(memory, query: str, user_id: str, bank_id: str, limit:
         # 🔴v20：默认域不下推 bank_id（存量向量 payload 无此字段，下推即清零），
         # 命名域下推；两种情况都在拿到候选后按域复筛。
         from ducky.bank_contract import vector_item_in_bank, vector_scope_filters
-        candidates_raw = memory.search(query, filters=vector_scope_filters(user_id, bank_id), limit=limit * MAX_CANDIDATE_MULT)
+        from ducky.search_candidates import search_candidates
+        candidates_raw = search_candidates(memory, query, filters=vector_scope_filters(user_id, bank_id), limit=limit * MAX_CANDIDATE_MULT)
         # mem.search 在 BM25/混合召回内部失败时可能返回 None，必须安全降级。
         if candidates_raw is None:
             logger.warning("候选池: mem.search 返回 None，降级到 hybrid_search")

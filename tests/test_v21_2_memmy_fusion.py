@@ -148,11 +148,11 @@ def test_m2_search_route_filters_verbatim_echo():
     from ducky.hot import search as hs
     src = inspect.getsource(hs)
     i = src.find("verbatim_search(")
-    j = src.find("fuse_verbatim(", i)
+    j = src.find("merge_originals(", i)
     assert i != -1 and j != -1, "原文融合段落找不到 —— 守卫失去着力点"
     between = src[i:j]
     assert "echo_suppress_enabled" in between and "session_id" in between, (
-        "verbatim_search 与 fuse_verbatim 之间没有回声过滤 —— "
+        "verbatim_search 与 merge_originals 之间没有回声过滤 —— "
         "打分后融合的腿会把滤掉的那句话原样送回")
 
 
