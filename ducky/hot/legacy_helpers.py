@@ -163,6 +163,18 @@ def _extract_key_facts(category: str, limit: int = 100,
         conn.close()
     return [dict(r) for r in rows]
 
+def _scoped_entity_id(cur, name, user_id, bank_id):
+    """Legacy global name uniqueness must never force a cross-scope link."""
+    from ducky.bank_contract import make_scope
+    from ducky.scope_sql import scope_clause
+    clause, params = scope_clause(make_scope(user_id, bank_id))
+    cur.execute("INSERT OR IGNORE INTO entities (name,entity_type,user_id,bank_id) "
+                "VALUES (?,'auto',?,?)", (name, user_id, bank_id))
+    row = cur.execute("SELECT entity_id FROM entities WHERE name=? " + clause,
+                      (name, *params)).fetchone()
+    return row[0] if row else None
+
+
 def _auto_extract_and_link(fact_id: int, text: str, conn=None, *,
                            user_id: str = "default", bank_id: str = "default") -> list[str]:
     """新增 fact 后自动提取实体并链接。
@@ -189,9 +201,10 @@ def _auto_extract_and_link(fact_id: int, text: str, conn=None, *,
             row = cur.execute("SELECT entity_id FROM entities WHERE name=?", (ent_name,)).fetchone()
         if row: eid = row[0]
         elif _scoped:
-            cur.execute("INSERT INTO entities (name,entity_type,user_id,bank_id) VALUES (?,'auto',?,?)",
-                        (ent_name, uid, bid))
-            eid = cur.lastrowid
+            eid = _scoped_entity_id(cur, ent_name, uid, bid)
+            if eid is None:
+                logger.debug("Legacy entity name conflict; fact retained without cross-scope link")
+                continue
         else:
             cur.execute("INSERT INTO entities (name,entity_type) VALUES (?,'auto')", (ent_name,))
             eid = cur.lastrowid

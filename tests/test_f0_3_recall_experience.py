@@ -139,3 +139,18 @@ def test_fresh_rerank_requires_current_hybrid_telemetry(monkeypatch):
     assert _fresh_rerank_allowed("cache") is False
     monkeypatch.setattr(runtime, "last_rerank_telemetry", lambda: {"status": "error", "applied": True})
     assert _fresh_rerank_allowed("hybrid") is False
+
+
+def test_legacy_global_entity_name_does_not_break_write_or_cross_link(monkeypatch):
+    from ducky.hot import legacy_helpers as helpers
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE entities(entity_id INTEGER PRIMARY KEY, name TEXT UNIQUE, entity_type TEXT, user_id TEXT, bank_id TEXT)")
+    conn.execute("CREATE TABLE fact_entities(fact_id INTEGER, entity_id INTEGER, UNIQUE(fact_id, entity_id))")
+    monkeypatch.setattr(helpers, "_extract_entities", lambda text: ["ProjectAtlas"])
+    assert helpers._auto_extract_and_link(1, "ProjectAtlas", conn, user_id="alice", bank_id="work") == ["ProjectAtlas"]
+    assert helpers._auto_extract_and_link(2, "ProjectAtlas", conn, user_id="bob", bank_id="work") == []
+    assert helpers._auto_extract_and_link(3, "ProjectAtlas", conn, user_id="alice", bank_id="home") == []
+    assert helpers._auto_extract_and_link(4, "ProjectAtlas", conn, user_id="alice", bank_id="work") == ["ProjectAtlas"]
+    assert [r[0] for r in conn.execute("SELECT fact_id FROM fact_entities ORDER BY fact_id")] == [1, 4]
+    assert conn.execute("SELECT count(*) FROM entities").fetchone()[0] == 1
+    conn.close()
