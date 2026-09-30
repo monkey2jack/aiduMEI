@@ -290,7 +290,7 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 - **换词检索**：低原始分候选只有本次重排分达到独立门槛、融合分也过底线才可保留。`_recall_strength.rerank_rescued` 记录数量，`decision_score` 用于判语，原始 `top_score` 保留。`AIDUMEI_RERANK_RESCUE_THRESHOLD` 默认0.9，需按模型的正负样本校准；它不是概率。所有候选统一重排，缓存与失败调用不复用旧重排分。
 - **实体别名**：自动读取同一 user/bank 已登记的 `entities.aliases`，或 `category=entity_alias` 的已确认事实（`fact_key` 为正式名称，`fact_value` 为 JSON 别名数组，`epistemic_mode=user_provided`，置信度至少90，未归档或失效）。未知与歧义映射不猜测，个人姓名不写进公共代码。
 - **事实与原话**：事实/决策问法保留已通过检查的主干结果，原文补足剩余位置；明确问原话、对话或日记时仍保留原文配额，不删除源记录。
-- **核心项目状态**：宿主确认完整项目状态后，通过既有事实接口记录 `category=core_memory`、`fact_key=core_current_project`、`fact_value=完整状态`。既有后台维护周期自动采用同域、`user_provided`、置信度至少90、未归档/取代/过期的新证据；推断、零散日记与冲突状态不覆盖核心块，不盲刷时间。旧版和证据同事务留档，防止并发覆盖。
+- **核心项目状态**：宿主确认完整项目状态后，通过既有事实接口记录 `category=core_memory`、`fact_key=core_current_project`、`fact_value=完整状态`。既有后台维护周期自动采用同域、`user_provided`、置信度至少90、未归档/取代/过期的新证据；推断、零散日记与冲突状态不覆盖核心块，不盲刷时间。旧版和证据同事务留档，防止并发覆盖；清空该域记忆时同时删除历史正文。
 - `POST /api/core-memory/core_current_project/refresh` 可提前处理已确认状态，`GET /api/core-memory/{block_key}/history` 查看历史。两接口遵循调用方及记忆域权限。缺少确认时陈旧告警保留，直到内容被真正核验。
 
 ## 测试与质量
@@ -300,8 +300,8 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **2913**（`pytest --collect-only` 实测，2026-09-30，f0.3 树）＝ **行为用例 2440（产品代码直测）+ 脚本/钩子行为 327 + 守卫用例 146（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——头条不用混合数 |
-| 独立开发机 | 2901 通过 · **12 跳过** —— **2026-09-30 收集口径**（f0.3 树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
+| 用例总数 | **2914**（`pytest --collect-only` 实测，2026-09-30，f0.3 树）＝ **行为用例 2441（产品代码直测）+ 脚本/钩子行为 327 + 守卫用例 146（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——头条不用混合数 |
+| 独立开发机 | 2902 通过 · **12 跳过** —— **2026-09-30 收集口径**（f0.3 树，Python 3.12；完整 extras + 模型缓存，只缺 Hermes 宿主） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，Python 3.12） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（本树 `de09794`，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
@@ -317,7 +317,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **为什么要把 2901 和 1967 都写出来**：2901 是本树开发环境 2026-09-30 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 2902 和 1967 都写出来**：2902 是本树开发环境 2026-09-30 的收集口径（缺宿主 ×12）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条不是玄学，自己就能验**：十三条跳过轴（宿主、工具、可选依赖、模型文件）全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
@@ -326,12 +326,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：2901 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2913 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2901 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：2902 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 有宿主：2914 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 2902 passed, 12 skipped
 > ```
 >
-> 上面代码块里的 `有宿主：2913 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
+> 上面代码块里的 `有宿主：2914 passed` 要**十三条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。
 
 > **跳过轴全量登记**（门控条数与实测逐行对账，改一条这里就红）：
 >
