@@ -908,10 +908,15 @@ def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
     """
     t_rr_start = time.time()
     rerank_applied = False
+    # Scores from another query (or stored payload) are not current evidence.
+    for item in scored:
+        item.pop("_rerank_score", None)
     try:
         from ducky.mem0_runtime import rerank as do_rerank
         docs = [_candidate_content_text(it) for it in scored]
-        rr = do_rerank(query, docs, top_n=min(len(docs), limit * 2))
+        # Every candidate competes on the same scale. Unreturned candidates
+        # otherwise retain their full old score and can outrank reranked hits.
+        rr = do_rerank(query, docs, top_n=len(docs))
         if rr:
             for r in rr:
                 idx = r.get("index", -1)
@@ -920,14 +925,14 @@ def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
                 # 等于让外部服务的一次抽风改变排序）。
                 raw_rr = r.get("relevance_score", 0)
                 rr_score = finite_or(raw_rr, float("nan"))
-                if not math.isfinite(rr_score):
+                if not math.isfinite(rr_score) or not 0 <= rr_score <= 1:
                     logger.debug("rerank 返回非有限分，跳过该条回写: idx=%s raw=%r", idx, raw_rr)
                     continue
-                if 0 <= idx < len(scored):
+                if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(scored):
                     old = scored[idx].get("_hybrid_score", 0) or 0
                     scored[idx]["_hybrid_score"] = round(old * (1 - RERANK_WEIGHT) + rr_score * RERANK_WEIGHT, 4)
                     scored[idx]["_rerank_score"] = round(rr_score, 4)
-            rerank_applied = True
+                    rerank_applied = True
             rr_elapsed = round((time.time() - t_rr_start) * 1000, 1)
             logger.debug("🎯 [Scoring] rerank ok: %d docs -> top %d in %sms", len(docs), len(rr), rr_elapsed)
     except Exception as e:

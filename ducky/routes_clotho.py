@@ -54,6 +54,22 @@ def _authorize_scope(user_id: str, bank_id: str, caller_user_id: str,
 def register_clotho_routes(app: FastAPI) -> None:
     """注册 CoreMemory、Checkpoint 与 AutoDream API。"""
 
+    @app.get("/api/core-memory/{block_key}/history")
+    def api_core_memory_history(block_key: str, user_id: str = DEFAULT_USER_ID,
+                                bank_id: str = DEFAULT_BANK_ID, caller_user_id: str = ""):
+        scope = make_scope(user_id, bank_id)
+        _authorize_scope(scope.user_id, scope.bank_id, caller_user_id)
+        from ducky.core_maintenance import revision_history
+        return {"status": "ok", "revisions": revision_history(block_key, scope.user_id, scope.bank_id)}
+
+    @app.post("/api/core-memory/core_current_project/refresh")
+    def api_core_project_refresh(user_id: str = DEFAULT_USER_ID,
+                                bank_id: str = DEFAULT_BANK_ID, caller_user_id: str = ""):
+        scope = make_scope(user_id, bank_id)
+        _authorize_scope(scope.user_id, scope.bank_id, caller_user_id, action="write")
+        from ducky.core_maintenance import project_refresh
+        return project_refresh(scope.user_id, scope.bank_id)
+
     @app.get("/api/core-memory")
     def api_core_memory_get(
         user_id: str = DEFAULT_USER_ID,
