@@ -924,6 +924,8 @@ def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
                 # 保留融合分原值 —— 不是当 0 处理（那会把一条好候选压到底，
                 # 等于让外部服务的一次抽风改变排序）。
                 raw_rr = r.get("relevance_score", 0)
+                if isinstance(raw_rr, bool) or not isinstance(raw_rr, (int, float)):
+                    continue
                 rr_score = finite_or(raw_rr, float("nan"))
                 if not math.isfinite(rr_score) or not 0 <= rr_score <= 1:
                     logger.debug("rerank 返回非有限分，跳过该条回写: idx=%s raw=%r", idx, raw_rr)

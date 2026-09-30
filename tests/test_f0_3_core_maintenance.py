@@ -164,3 +164,18 @@ def test_refresh_and_history_routes_enforce_read_and_write_grants(monkeypatch):
     params["caller_user_id"] = "alice"
     assert client.post(refresh, params=params).json()["status"] == "updated"
     assert calls == [("alice", "work")]
+
+
+def test_delete_all_erases_core_history_in_exact_scope(db):
+    from ducky.bank_contract import make_scope
+    from ducky.wal_engine import _cascade_all_core_memory
+    core.put_block("core_current_project", "Project Boreal remains confidential.", "bob", "work")
+    core.put_block("core_current_project", "Project Atlas home record remains private.", "alice", "home")
+    before_bob = maintenance.revision_history("core_current_project", "bob", "work")
+    before_home = maintenance.revision_history("core_current_project", "alice", "home")
+    result, failures = {}, []
+    _cascade_all_core_memory(make_scope("alice", "work"), result, lambda *args: failures.append(args))
+    assert not failures and result["core_memory_revisions_deleted"] >= 1
+    assert maintenance.revision_history("core_current_project", "alice", "work") == []
+    assert maintenance.revision_history("core_current_project", "bob", "work") == before_bob
+    assert maintenance.revision_history("core_current_project", "alice", "home") == before_home

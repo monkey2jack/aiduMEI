@@ -172,3 +172,13 @@ def revision_history(block_key: str, user_id: str, bank_id: str) -> list:
         (block_key, *params),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def delete_revisions(conn, scope) -> int:
+    """Full-text history follows the owner's delete_all contract, atomically."""
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='core_memory_revisions'").fetchone()
+    if not exists:
+        return 0
+    clause, params = scope_clause(scope)
+    return conn.execute("DELETE FROM core_memory_revisions WHERE 1=1 " + clause, params).rowcount
