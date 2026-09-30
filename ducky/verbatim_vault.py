@@ -627,6 +627,25 @@ def verbatim_search(
 # 融合 — 原文证据并入召回结果
 # ─────────────────────────────────────────────────────────────
 
+def _prefer_ranked_facts(query: str) -> bool:
+    import re
+    from ducky.scoring import is_fact_seeking_query
+    wants_original = re.search(
+        r"原话|原文|日记|对话|回忆|回顾|逐字|verbatim|diary|transcript", query, re.I)
+    return is_fact_seeking_query(query) and not wants_original
+
+
+def _limit_fused_results(results, fresh, limit, query):
+    if limit and limit > 0:
+        if _prefer_ranked_facts(query):
+            return results[:limit] + fresh[:max(0, limit - len(results))]
+        quota = max(VERBATIM_FUSE_MIN_QUOTA, limit // VERBATIM_FUSE_QUOTA_RATIO)
+        fresh = fresh[:quota]
+        if len(results) + len(fresh) > limit:
+            results = results[:max(0, limit - len(fresh))]
+    return results + fresh
+
+
 def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: str = "") -> list:
     """把原文证据融合进既有召回结果。
 
@@ -685,13 +704,8 @@ def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: st
         if not fresh:
             return results
 
-        if limit and limit > 0:
-            quota = max(VERBATIM_FUSE_MIN_QUOTA, limit // VERBATIM_FUSE_QUOTA_RATIO)
-            fresh = fresh[:quota]
-            if len(results) + len(fresh) > limit:
-                results = results[: max(0, limit - len(fresh))]
+        return _limit_fused_results(results, fresh, limit, query)
 
-        return results + fresh
     except Exception as exc:
         logger.debug("fuse_verbatim 降级返回原结果: %s", exc)
         return results
