@@ -36,6 +36,7 @@
 
   "_rerank_optional": "可选。配置后混合检索会走 rerank 精排；不配则自动跳过。",
   "rerank": {
+    "enabled": true,
     "provider": "openai_compatible",
     "config": {
       "model": "your-rerank-model",
