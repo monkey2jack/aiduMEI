@@ -1,21 +1,28 @@
 # aiduMEI 版本演进史
 
-## v0.3.0+decision.1 (f0.3+)
+## f0.3+（2026-10-04；包版本 0.3.0+decision.1）
 
-用例总数 2937 → 2990。
+用例总数 2937 → 3010；发布复核新增 20 条模型切换、版本解析、凭据迁移和熔断容量回归。
 
 - 可选决策通道自动分类及证据核验；保留原话路由与故障回退。
 - Hermes 检索自动允许 6 秒 HTTP 等待，核心块维持 1.5 秒；保留显式超时设置，避免正常决策调用被宿主截断。
 - 宿主注入保留类型标记；明确请求原话时，原文保留最多 500 字并标明截断，其余条目维持 120 字预算。
 
-Add an opt-in Nace/Drex 1.5 decision adapter with automatic task configuration.
+客户自行选择决策模型，可选 Nace、TypeSafe 或兼容的 System One 服务，不指定必须使用某个模型。默认关闭，配置供应商、模型、地址、密钥、任务及用户范围后自动生效；支持单独启用分类或检索。共享协议适配器代替写死 Drex 的实现，模型版本严格核对，移动别名记录实际版本；供应商/地址切换须显式填写配置和密钥，避免把旧密钥静默送往新地址。失败熔断表也有容量上限。
+
+**我们采用 Drex 1.5 进行测试。** 分类留出集：原有 LLM 22/24 → Drex 23/24；调用 p50 3018ms → 665ms，减少 2353ms（约 78.0%）。同代码真实 HTTP A/B：检索判定 45/50 → 49/50（+8 个百分点）；无答案正确空结果 8/12 → 12/12。50 题含 32 题诊断回放与 18 题新样本，原话命中均为 11/12；不代表生产最终回答准确率或其他模型效果。检索 p50 417.975ms → 702.10ms（慢约 68.0%），p95 619.26ms → 1363.55ms（慢约 120.2%）；没有吞吐量提速证据。
+
+缓解回归：自动按任务/用户选路，高分宽泛查询跳过、具体属性核验、原话及混合引用保护；每阶段 12 候选上限，60 秒成功缓存，2 并发，忙时立即回退，3 次失败后 30 秒熔断；缺分/故障/超长文本保留基线，本地挡阻止外呼。宿主检索超时独立配置，类型标签与原文预算改善证据交付。这些改动避免早期全量核验的原话误拒与宿主过早超时，但尚未消除检索时延代价。Embedding、提取、索引、关系和破坏性操作未新增决策写入。[测量口径、早期负收益及体验边界](docs/DECISION_EVALUATION.md)。
+
+Add an opt-in, customer-selected System One decision adapter with automatic task configuration.
 New memory types can use confidence-gated classification; ambiguous retrieval
 candidates can receive a scoped answer-support check before final slots. Retain
 rerank ordering and the existing original-wording checks. Add bounded concurrency,
 successful-response caching, failure circuit and explicit fallback telemetry.
 Local engine mode blocks this provider. Embedding, extraction and destructive
-memory operations do not acquire decision writes. This is a production-test build;
-public Release and PyPI publication remain separate.
+memory operations do not acquire decision writes. Release title and tag are
+exactly `f0.3+`; the valid package identity is `0.3.0+decision.1`. No PyPI upload
+is part of this release.
 
 ## f0.3 retrieval rejection maintenance
 

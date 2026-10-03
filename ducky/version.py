@@ -9,7 +9,7 @@ v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 �
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
 v0.3.0+decision.1 (对外 f0.3+ · 可选决策任务 · 2026-10-03)
-    用例总数 2937 → 2990。
+    用例总数 2937 → 3010。
     1. 可选通道自动分类及证据核验；原话保护、故障回退和隔离，详见 CHANGELOG。
     2. Hermes 检索默认等待 6 秒；核心块保持 1.5 秒，显式超时仍有效。
     3. 注入保留记忆类型；原话请求的原文最多 500 字，截断明确标记。
@@ -444,7 +444,7 @@ from __future__ import annotations
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
 SERVICE_VERSION = "0.3.0+decision.1"
 FULL_VERSION = "f0.3+"
-PUBLIC_RELEASE_VERSION = "f0.3"
+PUBLIC_RELEASE_VERSION = "f0.3+"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.

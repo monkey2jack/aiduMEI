@@ -12,6 +12,11 @@ import time
 from urllib.parse import urlsplit
 
 MODEL = "drex-v1.5"
+DEFAULTS = {
+    "nace": (MODEL, "https://drex.nace.ai/v1"),
+    "typesafe": ("jev-1.13.0", "https://api.typesafe.ai/v1"),
+    "systemone": (None, None),
+}
 TASKS = {"memory_type", "retrieval"}
 _ORIGINAL = re.compile(r"原话|原文|逐字|一字不差|quote|verbatim|exact wording", re.I)
 _SPECIFIC = re.compile(r"哪|何|几|多少|日期|时间|生日|星座|邮箱|序列号|哈希|密码|谁|\b(?:when|what|which|who|whether)\b", re.I)
@@ -35,9 +40,18 @@ def validate(section: dict) -> str | None:
         return "decision.config must be an object"
     if set(cfg) - {"model", "openai_base_url", "api_key", "tasks", "users", "timeout_ms", "threshold", "mode", "_note"}:
         return "unknown decision config field"
-    if cfg.get("model", MODEL) != MODEL:
-        return "nace decision model must be pinned to drex-v1.5"
-    url = urlsplit(str(cfg.get("openai_base_url", "https://drex.nace.ai/v1")))
+    default_model, default_url = DEFAULTS[section.get("provider", "nace")]
+    model = cfg.get("model", default_model)
+    if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", model):
+        return "decision.model requires a model ID"
+    endpoint = cfg.get("openai_base_url", default_url)
+    if not isinstance(endpoint, str):
+        return "decision endpoint requires an HTTPS URL"
+    try:
+        url = urlsplit(endpoint)
+        url.port
+    except ValueError:
+        return "invalid decision endpoint"
     if url.scheme != "https" or not url.netloc or url.username or url.password or url.query or url.fragment:
         return "decision endpoint requires an HTTPS URL without credentials"
     return _validate_options(cfg)
@@ -76,8 +90,9 @@ def settings() -> dict:
             return {"status": "config_error"}
         cfg = dict(section.get("config", {}))
         cfg.update(provider=section.get("provider", "nace"), enabled=section.get("enabled", False))
-        cfg.setdefault("model", MODEL)
-        cfg.setdefault("openai_base_url", "https://drex.nace.ai/v1")
+        default_model, default_url = DEFAULTS[cfg["provider"]]
+        cfg.setdefault("model", default_model)
+        cfg.setdefault("openai_base_url", default_url)
         cfg["api_key"] = os.getenv("AIDUMEI_DECISION_API_KEY") or cfg.get("api_key") or ""
         cfg.setdefault("tasks", {"memory_type": True, "retrieval": True})
         cfg.setdefault("timeout_ms", 2000)
@@ -136,7 +151,7 @@ def health() -> dict:
             "decision_metrics": metrics}
 
 
-def _nace(cfg: dict, state: dict, questions: dict) -> dict:
+def _systemone(cfg: dict, state: dict, questions: dict) -> dict:
     from ducky.engine_mode import cloud_egress_allowed
     if not cloud_egress_allowed("decision"):
         return {"model": cfg["model"], "answers": {}}
@@ -148,12 +163,23 @@ def _nace(cfg: dict, state: dict, questions: dict) -> dict:
     if response.status_code != 200:
         raise ValueError("decision HTTP error")
     data = response.json()
-    if not isinstance(data, dict) or data.get("model") != cfg["model"] or not isinstance(data.get("answers"), dict):
+    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
         raise ValueError("invalid decision response")
+    actual = data.get("model")
+    requested = cfg["model"]
+    # Pin versioned IDs exactly; documented moving aliases may resolve within
+    # their model family. Never silently accept a different model family.
+    alias = requested.endswith(("-latest", "-preview"))
+    family = requested.rsplit("-", 1)[0]
+    resolved_alias = (alias and isinstance(actual, str)
+                      and re.fullmatch(re.escape(family) + r"-v?\d+(?:\.\d+){1,3}", actual))
+    if actual != requested and not resolved_alias:
+        raise ValueError("decision model mismatch")
     return data
 
 
-PROVIDERS = {"nace": _nace}
+_nace = _systemone  # Existing private integrations may import this adapter.
+PROVIDERS = {name: _systemone for name in DEFAULTS}
 
 
 def decide(task: str, state: dict, questions: dict, user_id: str, bank_id: str, cfg: dict | None = None) -> tuple[dict, dict]:
@@ -172,7 +198,8 @@ def decide(task: str, state: dict, questions: dict, user_id: str, bank_id: str, 
         else:
             data = None
     if data is not None:
-        return data["answers"], _record(task, "cached", model=cfg["model"], applied=True, latency_ms=0)
+        return data["answers"], _record(task, "cached", model=data.get("model", cfg["model"]),
+                                        requested_model=cfg["model"], applied=True, latency_ms=0)
     if circuit[1] > now:
         return {}, _record(task, "circuit_open", applied=False)
     if not _slots.acquire(blocking=False):
@@ -187,13 +214,16 @@ def decide(task: str, state: dict, questions: dict, user_id: str, bank_id: str, 
             _cache[key] = (time.monotonic() + 60, data)
             while len(_cache) > 128:
                 _cache.popitem(last=False)
-        return data["answers"], _record(task, "ok", model=cfg["model"], applied=True,
+        return data["answers"], _record(task, "ok", model=data.get("model", cfg["model"]),
+                                       requested_model=cfg["model"], applied=True,
                                        latency_ms=round((time.perf_counter() - start) * 1000, 1),
                                        input_tokens=(data.get("usage") or {}).get("input_tokens", 0))
     except Exception as exc:
         with _lock:
             count = _circuits.get(fingerprint, (0, 0))[0] + 1
             _circuits[fingerprint] = (count, time.monotonic() + 30 if count >= 3 else 0)
+            while len(_circuits) > 32:
+                _circuits.pop(next(iter(_circuits)))
         return {}, _record(task, "error_fallback", applied=False, error_type=type(exc).__name__,
                            latency_ms=round((time.perf_counter() - start) * 1000, 1))
     finally:

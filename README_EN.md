@@ -9,9 +9,9 @@
 > Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.3**.
+> The current public release is **f0.3+**.
 
-> This tree is the **f0.3+** test build (`0.3.0+decision.1`). The optional decision channel automatically classifies new memories and checks ambiguous recall evidence after initial configuration. Rerank remains in place; original-wording requests bypass the new rejection check. Failures fall back and local mode makes no decision calls. See [decision configuration and limits](docs/DECISION.md).
+> **f0.3+ adds optional decision-model configuration** (`0.3.0+decision.1` package identity). Customers choose the provider, model, endpoint, key and tasks, or leave it disabled. Configured tasks run automatically for new-memory classification and recall evidence checks. Nace, TypeSafe and compatible System One services are supported; Drex is not mandatory. Rerank continues to rank; local mode makes no decision calls. See [configuration and compatibility](docs/DECISION.md).
 >
 > **About the `f`**: this is a new era, not a continuation of the old numbering. `f` stands for
 > **future / fantasy / forever** — what we want to build is not a bigger cache, but a memory that
@@ -23,6 +23,22 @@
 > Checking out a tag ≠ a releasable build; `pyproject.toml` is the source of truth.
 
 ---
+
+## f0.3+: measured benefits and costs
+
+**We used Drex 1.5 for testing.** These small internal experiments do not establish another model's performance or production answer accuracy. Revalidate tasks and thresholds after switching models.
+
+| Measurement | Without decision model | With decision model | Change |
+|---|---:|---:|---:|
+| Type accuracy, 24 held-out memories, existing LLM baseline | 22/24 (91.67%) | 23/24 (95.83%) | One additional correct label; +4.17 percentage points |
+| Classification call p50 | 3018ms | 665ms | 2353ms lower; about 78.0% |
+| Correct retrieval judgments, same-code HTTP A/B, 50 questions | 45/50 (90%) | 49/50 (98%) | +8 percentage points |
+| Correct empty results for unknown answers | 8/12 (66.67%) | 12/12 (100%) | +33.33 percentage points |
+| Full retrieval p50 / p95 | 417.975 / 619.26ms | 702.10 / 1363.55ms | 284.125 / 744.29ms higher |
+
+Classification was faster and unknown-answer rejection improved; **retrieval p50 increased about 68.0%, p95 about 120.2%**. The 50 questions include 32 diagnostic replays and 18 fresh cases (17/18 → 18/18), across 12 related families, not 50 independent production samples. Original-wording hits were 11/12 in both arms. One additional correct classification is insufficient to establish a stable accuracy advantage. Throughput was not measured; no decision-induced speedup is demonstrated for embedding, extraction or indexing. See [methods and retained failures](docs/DECISION_EVALUATION.md).
+
+Automatic routing limits overhead: high-scoring broad queries bypass checks; specific attributes still need support. Original and mixed quote requests retain existing gates and bypass the added rejection. Each stage checks at most 12 candidates, caches successful responses for 60 seconds with user/bank/model/config/content isolation, permits at most two concurrent calls, falls back immediately when busy, and opens a 30-second circuit after three failures. Missing scores, long text and failures preserve the baseline. Classification and retrieval can be disabled separately. The host search deadline is separated from the core-memory deadline to avoid prematurely cutting off healthy calls. **These measures mitigate overhead; measured retrieval latency remains higher.**
 
 ## YouiSi: MEI is more than "beauty"
 
@@ -314,8 +330,8 @@ Example section to insert in the configuration file (use your own service settin
 
 | Dimension | Current |
 |------|------|
-| Total cases | **2990** (measured via `pytest --collect-only`, 2026-10-03, f0.3+ tree) = **2510 behavior (product code under direct test) + 334 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 2978 passed · **12 skipped** — **collected 2026-10-03** (f0.3+ tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **3010** (measured via `pytest --collect-only`, 2026-10-04, f0.3+ tree) = **2530 behavior (product code under direct test) + 334 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 2998 passed · **12 skipped** — **collected 2026-10-04** (f0.3+ tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
@@ -331,7 +347,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 2978 and 1821**: the first is the 2026-10-03 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 2998 and 1821**: the first is the 2026-10-04 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
 > **Those 12 skips are not hand-waving — you can verify them yourself**: all thirteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
@@ -340,12 +356,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 2978 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 2990 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2978 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 2998 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 3010 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 2998 passed, 12 skipped
 > ```
 >
-> `2990 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `3010 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >
