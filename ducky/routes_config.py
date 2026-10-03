@@ -72,12 +72,25 @@ def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, o
 
 
 def _validate_decision_fields(cfg: dict, body: dict, old: dict) -> str | None:
-    from ducky.decision import validate
+    from ducky.decision import DEFAULTS, validate
     if "provider" in body and not isinstance(body["provider"], str):
         return "decision.provider must be a string"
+    if "provider" in body and body["provider"] not in DEFAULTS:
+        return "unsupported decision provider"
     if set(body) - {"enabled", "provider", "config"}:
         return "unknown decision section field"
     candidate = _channel_section("decision", body, old, {**(old.get("config") or {}), **cfg})
+    old_cfg = old.get("config") or {}
+    provider_changed = candidate["provider"] != old.get("provider", "nace")
+    endpoint_changed = ("openai_base_url" in cfg
+                        and cfg["openai_base_url"] != old_cfg.get("openai_base_url"))
+    if provider_changed or endpoint_changed:
+        if os.getenv("AIDUMEI_DECISION_API_KEY"):
+            return "remove the decision environment key override before changing provider or endpoint"
+        if old_cfg.get("api_key") and (not isinstance(cfg.get("api_key"), str) or not cfg["api_key"].strip()):
+            return "changing decision provider or endpoint requires an explicit API key"
+    if provider_changed and not {"model", "openai_base_url"} <= set(cfg):
+        return "changing decision provider requires explicit model and endpoint"
     return validate(candidate)
 
 
