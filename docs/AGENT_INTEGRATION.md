@@ -111,7 +111,7 @@ For Hermes, copying the script is not enough — it has to be **registered**:
 hooks:
   pre_llm_call:                                    # read wire
     - command: "~/.hermes/agent-hooks/aidumem-inject.sh"
-      timeout: 8
+      timeout: 10
   post_llm_call:                                   # write wire — the one people forget
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
