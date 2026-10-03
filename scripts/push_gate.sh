@@ -5,7 +5,12 @@
 # 而我用一条 `&&` 把那句话作废了。纪律靠记性执行，早晚会失效一次 —— 焊成脚本。
 set -e
 umask 077
-cd "$(git rev-parse --show-toplevel)"
+TOP=$(git rev-parse --show-toplevel)
+GIT_LOCAL_VARS=$(git rev-parse --local-env-vars)
+while IFS= read -r git_local_var; do
+  [[ -z "$git_local_var" ]] || unset "$git_local_var"
+done <<< "$GIT_LOCAL_VARS"
+cd "$TOP"
 GATE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/aidumei-gate.XXXXXXXX")
 trap 'rm -rf "$GATE_TMP"' EXIT
 SCAN_WORDLIST="${AIDUMEI_SCAN_WORDLIST:-$HOME/.config/aidumei/f02_full_scan_words.txt}"

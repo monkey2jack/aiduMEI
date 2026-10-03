@@ -552,3 +552,81 @@ def test_push_gate_uses_tag_scan_and_allowlist_mode() -> None:
     call = call[:call.index("|| fail")]
     assert "--tags-in-range" in call and "--require-allowlist" in call
     assert subprocess.run(["bash", "-n", str(SCRIPTS / "push_gate.sh")]).returncode == 0
+
+
+_NESTED_REPO_GATE = '''#!/usr/bin/env bash
+set -e
+"$AIDUMEM_PYTHON" - <<'PY'
+import os, pathlib, subprocess
+repo = pathlib.Path(os.environ["STUB_GATE_MARKER"]).parent / "nested-repo"
+repo.mkdir()
+def git(*args):
+    return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+git("init", "-q")
+git("config", "user.name", "Nested Fixture")
+git("config", "user.email", "nested@example.invalid")
+(repo / "nested.txt").write_text("fixture\\n")
+git("add", "--all")
+git("commit", "--allow-empty", "-qm", "nested fixture")
+pathlib.Path(os.environ["STUB_GATE_MARKER"]).write_text(git("rev-parse", "HEAD"))
+PY
+exit "${STUB_GATE_EXIT:-0}"
+'''
+
+
+def _nested_repo_push(tmp_path: Path, linked: bool, *, legacy: bool = False,
+                      gate_exit: int = 0):
+    fx = Fixture(tmp_path)
+    if linked:
+        wt = tmp_path / "linked"
+        fx.git("worktree", "add", "-q", "-b", "side", str(wt))
+        shutil.copytree(fx.work / "scripts", wt / "scripts")
+        fx.work = wt
+    fx.commit("candidate", CLEAN)
+    original = fx.git("rev-parse", "HEAD").stdout.strip()
+    config = fx.git("config", "--local", "--list").stdout
+    git_dir = fx.git("rev-parse", "--absolute-git-dir").stdout.strip()
+    common = Path(fx.git("rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = (fx.work / common).resolve()
+    index = Path(git_dir) / "index"
+    original_index = index.read_bytes()
+    hook = common / "hooks/pre-push"
+    if legacy:
+        text = hook.read_text()
+        start = text.index("# git-env-isolation-start")
+        end = text.index("# git-env-isolation-end") + len("# git-env-isolation-end")
+        hook.write_text(text[:start] + text[end:])
+    (fx.work / "scripts/push_gate.sh").write_text(_NESTED_REPO_GATE)
+    result = fx.push("HEAD:refs/heads/main", GIT_DIR=git_dir,
+                     GIT_COMMON_DIR=str(common), GIT_WORK_TREE=str(fx.work),
+                     GIT_INDEX_FILE=str(index), STUB_GATE_EXIT=str(gate_exit))
+    return fx, result, original, config, index, original_index
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("gate_exit", [0, 1])
+def test_push_hook_isolates_nested_git_without_weakening_gate(tmp_path, linked, gate_exit):
+    fx, result, original, config, index, original_index = _nested_repo_push(
+        tmp_path, linked, gate_exit=gate_exit)
+    assert (result.returncode == 0) == (gate_exit == 0), result.stdout + result.stderr
+    assert fx.git("rev-parse", "HEAD").stdout.strip() == original
+    assert fx.git("config", "--local", "--list").stdout == config
+    assert index.read_bytes() == original_index
+    assert not fx.git("status", "--porcelain", "--untracked-files=no").stdout
+    nested = Path(fx.env["STUB_GATE_MARKER"]).read_text()
+    assert nested != original
+    remote_head = subprocess.check_output(
+        ["git", "--git-dir", str(fx.remote), "rev-parse", "refs/heads/main"],
+        env=fx.env, text=True).strip()
+    assert (remote_head == original) == (gate_exit == 0)
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_negative_control_v2_hook_mutated_source_repository(tmp_path, linked):
+    fx, result, original, config, index, original_index = _nested_repo_push(
+        tmp_path, linked, legacy=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fx.git("rev-parse", "HEAD").stdout.strip() != original
+    assert fx.git("config", "--local", "--list").stdout != config
+    assert index.read_bytes() != original_index
