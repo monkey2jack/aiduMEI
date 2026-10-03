@@ -8,6 +8,10 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.3.0+decision.1 (对外 f0.3+ · 可选决策任务 · 2026-10-03)
+    用例总数 2937 → 2984。
+    1. 可选通道自动分类及证据核验；原话保护、故障回退和隔离，详见 CHANGELOG。
+
 v0.3.0 (对外 f0.3 · 四份审计合并整改 · 2026-09-30)
     同版维护：reranker 开关与配置即时生效，新增 15 条行为回归（初次发布时收集 2858 条）。
     用例总数 2385 → 2937（`pytest --collect-only` 实测：行为 2463 + 脚本/钩子 328 + 守卫 146）。
@@ -436,8 +440,9 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.3.0"
-FULL_VERSION = "f0.3"
+SERVICE_VERSION = "0.3.0+decision.1"
+FULL_VERSION = "f0.3+"
+PUBLIC_RELEASE_VERSION = "f0.3"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
@@ -450,6 +455,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.3.0+decision.1", "", "f0.3+", "Optional automatic decision tasks with scoped fallback · 2026-10-03"),
     ("0.3.0", "", "f0.3", "四份审计合并整改 · 停止误删/判据归真/插件萃取三修/服务端五修/身份闸与容器交付 · 2026-09-30"),
     ("0.2.0", "", "f0.2", "接线整改（外部用户反馈）· 读线补 session_id 令 M2 回声抑制生效 / 推荐插件路径补萃取线 / 验收脚本 cron 数动态对齐 · 2026-09-28"),
     ("0.1.0", "", "f0.1", "f 世代首版 · LoCoMo 跑分整改：verbatim 事件时间根因修复（写线/读线/时间衰减防回归）· 2026-09-23"),

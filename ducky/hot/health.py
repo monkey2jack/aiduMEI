@@ -1015,6 +1015,8 @@ def register_health_routes(app: FastAPI) -> None:
         # （health 不该烧付费 API），调用期三态（ok/error/empty）在 /search
         # 响应的 _rerank 字段与 /usage 账本里。
         probes.update(_rerank_probe())
+        from ducky.decision import health as decision_health
+        probes.update(decision_health())
 
         # WAL 探针
         try:
