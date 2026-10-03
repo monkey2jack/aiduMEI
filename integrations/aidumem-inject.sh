@@ -20,6 +20,7 @@
 #   AIDUMEI_INJECT_DATE     召回条目是否带时间：day(默认,只到天)|minute(到分)|off
 #                           （v22.0 双前缀冻结后的新变量，故用 AIDUMEI_ 前缀）
 #   AIDUMEM_TIMEOUT         单次 HTTP 超时秒数，默认 1.5
+#   AIDUMEI_SEARCH_TIMEOUT  检索 HTTP 超时，默认 6 秒；显式旧 TIMEOUT 仍优先于默认
 #   AIDUMEM_API_TOKEN       鉴权门禁 token（见下方「凭据」段，可由 .env 兜底）
 #   AIDUMEM_ENV_FILE        指定 .env 路径，优先级最高
 #   AIDUMEM_HOME            部署根目录，会找 $AIDUMEM_HOME/.env
@@ -144,6 +145,9 @@ export AIDUMEM_SEARCH_LIMIT="${AIDUMEM_SEARCH_LIMIT:-5}"
 # 带日期每条多约 12 字符，5 条约 60 —— 觉得挤就设 off；需要区分同一天内的
 # 先后顺序就设 minute（每条多约 6 字符）。默认 day：够答「什么时候」又最省。
 export AIDUMEI_INJECT_DATE="${AIDUMEI_INJECT_DATE:-day}"
+# 检索含云重排与可选决策，不能套用 Core/Checkpoint 的短超时。
+# 保留使用者显式设置；这个上限不会增加正常请求的实际耗时。
+export AIDUMEI_SEARCH_TIMEOUT="${AIDUMEI_SEARCH_TIMEOUT:-${AIDUMEM_TIMEOUT:-6}}"
 export AIDUMEM_TIMEOUT="${AIDUMEM_TIMEOUT:-1.5}"
 AIDUMEM_MIN_HISTORY="${AIDUMEM_MIN_HISTORY:-4}"
 AIDUMEM_NEW_SESSION_MAX="${AIDUMEM_NEW_SESSION_MAX:-8}"
@@ -250,7 +254,7 @@ if tok:
 data = os.environ['AIDUMEM_BODY'].encode('utf-8')
 try:
     req = urllib.request.Request(url, data=data, headers=headers, method='POST')
-    with urllib.request.urlopen(req, timeout=float(os.environ['AIDUMEM_TIMEOUT'])) as resp:
+    with urllib.request.urlopen(req, timeout=float(os.environ['AIDUMEI_SEARCH_TIMEOUT'])) as resp:
         json.loads(resp.read().decode('utf-8'))
 except urllib.error.HTTPError as e:
     if e.code in (401, 403):
@@ -345,7 +349,8 @@ def _diag(line):
 
 try:
     req = urllib.request.Request(url, data=data, headers=headers, method='POST')
-    with urllib.request.urlopen(req, timeout=float(os.environ['AIDUMEM_TIMEOUT'])) as resp:
+    timeout_key = 'AIDUMEI_SEARCH_TIMEOUT' if os.environ['AIDUMEM_PATH'] == '/search' else 'AIDUMEM_TIMEOUT'
+    with urllib.request.urlopen(req, timeout=float(os.environ[timeout_key])) as resp:
         result = json.loads(resp.read().decode('utf-8'))
 except urllib.error.HTTPError as e:
     if e.code in (401, 403):

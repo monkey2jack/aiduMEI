@@ -2,9 +2,10 @@
 
 ## v0.3.0+decision.1 (f0.3+)
 
-用例总数 2937 → 2984。
+用例总数 2937 → 2986。
 
 - 可选决策通道自动分类及证据核验；保留原话路由与故障回退。
+- Hermes 检索自动允许 6 秒 HTTP 等待，核心块维持 1.5 秒；保留显式超时设置，避免正常决策调用被宿主截断。
 
 Add an opt-in Nace/Drex 1.5 decision adapter with automatic task configuration.
 New memory types can use confidence-gated classification; ambiguous retrieval

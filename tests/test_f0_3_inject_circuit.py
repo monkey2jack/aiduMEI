@@ -39,7 +39,7 @@ if shutil.which("bash"):
 
 
 @contextmanager
-def _server():
+def _server(search_delay=0, search_payload=None):
     """Record method, path and Authorization of every request."""
     seen: list[tuple[str, str, str | None]] = []
 
@@ -50,7 +50,10 @@ def _server():
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
-            self.wfile.write(raw)
+            try:
+                self.wfile.write(raw)
+            except BrokenPipeError:
+                pass  # Expected when the explicit short-deadline control cancels.
 
         def do_GET(self):  # noqa: N802
             seen.append(("GET", self.path, self.headers.get("Authorization")))
@@ -61,7 +64,8 @@ def _server():
             self.rfile.read(length)
             seen.append(("POST", self.path, self.headers.get("Authorization")))
             if self.path == "/search":
-                self._reply({"status": "ok", "results": []})
+                time.sleep(search_delay)
+                self._reply(search_payload or {"status": "ok", "results": []})
             elif self.path.startswith("/session/distill"):
                 self._reply({"status": "ok", "summary": "A stretch worth keeping.",
                              "source_count": 3, "metadata": {}})
@@ -124,6 +128,21 @@ def _fake_bin(tmp_path: Path, names: tuple[str, ...], log: Path) -> Path:
             f'exec "{real}" "$@"\n', encoding="utf-8")
         wrapper.chmod(0o755)
     return fake
+
+
+@pytest.mark.parametrize("override", [None, "0.05"])
+def test_cloud_decision_search_outlives_old_deadline_and_honors_override(tmp_path, override):
+    response = {"status": "ok", "results": [{"memory": "slow-search-marker", "score": .8}]}
+    with _server(search_delay=1.7, search_payload=response) as (base, seen):
+        env = _env(tmp_path, base)
+        env.pop("AIDUMEM_TIMEOUT")
+        if override is not None:
+            env["AIDUMEI_SEARCH_TIMEOUT"] = override
+        result = _run("/bin/bash", env)
+    assert result.returncode == 0
+    assert any(path == "/search" for _, path, _ in seen)
+    assert ("slow-search-marker" in result.stdout) == (override is None)
+    assert "remembered-context" in result.stdout
 
 
 # ---------------------------------------------------------------------------
