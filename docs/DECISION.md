@@ -1,6 +1,7 @@
 # Optional decision tasks (f0.3+)
 
-The decision channel is opt-in. Without it, the existing engine runs as before.
+The decision channel is opt-in and disabled by default. Customers select the
+provider and model; Drex is not mandatory. Without it, the existing engine runs as before.
 Rerank continues to rank candidates and reject low relevance. The decision model
 checks direct answer support for ambiguous candidates and can classify new memory
 types. It does not produce embeddings or replace the extraction LLM.
@@ -34,6 +35,41 @@ restart. Administrators can also use `PUT /config/decision?caller=<admin>` with
 the same section. Missing switches preserve existing settings; an empty API key
 on save preserves the stored key. Send the complete `tasks` map when changing it.
 `users` restricts the channel to specific user IDs; empty means all users.
+
+### Customer model selection
+
+| Provider | Default endpoint | Model example |
+|---|---|---|
+| `nace` | `https://drex.nace.ai/v1` | `drex-v1.5` |
+| `typesafe` | `https://api.typesafe.ai/v1` | `jev-1.13.0` |
+| `systemone` | Customer-supplied HTTPS endpoint | Customer-supplied model ID |
+
+Examples are defaults for convenience, not mandatory model choices. Every
+provider allows an explicit model and HTTPS base URL. `systemone` requires both.
+The shared adapter sends `POST <base URL>/systemone` with `model`, `state` and
+`questions`, and consumes `answers` containing Choice/confidence or Noul
+probabilities. It is not a chat-completions or rerank endpoint adapter.
+[TypeSafe API](https://docs.typesafe.ai/api) and [Drex protocol](https://www.nace.ai/drex)
+document this request shape. Other protocols require a separate adapter.
+
+For example, replace the provider with `typesafe`, model with `jev-1.13.0`, base
+URL with `https://api.typesafe.ai/v1`, and supply that provider's own key. When
+switching provider through the config API, send explicit model, endpoint and
+key together. Endpoint changes require an explicit key as well; omission or an
+empty value cannot silently reuse a stored credential for another destination.
+If `AIDUMEI_DECISION_API_KEY` is set, it overrides the JSON key: remove the
+override and restart before changing providers in the API, or update the full
+service configuration deliberately.
+
+Versioned response model IDs must match the request. Moving `-latest` and
+`-preview` aliases may resolve to a versioned ID in the same family; telemetry
+records both requested and actual IDs. Pin versions after calibration. A
+protocol-compatible model can still have different probability calibration,
+Chinese accuracy and latency: test representative workload and set its own
+retrieval threshold before relying on it. Classification retains the 0.7
+confidence gate and existing fallback. **We used Drex 1.5 for testing**; TypeSafe
+and custom-provider transport contracts have automated coverage, not a live Jev
+quality benchmark. [Measured benefits and costs](DECISION_EVALUATION.md).
 
 `auto` checks up to 12 ambiguous candidates per stage, after scope filtering and
 rerank, before final result slots. A rerank score of at least 0.85 skips the new
@@ -80,9 +116,9 @@ actual calls, cache hits, skips, fallback, valid scores and rejected candidates.
 The `local` engine mode makes no decision provider calls, even if the channel is
 enabled. Enabling a cloud decision channel sends scoped query/candidate text or
 the newly classified memory to the configured provider. Keys are masked in API
-views and never included in decision telemetry. The adapter registry currently
-implements Nace/Drex 1.5 only; other decision protocols need their own adapter and
-verification before they can be selected.
+views and never included in decision telemetry. The shared adapter supports
+Nace, TypeSafe and compatible System One services; protocol compatibility does
+not establish equivalent quality or calibrated probabilities.
 
 Embedding, chunking, extraction, conflict handling, deletion, core-memory
 confirmation, consolidation and federation grants retain their existing owners.
@@ -91,4 +127,5 @@ these paths. New types can affect existing type-aware ranking, filters and decay
 verify those effects on representative workload before enabling more tasks.
 
 Display identity: **f0.3+**. Package identity: **0.3.0+decision.1** (PEP 440 local
-version). This build is not a new public Release or PyPI upload.
+version). GitHub release title and tag are exactly `f0.3+`. No PyPI upload is
+included in this release.
