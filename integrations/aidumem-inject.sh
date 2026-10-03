@@ -375,6 +375,7 @@ if ctx:
 import re
 results = result.get('results') or []
 if results:
+    import json
     limit = int(os.environ['AIDUMEM_SEARCH_LIMIT'])
     # 这一行会原样出现在下一轮对话里，是**用户可见门面**，用当前品牌名。
     # 与 ducky/hot/health.py 的 service=f"aiduMEM-v" 刻意相反：那个是机器契约
@@ -389,7 +390,7 @@ if results:
     if mode not in ('day', 'minute', 'off'):
         mode = 'day'   # 写错了按默认走，不因为一个拼写错误就把时间整段丢掉
     try:
-        query = str(json.loads(body or '{}').get('query') or '')
+        query = str(json.loads(os.environ.get('AIDUMEM_BODY') or '{}').get('query') or '')
     except (ValueError, AttributeError):
         query = ''
     original_request = bool(re.search(r'原话|原文|逐字|一字不差|quote|verbatim|exact wording', query, re.I))
@@ -417,10 +418,11 @@ if results:
         if mem:
             day = '' if mode == 'off' else _day(r)
             kind = r.get('memory_type') or (r.get('metadata') or {}).get('memory_type')
-            kind = kind if isinstance(kind, str) and kind in known_types else 'MEMORY'
+            kind = kind if isinstance(kind, str) and kind in known_types else None
             budget = 500 if original_request and kind == 'VERBATIM' else 120
             excerpt = ' [excerpt]' if len(mem) > budget else ''
-            lines.append(('· [%s] ' % day if day else '· ') + '[' + kind + '] ' + mem[:budget] + excerpt)
+            label = '[' + kind + '] ' if kind else ''
+            lines.append(('· [%s] ' % day if day else '· ') + label + mem[:budget] + excerpt)
     if len(lines) > 1:
         print('\n'.join(lines))
 "
