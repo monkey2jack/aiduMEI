@@ -88,6 +88,10 @@ _CARRIES_AUTH = re.compile(r"api_auth_headers|_auth_headers|AUTH_ARGS|Authorizat
 # 每条理由都是**逐个文件读过调用点核对**的，不是照着「文件里有 Authorization」推的：
 # 那样写出来的理由和代码就是两半（甲9 的病），而这张表本身就是为了防这个。
 _OUTBOUND_THIRD_PARTY = {
+    "ducky/decision.py":
+        "出站调用部署方配置的决策供应商 /systemone，使用供应商独立凭据。"
+        "本服务没有此模型端点；经过 cloud_egress_allowed 与作用域筛选，"
+        "不会消费本服务 API token。",
     "ducky/llm_client.py":
         "出站打 LLM 供应商的 /chat/completions（:165 requests.post；:168 的 Bearer 来自 "
         "_resolve_key(api_key, 'llm')，即供应商 key；地址来自 cfg['base_url']）。"

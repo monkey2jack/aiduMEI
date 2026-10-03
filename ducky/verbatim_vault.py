@@ -646,7 +646,7 @@ def _limit_fused_results(results, fresh, limit, query):
     return results + fresh
 
 
-def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: str = "") -> list:
+def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: str = "", *, intent_query: str | None = None) -> list:
     """把原文证据融合进既有召回结果。
 
     策略（保守、可解释、主干优先）：
@@ -704,7 +704,7 @@ def fuse_verbatim(results: list, verbatim_hits: list, limit: int = 10, query: st
         if not fresh:
             return results
 
-        return _limit_fused_results(results, fresh, limit, query)
+        return _limit_fused_results(results, fresh, limit, query if intent_query is None else intent_query)
 
     except Exception as exc:
         logger.debug("fuse_verbatim 降级返回原结果: %s", exc)
