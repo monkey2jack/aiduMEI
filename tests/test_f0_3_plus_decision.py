@@ -167,7 +167,7 @@ def test_config_hot_save_disables_and_rotates_cache(channel):
 
 
 @pytest.mark.parametrize("body", [{"enabled": "true"}, {"provider": "unsupported"}, {"provider": []}, {"config": {"mode": []}},
-    {"config": {"model": "drex-latest"}}, {"config": {"tasks": {"delete": True}}},
+    {"config": {"model": ""}}, {"config": {"tasks": {"delete": True}}},
     {"config": {"tasks": {"retrieval": "true"}}}, {"config": {"timeout_ms": 99999}},
     {"config": {"threshold": True}}, {"config": {"users": "test-user-one"}},
     {"config": {"openai_base_url": "http://example.invalid"}},
@@ -275,3 +275,106 @@ def test_adapter_rejects_redirect_model_change_and_invalid_answers(channel, monk
     with pytest.raises(ValueError):
         d._nace(cfg, {}, {})
     assert seen[0]["allow_redirects"] is False and seen[0]["timeout"] == (2.0, 2.0)
+
+
+@pytest.mark.parametrize("provider,model,url", [
+    ("nace", "drex-v1.5", "https://drex.nace.ai/v1"),
+    ("typesafe", "jev-1.13.0", "https://api.typesafe.ai/v1"),
+    ("systemone", "customer-model-v2", "https://example.invalid/v1"),
+])
+def test_customer_provider_selection_uses_scoped_contract(channel, monkeypatch, provider, model, url):
+    import requests
+    path, _, _ = channel
+    raw = json.loads(path.read_text())
+    raw["decision"] = {"enabled": True, "provider": provider, "config": {
+        "api_key": "selected-synthetic-key", "model": model, "openai_base_url": url}}
+    path.write_text(json.dumps(raw))
+    seen = []
+    class Reply:
+        status_code = 200
+        def json(self):
+            return {"model": model, "answers": {"type": {
+                "type": "choice", "choice": "DECISIONS", "confidence": .95}}}
+    def post(endpoint, **kwargs):
+        seen.append((endpoint, kwargs))
+        return Reply()
+    monkeypatch.setattr(requests, "post", post)
+    # Restore actual transport, since channel mocks the Nace provider.
+    monkeypatch.setitem(d.PROVIDERS, provider, d._systemone)
+    assert d.classify("Example project decision", "test-user-one", "work") == ("DECISIONS", .95)
+    assert seen[0][0] == url + "/systemone"
+    assert seen[0][1]["json"]["model"] == model
+    assert d.health()["decision_provider"] == provider
+    assert "selected-synthetic-key" not in json.dumps(d.telemetry())
+
+
+@pytest.mark.parametrize("requested,actual,accepted", [
+    ("jev-latest", "jev-1.13.0", True),
+    ("drex-latest", "drex-v1.5", True),
+    ("jev-preview", "jev-1.14.0", True),
+    ("jev-latest", "drex-v1.5", False),
+    ("jev-1.13.0", "jev-1.14.0", False),
+    ("drex-v1.5", "drex-latest", False),
+])
+def test_model_alias_resolution_does_not_weaken_version_pins(channel, monkeypatch, requested, actual, accepted):
+    import requests
+    class Reply:
+        status_code = 200
+        def json(self):
+            return {"model": actual, "answers": {}}
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Reply())
+    cfg = {**d.settings(), "model": requested}
+    if accepted:
+        assert d._systemone(cfg, {}, {})["model"] == actual
+    else:
+        with pytest.raises(ValueError):
+            d._systemone(cfg, {}, {})
+
+
+@pytest.mark.parametrize("config", [{}, {"model": "customer-v2"},
+    {"openai_base_url": "https://example.invalid/v1"},
+    {"model": [], "openai_base_url": "https://example.invalid/v1"},
+    {"model": "customer-v2", "openai_base_url": "https://example.invalid:bad/v1"}])
+def test_custom_protocol_requires_explicit_valid_model_and_endpoint(config):
+    assert d.validate({"provider": "systemone", "config": config}) is not None
+
+
+@pytest.mark.parametrize("body", [
+    {"provider": "typesafe"},
+    {"provider": "typesafe", "config": {"model": "jev-1.13.0", "openai_base_url": "https://api.typesafe.ai/v1"}},
+    {"config": {"openai_base_url": "https://example.invalid/v1", "api_key": ""}},
+])
+def test_provider_switch_never_silently_forwards_old_key(channel, body):
+    path, _, client = channel
+    before = path.read_bytes()
+    assert client.put("/config/decision?caller=test-admin", json=body).status_code == 400
+    assert path.read_bytes() == before
+
+
+def test_explicit_provider_switch_and_model_edit_are_hot_applied(channel):
+    path, _, client = channel
+    cfg = {"model": "jev-1.13.0", "openai_base_url": "https://api.typesafe.ai/v1", "api_key": "new-synthetic-key"}
+    assert client.put("/config/decision?caller=test-admin", json={"provider": "typesafe", "config": cfg}).status_code == 200
+    assert d.settings()["provider"] == "typesafe" and d.settings()["model"] == "jev-1.13.0"
+    assert client.put("/config/decision?caller=test-admin", json={"config": {"model": "jev-latest"}}).status_code == 200
+    assert d.settings()["model"] == "jev-latest"
+    assert json.loads(path.read_text())["decision"]["config"]["api_key"] == "new-synthetic-key"
+
+
+def test_failure_circuits_are_bounded_across_configuration_changes(channel, monkeypatch):
+    def broken(*args):
+        raise TimeoutError()
+    monkeypatch.setitem(d.PROVIDERS, "nace", broken)
+    for i in range(40):
+        cfg = {**d.settings(), "model": f"synthetic-v{i}"}
+        d.decide("memory_type", {}, {}, "test-user-one", "work", cfg)
+    assert len(d._circuits) == 32
+
+
+def test_environment_key_override_blocks_destination_switch(channel, monkeypatch):
+    path, _, client = channel
+    before = path.read_bytes()
+    monkeypatch.setenv("AIDUMEI_DECISION_API_KEY", "environment-synthetic-key")
+    cfg = {"model": "jev-1.13.0", "openai_base_url": "https://api.typesafe.ai/v1", "api_key": "new-synthetic-key"}
+    assert client.put("/config/decision?caller=test-admin", json={"provider": "typesafe", "config": cfg}).status_code == 400
+    assert path.read_bytes() == before
