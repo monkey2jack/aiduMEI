@@ -145,6 +145,28 @@ def test_cloud_decision_search_outlives_old_deadline_and_honors_override(tmp_pat
     assert "remembered-context" in result.stdout
 
 
+@pytest.mark.parametrize("query,kind,padding,visible", [
+    ("Give the exact wording of the rollout", "VERBATIM", 160, True),
+    ("Summarize the rollout", "VERBATIM", 160, False),
+    ("Give the exact wording of the rollout", "FACTS", 160, False),
+    ("Give the exact wording of the rollout", "VERBATIM", 520, False),
+])
+def test_injected_source_and_quote_budget_reach_the_model(tmp_path, query, kind, padding, visible):
+    marker = "source-evidence-tail"
+    response = {"status": "ok", "results": [{"content": "x" * padding + marker,
+                                               "memory_type": kind, "score": .8}]}
+    payload = json.dumps({"session_id": "source-test", "user_message": query,
+                          "conversation_history": [{"role": "user", "content": "x"}] * 4})
+    with _server(search_payload=response) as (base, _):
+        result = _run("/bin/bash", _env(tmp_path, base), stdin=payload)
+    assert result.returncode == 0
+    context = json.loads(result.stdout)["context"]
+    assert f"[{kind}]" in context
+    assert (marker in context) == visible
+    assert ("[excerpt]" in context) == (not visible)
+    assert "<memory>" in context
+
+
 # ---------------------------------------------------------------------------
 # H-1: state file content never reaches bash arithmetic
 # ---------------------------------------------------------------------------

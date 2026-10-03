@@ -48,6 +48,12 @@ bypass decision rejection and retain the existing original/rerank checks.
 These policies preserve recall but do not prove that every returned item answers
 the question, or guarantee that false positives reach zero.
 
+The Hermes hook retains memory-type labels in the injected evidence. Explicit
+original-wording requests receive up to 500 characters per VERBATIM item;
+other items retain the 120-character budget. Truncated evidence is marked
+`[excerpt]`. A VERBATIM label identifies the vault source, not necessarily a
+user-authored statement or the complete original message.
+
 Memory type classification uses the six existing types. A valid provider
 confidence of at least 0.7 is required; otherwise existing LLM/rules apply.
 Classification runs synchronously in the existing write transaction sequence,

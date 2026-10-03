@@ -150,7 +150,7 @@ chmod +x ~/.hermes/agent-hooks/aidumem-{inject,ingest,distill}.sh
 hooks:
   pre_llm_call:                                    # 读线
     - command: "~/.hermes/agent-hooks/aidumem-inject.sh"
-      timeout: 8
+      timeout: 10
   post_llm_call:                                   # 写线 —— 别漏
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
