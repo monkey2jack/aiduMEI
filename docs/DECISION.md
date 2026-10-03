@@ -56,6 +56,13 @@ overwrite newer labels. Provider confidence is not calibrated accuracy.
 
 Provider calls have a connection timeout capped at two seconds and the configured read timeout;
 these are transport deadlines, not a guaranteed end-to-end request budget.
+The Hermes read hook automatically allows six seconds for `/search` in this
+build, while CoreMemory/Checkpoint retain their 1.5-second default. This fixes
+the former 1.5-second search timeout cutting off healthy decision calls.
+`AIDUMEI_SEARCH_TIMEOUT` overrides the search deadline; an explicitly supplied
+legacy `AIDUMEM_TIMEOUT` remains the fallback for both paths. Provider failures
+can still exceed the outer deadline, which is reported by the hook; a custom
+Hermes lifecycle timeout must also accommodate the complete hook.
 At most two decision calls run concurrently. A busy channel immediately falls
 back. Three failures open a 30-second circuit; the next request probes recovery.
 Only successful responses are cached (60 seconds, at most 128 entries), keyed by
