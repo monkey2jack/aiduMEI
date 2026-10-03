@@ -388,6 +388,12 @@ if results:
     mode = (os.environ.get('AIDUMEI_INJECT_DATE') or 'day').strip().lower()
     if mode not in ('day', 'minute', 'off'):
         mode = 'day'   # 写错了按默认走，不因为一个拼写错误就把时间整段丢掉
+    try:
+        query = str(json.loads(body or '{}').get('query') or '')
+    except (ValueError, AttributeError):
+        query = ''
+    original_request = bool(re.search(r'原话|原文|逐字|一字不差|quote|verbatim|exact wording', query, re.I))
+    known_types = {'FACTS', 'PREFERENCES', 'EXPERIENCES', 'OBSERVATIONS', 'REFLECTIONS', 'DECISIONS', 'VERBATIM'}
 
     def _day(item):
         raw = (item.get('recorded_at') or item.get('created_at')
@@ -407,10 +413,14 @@ if results:
         return raw[:24]
 
     for r in results[:limit]:
-        mem = r.get('memory') or r.get('text') or ''
+        mem = r.get('memory') or r.get('text') or r.get('content') or ''
         if mem:
             day = '' if mode == 'off' else _day(r)
-            lines.append(('· [%s] ' % day if day else '· ') + mem[:120])
+            kind = r.get('memory_type') or (r.get('metadata') or {}).get('memory_type')
+            kind = kind if isinstance(kind, str) and kind in known_types else 'MEMORY'
+            budget = 500 if original_request and kind == 'VERBATIM' else 120
+            excerpt = ' [excerpt]' if len(mem) > budget else ''
+            lines.append(('· [%s] ' % day if day else '· ') + '[' + kind + '] ' + mem[:budget] + excerpt)
     if len(lines) > 1:
         print('\n'.join(lines))
 "
