@@ -73,7 +73,8 @@ def test_sse_loopback_form_stays_open(monkeypatch):
 
 def test_global_bucket_blocks_user_id_rotation():
     from ducky import rate_guard as rg
-    base = time.time()
+    # 固定在分钟内部，避免最后 0.5 秒跨窗把合法重置误判为限流失效。
+    base = (int(time.time()) // 60) * 60 + 10
     route = "guard-global-probe"
     # 每次换一个 user_id：按租户桶永不超（每租户 1 次 < limit 5），
     # 全局桶在第 11 个请求拦住。
@@ -87,7 +88,7 @@ def test_global_bucket_blocks_user_id_rotation():
 
 def test_per_tenant_bucket_unchanged():
     from ducky import rate_guard as rg
-    base = time.time()
+    base = (int(time.time()) // 60) * 60 + 10
     route = "guard-tenant-probe"
     for i in range(3):
         assert rg.check_rate(route, "same-user", limit=3, global_limit=0,
