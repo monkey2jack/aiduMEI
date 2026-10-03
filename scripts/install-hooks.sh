@@ -30,7 +30,7 @@ TOP=$(git rev-parse --show-toplevel 2>/dev/null) || {
 cd "$TOP"
 HOOK_FILE=$(git rev-parse --git-path hooks/pre-push)
 MARKER="# aidumei-pre-push-hook"
-VERSION_MARKER="# aidumei-pre-push-hook-version: 2"
+VERSION_MARKER="# aidumei-pre-push-hook-version: 3"
 
 has_marker() {
     [ -f "$HOOK_FILE" ] && grep -q "$MARKER" "$HOOK_FILE"
@@ -46,7 +46,7 @@ case "${1:-}" in
             echo "✅ pre-push 钩子已安装（当前版本）"
             exit 0
         elif has_marker; then
-            echo "❌ pre-push 钩子是旧版本（只拦 main/master，不扫标签与其它分支）——请重跑安装" >&2
+            echo "❌ pre-push 钩子是旧版本——请重跑安装以更新身份扫描与 Git 环境隔离" >&2
             exit 1
         else
             echo "❌ pre-push 钩子未安装" >&2
@@ -75,11 +75,20 @@ case "${1:-}" in
         cat > "$HOOK_FILE" <<'EOF'
 #!/usr/bin/env bash
 # aidumei-pre-push-hook —— push 前的两道闸（f0.3 起分支与标签一律扫描）
-# aidumei-pre-push-hook-version: 2
+# aidumei-pre-push-hook-version: 3
 # 由 scripts/install-hooks.sh 生成；要改请改那个脚本。
 set -u
 remote="${1:-}"
-cd "$(git rev-parse --show-toplevel)" || exit 1
+TOP=$(git rev-parse --show-toplevel) || exit 1
+# Git exports repository-local variables to hooks. Resolve this worktree first,
+# then clear them so child tests can operate on their own temporary repositories.
+# git-env-isolation-start
+GIT_LOCAL_VARS=$(git rev-parse --local-env-vars) || exit 1
+while IFS= read -r git_local_var; do
+    [ -z "$git_local_var" ] || unset "$git_local_var" || exit 1
+done <<< "$GIT_LOCAL_VARS"
+# git-env-isolation-end
+cd "$TOP" || exit 1
 
 PY="${AIDUMEM_PYTHON:-}"
 if [ -z "$PY" ]; then
