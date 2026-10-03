@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _WRITE_LOCK = threading.Lock()
 
 # 允许通过 UI 在线编辑的配置段
-_PUT_SECTIONS = {"llm", "embedder", "rerank", "vector_store", "vision", "_features"}
+_PUT_SECTIONS = {"llm", "embedder", "rerank", "decision", "vector_store", "vision", "_features"}
 
 # v20.4.0（三方审计 P2-1 · Codex P1-10）：**字段级白名单**。原实现 body 的
 # config 字段全盘合并 —— 持普通 API 凭据的调用方可以写入任意键（含未来
@@ -36,16 +36,19 @@ _SECTION_FIELD_ALLOWLIST: dict[str, set] = {
     "vision": {"model", "openai_base_url", "api_key", "_note"},
     "embedder": {"model", "openai_base_url", "api_key", "embedding_dims", "_note"},
     "rerank": {"model", "openai_base_url", "api_key", "top_n", "_note"},
+    "decision": {"model", "openai_base_url", "api_key", "tasks", "users", "timeout_ms", "threshold", "mode", "_note"},
     "vector_store": {"collection_name", "path", "host", "port", "embedding_model_dims", "_note"},
 }
 _URL_FIELDS = {"openai_base_url", "host"}
 
 
-def _validate_config_fields(section: str, cfg: dict, body: dict | None = None) -> str | None:
+def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, old_section: dict | None = None) -> str | None:
     """返回错误文案；None = 通过。"""
-    if section == "rerank" and body is not None and "enabled" in body:
+    if section == "decision":
+        return _validate_decision_fields(cfg, body or {}, old_section or {})
+    if section in {"rerank", "decision"} and body is not None and "enabled" in body:
         if not isinstance(body["enabled"], bool):
-            return "rerank.enabled must be a JSON boolean"
+            return f"{section}.enabled must be a JSON boolean"
     allow = _SECTION_FIELD_ALLOWLIST.get(section)
     if allow is None:
         return None  # _features 走布尔合并分支，不进这里
@@ -66,6 +69,22 @@ def _validate_config_fields(section: str, cfg: dict, body: dict | None = None) -
         if real != root and not real.startswith(root + _os.sep):
             return f"vector_store.path 必须位于数据根内（{root}），收到: {path_v[:60]}"
     return None
+
+
+def _validate_decision_fields(cfg: dict, body: dict, old: dict) -> str | None:
+    from ducky.decision import validate
+    if "provider" in body and not isinstance(body["provider"], str):
+        return "decision.provider must be a string"
+    if set(body) - {"enabled", "provider", "config"}:
+        return "unknown decision section field"
+    candidate = _channel_section("decision", body, old, {**(old.get("config") or {}), **cfg})
+    return validate(candidate)
+
+
+def _channel_section(section: str, body: dict, old: dict, cfg: dict) -> dict:
+    return {"enabled": body.get("enabled", old.get("enabled", section == "rerank")),
+            "provider": body.get("provider") or old.get("provider") or ("nace" if section == "decision" else None),
+            "config": cfg}
 
 
 def _mask_key(key: Optional[str]) -> str:
@@ -192,6 +211,12 @@ def _build_config_view() -> dict:
                 "api_key": _mask_key(rc.get("api_key")),
             },
         },
+        "decision": {
+            "enabled": (raw.get("decision") or {}).get("enabled", False) is True,
+            "provider": (raw.get("decision") or {}).get("provider"),
+            "config": {**((raw.get("decision") or {}).get("config") or {}),
+                       "api_key": _mask_key(((raw.get("decision") or {}).get("config") or {}).get("api_key"))},
+        },
         "vision": {
             "provider": vis.get("provider") or llm.get("provider"),
             "config": {
@@ -302,7 +327,7 @@ def register_config_routes(app: FastAPI) -> None:
             old_section = _config_section(raw, section)
             old_cfg = dict(old_section.get("config") or {})
             new_cfg = dict((body.get("config") or {}))
-            _field_err = _validate_config_fields(section, new_cfg, body)
+            _field_err = _validate_config_fields(section, new_cfg, body, old_section)
             if _field_err:
                 return JSONResponse({"status": "error", "detail": _field_err},
                                     status_code=400)
@@ -311,9 +336,8 @@ def register_config_routes(app: FastAPI) -> None:
                     continue
                 old_cfg[k] = v
             new_provider = body.get("provider") or old_section.get("provider")
-            if section == "rerank":
-                enabled = body.get("enabled", old_section.get("enabled", True)) is True
-                raw[section] = {"enabled": enabled, "provider": new_provider, "config": old_cfg}
+            if section in {"rerank", "decision"}:
+                raw[section] = _channel_section(section, body, old_section, old_cfg)
             elif section == "_features" or section == "features":
                 # 模块开关：直接合并布尔值
                 old_features = dict(raw.get("_features") or {})

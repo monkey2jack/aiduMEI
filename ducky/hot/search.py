@@ -374,6 +374,8 @@ def register_search_routes(app: FastAPI) -> None:
             # 会被误读成本次的重排序结局。
             from ducky.mem0_runtime import last_rerank_telemetry, reset_rerank_telemetry
             reset_rerank_telemetry()
+            from ducky.decision import workspace_hits, reset_telemetry, telemetry as decision_telemetry
+            reset_telemetry()
             # v21.2.0 审计整改轮：闸门/生效遥测同样每请求重置 —— 线程复用时
             # 上一请求的残留会被读成本次的（与 rerank 同一条教训）。
             from ducky.scoring import last_gate_telemetry, reset_gate_telemetry
@@ -410,6 +412,8 @@ def register_search_routes(app: FastAPI) -> None:
             try:
                 from ducky.memory_workspace import ws_lookup, ws_feed_from_results
                 ws_hits = ws_lookup(uid, req.query, bank_id=bank_id)
+                # A changed decision policy cannot use old workspace scores.
+                ws_hits = workspace_hits(ws_hits, uid)
                 # v21.2.0 审计整改轮：workspace 是「最近访问/刚写入」的热缓存
                 # —— 回声最可能出现的**正是**这里，而这条分支提前 return，
                 # 整条绕开了打分出口里的回声抑制。不在这里补一刀，M2 在热路径上
@@ -447,6 +451,7 @@ def register_search_routes(app: FastAPI) -> None:
                         "_workspace_hit": True,
                         "_recall_path": "workspace",
                         "_rerank": {"status": "not_invoked"},
+                        "_decision": decision_telemetry(),
                         "_recall_strength": ws_strength,
                         "_recall_legs": {"workspace": "hit"},
                         # 如实说明这条快路没走打分出口：MMR 多样性与错误签名
@@ -500,7 +505,8 @@ def register_search_routes(app: FastAPI) -> None:
             # 失败干净降级）。让召回的不只是蒸馏后的事实，还有说过的原话。
             try:
                 from ducky.verbatim_vault import verbatim_search
-                v_hits = verbatim_search(req.query, uid, limit=max(20, effective_limit), bank_id=bank_id)
+                from ducky.verbatim_relevance import original_lookup_query
+                v_hits = verbatim_search(original_lookup_query(req.query), uid, limit=max(20, effective_limit), bank_id=bank_id)
                 # v21.2 M2：原文腿在打分**之后**融合，绕过了 scoring 里的回声
                 # 抑制 —— 不在这里补一刀，向量腿滤掉的那句话会被原文腿原样送
                 # 回来（实机冒烟实测到的漏网）。verbatim 行自带 session_id，
@@ -579,6 +585,7 @@ def register_search_routes(app: FastAPI) -> None:
                 "status": "ok", "results": results,
                 "_recall_path": recall_path,
                 "_rerank": rerank_telem,
+                "_decision": decision_telemetry(),
                 "_gate": gate_telem,
                 "_recall_strength": strength,
                 "_recall_legs": recall_telem,

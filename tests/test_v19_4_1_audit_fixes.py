@@ -1573,15 +1573,17 @@ def test_readme_public_version_claim_matches_service_version():
     """
     import re
 
-    from ducky.version import FULL_VERSION
+    from ducky.version import FULL_VERSION, PUBLIC_RELEASE_VERSION
 
     # f0.1 起对外版本号为 f*.*（见 ducky/version.py 的两层版本说明）。
     # 守卫改为**逐字比对品牌版本**（含前缀），比原来只比数字段更严；
     # 正则同时收 v/f 两代前缀，射程覆盖历史 v 世代宣称，不留网眼。
-    current = FULL_VERSION
+    current = PUBLIC_RELEASE_VERSION
 
     zh = open(os.path.join(_REPO_ROOT, "README.md"), encoding="utf-8").read()
     en = open(os.path.join(_REPO_ROOT, "README_EN.md"), encoding="utf-8").read()
+    assert f"本树测试品为 **{FULL_VERSION}**" in zh
+    assert f"This tree is the **{FULL_VERSION}** test build" in en
 
     m = re.search(r"当前公开版本\s*([vf]\d+\.\d+)", zh)
     assert m, "README.md 缺少「当前公开版本 fX.Y」宣称"

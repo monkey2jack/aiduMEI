@@ -1,5 +1,20 @@
 # aiduMEI 版本演进史
 
+## v0.3.0+decision.1 (f0.3+)
+
+用例总数 2937 → 2984。
+
+- 可选决策通道自动分类及证据核验；保留原话路由与故障回退。
+
+Add an opt-in Nace/Drex 1.5 decision adapter with automatic task configuration.
+New memory types can use confidence-gated classification; ambiguous retrieval
+candidates can receive a scoped answer-support check before final slots. Retain
+rerank ordering and the existing original-wording checks. Add bounded concurrency,
+successful-response caching, failure circuit and explicit fallback telemetry.
+Local engine mode blocks this provider. Embedding, extraction and destructive
+memory operations do not acquire decision writes. This is a production-test build;
+public Release and PyPI publication remain separate.
+
 ## f0.3 retrieval rejection maintenance
 
 Reject freshly reranked low-relevance candidates before truncation, validate supplemental originals before allocating their quota, preserve unknown/failure telemetry, and feed only final results to the workspace. Correct current/legacy SDK candidate-budget keywords so the requested pool is not silently limited to the SDK default. Relevance thresholds are model-specific; retrieval success is not proof of answer correctness.

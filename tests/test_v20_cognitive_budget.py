@@ -327,6 +327,9 @@ def test_no_module_hand_rolls_its_own_completion_client():
     豁免表就是这样一条条烂成永真的。**
     """
     ALLOWED = {
+        "ducky/decision.py":
+            "决策供应商使用 state/questions 与 choice/noul 协议，非文本补全；"
+            "无法转交 call_llm。独立出站闸、超时、熔断、凭据隔离和行为回归。",
         "ducky/llm_client.py":
             "认知层唯一的补全通道本体：截断重试、SSE 拼接体兜底解析、"
             "__SF_KEY__ → .llm_key → .sensenova_key 的密钥回退都在这里。",

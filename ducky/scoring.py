@@ -1115,6 +1115,10 @@ def score_and_rank_candidates(
     # 3. Rerank 重排序（原地改 scored，探针回写在 _apply_rerank 内）
     _apply_rerank(query, scored, limit)
 
+    # Optional answer support check runs on the full pool before final slots.
+    from ducky.decision import filter_evidence
+    scored = filter_evidence(query, scored, user_id, bank_id)
+
     # 4. 排序、总分门槛、截断
     scored.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)
 
