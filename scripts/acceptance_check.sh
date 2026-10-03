@@ -103,8 +103,8 @@ PUBLIC_VER="$(python3 -c 'import re; m=re.search(r"^FULL_VERSION = \"([^\"]+)\""
 if [[ -z "${PUBLIC_VER}" ]]; then PUBLIC_VER="v${MAJOR_MINOR}"; fi
 check "DOC-README versions match version.py (${PUBLIC_VER} / ${VER})" bash -c '
   test -n "$1" && test -n "$2" &&
-  head -n 20 README.md | grep -Fq "当前公开版本 $2" &&
-  head -n 20 README_EN.md | grep -Fq "current public release is **$2**"
+  head -n 20 README.md | grep -Fq "本树测试品为 **$2**" &&
+  head -n 20 README_EN.md | grep -Fq "This tree is the **$2** test build"
 ' _ "${VER}" "${PUBLIC_VER}"
 check "dependency declarations match" bash -c 'test -x scripts/dependency_audit.py && python3 scripts/dependency_audit.py >/dev/null'
 check "service units have memory limits" bash -c 'grep -q "MemoryHigh=768M" deploy/aidumem-api.service && grep -q "MemoryMax=1G" deploy/aidumem-api.service'

@@ -369,7 +369,17 @@ def classify_and_record(
     source = "rule"
     memory_type = classify_text(text)
 
-    if use_llm:
+    from ducky.decision import active as decision_active, classify as decision_classify
+    decision_type = None
+    if decision_active("memory_type", scope.user_id):
+        decision_type, decision_confidence = decision_classify(text, scope.user_id, scope.bank_id)
+        if decision_type:
+            memory_type = decision_type
+            source = "decision"
+            # Provider confidence is recorded without claiming calibration.
+            confidence = decision_confidence
+
+    if use_llm and not decision_type:
         llm_type = _llm_classify(text)
         if llm_type:
             memory_type = llm_type
