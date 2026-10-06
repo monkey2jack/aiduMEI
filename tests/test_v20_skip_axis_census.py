@@ -88,6 +88,13 @@ _AXES = (
         "doc_en": "`scripts/backup_gate.sh` + POSIX shell",
     },
     {
+        "key": "wal_posix",
+        "file": "test_f03pp_wal_integrity.py",
+        "scope": "callsite",
+        "doc_zh": "WAL POSIX 真实锁与目录 fsync",
+        "doc_en": "WAL POSIX real locks and directory fsync",
+    },
+    {
         "key": "qdrant_client",
         "file": "test_v20_vector_bank_contract.py",
         "scope": "callsite",
@@ -292,7 +299,8 @@ def _callsite_gated_cases(fname, match=None):
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        lo, hi = node.lineno, getattr(node, "end_lineno", node.lineno)
+        lo = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        hi = getattr(node, "end_lineno", node.lineno)
         funcs[node.name] = (lo, hi)
         names = set()
         for sub in ast.walk(node):
@@ -492,6 +500,8 @@ def _present_axes() -> list:
     if (_REPO_ROOT / "scripts" / "backup_gate.sh").exists() and \
             not sys.platform.startswith("win"):
         present.append("backup_gate_posix")
+    if not sys.platform.startswith("win"):
+        present.append("wal_posix")
     for mod, key in (("qdrant_client", "qdrant_client"),
                      ("regex", "bench_dep_regex"),
                      ("numpy", "bench_dep_numpy"),
@@ -561,7 +571,7 @@ def test_every_registered_skip_axis_has_a_probe():
     任何基于「齐备与否」的判断都会静默失真 —— 这个风险和绊线在不在无关。
     """
     present = _present_axes()
-    probed = {"hermes_host", "git_worktree", "backup_gate_posix", "qdrant_client",
+    probed = {"hermes_host", "git_worktree", "backup_gate_posix", "wal_posix", "qdrant_client",
               "bench_dep_regex", "bench_dep_numpy", "bench_dep_nltk",
                   "locomo_dataset", "git_binary", "mem0_base", "fastembed_local",
                   "ruff_installed", "mcp_extra"}

@@ -182,3 +182,46 @@ def test_env_keys_are_registered():
         assert is_known_env_name(key), f"{key} 未登记 —— 用户拼错不会有任何告警"
     # 负向对照：编造的名字必须判未知（否则这条断言恒真）
     assert not is_known_env_name("AIDUMEI_TOTALLY_MADE_UP_KEY_XYZ")
+
+
+def test_820_heterogeneous_same_source_memories_are_retained(monkeypatch):
+    """Reproduce the reported capacity scale through the real merge function.
+
+    A deterministic in-memory adapter avoids cloud calls/local model loading;
+    snapshot/delete spies prove ordering and exact IDs for three duplicates.
+    """
+    import random
+    import string
+    import ducky.layer1_selfcheck as layer
+    import ducky.tombstone as tombstone
+    import ducky.wal_engine as wal
+
+    rng = random.Random(16)
+    topics = ["coffee", "travel", "budget", "books", "hardware", "exercise"]
+    records = [{"id": str(i), "memory": topics[i % len(topics)] + " " +
+                "".join(rng.choices(string.ascii_letters, k=100)),
+                "created_at": str(i).zfill(4),
+                "metadata": {"source": "hermes_turn", "bank_id": "capacity-test"}}
+               for i in range(820)]
+    events = []
+    monkeypatch.setattr(layer, "get_all_memories", lambda *a, **k: {"results": records})
+    monkeypatch.setattr(tombstone, "snapshot_before_delete", lambda mid, **k: (events.append(("snapshot", mid)) or 1))
+    monkeypatch.setattr(
+        wal,
+        "cascade_delete_memory",
+        lambda mid, **k: (events.append(("delete", mid)) or {"status": "committed"}),
+    )
+    monkeypatch.delenv("AIDUMEI_AUTO_MERGE", raising=False)
+    assert layer.auto_merge_similar(object(), "capacity-user", bank_id="capacity-test")["deleted"] == 0
+    assert not events
+    monkeypatch.setenv("AIDUMEI_AUTO_MERGE", "on")
+    assert layer.auto_merge_similar(object(), "capacity-user", bank_id="capacity-test")["deleted"] == 0
+    assert not events
+    duplicate = "The workshop starts at three in the afternoon; bring the printed agenda."
+    for i in range(3):
+        records.append({"id": "dup-" + str(i), "memory": duplicate,
+                        "created_at": str(i), "metadata": {"source": "hermes_turn", "bank_id": "capacity-test"}})
+    result = layer.auto_merge_similar(object(), "capacity-user", bank_id="capacity-test")
+    assert result == {"merged_groups": 1, "deleted": 2}
+    assert events == [("snapshot", "dup-1"), ("delete", "dup-1"),
+                      ("snapshot", "dup-0"), ("delete", "dup-0")]
