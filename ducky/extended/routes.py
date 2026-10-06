@@ -69,7 +69,10 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
     def persona_ai_self(
         user_id: str = Query(DEFAULT_USER_ID),
         bank_id: str = Query(DEFAULT_BANK_ID),
+        caller_user_id: str = Query(""),
     ):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         db = _get_facts_conn()
         clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
         facts = db.execute("""SELECT category, fact_key, fact_value, trust_score
@@ -90,9 +93,14 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
         key: str,
         value: str,
         bank_id: str = Query(DEFAULT_BANK_ID),
+        caller_user_id: str = Query(""),
     ):
         # v20.3.1（外审）：写入身份不由调用方自选。默认身份是部署配置，
         # bank 仍显式传入，读侧也按同一 scope 谓词收窄。
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(DEFAULT_USER_ID, caller_user_id, bank_id=bank_id, action="write")
+        from ducky.scope_auth import sanitize_memory_or_raise
+        value = sanitize_memory_or_raise(value)
         db = _get_facts_conn()
         now = datetime.now(timezone.utc).isoformat()
         _cols = table_columns(db, "facts")
@@ -127,7 +135,10 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
     @app.post("/facts/preference")
     def facts_preference(fact_id:int, score:float=Query(0.5, ge=-1.0, le=1.0),
                          user_id:str=Query(DEFAULT_USER_ID),
-                         bank_id:str=Query(DEFAULT_BANK_ID)):
+                         bank_id:str=Query(DEFAULT_BANK_ID),
+                         caller_user_id:str=Query("")):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="write")
         db = _get_facts_conn()
         clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
         cur = db.execute("UPDATE facts SET preference_score=? WHERE id=?" + clause,
@@ -142,7 +153,10 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
     @app.get("/facts/preferences")
     def facts_preferences_list(min_abs:float=0.3,
                                user_id:str=Query(DEFAULT_USER_ID),
-                               bank_id:str=Query(DEFAULT_BANK_ID)):
+                               bank_id:str=Query(DEFAULT_BANK_ID),
+                               caller_user_id:str=Query("")):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         db = _get_facts_conn()
         clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
         rows = db.execute("""SELECT id,category,fact_key,fact_value,preference_score
@@ -159,7 +173,10 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
                      # 或推到极远未来。1 小时 ~ 10 年。
                      expires_in_hours:int=Query(24, ge=1, le=87600),
                      user_id:str=Query(DEFAULT_USER_ID),
-                     bank_id:str=Query(DEFAULT_BANK_ID)):
+                     bank_id:str=Query(DEFAULT_BANK_ID),
+                     caller_user_id:str=Query("")):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="write")
         db = _get_facts_conn()
         expires_at = (datetime.now(timezone.utc)+timedelta(hours=expires_in_hours)).isoformat()
         clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
@@ -172,7 +189,10 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
 
     @app.get("/knowledge/tree")
     def knowledge_tree(user_id:str=Query(DEFAULT_USER_ID),
-                       bank_id:str=Query(DEFAULT_BANK_ID)):
+                       bank_id:str=Query(DEFAULT_BANK_ID),
+                       caller_user_id:str=Query("")):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         db = _get_facts_conn()
         clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
         cats = db.execute("""SELECT category,COUNT(*) as cnt FROM facts WHERE archived=0""" + clause + """
@@ -189,7 +209,10 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
     @app.get("/facts/delta")
     def facts_delta(since:str=Query(..., description="ISO时间戳"),
                     user_id:str=Query(DEFAULT_USER_ID),
-                    bank_id:str=Query(DEFAULT_BANK_ID)):
+                    bank_id:str=Query(DEFAULT_BANK_ID),
+                    caller_user_id:str=Query("")):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         db = _get_facts_conn()
         clause, params = tenant_clause(user_id, bank_id=bank_id, conn=db)
         added = db.execute("""SELECT id,category,fact_key,fact_value,created_at

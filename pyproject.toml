@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "0.3.0+decision.1"
+version = "0.3.0+decision.2"
 description = "aiduMEI: self-hosted multi-tier AI wisdom engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
@@ -51,12 +51,12 @@ local-embed = ["fastembed>=0.8"]
 # 而 mcp_server.py 导入的 `mcp.server.fastmcp` 在 2.x 里不存在，
 # 于是 `pip install 'aidumei[mcp]'` 装得上、工具起不来。
 # v2 迁移另立项，不在维护版里跨大版本。
-mcp = ["mcp>=1.0.0,<2"]
+mcp = ["mcp==1.30.0"]
 # sync: mem0_sync.py 守护模式（inotify 监听 MEMORY.md）。仅 Linux 有 inotify。
 # v19.4.2 补：此前该依赖从未在任何清单里声明，照仓库部署 sync 必然崩溃循环。
 sync = ["inotify_simple>=2.0.1; sys_platform == 'linux'"]
 full = [
-    "mcp>=1.0.0,<2",   # v20.2.4 F-21：同上，2.x 的 fastmcp 路径已变
+    "mcp==1.30.0",     # f0.3++：与 requirements.txt、生产 MCP 轴精确对齐
     "inotify_simple>=2.0.1; sys_platform == 'linux'",
 ]
 

@@ -30,6 +30,8 @@
 from __future__ import annotations
 
 import errno
+from collections import OrderedDict
+import hashlib
 import http.client
 import json
 import logging
@@ -344,6 +346,8 @@ class AiduMemProvider(MemoryProvider):
         bank_id = cfg.get("bank_id") or _resolve_env_key("AIDUMEI_BANK_ID", "default")
         self._client = _Client(url, user_id, bank_id)
         self._session_id = ""
+        self._tool_failures = OrderedDict()
+        self._tool_retry_lock = threading.Lock()
         self._threads: List[threading.Thread] = []
         self._threads_lock = threading.Lock()
         self._pending_turns: Dict[str, List[Dict[str, Any]]] = {}
@@ -972,6 +976,39 @@ class AiduMemProvider(MemoryProvider):
         return [SEARCH_SCHEMA, REMEMBER_SCHEMA, STATUS_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        # This standalone plugin is copied without ducky. Keep hints local;
+        # the host owns call budgets, and only MCP implements a circuit breaker.
+        result = self._handle_tool_call(tool_name, args, **kwargs)
+        try:
+            value = json.loads(result)
+            raw = json.dumps([self._source_session_id(self._session_id), tool_name, args],
+                             sort_keys=True, separators=(",", ":"), allow_nan=False)
+            key = hashlib.sha256(raw.encode()).hexdigest()
+            with self._tool_retry_lock:
+                now = time.monotonic()
+                count, started = self._tool_failures.get(key, (0, now))
+                if now - started >= 60:
+                    count, started = 0, now
+                if not isinstance(value, dict) or not value.get("error"):
+                    self._tool_failures.pop(key, None)
+                    return result
+                count += 1
+                self._tool_failures[key] = (count, started)
+                self._tool_failures.move_to_end(key)
+                while len(self._tool_failures) > 256:
+                    self._tool_failures.popitem(last=False)
+                if count >= 2:
+                    value["retry_count"] = count
+                if count >= 3:
+                    value["loop_warning"] = (
+                        "Repeated failure: change the arguments or strategy instead of repeating this call."
+                    )
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            # Accounting must never repeat a tool or hide its original outcome.
+            return result
+
+    def _handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if tool_name == "aidumem_search":
             query = (args.get("query") or "").strip()
             if not query:

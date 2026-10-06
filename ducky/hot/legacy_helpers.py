@@ -11,6 +11,7 @@ v8 重构 (2026-07-13):
 """
 
 import json, logging, os, sqlite3, re
+from ducky.mem0_compat import get_all_memories
 from ducky.shutdown import sleep as _shutdown_sleep
 from datetime import datetime, timezone
 
@@ -379,7 +380,7 @@ def _get_recent_memories(limit=100, user_id=DEFAULT_USER_ID) -> list:
     try:
         from api_server import get_memory
         mem = get_memory()
-        return mem.get_all(filters={"user_id": user_id}, limit=limit)
+        return get_all_memories(mem, filters={"user_id": user_id}, limit=limit)
     except Exception: return []
 
 def _run_consolidation(user_id=DEFAULT_USER_ID, max_obs=50):

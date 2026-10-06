@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
+from ducky.mem0_compat import get_all_memories
 from ducky.utils import DATA_DIR, DEFAULT_USER_ID, get_facts_conn
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,
@@ -35,6 +37,60 @@ from ducky.bank_contract import (
 )
 
 logger = logging.getLogger("aiduMEM.wal")
+
+
+class WALIntegrityError(RuntimeError):
+    """The WAL could not be read with confidence."""
+
+
+@contextmanager
+def _file_lock(lock_path: Path, *, exclusive: bool):
+    """Cross-process advisory lock for WAL read/modify/replace operations."""
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a+b") as lock_fh:
+            if platform.system() == "Windows":
+                import msvcrt
+
+                # Keep the lock on the stable sidecar inode across WAL replace.
+                # Windows byte-range locking also needs a byte in a new sidecar.
+                lock_fh.seek(0, os.SEEK_END)
+                if lock_fh.tell() == 0:
+                    lock_fh.write(b"\0")
+                    lock_fh.flush()
+                lock_fh.seek(0)
+                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                if platform.system() == "Windows":
+                    lock_fh.seek(0)
+                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    except WALIntegrityError:
+        raise
+    except (ImportError, OSError, UnicodeError) as exc:
+        # Covers opening/acquiring/releasing the sidecar and I/O in the locked
+        # operation.  Never continue a read or write without a working lock.
+        raise WALIntegrityError(f"WAL 锁或 I/O 失败: {exc}") from exc
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist the directory entry changed by os.replace on POSIX."""
+    if os.name == "nt":
+        # No portable directory fsync on Windows; file fsync still precedes replace.
+        return
+    directory_fd = os.open(str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
 
 WAL_DIR = os.path.join(DATA_DIR, "wal")
 WAL_FILE = os.path.join(WAL_DIR, "mem_mutations.wal")
@@ -145,10 +201,7 @@ def _scoped_vector_items(mem: Any, scope: Any) -> tuple[list[dict], bool]:
     """
     filters = vector_scope_filters(scope.user_id, scope.bank_id)
     try:
-        try:
-            raw = mem.get_all(filters=filters, top_k=VECTOR_ENUM_LIMIT)
-        except TypeError:
-            raw = mem.get_all(filters=filters, limit=VECTOR_ENUM_LIMIT)
+        raw = get_all_memories(mem, filters=filters, limit=VECTOR_ENUM_LIMIT)
         items = _vector_items(raw)
     except Exception as exc:
         logger.warning(
@@ -276,6 +329,7 @@ class WALEngine:
         self.wal_dir = Path(wal_dir)
         self.wal_dir.mkdir(parents=True, exist_ok=True)
         self.wal_file = self.wal_dir / "mem_mutations.wal"
+        self.lock_file = self.wal_dir / "mem_mutations.wal.lock"
         self._write_lock = threading.Lock()
         self.compactions = 0          # P1-17：已执行的 compaction 次数（可观测）
         self._compact_floor = 0       # 滞回：上次收敛后仍 > 阈值时，下次触发点抬到 2×
@@ -292,27 +346,12 @@ class WALEngine:
         """追加一条 WAL 记录并执行 fsync 落盘。"""
         line = entry.to_json() + "\n"
         with self._write_lock:
-            with open(self.wal_file, "a", encoding="utf-8") as f:
-                is_win = platform.system() == "Windows"
-                if is_win:
-                    import msvcrt
-                    f.seek(0)
-                    try:
-                        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-                    except OSError:
-                        pass
-                try:
+            with _file_lock(self.lock_file, exclusive=True):
+                with open(self.wal_file, "a", encoding="utf-8") as f:
                     f.seek(0, os.SEEK_END)
                     f.write(line)
                     f.flush()
                     os.fsync(f.fileno())
-                finally:
-                    if is_win:
-                        f.seek(0)
-                        try:
-                            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                        except OSError:
-                            pass
         logger.debug("WAL append: %s [%s] user=%s", entry.wal_id, entry.operation, entry.user_id)
         self.compact_if_large()  # P1-17：锁外体积触发
         return entry.wal_id
@@ -336,56 +375,61 @@ class WALEngine:
     def compact(self, keep_recent_seconds: float = 86400.0) -> Dict[str, Any]:
         """收敛账本：pending 全留；终态条目只留最近 keep_recent_seconds 内的（状态折叠进条目）。"""
         with self._write_lock:
-            if not self.wal_file.exists():
-                return {"kept": 0, "dropped": 0, "unparsable_kept": 0, "bytes_before": 0, "bytes_after": 0}
-            before = self.wal_file.stat().st_size
-            entries_by_id: Dict[str, WALEntry] = {}
-            order: List[str] = []
-            status_updates: Dict[str, tuple] = {}
-            bad = 0
-            bad_lines: List[str] = []
-            with open(self.wal_file, encoding="utf-8") as f:
-                for line in f:
-                    entry = WALEntry.from_json(line)
-                    if not entry:
-                        if line.strip():
-                            bad += 1
-                            # v20.4.0（Codex P2-03）：解析不动的行**原样保留**，
-                            # 不许把损坏翻译成「没有待处理」——丢弃即静默数据丢失。
-                            bad_lines.append(line.rstrip("\n"))
-                        continue
-                    tgt = entry.payload.get("target_wal_id")
-                    if tgt:
-                        status_updates[tgt] = (entry.payload.get("updated_status", ""),
-                                               entry.payload.get("error", "") or entry.error)
+            with _file_lock(self.lock_file, exclusive=True):
+                try:
+                    before = self.wal_file.stat().st_size
+                except FileNotFoundError:
+                    return {"kept": 0, "dropped": 0, "unparsable_kept": 0, "bytes_before": 0, "bytes_after": 0}
+                entries_by_id: Dict[str, WALEntry] = {}
+                order: List[str] = []
+                status_updates: Dict[str, tuple] = {}
+                bad = 0
+                bad_lines: List[str] = []
+                try:
+                    with open(self.wal_file, encoding="utf-8") as f:
+                        for line in f:
+                            entry = WALEntry.from_json(line)
+                            if not entry:
+                                if line.strip():
+                                    bad += 1
+                                    # 保留坏行；get_pending_entries 会把它报告为未知完整性状态。
+                                    bad_lines.append(line.rstrip("\n"))
+                                continue
+                            tgt = entry.payload.get("target_wal_id")
+                            if tgt:
+                                status_updates[tgt] = (entry.payload.get("updated_status", ""),
+                                                       entry.payload.get("error", "") or entry.error)
+                            else:
+                                if entry.wal_id not in entries_by_id:
+                                    order.append(entry.wal_id)
+                                entries_by_id[entry.wal_id] = entry
+                except (OSError, UnicodeError) as exc:
+                    raise WALIntegrityError(f"读取 WAL 失败: {exc}") from exc
+                now = time.time()
+                kept: List[WALEntry] = []
+                dropped = 0
+                for wid in order:
+                    ent = entries_by_id[wid]
+                    final_status, err = status_updates.get(wid, (ent.status, ent.error))
+                    if final_status:
+                        ent.status = final_status  # type: ignore[assignment]
+                    if err:
+                        ent.error = err
+                    if ent.status == "pending" or (now - float(ent.timestamp or 0)) < keep_recent_seconds:
+                        kept.append(ent)
                     else:
-                        if entry.wal_id not in entries_by_id:
-                            order.append(entry.wal_id)
-                        entries_by_id[entry.wal_id] = entry
-            now = time.time()
-            kept: List[WALEntry] = []
-            dropped = 0
-            for wid in order:
-                ent = entries_by_id[wid]
-                final_status, err = status_updates.get(wid, (ent.status, ent.error))
-                if final_status:
-                    ent.status = final_status  # type: ignore[assignment]
-                if err:
-                    ent.error = err
-                if ent.status == "pending" or (now - float(ent.timestamp or 0)) < keep_recent_seconds:
-                    kept.append(ent)
-                else:
-                    dropped += 1
-            tmp = self.wal_file.with_name(self.wal_file.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                for ent in kept:
-                    f.write(ent.to_json() + "\n")
-                for raw in bad_lines:
-                    f.write(raw + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self.wal_file)
-            after = self.wal_file.stat().st_size
+                        dropped += 1
+                tmp = self.wal_file.with_name(self.wal_file.name + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    for ent in kept:
+                        f.write(ent.to_json() + "\n")
+                    for raw in bad_lines:
+                        f.write(raw + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.wal_file)
+                _fsync_directory(self.wal_dir)
+                after = self.wal_file.stat().st_size
             self.compactions += 1
             # 滞回：账本若全是近期条目，收敛后仍可能 > 阈值；不设滞回会每次 append 重写整个文件
             self._compact_floor = after * 2 if after > self.COMPACT_SIZE_TRIGGER else 0
@@ -406,29 +450,38 @@ class WALEngine:
         return None
 
     def get_pending_entries(self) -> List[WALEntry]:
-        """读取所有未提交的有效操作。"""
-        if not self.wal_file.exists():
-            return []
+        """读取所有未提交的有效操作。
 
+        A malformed row or read failure is an integrity failure, never an empty
+        pending list.  Returning ``[]`` here would allow startup reconciliation
+        to report a healthy ledger while an operation is hidden behind a bad row.
+        """
         entries_by_id: Dict[str, WALEntry] = {}
         status_updates: Dict[str, str] = {}
 
-        try:
-            with open(self.wal_file, encoding="utf-8") as f:
-                for line in f:
-                    entry = WALEntry.from_json(line)
-                    if not entry:
-                        continue
-                    if entry.payload.get("target_wal_id"):
-                        status_updates[entry.payload["target_wal_id"]] = entry.payload.get("updated_status", "")
-                    else:
-                        entries_by_id[entry.wal_id] = entry
-        except Exception as e:
-            # v20.4.0（Codex P2-03）：读欠账失败按空返回是**静默丢失形态** ——
-            # 对账会把「读不了」当成「没欠账」。升 ERROR 让运维面看得见；
-            # 返回空的降级行为保留（启动对账不能因账本损坏拒绝启动）。
-            logger.error("读取 WAL 日志失败（对账将按空欠账处理 —— 这可能是静默丢失，需人工核查）: %s", e)
-            return []
+        with _file_lock(self.lock_file, exclusive=False):
+            try:
+                try:
+                    self.wal_file.stat()
+                except FileNotFoundError:
+                    return []
+                with open(self.wal_file, encoding="utf-8") as f:
+                    for line_no, line in enumerate(f, 1):
+                        entry = WALEntry.from_json(line)
+                        if not entry:
+                            if line.strip():
+                                raise WALIntegrityError(
+                                    f"WAL 第 {line_no} 行无法解析；原文保留，暂停自动对账"
+                                )
+                            continue
+                        if entry.payload.get("target_wal_id"):
+                            status_updates[entry.payload["target_wal_id"]] = entry.payload.get("updated_status", "")
+                        else:
+                            entries_by_id[entry.wal_id] = entry
+            except WALIntegrityError:
+                raise
+            except (OSError, UnicodeError) as exc:
+                raise WALIntegrityError(f"读取 WAL 失败: {exc}") from exc
 
         pending = []
         for wid, ent in entries_by_id.items():
@@ -751,14 +804,10 @@ def cascade_delete_all(
     scope = make_scope(user_id, bank_id)
     user_id = scope.user_id
     bank_id = scope.bank_id
-    # v19.4.2：闸门原先只认字面量 "default"。这道闸的立意（见上方 docstring）
-    # 是「default 是系统默认 user_id，误触概率极高」—— 它保护的是**大家会
-    # 误触的那个租户**。部署方配了 AIDUMEM_DEFAULT_USER_ID 之后，误触面就
-    # 换了人，而闸门还守在旧名字上：保护罩和被保护对象错位。
-    # HTTP /delete_all 那层用的是 DEFAULT_USER_ID 常量、口径本来就对，
-    # 所以线上无暴露；这里补齐内层的直接调用路径，两个名字都守，只加不减。
-    if user_id in ("default", DEFAULT_USER_ID) and not confirm:
-        raise ValueError(f"清空默认用户({user_id})全量记忆必须传递 confirm=True")
+    # f0.3++：全量删除对所有租户都必须显式确认，与 HTTP gate 一致。
+    # 拒绝发生在追加 WAL 和任何存储副作用之前；已获授权的 WAL 重放传 True。
+    if not confirm:
+        raise ValueError(f"清空用户({user_id})全量记忆必须传递 confirm=True")
     wal = WALEngine.get_instance()
     wal_id = wal.append(WALEntry(
         user_id=user_id,
@@ -2004,16 +2053,31 @@ def _cascade_all_verdict(
     return outcome
 
 
+def _pause_reconcile(report: Dict[str, Any], exc: WALIntegrityError) -> Dict[str, Any]:
+    report.update({
+        "wal_integrity": "unknown",
+        "wal_integrity_error": str(exc)[:240],
+        "reconciliation_paused": True,
+    })
+    logger.error("[WAL Reconcile] 完整性未知，暂停自动对账: %s", exc)
+    return report
+
+
 def reconcile_startup() -> Dict[str, Any]:
     """服务启动自检与对账自愈。"""
     wal = WALEngine.get_instance()
-    pending = wal.get_pending_entries()
     report = {
-        "pending_count": len(pending),
+        "pending_count": None,
         "recovered": 0,
         "failed": 0,
         "reconciled_at": time.time(),
+        "wal_integrity": "ok",
     }
+    try:
+        pending = wal.get_pending_entries()
+    except WALIntegrityError as exc:
+        return _pause_reconcile(report, exc)
+    report["pending_count"] = len(pending)
     if not pending:
         logger.info("🔍 [WAL Reconcile] 启动对账完成：无挂起事务，数据状态健康")
         return _finish_reconcile(report)
@@ -2043,7 +2107,7 @@ def reconcile_startup() -> Dict[str, Any]:
                     report["failed"] += 1
             elif ent.operation == "delete_all":
                 # WAL 条目的存在即证明原调用已通过 confirm 闸门；
-                # 重放时补 confirm=True，否则 default 用户的恢复会永远失败。
+                # 重放时补 confirm=True，所有用户的全量删除都要过确认闸门。
                 cascade_delete_all(user_id=ent.user_id, confirm=True, bank_id=replay_bank)
                 wal.mark_status(ent.wal_id, "committed")
                 report["recovered"] += 1
@@ -2051,12 +2115,18 @@ def reconcile_startup() -> Dict[str, Any]:
                 # 记录为无法自动决议的写入，标记 failed 供运维审计
                 wal.mark_status(ent.wal_id, "failed", error="Unresolved startup transaction")
                 report["failed"] += 1
+        except WALIntegrityError as exc:
+            # Lock/durability failure leaves the transaction outcome unknown;
+            # do not append a misleading terminal status or replay more entries.
+            return _pause_reconcile(report, exc)
         except Exception as err:
             logger.error("Reconcile 恢复失败 wal_id=%s: %s", ent.wal_id, err)
             # 失败也要闭合：留在 pending 里等于下次重启再炸一遍，而且账本永不收敛。
             # 标 failed 供运维审计（与 else 支的处置一致）。
             try:
                 wal.mark_status(ent.wal_id, "failed", error=f"replay failed: {err}")
+            except WALIntegrityError as exc:
+                return _pause_reconcile(report, exc)
             except Exception as mark_err:
                 logger.error("Reconcile 无法标记 wal_id=%s: %s", ent.wal_id, mark_err)
             report["failed"] += 1
@@ -2076,6 +2146,9 @@ def _finish_reconcile(report: Dict[str, Any]) -> Dict[str, Any]:
     回退语义下坏配置不再炸，就必须在启动面**出声**可查）。"""
     try:
         report["compacted"] = WALEngine.get_instance().compact()
+    except WALIntegrityError as exc:
+        report["compacted"] = {"error": str(exc)[:120]}
+        return _pause_reconcile(report, exc)
     except Exception as exc:
         logger.warning("启动 WAL compaction 失败（留账，不阻塞启动）: %s", exc)
         report["compacted"] = {"error": str(exc)[:120]}

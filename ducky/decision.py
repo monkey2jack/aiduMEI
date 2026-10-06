@@ -15,8 +15,13 @@ MODEL = "drex-v1.5"
 DEFAULTS = {
     "nace": (MODEL, "https://drex.nace.ai/v1"),
     "typesafe": ("jev-1.13.0", "https://api.typesafe.ai/v1"),
+    # Cloudflare's REST API wraps the System One-compatible response in
+    # ``result`` and needs the account ID to build the model route.  Keep the
+    # endpoint as a credential-free API base so it is safe to display/edit.
+    "cloudflare": ("clef", "https://api.cloudflare.com/client/v4"),
     "systemone": (None, None),
 }
+_CLOUDFLARE_MODELS = {"clef", "clef-flash"}
 TASKS = {"memory_type", "retrieval"}
 _ORIGINAL = re.compile(r"原话|原文|逐字|一字不差|quote|verbatim|exact wording", re.I)
 _SPECIFIC = re.compile(r"哪|何|几|多少|日期|时间|生日|星座|邮箱|序列号|哈希|密码|谁|\b(?:when|what|which|who|whether)\b", re.I)
@@ -38,7 +43,7 @@ def validate(section: dict) -> str | None:
     cfg = section.get("config", {})
     if not isinstance(cfg, dict):
         return "decision.config must be an object"
-    if set(cfg) - {"model", "openai_base_url", "api_key", "tasks", "users", "timeout_ms", "threshold", "mode", "_note"}:
+    if set(cfg) - {"model", "openai_base_url", "api_key", "account_id", "tasks", "users", "timeout_ms", "threshold", "mode", "_note"}:
         return "unknown decision config field"
     default_model, default_url = DEFAULTS[section.get("provider", "nace")]
     model = cfg.get("model", default_model)
@@ -54,6 +59,13 @@ def validate(section: dict) -> str | None:
         return "invalid decision endpoint"
     if url.scheme != "https" or not url.netloc or url.username or url.password or url.query or url.fragment:
         return "decision endpoint requires an HTTPS URL without credentials"
+    provider = section.get("provider", "nace")
+    if provider == "cloudflare":
+        if model not in _CLOUDFLARE_MODELS:
+            return "cloudflare decision model must be clef or clef-flash"
+        account_id = cfg.get("account_id", "")
+        if not isinstance(account_id, str) or not re.fullmatch(r"[A-Fa-f0-9]{32}", account_id.strip()):
+            return "cloudflare account_id must be a 32-character hexadecimal ID"
     return _validate_options(cfg)
 
 
@@ -151,6 +163,21 @@ def health() -> dict:
             "decision_metrics": metrics}
 
 
+def _validate_response_model(data: dict, cfg: dict) -> dict:
+    """Validate a provider response without accepting a silent model swap."""
+    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+        raise ValueError("invalid decision response")
+    actual = data.get("model")
+    requested = cfg["model"]
+    alias = requested.endswith(("-latest", "-preview"))
+    family = requested.rsplit("-", 1)[0]
+    resolved_alias = (alias and isinstance(actual, str)
+                      and re.fullmatch(re.escape(family) + r"-v?\d+(?:\.\d+){1,3}", actual))
+    if actual != requested and not resolved_alias:
+        raise ValueError("decision model mismatch")
+    return data
+
+
 def _systemone(cfg: dict, state: dict, questions: dict) -> dict:
     from ducky.engine_mode import cloud_egress_allowed
     if not cloud_egress_allowed("decision"):
@@ -163,23 +190,46 @@ def _systemone(cfg: dict, state: dict, questions: dict) -> dict:
     if response.status_code != 200:
         raise ValueError("decision HTTP error")
     data = response.json()
-    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
-        raise ValueError("invalid decision response")
-    actual = data.get("model")
-    requested = cfg["model"]
-    # Pin versioned IDs exactly; documented moving aliases may resolve within
-    # their model family. Never silently accept a different model family.
-    alias = requested.endswith(("-latest", "-preview"))
-    family = requested.rsplit("-", 1)[0]
-    resolved_alias = (alias and isinstance(actual, str)
-                      and re.fullmatch(re.escape(family) + r"-v?\d+(?:\.\d+){1,3}", actual))
-    if actual != requested and not resolved_alias:
-        raise ValueError("decision model mismatch")
-    return data
+    return _validate_response_model(data, cfg)
+
+
+def _cloudflare(cfg: dict, state: dict, questions: dict) -> dict:
+    """Call Workers AI Clef through Cloudflare's account REST API.
+
+    Cloudflare follows the same typed decision protocol as System One, but its
+    REST envelope is ``{"result": {"model", "answers", "usage"}}``.  Only
+    the normalized result crosses the provider boundary, so the rest of the
+    pipeline retains one response contract and one telemetry path.
+    """
+    from ducky.engine_mode import cloud_egress_allowed
+    if not cloud_egress_allowed("decision"):
+        return {"model": cfg["model"], "answers": {}}
+    import requests
+    account_id = cfg["account_id"].strip()
+    model = cfg["model"]
+    endpoint = (cfg.get("openai_base_url") or DEFAULTS["cloudflare"][1]).rstrip("/")
+    url = f"{endpoint}/accounts/{account_id}/ai/run/@cf/cloudflare/{model}"
+    response = requests.post(
+        url,
+        headers={"Authorization": "Bearer " + cfg["api_key"], "Content-Type": "application/json"},
+        json={"model": model, "state": state, "questions": questions},
+        timeout=(min(2, cfg["timeout_ms"] / 1000), cfg["timeout_ms"] / 1000),
+        allow_redirects=False,
+    )
+    if response.status_code != 200:
+        raise ValueError("decision HTTP error")
+    envelope = response.json()
+    if not isinstance(envelope, dict) or envelope.get("success") is False:
+        raise ValueError("invalid Cloudflare decision response")
+    data = envelope.get("result")
+    if not isinstance(data, dict):
+        raise ValueError("invalid Cloudflare decision result")
+    return _validate_response_model(data, cfg)
 
 
 _nace = _systemone  # Existing private integrations may import this adapter.
 PROVIDERS = {name: _systemone for name in DEFAULTS}
+PROVIDERS["cloudflare"] = _cloudflare
 
 
 def decide(task: str, state: dict, questions: dict, user_id: str, bank_id: str, cfg: dict | None = None) -> tuple[dict, dict]:
@@ -214,20 +264,37 @@ def decide(task: str, state: dict, questions: dict, user_id: str, bank_id: str, 
             _cache[key] = (time.monotonic() + 60, data)
             while len(_cache) > 128:
                 _cache.popitem(last=False)
+        usage = data.get("usage")
+        tokens = usage.get("input_tokens", 0) if isinstance(usage, dict) else 0
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            tokens = 0
+        latency = round((time.perf_counter() - start) * 1000, 1)
+        _track_usage(task, tokens, latency, False, data.get("model", cfg["model"]))
         return data["answers"], _record(task, "ok", model=data.get("model", cfg["model"]),
                                        requested_model=cfg["model"], applied=True,
-                                       latency_ms=round((time.perf_counter() - start) * 1000, 1),
-                                       input_tokens=(data.get("usage") or {}).get("input_tokens", 0))
+                                       latency_ms=latency, input_tokens=tokens)
     except Exception as exc:
+        latency = round((time.perf_counter() - start) * 1000, 1)
+        _track_usage(task, 0, latency, True, cfg.get("model", "unknown"))
         with _lock:
             count = _circuits.get(fingerprint, (0, 0))[0] + 1
             _circuits[fingerprint] = (count, time.monotonic() + 30 if count >= 3 else 0)
             while len(_circuits) > 32:
                 _circuits.pop(next(iter(_circuits)))
         return {}, _record(task, "error_fallback", applied=False, error_type=type(exc).__name__,
-                           latency_ms=round((time.perf_counter() - start) * 1000, 1))
+                           latency_ms=latency)
     finally:
         _slots.release()
+
+
+def _track_usage(task: str, tokens: int, latency: float, failed: bool, model: str) -> None:
+    """Retain the live usage ledger without making accounting a recall failure."""
+    try:
+        from ducky.mem0_runtime import _track_decision_usage
+        _track_decision_usage(task=task, input_tokens=tokens, latency_ms=latency,
+                              failed=failed, model=model)
+    except Exception:
+        pass
 
 
 def probability(answer) -> float | None:
@@ -246,7 +313,7 @@ def classify(text: str, user_id: str, bank_id: str) -> tuple[str | None, float |
     value = answer.get("choice") if isinstance(answer, dict) and answer.get("type") == "choice" else None
     confidence = answer.get("confidence") if isinstance(answer, dict) else None
     valid = probability({"type": "noul", "noul": confidence})
-    return (value, valid) if value in TYPE_LABELS and valid is not None and valid >= 0.7 else (None, None)
+    return (value, valid) if isinstance(value, str) and value in TYPE_LABELS and valid is not None and valid >= 0.7 else (None, None)
 
 
 def filter_evidence(query: str, rows: list, user_id: str, bank_id: str) -> list:

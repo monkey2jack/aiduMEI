@@ -161,7 +161,8 @@ def test_bearer_token_grants_access(env):
     client = env.client()
     assert client.get("/api/facts").status_code == 401
     assert client.get(
-        "/api/facts", headers={"Authorization": "Bearer tok-secret"}
+        "/api/facts", params={"caller_user_id": "default"},
+        headers={"Authorization": "Bearer tok-secret"}
     ).status_code == 200
     assert client.get(
         "/api/facts", headers={"Authorization": "Bearer wrong"}
@@ -171,7 +172,10 @@ def test_bearer_token_grants_access(env):
 def test_x_api_token_header_also_accepted(env):
     env.set_token("tok-secret")
     client = env.client()
-    assert client.get("/api/facts", headers={"X-API-Token": "tok-secret"}).status_code == 200
+    assert client.get(
+        "/api/facts", params={"caller_user_id": "default"},
+        headers={"X-API-Token": "tok-secret"}
+    ).status_code == 200
     assert client.get("/api/facts", headers={"X-API-Token": "nope"}).status_code == 401
 
 
@@ -185,7 +189,8 @@ def test_cookie_and_bearer_are_interchangeable(env):
     client = env.client()
     assert client.get("/api/facts").status_code == 401
     assert client.get(
-        "/api/facts", headers={"Authorization": "Bearer tok-secret"}
+        "/api/facts", params={"caller_user_id": "default"},
+        headers={"Authorization": "Bearer tok-secret"}
     ).status_code == 200
     client.post("/api/login", json={"password": "verystrongpassword"})
     assert client.get("/api/facts").status_code == 200

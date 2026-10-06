@@ -171,7 +171,7 @@ def test_delete_all_clears_every_scoped_ledger(sandbox):
     query, fake, _ = sandbox
     _seed_tenant("dc_alice", fake)
 
-    out = cascade_delete_all("dc_alice")
+    out = cascade_delete_all("dc_alice", confirm=True)
     det = out["details"]
     assert det.get("core_memory_deleted", 0) >= 1, "core_memory 正本没清（w P0/自报 4.1）"
     assert det.get("refined_deleted", 0) >= 1, "refined_memories 没清（w P0）"
@@ -200,7 +200,7 @@ def test_deleted_content_cannot_resurrect_via_workspace(sandbox):
     pre = ws_lookup("dc_ghost", text)
     assert pre, "前置失败：缓存本该命中（同文查询 Jaccard=1）—— 探针失去区分力"
 
-    cascade_delete_all("dc_ghost")
+    cascade_delete_all("dc_ghost", confirm=True)
     post = ws_lookup("dc_ghost", text)
     assert not post, "已删内容从 workspace 复活 —— found/workspace_hit 幽灵（z P1-01）"
     assert query("SELECT 1 FROM core_memory WHERE user_id='dc_ghost'") == []
@@ -230,7 +230,7 @@ def test_backfill_after_delete_all_does_not_resurrect(sandbox):
     _seed_tenant("dc_refill", fake)
     fake.vector_store.points.clear()  # 只观察回填产物
 
-    cascade_delete_all("dc_refill")
+    cascade_delete_all("dc_refill", confirm=True)
     report = cm.backfill_core_vectors(apply=True)  # 全作用域回填
 
     resurrected = [t for t in report.get("indexed", [])
@@ -254,7 +254,7 @@ def test_cross_tenant_negative_control(sandbox):
     _seed_tenant("dc_victim", fake)
     _seed_tenant("dc_bystander", fake)
 
-    cascade_delete_all("dc_victim")
+    cascade_delete_all("dc_victim", confirm=True)
 
     assert query("SELECT 1 FROM core_memory WHERE user_id='dc_bystander'"), \
         "旁观者的 core_memory 被连坐"

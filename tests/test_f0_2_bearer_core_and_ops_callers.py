@@ -23,7 +23,7 @@ USER = "f02-other-hall"
 
 
 @contextmanager
-def _gated_server():
+def _gated_server(principal=None):
     """Reject the old Bearer shape and record the real HTTP requests."""
     calls: list[dict] = []
 
@@ -46,7 +46,7 @@ def _gated_server():
             scope = query if self.command == "GET" else body
             if self.headers.get("Authorization") != f"Bearer {TOKEN}":
                 self._reply(401, {"detail": "bearer required"})
-            elif scope.get("caller_user_id") != scope.get("user_id"):
+            elif scope.get("caller_user_id") != (principal or scope.get("user_id")):
                 self._reply(403, {"detail": "caller must declare target hall"})
             elif parts.path.startswith("/api/core-memory"):
                 self._reply(200, {"status": "ok", "user_id": scope["user_id"],
@@ -88,6 +88,7 @@ def _load_mcp_core_functions(api_get):
     namespace = {
         "DEFAULT_USER_ID": "default", "DEFAULT_BANK_ID": "default",
         "_api_get": api_get, "_ok": json.dumps, "urllib": urllib,
+        "_mcp_principal": lambda: "default",
     }
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                  "mcp_server.py", "exec"), namespace)
@@ -110,7 +111,7 @@ def test_gated_server_rejects_old_undeclared_caller_shape():
 
 
 def test_mcp_core_tools_send_query_scope_for_default_and_custom_halls():
-    with _gated_server() as (base, calls):
+    with _gated_server(principal="default") as (base, calls):
         def api_get(path, params=None):
             url = base + path + "?" + urllib.parse.urlencode(params or {})
             req = urllib.request.Request(url,
@@ -130,7 +131,7 @@ def test_mcp_core_tools_send_query_scope_for_default_and_custom_halls():
     assert len(calls) == 3
     for call in calls:
         assert call["auth"] == f"Bearer {TOKEN}"
-        assert call["query"]["caller_user_id"] == call["query"]["user_id"]
+        assert call["query"]["caller_user_id"] == "default"
 
 
 def test_integration_smoke_search_declares_its_synthetic_hall(monkeypatch, capsys):

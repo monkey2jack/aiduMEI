@@ -133,6 +133,29 @@ def _track_rerank_usage(provider: str = "", latency_ms: float = 0.0, failed: boo
         _save_usage()
 
 
+def _track_decision_usage(task: str = "", input_tokens: int = 0, latency_ms: float = 0.0,
+                          failed: bool = False, model: str = ""):
+    """Count actual decision requests; cached decisions do not add calls."""
+    today = _ensure_today()
+    with _usage_lock:
+        d = _llm_usage[today].setdefault(
+            "decision",
+            {"calls": 0, "input_tokens": 0, "total_tokens": 0,
+             "failures": 0, "latency_ms_sum": 0.0, "models": {}},
+        )
+        d["calls"] = d.get("calls", 0) + 1
+        d["input_tokens"] = d.get("input_tokens", 0) + input_tokens
+        d["total_tokens"] = d.get("total_tokens", 0) + input_tokens
+        d["failures"] = d.get("failures", 0) + int(failed)
+        d["latency_ms_sum"] = round(d.get("latency_ms_sum", 0.0) + latency_ms, 1)
+        mod = d.setdefault("models", {}).setdefault(
+            model or "unknown", {"calls": 0, "input_tokens": 0, "failures": 0})
+        mod["calls"] += 1
+        mod["input_tokens"] += input_tokens
+        mod["failures"] += int(failed)
+        _save_usage()
+
+
 def track_vision_usage(input_tokens: int = 0, output_tokens: int = 0, total_tokens: int = 0):
     """追踪多模态 Vision API 用量（v18.3）"""
     today = _ensure_today()
