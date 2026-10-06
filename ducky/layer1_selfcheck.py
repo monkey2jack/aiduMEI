@@ -19,6 +19,7 @@ from .bank_contract import (
     vector_scope_filters,
 )
 from .utils import get_facts_conn, jaccard_sim
+from ducky.mem0_compat import get_all_memories
 from ducky.failure_ledger import feature_failed
 
 logger = logging.getLogger("aiduMEM.selfcheck")
@@ -84,7 +85,7 @@ def check_capacity(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict
     default）的行为与 v19 逐字节一致，多域部署则各算各的。
     """
     try:
-        all_mem = memory.get_all(filters=vector_scope_filters(user_id, bank_id), limit=10000)
+        all_mem = get_all_memories(memory, filters=vector_scope_filters(user_id, bank_id), limit=10000)
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
         results = [r for r in results if vector_item_in_bank(r, bank_id)] \
             if isinstance(results, list) else results
@@ -129,7 +130,10 @@ def dedup_check(memory, user_id: str, new_text: str,
         top = results_list[0]
         # mem0 各版本 score 口径不一（距离/相似度混用），判据统一走文本相似度
         existing_text = top.get("memory", "") if isinstance(top, dict) else ""
-        if existing_text and _text_similarity(new_text[:200], existing_text[:200]) > DEDUP_THRESHOLD:
+        # Compare the complete text.  A shared opening paragraph is common in
+        # long templates; truncating both sides at 200 characters made records
+        # with different conclusions look like duplicates.
+        if existing_text and _text_similarity(new_text, existing_text) > DEDUP_THRESHOLD:
             return top.get("id", "")
     except Exception as e:
         logger.debug(f"去重检查跳过: {e}")
@@ -140,6 +144,10 @@ def _text_similarity(a: str, b: str) -> float:
     """简单的 Jaccard 相似度（字符级 bigram）"""
     if not a or not b:
         return 0.0
+    # Long templates can share almost every bigram while differing in one
+    # critical final fact. Keep both unless their complete text is identical.
+    if max(len(a), len(b)) > 200:
+        return 1.0 if a == b else 0.0
     def bigrams(s):
         return set(s[i:i+2] for i in range(len(s)-1))
     ba, bb = bigrams(a), bigrams(b)
@@ -184,7 +192,7 @@ def _cluster_by_similarity(items: list, threshold: float) -> list:
         placed = False
         for cluster in clusters:
             head_text = _memory_text(cluster[0])
-            if head_text and _text_similarity(text[:200], head_text[:200]) > threshold:
+            if head_text and _text_similarity(text, head_text) > threshold:
                 cluster.append(item)
                 placed = True
                 break
@@ -224,7 +232,7 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
             )
             return {"merged_groups": 0, "deleted": 0, "skipped_reason": "auto_merge_disabled"}
 
-        all_mem = memory.get_all(filters=vector_scope_filters(user_id, bank_id), limit=10000)
+        all_mem = get_all_memories(memory, filters=vector_scope_filters(user_id, bank_id), limit=10000)
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
         if not isinstance(results, list):
             return {"merged_groups": 0, "deleted": 0}
@@ -264,21 +272,25 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
                     # 既删错了、又删得找不回来。这里两步都要，且**顺序不能反**。
                     try:
                         from ducky.tombstone import snapshot_before_delete
-                        snapshot_before_delete(
+                        snapshot_id = snapshot_before_delete(
                             mid, user_id=user_id, bank_id=bank_id,
                             reason="layer1_auto_merge_capacity",
                             actor="layer1_auto_merge",
                         )
+                        if snapshot_id is None:
+                            logger.warning("tombstone snapshot unavailable; preserving %s", str(mid)[:8])
+                            continue
                     except (OSError, ValueError, TypeError, KeyError, ImportError,
                             AttributeError, RuntimeError) as te:
-                        # 快照失败不阻断删除主链路（与 wal_engine 同口径），
-                        # 但必须留痕 —— 这条记忆将不可恢复。
-                        # 收窄到具体类型而非 except Exception：宽捕获棘轮只降不升。
-                        logger.warning(f"tombstone 快照失败，{str(mid)[:8]} 删除后不可恢复: {te}")
+                        # Automated pruning must keep a recoverable copy. A
+                        # failed snapshot leaves the source memory untouched.
+                        logger.warning("tombstone snapshot failed; preserving %s: %s", str(mid)[:8], type(te).__name__)
+                        continue
                     try:
                         from ducky.wal_engine import cascade_delete_memory
-                        cascade_delete_memory(mid, user_id=user_id, bank_id=bank_id)
-                        deleted_total += 1
+                        result = cascade_delete_memory(mid, user_id=user_id, bank_id=bank_id)
+                        if result and result.get("status") in ("ok", "committed"):
+                            deleted_total += 1
                     except Exception as e:
                         logger.debug(f"删除记忆 {str(mid)[:8]} 失败: {e}")
                 merged += 1

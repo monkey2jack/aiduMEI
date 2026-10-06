@@ -234,7 +234,7 @@ class TestR18ScopedDeletion:
         _seed_r18(db_path)
         from ducky.wal_engine import cascade_delete_all
 
-        out = cascade_delete_all("r18_victim")
+        out = cascade_delete_all("r18_victim", confirm=True)
         det = out["details"]
         assert det.get("observations_deleted") == 2, det
         assert det.get("scenes_deleted") == 1, det
@@ -248,7 +248,7 @@ class TestR18ScopedDeletion:
         _seed_r18(db_path)
         from ducky.wal_engine import cascade_delete_all
 
-        cascade_delete_all("r18_victim")
+        cascade_delete_all("r18_victim", confirm=True)
         assert query("SELECT 1 FROM observations WHERE user_id='r18_bystander'"), "旁观者观察被连坐"
         assert query("SELECT 1 FROM scenes WHERE user_id='r18_bystander'"), "旁观者场景被连坐"
         assert query("SELECT 1 FROM observations WHERE user_id=''"), "v7 无主存量行被误删"

@@ -15,6 +15,7 @@ J-space 启发：概念写入全局广播区后，被所有子电路读取→形
 
 import time, logging
 
+from ducky.mem0_compat import get_all_memories
 from ducky.bank_contract import DEFAULT_BANK_ID, vector_item_in_bank, vector_scope_filters
 
 logger = logging.getLogger("aiduMEM.broadcast")
@@ -154,7 +155,7 @@ def broadcast_expand(memory, memory_id: str, user_id: str, limit: int = 5,
     try:
         scope_filters = vector_scope_filters(user_id, bank_id)
         # 先拿文本（复筛保证他库同 id 的记忆定位不到）
-        all_mem = memory.get_all(filters=scope_filters, limit=10000)
+        all_mem = get_all_memories(memory, filters=scope_filters, limit=10000)
         results_list = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
         source_text = ""
         for item in (results_list or []):

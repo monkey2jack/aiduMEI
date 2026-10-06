@@ -28,6 +28,7 @@ class RawDrawerRequest(BaseModel):
     # 原文抽屉不是绕开 /add 上限的后门。
     content: str = Field(..., max_length=TEXT_FIELD_MAX_CHARS)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
     # 🔴v20：原味抽屉此前完全不知道「域」的存在 —— /add/raw 写入的原文
     # 恒落默认域，任何命名域都无法用它存原文。补齐后与 /add 同一套契约。
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
@@ -111,6 +112,9 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
             raise
 
     def _add_raw_inner(req: RawDrawerRequest, t0: float, _finalize_raw):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(req.user_id, req.caller_user_id,
+                             bank_id=req.bank_id, action="write")
         is_safe, sanitized_content, rejection = validate_and_sanitize_memory_content(req.content.strip())
         if not is_safe:
             logger.warning("🛡️ /add/raw rejected injection: %s", rejection)

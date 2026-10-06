@@ -35,6 +35,8 @@ pydantic_core==2.46.4
 # --- HTTP 客户端 ------------------------------------------------------------
 # httpx: 异步 HTTP 客户端（mem0ai 内部用 + 测试脚本备用）；f0.3 起锁生产实跑版本
 httpx==0.28.1
+# MCP server uses the official SDK's mcp.server.fastmcp, not the fastmcp package.
+mcp==1.30.0
 # requests: 同步 HTTP 客户端（tests/test_smoke_api.py 用，零依赖）；f0.3 起锁生产实跑版本
 requests==2.34.2
 

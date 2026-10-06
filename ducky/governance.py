@@ -404,7 +404,9 @@ def _apply_reject(conn, candidate_id: int, fact_id: int, fact_key: str,
     if fact_id:
         conn.execute("UPDATE facts SET archived=1, archived_at=CURRENT_TIMESTAMP WHERE id=?",
                      (fact_id,))
-    _tombstone_rejected(conn, fact_key, category, fact_value, user_id, reason, actor,
+    # Candidate user_id records the writer/source; snapshots belong to the
+    # fact's tenant, matching the rejection ledger and scoped erasure.
+    _tombstone_rejected(conn, fact_key, category, fact_value, scope_user or "default", reason, actor,
                         bank_id=scope_bank)
     conn.execute(
         "UPDATE candidate_facts SET status='rejected', review_reason=?, decided_at=? WHERE candidate_id=?",

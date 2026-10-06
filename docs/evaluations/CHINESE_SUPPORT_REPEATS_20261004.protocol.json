@@ -1,0 +1,180 @@
+{
+  "additional_repeats": 2,
+  "cases": [
+    {
+      "category": "negation",
+      "en": {
+        "candidate": "The owner explicitly rejected this release request.",
+        "query": "Did the owner approve this release?"
+      },
+      "expected": true,
+      "family": "negation-3",
+      "id": "negation-3-positive",
+      "zh": {
+        "candidate": "负责人明确拒绝了本轮上线申请。",
+        "query": "负责人是否批准了本轮上线？"
+      }
+    },
+    {
+      "category": "negation",
+      "en": {
+        "candidate": "Not every release request is approved; there is no conclusion for this request yet.",
+        "query": "Did the owner approve this release?"
+      },
+      "expected": false,
+      "family": "negation-3",
+      "id": "negation-3-negative",
+      "zh": {
+        "candidate": "并非所有上线申请都会获批，本轮申请尚无结论。",
+        "query": "负责人是否批准了本轮上线？"
+      }
+    },
+    {
+      "category": "referent",
+      "en": {
+        "candidate": "The magnifier animation must be on the topmost layer; the logo and ring go on the bottommost layer.",
+        "query": "Which layer is required for the magnifier animation?"
+      },
+      "expected": true,
+      "family": "referent-1",
+      "id": "referent-1-positive",
+      "zh": {
+        "candidate": "放大镜动效必须位于最顶层；标志和外圈放在最底层。",
+        "query": "放大镜动效要求放在哪一层？"
+      }
+    },
+    {
+      "category": "referent",
+      "en": {
+        "candidate": "The logo and ring go on the bottommost layer, below the magnifier animation; the magnifier's own exact layer is unspecified.",
+        "query": "Which layer is required for the magnifier animation?"
+      },
+      "expected": false,
+      "family": "referent-1",
+      "id": "referent-1-negative",
+      "zh": {
+        "candidate": "标志和外圈要放在最底层，在放大镜动效的下方；未指定放大镜自身的具体层级。",
+        "query": "放大镜动效要求放在哪一层？"
+      }
+    },
+    {
+      "category": "alias",
+      "en": {
+        "candidate": "Old Chen is Chen Mo; Chen Mo prefers Chinese weekly reports.",
+        "query": "Which language does Old Chen prefer for weekly reports?"
+      },
+      "expected": true,
+      "family": "alias-2",
+      "id": "alias-2-positive",
+      "zh": {
+        "candidate": "老陈就是陈默；陈默最喜欢中文周报。",
+        "query": "老陈最喜欢用哪种语言写周报？"
+      }
+    },
+    {
+      "category": "alias",
+      "en": {
+        "candidate": "There is no confirmed mapping between Old Chen and Chen Mo; only Chen Mo's preference for Chinese reports is known.",
+        "query": "Which language does Old Chen prefer for weekly reports?"
+      },
+      "expected": false,
+      "family": "alias-2",
+      "id": "alias-2-negative",
+      "zh": {
+        "candidate": "老陈和陈默没有已确认的对应关系；只知道陈默喜欢中文周报。",
+        "query": "老陈最喜欢用哪种语言写周报？"
+      }
+    },
+    {
+      "category": "quantity",
+      "en": {
+        "candidate": "The 9:30 test took 300 milliseconds, or 0.3 seconds.",
+        "query": "How long did the 9:30 test take?"
+      },
+      "expected": true,
+      "family": "quantity-1",
+      "id": "quantity-1-positive",
+      "zh": {
+        "candidate": "九点半那次测试耗时300毫秒，也就是0.3秒。",
+        "query": "九点半那次测试等了多久？"
+      }
+    },
+    {
+      "category": "quantity",
+      "en": {
+        "candidate": "The 9:30 test made 300 calls; its duration was not recorded.",
+        "query": "How long did the 9:30 test take?"
+      },
+      "expected": false,
+      "family": "quantity-1",
+      "id": "quantity-1-negative",
+      "zh": {
+        "candidate": "九点半那次测试调用了300次，耗时没有记录。",
+        "query": "九点半那次测试等了多久？"
+      }
+    },
+    {
+      "category": "commitment",
+      "en": {
+        "candidate": "Jev has been approved and enabled for retrieval evidence checks.",
+        "query": "Which decision model is already active?"
+      },
+      "expected": true,
+      "family": "commitment-2",
+      "id": "commitment-2-positive",
+      "zh": {
+        "candidate": "已批准并启用Jev作为检索核验模型。",
+        "query": "已生效的决策模型是哪个？"
+      }
+    },
+    {
+      "category": "commitment",
+      "en": {
+        "candidate": "Jev scored well in discussion, but no decision model has been selected or enabled.",
+        "query": "Which decision model is already active?"
+      },
+      "expected": false,
+      "family": "commitment-2",
+      "id": "commitment-2-negative",
+      "zh": {
+        "candidate": "Jev在讨论中得分较高，但尚未选定或启用决策模型。",
+        "query": "已生效的决策模型是哪个？"
+      }
+    },
+    {
+      "category": "commitment",
+      "en": {
+        "candidate": "Deployment is complete and the service is actually running f0.3+.",
+        "query": "What version is currently deployed?"
+      },
+      "expected": true,
+      "family": "commitment-4",
+      "id": "commitment-4-positive",
+      "zh": {
+        "candidate": "当前已完成上线，服务实际运行f0.3+。",
+        "query": "当前已经上线的版本号是什么？"
+      }
+    },
+    {
+      "category": "commitment",
+      "en": {
+        "candidate": "f0.3+ is planned for the next release and is not deployed; this record does not give the current version.",
+        "query": "What version is currently deployed?"
+      },
+      "expected": false,
+      "family": "commitment-4",
+      "id": "commitment-4-negative",
+      "zh": {
+        "candidate": "f0.3+是下一版计划，尚未上线；本记录没写当前版本。",
+        "query": "当前已经上线的版本号是什么？"
+      }
+    }
+  ],
+  "concurrency": 2,
+  "initial_protocol_sha256": "1475bb53eadf1386dfcf1f1bb1703884692d0b0ea85774305fc0ef38836fa1ae",
+  "new_independent_samples": 0,
+  "posthoc": true,
+  "selection": "Families with a Chinese error by any model, plus polarity counterparts; diagnostic only",
+  "threshold": 0.6,
+  "timeout_ms": 5000
+}

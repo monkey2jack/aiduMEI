@@ -65,6 +65,9 @@ class AddRequest(BaseModel):
     messages: Messages = ""
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    # v0.3++ scope principal.  Empty preserves the single-owner loopback
+    # contract; agents must send the principal when they address a named user.
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
     metadata: dict = Field(default_factory=dict)
 
     @field_validator("messages")
@@ -165,6 +168,7 @@ class DeleteRequest(BaseModel):
     memory_id: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 class DeleteAllRequest(BaseModel):
@@ -173,6 +177,7 @@ class DeleteAllRequest(BaseModel):
     # 🔴P0-3: 必须显式指定 user_id，缺失拒绝执行
     user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
     # 清空 default 租户必须显式传递 confirm=True
     confirm: bool = False
 
@@ -184,6 +189,7 @@ class TombstoneRestoreRequest(BaseModel):
     tombstone_id: int
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 class GovernanceReviewRequest(BaseModel):
     """🏛️ 治理管线人审请求（v19.4.0 Mímir 借鉴 B1）"""
@@ -194,6 +200,7 @@ class GovernanceReviewRequest(BaseModel):
     reason: str = Field(default="", max_length=SHORT_TEXT_MAX_CHARS)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 class OpinionSetRequest(BaseModel):
     """🧭 信念层写入请求（v19.4.0 Mímir 借鉴 B6）"""
@@ -206,6 +213,7 @@ class OpinionSetRequest(BaseModel):
     source: str = Field(..., max_length=ID_FIELD_MAX_CHARS)  # 证据来源标识（必填，聚合按来源去重）
     owner: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 class UpdateRequest(BaseModel):
@@ -216,6 +224,7 @@ class UpdateRequest(BaseModel):
     memory_id: str = Field(..., max_length=ID_FIELD_MAX_CHARS)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
     content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
 
 
@@ -229,3 +238,4 @@ class InjectContextRequest(BaseModel):
     assistant_content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)

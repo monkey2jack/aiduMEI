@@ -266,6 +266,8 @@ def authorize_cross_hall(target_user_id: str, caller_user_id: str,
     """
     tgt = str(target_user_id or "").strip()
     clr = str(caller_user_id or "").strip()
+    from ducky.security.auth import enforce_caller_binding
+    enforce_caller_binding(clr, f"hall:{action}")
     if clr == tgt:
         return True
     if not clr:

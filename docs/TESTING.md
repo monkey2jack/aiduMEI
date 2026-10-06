@@ -11,7 +11,7 @@
 ```bash
 # 完整可选环境；先部署模型再测试
 pip install -r requirements.txt -r requirements-dev.txt
-pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
+pip install "mcp==1.30.0" ruff nltk regex numpy fastembed
 python scripts/fetch_local_embed_model.py
 HERMES_SRC=none pytest tests/ -q -rs
 # 宿主在场；其余工具、依赖、数据集与缓存也必须齐备

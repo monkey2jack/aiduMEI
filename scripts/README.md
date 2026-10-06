@@ -18,6 +18,7 @@
 | `fetch_local_embed_model.py` | Download and stage local embedding model | Writes model cache | Yes | Deployment for auto/local |
 | `deploy_manifest.py` | Build deployment manifest | No | Yes | Packaging/deployment audit |
 | `vector_shadow_poc.py` | Vector backend shadow checks | No | Yes | Backend contract diagnostics |
+| `decision_compare.py` | Same-corpus Drex/Jev/Clef typed-decision comparison; credentials only from environment | No | Yes | Before selecting a decision provider |
 | `release_scan.py` | Release-sensitive scan | No | Yes | Release gate |
 | `push_gate.sh` | Full push gate | No | Yes | Before pushing repositories |
 | `phase4a_test.sh` | Legacy phase test | No | Yes | Historical diagnostics |

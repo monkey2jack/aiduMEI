@@ -45,6 +45,11 @@ from ducky.hot.legacy_helpers import (
     _vault_refine,
 )
 
+
+def _scope_default(value: str, default: str) -> str:
+    """Use a route scope value or its historical default."""
+    return value if value else default
+
 logger = logging.getLogger("aiduMEM.legacy.routes")
 
 
@@ -54,7 +59,10 @@ def register_legacy_routes(app):
     # ── 6.2  Facts CRUD ──
     @app.get("/facts")
     def list_facts(category: str = None, key: str = None, level: str = "L2",
-                   user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
+                   user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
+                   caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         level_norm = (level or "L2").upper()
         if level_norm not in ("L0","L1","L2"): level_norm = "L2"
         conn = _get_facts_conn()
@@ -88,7 +96,11 @@ def register_legacy_routes(app):
     def add_fact(category: str = "general", fact_key: str = "", fact_value: str = "",
                  source: str = DEFAULT_USER_ID, level: str = "",
                  valid_from: str = "", valid_to: str = "",
-                 agent_id: str = "", user_id: str = "", bank_id: str = ""):
+                 agent_id: str = "", user_id: str = "", bank_id: str = "",
+                 caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(normalize_user_id(user_id), caller_user_id,
+                             bank_id=normalize_bank_id(bank_id), action="write")
         if not fact_key or not fact_value:
             return {"status":"error","detail":"fact_key 和 fact_value 不能为空"}
         from ducky.security.injection_guard import validate_and_sanitize_memory_content
@@ -280,7 +292,10 @@ def register_legacy_routes(app):
 
     @app.get("/facts/related")
     def fact_related(entity: str = "", limit: int = 10, user_id: str = DEFAULT_USER_ID,
-                     bank_id: str = DEFAULT_BANK_ID):
+                     bank_id: str = DEFAULT_BANK_ID,
+                     caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         if not entity: return {"status":"error","detail":"需要 entity 参数"}
         conn = _get_facts_conn()
         t_clause, t_params = tenant_clause(
@@ -452,7 +467,10 @@ def register_legacy_routes(app):
     # ── 6.5  Feedback ──
     @app.post("/facts/feedback")
     def fact_feedback(fact_id: int, helpful: bool,
-                      user_id: str = "", bank_id: str = ""):
+                      user_id: str = "", bank_id: str = "", caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(_scope_default(user_id, DEFAULT_USER_ID), caller_user_id,
+                             bank_id=_scope_default(bank_id, DEFAULT_BANK_ID), action="write")
         # v20 P0-2：opt-in 作用域护栏——传了就校验事实归属，不传 = v19 管理员语义
         return _fact_feedback_impl(fact_id, helpful, user_id=user_id, bank_id=bank_id)
 
@@ -541,7 +559,10 @@ def register_legacy_routes(app):
                      # facts_recall.search_facts 一直有。FastAPI 会静默丢弃多余的
                      # query 参数，所以请求看着接受了 bank_id=xxx，轨迹里却始终是
                      # default —— 「看似选了域，其实查的是另一个域」。
-                     bank_id: str = DEFAULT_BANK_ID):
+                     bank_id: str = DEFAULT_BANK_ID,
+                     caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         # facts 是独立结构化知识库，不再绕经 mem0/Qdrant；use_hybrid 保留为兼容参数。
         # P0-1 时间过滤：before/after 支持 YYYY[-MM[-DD]] 粒度。
         from ducky.facts_recall import search_facts as recall_facts
@@ -559,7 +580,9 @@ def register_legacy_routes(app):
 
     # ── §8  Observations + Reflect ──
     @app.post("/observe/consolidate")
-    def run_consolidation(user_id: str = DEFAULT_USER_ID):
+    def run_consolidation(user_id: str = DEFAULT_USER_ID, caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(user_id, caller_user_id, bank_id=DEFAULT_BANK_ID, action="write")
         return _run_consolidation(user_id)
 
     @app.get("/observe")
@@ -655,7 +678,11 @@ def register_legacy_routes(app):
         return {"status":"ok","name":name,"facts_count":len(rows)}
 
     @app.get("/persona")
-    def get_persona(name: str = "user", user_id: str = "", bank_id: str = ""):
+    def get_persona(name: str = "user", user_id: str = "", bank_id: str = "",
+                    caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(_scope_default(user_id, DEFAULT_USER_ID), caller_user_id,
+                             bank_id=_scope_default(bank_id, DEFAULT_BANK_ID), action="read")
         return _refresh_persona_inline(name, user_id=user_id, bank_id=bank_id)
 
     # 注：/persona/build 已让位给 v19.0 人格记忆基座（ducky.routes_persona）。

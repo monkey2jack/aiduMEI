@@ -9,9 +9,9 @@
 > Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.3+**.
+> The current public release is **f0.3++**.
 
-> **f0.3+ adds optional decision-model configuration** (`0.3.0+decision.1` package identity). Customers choose the provider, model, endpoint, key and tasks, or leave it disabled. Configured tasks run automatically for new-memory classification and recall evidence checks. Nace, TypeSafe and compatible System One services are supported; Drex is not mandatory. Rerank continues to rank; local mode makes no decision calls. See [configuration and compatibility](docs/DECISION.md).
+> **f0.3++ closes the optional decision-model and three production hardening tracks** (`0.3.0+decision.2` package identity). Customers choose the provider, model, endpoint, key and tasks, or leave it disabled. Configured tasks run automatically for new-memory classification and recall evidence checks. Nace, TypeSafe, Cloudflare Clef/Clef Flash and compatible System One services are supported; Drex is not mandatory. Rerank continues to rank; local mode makes no decision calls. See [configuration and compatibility](docs/DECISION.md).
 >
 > **About the `f`**: this is a new era, not a continuation of the old numbering. `f` stands for
 > **future / fantasy / forever** — what we want to build is not a bigger cache, but a memory that
@@ -26,7 +26,7 @@
 
 ## f0.3+: measured benefits and costs
 
-**We used Drex 1.5 for testing.** These small internal experiments do not establish another model's performance or production answer accuracy. Revalidate tasks and thresholds after switching models.
+**Historical f0.3+ tests used Drex 1.5 with synthetic memories.** These small internal experiments do not establish another model's performance or production answer accuracy. Revalidate tasks and thresholds after switching models.
 
 | Measurement | Without decision model | With decision model | Change |
 |---|---:|---:|---:|
@@ -39,6 +39,38 @@
 Classification was faster and unknown-answer rejection improved; **retrieval p50 increased about 68.0%, p95 about 120.2%**. The 50 questions include 32 diagnostic replays and 18 fresh cases (17/18 → 18/18), across 12 related families, not 50 independent production samples. Original-wording hits were 11/12 in both arms. One additional correct classification is insufficient to establish a stable accuracy advantage. Throughput was not measured; no decision-induced speedup is demonstrated for embedding, extraction or indexing. See [methods and retained failures](docs/DECISION_EVALUATION.md).
 
 Automatic routing limits overhead: high-scoring broad queries bypass checks; specific attributes still need support. Original and mixed quote requests retain existing gates and bypass the added rejection. Each stage checks at most 12 candidates, caches successful responses for 60 seconds with user/bank/model/config/content isolation, permits at most two concurrent calls, falls back immediately when busy, and opens a 30-second circuit after three failures. Missing scores, long text and failures preserve the baseline. Classification and retrieval can be disabled separately. The host search deadline is separated from the core-memory deadline to avoid prematurely cutting off healthy calls. **These measures mitigate overhead; measured retrieval latency remains higher.**
+
+## f0.3++ local real-memory evaluation
+
+2026-10-04: the same isolated real-data copy and code compare decision off, Drex, Jev and Clef, with Clef Flash as an additional arm. All retain the same embedding/reranker. Classification includes confidence-gated LLM fallback; its baseline is the existing DeepSeek-V3.2 classifier.
+
+| Metric | Baseline | Drex 1.5 | Jev 1.13.0 | Clef | Clef Flash |
+|---|---:|---:|---:|---:|---:|
+| Type labels correct, including fallback (24) | 15/24 (62.50%) | 14/24 (58.33%) | 15/24 (62.50%) | 15/24 (62.50%) | 16/24 (66.67%) |
+| Classification end-to-end p50 / p95 (ms) | 3046.21 / 26730.75 | 566.15 / 9074.01 | 445.72 / 15219.92 | 3562.35 / 16589.42 | 3263.60 / 14058.57 |
+| HTTP retrieval judgments correct (60) | 26/60 (43.33%) | 29/60 (48.33%) | 32/60 (53.33%) | 30/60 (50.00%) | 29/60 (48.33%) |
+| Unknown answers correctly empty (12) | 5/12 (41.67%) | 11/12 (91.67%) | 11/12 (91.67%) | 10/12 (83.33%) | 11/12 (91.67%) |
+| Retrieval end-to-end p50 / p95 (ms) | 928.80 / 1495.72 | 1225.43 / 2844.45 | 1273.91 / 2058.61 | 1513.24 / 3531.30 | 1376.72 / 2871.43 |
+
+Jev gained six passes under the strict literal-anchor rubric (+10 percentage points); retrieval p50 increased 345.11ms (37.16%). **Receipt review found scoring penalties for concise equivalent answers and an ambiguous historical time reference. We withdraw the claim that every paired scoring regression was a false rejection; these counts do not establish a semantic accuracy ranking.** Classification accuracy gains remain unproven. Both Clef variants fell back to the LLM on 21/24 classifications, so direct API speed does not imply integrated speed. The historical synthetic-data table above cannot be compared across datasets. See the [full report](docs/DECISION_EVALUATION_20261004.md) and [sanitized aggregate receipt](docs/DECISION_EVALUATION_20261004.json) for raw-choice quality, rule baseline, ms/% changes, index coverage and limitations. Customers still choose their model and tasks.
+
+Chinese verifier follow-up: 64 Chinese contrasts plus 64 matched English translations, 512 calls with one frozen prompt, one candidate, .6 threshold and no LLM fallback. Chinese scores were Drex61/64, Jev64/64, Clef62/64, Flash61/64; API p50 was 415.75, 416.41, 647.67 and 482.88ms respectively. Two-to-three-case gaps do not establish an overall winner or a Clef Chinese advantage. A posthoc 96-call repeat showed unchanged verdicts; a 24-call full-memory/relevant-clause ablation reproduced Drex's long mixed-context false rejection. These are verifier scores, not production answer accuracy or classification/embedding/indexing results. See the [diagnosis and design implications](docs/DECISION_CHINESE_DIAGNOSIS_20261004.md). Original frozen inputs are retained privately; the public v2 uses fictional nodes and needs its own measurements.
+
+## A small easter egg: Dudu production decision-model comparison
+
+This easter egg carries forward the production comparison run before the three-Issue closeout: Dudu's production host, using the real API and Hermes CLI, compared decision off with four decision models on the same 24 independent synthetic families (16 answerable, 8 unanswerable; 2 exact-quote questions). Each arm ran 24 HTTP calls and 24 CLI calls, for 120 HTTP calls and 120 CLI calls across the five arms. The data, reranker, thresholds, prompts and verdict rules were fixed; each arm used its own data domain with cold caches and rotated call order, and failures stayed in the original denominator.
+
+| Configuration | HTTP retrieval | Unanswerable HTTP empty+not_found | CLI final answer | HTTP p95 |
+|---|---:|---:|---:|---:|
+| Decision off | 17/24 | 1/8 | 23/24 | 1092 ms |
+| Drex 1.5 | 21/24 | 6/8 | 22/24 | 1654 ms |
+| Jev 1.13.0 | 21/24 | 5/8 | 23/24 | 3663 ms |
+| Clef | 21/24 | 5/8 | 23/24 | 4187 ms |
+| Clef Flash | 22/24 | 6/8 | 23/24 | 4531 ms |
+
+Under these sample and test conditions we recommend Jev 1.13.0; Drex 1.5 is the speed-oriented alternative. This comparison used the production candidate before the closeout and was not a remeasurement of the final f0.3++ SHA; it is responsible only for this sample, environment and conditions, and is not a general production accuracy claim, model ranking or SLA.
+
+This easter egg is responsible only for this test sample, environment and conditions. It is not a general production accuracy claim, model ranking or SLA. Re-run the comparison after changing the model version, samples, prompt, network or task; users still choose their decision model.
 
 ## YouiSi: MEI is more than "beauty"
 
@@ -255,6 +287,12 @@ Details: [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## MCP Server (41 tools · default port 8766)
 
+`pip install -r requirements.txt` includes the official `mcp==1.30.0` SDK (1.x). The separate `fastmcp` package is not needed. For package installs, use `pip install 'aidumei[mcp]'`. Missing or incompatible SDK versions produce an actionable startup error.
+
+MCP guards repeated failures for the same connection, tool and normalized arguments: failure 2 adds `retry_count`; failure 3 adds `loop_warning`. Five failures within 60 seconds block subsequent identical calls with `circuit_open` and `retry_after`; after 30 seconds one recovery probe is admitted. Success resets the counter; successful batch calls are unlimited. SSE connections and different tenant arguments have separate counters. State is local to the process and resets on restart. Missing or wrongly typed parameters rejected by SDK validation do not reach this guard. The Hermes plugin provides retry hints only; hosts still need turn budgets. REST session circuit breaking is deferred.
+
+Set `AIDUMEI_MCP_LOOP_GUARD=0` to disable, or configure `AIDUMEI_MCP_LOOP_GUARD_THRESHOLD`, `AIDUMEI_MCP_LOOP_GUARD_WINDOW_S` and `AIDUMEI_MCP_LOOP_GUARD_COOLDOWN_S` (defaults 5/60/30). Invalid settings fall back to defaults. `[loop-guard]` logs omit original arguments. Calls already in flight are not cancelled.
+
 MCP and REST run in one process: REST on :8767, MCP on :8766 (stdio/HTTP dual transport). **Auth discipline**: a non-loopback bind must configure `AIDUMEM_API_TOKEN` or the server refuses to start; only set `AIDUMEM_ALLOW_INSECURE_PUBLIC=1` if you genuinely need credential-less public exposure (off by default; turning it on emits a critical log line) — both the REST service and MCP SSE additionally require `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<listen address>` (the value must equal the actual listen address verbatim; `1`/`true` do not count), otherwise it still refuses to start. Tool groups and call examples in [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
 
 ## Security Model
@@ -330,8 +368,8 @@ Example section to insert in the configuration file (use your own service settin
 
 | Dimension | Current |
 |------|------|
-| Total cases | **3016** (measured via `pytest --collect-only`, 2026-10-04, f0.3+ tree) = **2530 behavior (product code under direct test) + 340 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 3004 passed · **12 skipped** — **collected 2026-10-04** (f0.3+ tree, Python 3.12; complete extras and model cache, only Hermes source absent) |
+| Total cases | **3276** (measured via `pytest --collect-only`, 2026-10-06, f0.3++ candidate tree) = **2789 behavior (product code under direct test) + 341 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 3264 passed · **12 skipped** — **measured on 2026-10-06 against the current f0.3++ candidate tree** (Python 3.12; development and benchmark dependencies plus the local embedding model are ready; only the Hermes source is absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
@@ -347,21 +385,21 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 3004 and 1821**: the first is the 2026-10-04 collection count of the complete optional environment on this tree; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 3264 and 1821**: the first is the complete regression measured in the current development environment on 2026-10-06 (only the 12 Hermes host cases are skipped); the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
-> **Those 12 skips are not hand-waving — you can verify them yourself**: all thirteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
+> **Those 12 skips are not hand-waving — you can verify them yourself**: all fourteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
 > ```bash
-> # measured 2026-09-14: install everything, deploy the model cache, and point AIDUMEI_BENCH_DATA_DIR at a directory containing locomo10.json
+> # Expected counts for the current candidate (full re-measurement pending): install everything, deploy the model cache, and point AIDUMEI_BENCH_DATA_DIR at a directory containing locomo10.json
 > pip install -r requirements.txt -r requirements-dev.txt
-> pip install "mcp>=1.0.0,<2" ruff nltk regex numpy fastembed
+> pip install "mcp==1.30.0" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 3004 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 3016 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 3004 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 3264 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 3276 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 3264 passed, 12 skipped
 > ```
 >
-> `3016 passed` in the block above requires **all thirteen axes present**; the host is only one of them — don't read "install the host" as "all green".
+> `3276 passed` in the block above requires **all fourteen axes present**; the host is only one of them — don't read "install the host" as "all green". The current candidate has been measured at `3264 passed · 12 skipped` without the host.
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >
@@ -370,6 +408,7 @@ python -m compileall ducky api_server.py mcp_server.py
 > | Host Hermes source | 12 | `tests/test_hermes_plugin.py` |
 > | git worktree | 1 | brand-policy baseline |
 > | `scripts/backup_gate.sh` + POSIX shell | 8 | backup-gate tests |
+> | WAL POSIX real locks and directory fsync | 5 | POSIX tests in `test_f03pp_wal_integrity.py`; Windows locks are simulated only |
 > | `qdrant_client` installed | 1 | vector-bank contract |
 > | LoCoMo dataset present | 1 | official whole-dataset scan |
 > | `regex` installed | 1 | metric differential test |
@@ -389,6 +428,10 @@ MIT License. `SECURITY.md` + [docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT
 
 ## Known boundaries (honestly stated)
 
+- **Identity and scope**: the default is a trusted single owner. Without credential bindings, REST callers remain client-declared; a shared token does not isolate mutually distrusting customers. Configure `AIDUMEI_CALLER_BINDINGS` (credential fingerprints → allowed principals) with `AIDUMEI_CALLER_BINDING_MODE=strict` for the common scoped-route, management and cross-hall checks. MCP uses the deployment `AIDUMEM_USER_ID` (configured default user if absent) as its principal; choosing a target user does not grant that identity. UI sessions represent the owner.
+- **Destructive operations**: `delete_all` requires explicit `confirm=true` for every user. Capacity merging defaults off; when enabled, texts longer than 200 characters merge only if identical in full. Snapshot failure preserves the source.
+- **WAL**: the deletion/recovery chain is covered; ordinary add/update are not a complete durable write log. Bad rows and I/O/lock errors enter unknown and pause reconciliation. POSIX process locking and directory fsync have regressions; Windows locking is simulated only. CRC, sequence migration and cross-store atomicity remain future architecture work.
+- **Loop protection**: MCP state lives in one process and resets on restart; workers do not coordinate. Top-level tracing IDs do not reset failures; pagination, timestamps and nested business fields remain meaningful. Async half-open probes time out after 30 seconds; synchronous HTTP tools retain their own 20/30-second network deadlines. Plugins provide retry hints; hosts still need turn/budget limits.
 - Requires embedding and LLM services (cloud or a local spare) — what you get back is real semantic retrieval and extraction quality. If you want "fully offline and sub-millisecond", a zero-dependency local tool suits you better, and we won't hide that.
 - **The benchmark result is a trial run, not a final score**: 2 of 10 samples, judge is not GPT-4o. A formal entry requires a full re-run; [benchmarks/RESULTS.md](benchmarks/RESULTS.md) records this honestly.
 - Temporal reasoning remains a **known weakness**: the root cause is fixed but **not yet re-measured** — every entry in the "target" column above is still a target, not a result.
@@ -421,6 +464,15 @@ aiduMEI/
 ├── scripts/                # e2e_smoke.py · check_hook_deployment.py · report.py and friends
 └── mem0_config_local.json  # Model configuration (gitignored, holds keys)
 ```
+
+<details>
+<summary>An easter egg: how we picked a decision model</summary>
+
+On the 2026-10-05 Linux/Python 3.12.3 isolated instances, real Hermes CLI and fixed model/data settings, five arms on 24 synthetic families favored **Jev 1.13.0**, with Drex 1.5 as a lower-latency option. Decision-off and Jev both scored 23/24 final answers; the measurable benefit was cleaner evidence for unknowns.
+
+**These observations apply only to the tested samples, environment and conditions.** This single historical run was not repeated on the final release and is not a universal ranking. [Environment, parameters, denominators, results, case matrix and limitations](docs/DECISION_MODEL_SAMPLE_20261005.md) include the long-record case all arms failed. Users choose their own model.
+
+</details>
 
 ## License
 

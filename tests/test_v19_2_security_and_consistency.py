@@ -278,10 +278,10 @@ def test_cascade_delete_all_guards(monkeypatch):
     with pytest.raises(ValueError, match="必须传递 confirm=True"):
         cascade_delete_all(user_id="default", confirm=False)
 
-    # 3. 指定非 default 租户（如 test_sandbox_user）允许正常执行
+    # 3. 任意租户都须显式确认后才执行
     from ducky.schema_bootstrap import ensure_core_schema
     ensure_core_schema()
-    res = cascade_delete_all(user_id="test_sandbox_user", confirm=False)
+    res = cascade_delete_all(user_id="test_sandbox_user", confirm=True)
     # v20.2.5：契约变更 ok → committed（外审 F-02 三态）。本机取不到 mem0
     # 后端属于「未启用」而非删除失败，所以这里仍应是 committed。
     assert res["status"] == "committed"

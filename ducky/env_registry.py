@@ -49,6 +49,10 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     # 该逻辑曾按 metadata.source 一刀切删记忆（用户单次被删 794~864 条），
     # 判据已改为内容相似度，但默认仍不自动删：宁可库满告警，不替用户删数据。
     "AIDUMEI_AUTO_MERGE",
+    "AIDUMEI_MCP_LOOP_GUARD",
+    "AIDUMEI_MCP_LOOP_GUARD_THRESHOLD",
+    "AIDUMEI_MCP_LOOP_GUARD_WINDOW_S",
+    "AIDUMEI_MCP_LOOP_GUARD_COOLDOWN_S",
     "AIDUMEI_MAX_CAPACITY",
     "AIDUMEI_CAPACITY_THRESHOLD",
     # v21 preview F1：epistemic 检索乘数四档（非法值 fail-closed 回默认，见 ducky/epistemic.py）
@@ -126,6 +130,7 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEM_DEFAULT_AGENT_ID",
     "AIDUMEM_DEFAULT_AGENT_NAME",
     "AIDUMEM_DEFAULT_USER_ID",
+    "AIDUMEM_USER_ID",
     "AIDUMEM_ENTITY_KEYWORDS",
     "AIDUMEM_ENV_FILE",
     "AIDUMEM_HOME",
@@ -198,6 +203,13 @@ _F03_CONSOLIDATOR_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_LLM_DEGRADED_WARN_RATIO",
     # ducky/hot/health.py：授权 /health 的 git_sha 来源（部署时写入）
     "AIDUMEI_BUILD_SHA",
+    # scripts/decision_compare.py: evaluation-only credentials and model
+    # selector. These are never service configuration and are not persisted.
+    "AIDUMEI_EVAL_DREX_API_KEY",
+    "AIDUMEI_EVAL_JEV_API_KEY",
+    "AIDUMEI_EVAL_CLEF_API_KEY",
+    "AIDUMEI_EVAL_CLEF_MODEL",
+    "AIDUMEI_EVAL_CLOUDFLARE_ACCOUNT_ID",
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F03_CONSOLIDATOR_ENV_VARS
 
@@ -221,6 +233,8 @@ FROZEN_LEGACY_AIDUMEM: frozenset[str] = frozenset((
     "AIDUMEM_DEFAULT_AGENT_ID",
     "AIDUMEM_DEFAULT_AGENT_NAME",
     "AIDUMEM_DEFAULT_USER_ID",
+    # Existing shell-hook identity, now also read by MCP (not a new variable).
+    "AIDUMEM_USER_ID",
     "AIDUMEM_ENTITY_KEYWORDS",
     "AIDUMEM_ENV_FILE",
     "AIDUMEM_HOME",

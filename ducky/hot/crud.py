@@ -6,6 +6,7 @@ import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from ducky.mem0_compat import get_all_memories
 from ducky.api_models import (
     DeleteAllRequest,
     DeleteRequest,
@@ -38,13 +39,17 @@ logger = logging.getLogger("aiduMEM.hot")
 
 def register_crud_routes(app: FastAPI) -> None:
     @app.get("/recent")
-    def recent(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 10):
+    def recent(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 10,
+               caller_user_id: str = ""):
         try:
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             scope = make_scope(user_id, bank_id)
             mem = get_memory()
             # 🔴v20：过滤下推 + Python 复筛，缺一不可。直接把 bank_id 塞进
             # filters 会把**所有**存量向量滤掉（payload 里没这个字段）。
-            raw = mem.get_all(
+            raw = get_all_memories(
+                mem,
                 filters=vector_scope_filters(_normalize_user_id(scope.user_id), scope.bank_id),
                 limit=limit,
             )
@@ -62,12 +67,15 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(500, api_error_detail(e))
 
     @app.get("/stats")
-    def stats(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
+    def stats(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
+              caller_user_id: str = ""):
         try:
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             scope = make_scope(user_id, bank_id)
             mem = get_memory()
             user_id = _normalize_user_id(scope.user_id)
-            all_mem = mem.get_all(filters=vector_scope_filters(user_id, scope.bank_id), limit=10000)
+            all_mem = get_all_memories(mem, filters=vector_scope_filters(user_id, scope.bank_id), limit=10000)
             results = all_mem.get("results", []) if isinstance(all_mem, dict) else (all_mem or [])
             # 同上：默认域没下推 bank_id，命名域的点得在这儿剔掉，否则 /stats
             # 会把别的域的条数算进默认域。
@@ -157,6 +165,9 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "memory_id 不能为空")
         try:
             scope = make_scope(req.user_id, req.bank_id)
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(scope.user_id, req.caller_user_id,
+                                 bank_id=scope.bank_id, action="delete")
             user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
             res = cascade_delete_memory(req.memory_id, user_id=user_id, bank_id=scope.bank_id)
             # v20.2.5-b（生产实机冒烟 D2）：**透传底层三态**。
@@ -196,6 +207,9 @@ def register_crud_routes(app: FastAPI) -> None:
         if not req.user_id or not req.user_id.strip():
             raise HTTPException(400, "user_id 必须显式指定，拒绝空参数清库")
         scope = make_scope(req.user_id, req.bank_id)
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(scope.user_id, req.caller_user_id,
+                             bank_id=scope.bank_id, action="delete")
         user_id = _normalize_user_id(scope.user_id)
         # v20.1.1（N-1）：删除路径限流（默认 3/min）——生产 14 天 delete_all
         # 共 7 次，正常操作打不到上限；循环误删在清空更多域之前被拦停。
@@ -210,11 +224,11 @@ def register_crud_routes(app: FastAPI) -> None:
                        f"上限可经 AIDUMEI_RATE_DELETE_ALL_PER_MIN 调整（0=关闭）",
                 headers={"Retry-After": str(_retry)},
             )
-        if user_id == DEFAULT_USER_ID and not getattr(req, "confirm", False):
+        if not getattr(req, "confirm", False):
             # v19.4.2：文案原先把默认身份写死成 "(default)"。部署方配了
             # AIDUMEM_DEFAULT_USER_ID 之后，报错里说的租户和实际要清的
             # 租户不是同一个，运维照着文案排查会走岔。改成回报真实身份。
-            raise HTTPException(400, f"清空默认用户({user_id})全部记忆具有破坏性，必须传递 confirm: true 二次确认")
+            raise HTTPException(400, f"清空用户({user_id})全部记忆具有破坏性，必须传递 confirm: true 二次确认")
 
         try:
             res = cascade_delete_all(user_id=user_id, bank_id=scope.bank_id, confirm=getattr(req, "confirm", False))
@@ -269,10 +283,13 @@ def register_crud_routes(app: FastAPI) -> None:
 
     # 🪦 tombstone 遗忘层（v19.4.0 Mímir 借鉴 B3）：遗忘不是删除，留痕可恢复
     @app.get("/tombstones")
-    def tombstones(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 50):
+    def tombstones(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 50,
+                   caller_user_id: str = ""):
         """列某租户的遗忘记录（全文与撤回理由可查）"""
         try:
             from ducky.tombstone import list_tombstones
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             scope = make_scope(user_id, bank_id)
             uid = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
             return {"status": "ok", "user_id": uid, "bank_id": scope.bank_id, "results": list_tombstones(uid, limit=limit, bank_id=scope.bank_id)}
@@ -293,6 +310,9 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             from ducky.tombstone import restore_tombstone
             scope = make_scope(req.user_id, req.bank_id)
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(scope.user_id, req.caller_user_id,
+                                 bank_id=scope.bank_id, action="write")
             uid = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
             res = restore_tombstone(req.tombstone_id, user_id=uid, bank_id=scope.bank_id)
             # f0.3 (C7): pass the layered outcome through -- "partial" (a
@@ -313,7 +333,8 @@ def register_crud_routes(app: FastAPI) -> None:
     @app.get("/events/history")
     def events_history(target_id: str = "", limit: int = 100,
                        user_id: str = DEFAULT_USER_ID,
-                       bank_id: str = DEFAULT_BANK_ID):
+                       bank_id: str = DEFAULT_BANK_ID,
+                       caller_user_id: str = ""):
         """查某条记忆的完整变更史（谁、何时、做了什么、为什么）
 
         🟡-D（v19.4.1）：target_id 常常是自增整数，可被顺序枚举。
@@ -325,6 +346,8 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "target_id 不能为空")
         try:
             from ducky.event_ledger import get_history
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             from ducky.facts_recall import fact_visible_to_tenant
             from ducky.utils import get_facts_conn
 
@@ -361,11 +384,14 @@ def register_crud_routes(app: FastAPI) -> None:
     # 🏛️ 治理管线（v19.4.0 Mímir 借鉴 B1）：候选队列 + 人审入口
     @app.get("/governance/candidates")
     def governance_candidates(status: str = "", user_id: str = "", limit: int = 50,
-                              bank_id: str = "", scope_user_id: str = ""):
+                              bank_id: str = "", scope_user_id: str = "",
+                              caller_user_id: str = ""):
         """候选事实队列（可按状态过滤：pending/evaluated/approved/rejected/committed；
         v20：bank_id / scope_user_id 可选作用域过滤，不传保持全量视图）"""
         try:
             from ducky.governance import list_candidates
+            from ducky.scope_auth import authorize_governance_view
+            authorize_governance_view(user_id, scope_user_id, bank_id, caller_user_id)
             return {"status": "ok", "results": list_candidates(
                 status, user_id, limit, bank_id=bank_id, scope_user_id=scope_user_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
@@ -386,6 +412,9 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "decision 必须是 approve 或 reject")
         try:
             from ducky.governance import review_candidate
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(req.user_id, req.caller_user_id,
+                                 bank_id=req.bank_id, action="write")
             # v20 P0-2：只有调用方显式声明了 bank_id 才启用越库裁决守卫——
             # 模型字段有 DEFAULT_BANK_ID 缺省值，无脑透传会把「没传 bank 的
             # 管理员全权裁决」误判成「default 库越权」，v19 存量调用全断。
@@ -413,6 +442,9 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "source（证据来源标识）不能为空")
         try:
             from ducky.opinion import set_opinion
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(req.owner, req.caller_user_id,
+                                 bank_id=req.bank_id, action="write")
             res = set_opinion(req.fact_id, req.stance, confidence=req.confidence,
                               evidence_ids=req.evidence_ids, source=req.source,
                               owner=req.owner)
@@ -430,11 +462,14 @@ def register_crud_routes(app: FastAPI) -> None:
     def opinions_list(fact_id: int = 0, user_id: str = DEFAULT_USER_ID,
                       # v20.2.4（外审 F-11）：此前**没有 bank 参数**，
                       # 可见性校验一律按默认域判 —— 具名域的信念对谁都可见。
-                      bank_id: str = DEFAULT_BANK_ID):
+                      bank_id: str = DEFAULT_BANK_ID,
+                      caller_user_id: str = ""):
         """查某事实的信念清单（严格档下按租户可见性校验，见 🟡-D）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
         try:
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             from ducky.facts_recall import fact_visible_to_tenant
             from ducky.opinion import list_opinions
             from ducky.utils import get_facts_conn
@@ -455,11 +490,14 @@ def register_crud_routes(app: FastAPI) -> None:
 
     @app.get("/opinions/aggregate")
     def opinions_aggregate(fact_id: int = 0, user_id: str = DEFAULT_USER_ID,
-                           bank_id: str = DEFAULT_BANK_ID):
+                           bank_id: str = DEFAULT_BANK_ID,
+                           caller_user_id: str = ""):
         """聚合判定：≥2 个不同证据来源才聚合（单来源刷好评不聚合）"""
         if not fact_id:
             raise HTTPException(400, "fact_id 不能为空")
         try:
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             from ducky.facts_recall import fact_visible_to_tenant
             from ducky.opinion import aggregate_opinion
             from ducky.utils import get_facts_conn
@@ -525,6 +563,11 @@ def register_crud_routes(app: FastAPI) -> None:
 
             scope = make_scope(req.user_id, req.bank_id)
             user_id = _normalize_user_id(scope.user_id) if scope.user_id else DEFAULT_USER_ID
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, req.caller_user_id,
+                                 bank_id=scope.bank_id, action="write")
+            from ducky.scope_auth import sanitize_memory_or_raise
+            content = sanitize_memory_or_raise(content)
             # v20.4.0（P1-3）：归属先验，未验证不许动向量。
             _verify_vector_ownership(mem, req.memory_id, user_id, scope.bank_id)
             # /update 会把 bank_id 盖进向量 metadata 并按该域重建 FTS 索引，
@@ -656,6 +699,9 @@ def register_crud_routes(app: FastAPI) -> None:
             return {"status": "error", "message": str(e)}
 
     def _do_inject_context(req: InjectContextRequest) -> dict:
+        from ducky.scope_auth import require_scope_access
+        require_scope_access(req.user_id, req.caller_user_id,
+                             bank_id=req.bank_id, action="read")
         from ducky.facts_recall import inject_context as inject_facts_context
         # 🔴P0-2（v19.4.1）：注入上下文按租户收窄 —— 注入是记忆流向宿主
         # 模型的出口，此处漏租户等于把别人的事实喂进本租户的对话。

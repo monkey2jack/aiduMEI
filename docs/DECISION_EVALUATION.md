@@ -5,6 +5,20 @@ synthetic memory tasks, not an independent audit, production accuracy estimate,
 or official LoCoMo/LongMemEval result. Alternative models are customer choices;
 these numbers do not transfer to them.
 
+## f0.3++ real-memory comparison, 2026-10-04
+
+The decision-disabled baseline and Drex/Jev/Clef comparisons, plus Clef Flash, now have real local HTTP receipts: 24 classifications, 60 retrieval questions, preserved BGE embedding/reranker, and confidence-gated LLM fallback. See the [complete report](DECISION_EVALUATION_20261004.md) and [sanitized aggregate JSON](DECISION_EVALUATION_20261004.json). Strict literal-anchor passes were 26/60 baseline, 29/60 Drex, 32/60 Jev, 30/60 Clef and 29/60 Flash. Receipt review found penalties for concise equivalent answers and a missing historical time reference; these counts do not establish semantic accuracy rankings. Gains came mainly from unknown-answer rejection; all decision arms increased retrieval latency. The candidate has not been deployed in this evaluation.
+
+A [Chinese-specific diagnosis](DECISION_CHINESE_DIAGNOSIS_20261004.md) adds 64 Chinese contrasts and their 64 English translations: Drex61/64, Jev64/64, Clef62/64, Flash61/64 under one frozen product prompt and .6 threshold. These are component verifier measurements, not HTTP or six-type classification scores. A posthoc 96-call error repeat found no changed verdicts; a 24-call real-text ablation reproduced Drex rejecting a long answer-containing memory while accepting its relevant clause. All counts, latency, negative controls and limitations are retained. No Chinese superiority claim follows from Qwen ancestry alone.
+
+The earlier real-data-derived v1 diagnostic report is invalid and superseded: its Cloudflare account input had an extra character, batch question association was ambiguous, label/denominator handling was unreliable, and it lacked a disabled-decision baseline. Its scores and recommendation must not be reused.
+
+`scripts/decision_compare.py` remains a separate synthetic typed-decision diagnostic, not this HTTP benchmark. Its current v3 corpus uses fictional entities and nodes; historical scores are not transferred to these changed inputs. Questions explicitly reference their indexed state items, failures/missing/invalid answers stay in the denominator, accounts are validated before transport, the support threshold is .6, and unique cases are reported separately from repeated attempts. Its latency unit is one batch HTTP request. Failed/partial runs no longer report success. A connectivity probe establishes transport only, not accuracy.
+
+Historical Chinese verifier inputs are retained privately; the public protocol is a manifest with case IDs and the original protocol hash. The public Chinese v2 corpus uses fictional nodes and requires a separate evaluation. The historical aggregate receipts remain unchanged, so public files cannot independently reconstruct the original full inputs.
+
+The figures below remain historical synthetic-data Drex tests; datasets differ and must not be compared as version-level accuracy changes.
+
 ## Component measurements
 
 The earlier experiment covered 264 tasks with frozen held-out family splits.

@@ -1,0 +1,692 @@
+{
+  "protocol": "real-dudu-local-v2",
+  "protocol_sha256": "587e255321158cd54e4a7cd0a5dbcb164523c4e096c49ef020ce89626d8cace6",
+  "candidate": "b9c91d0448865be673013bd706f8d48b6234c21e",
+  "dataset": {
+    "facts": 3607,
+    "verbatim_turns": 3334,
+    "memory_types": 6482,
+    "fts_memories": 4098,
+    "vectors": 3809
+  },
+  "memory_type_cases": 24,
+  "retrieval_cases": 60,
+  "classification_baseline_model": "deepseek-ai/DeepSeek-V3.2",
+  "controls": "same copied dense vectors, scoped SQLite/FTS, real HTTP, BGE-m3 and BGE-reranker-v2-m3, floor .46 and gate .3, decision threshold .6, timeout2000ms, auto routing, no added retries, workspace cleared and successful decision cache cleared per request; rotating arm order; no production mutations",
+  "classification": {
+    "baseline": {
+      "correct": 15,
+      "total": 24,
+      "accuracy_pct": 62.5,
+      "p50_ms": 3046.21,
+      "p95_ms": 26730.75,
+      "sources": {
+        "decision": 0,
+        "llm": 24,
+        "rule": 0
+      },
+      "provider_stages": {},
+      "by_class": {
+        "DECISIONS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 2935.31,
+          "p95_ms": 4041.53
+        },
+        "EXPERIENCES": {
+          "correct": 1,
+          "total": 4,
+          "accuracy_pct": 25.0,
+          "p50_ms": 6844.84,
+          "p95_ms": 12480.51
+        },
+        "FACTS": {
+          "correct": 2,
+          "total": 4,
+          "accuracy_pct": 50.0,
+          "p50_ms": 4254.25,
+          "p95_ms": 6603.72
+        },
+        "OBSERVATIONS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 2798.11,
+          "p95_ms": 5024.03
+        },
+        "PREFERENCES": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 2277.08,
+          "p95_ms": 26730.75
+        },
+        "REFLECTIONS": {
+          "correct": 0,
+          "total": 4,
+          "accuracy_pct": 0.0,
+          "p50_ms": 10137.68,
+          "p95_ms": 27401.59
+        }
+      }
+    },
+    "drex": {
+      "correct": 14,
+      "total": 24,
+      "accuracy_pct": 58.33,
+      "p50_ms": 566.15,
+      "p95_ms": 9074.01,
+      "sources": {
+        "decision": 14,
+        "llm": 10,
+        "rule": 0
+      },
+      "provider_stages": {
+        "ok": 24
+      },
+      "by_class": {
+        "DECISIONS": {
+          "correct": 3,
+          "total": 4,
+          "accuracy_pct": 75.0,
+          "p50_ms": 4559.89,
+          "p95_ms": 11851.8
+        },
+        "EXPERIENCES": {
+          "correct": 1,
+          "total": 4,
+          "accuracy_pct": 25.0,
+          "p50_ms": 2235.61,
+          "p95_ms": 9074.01
+        },
+        "FACTS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 441.42,
+          "p95_ms": 564.83
+        },
+        "OBSERVATIONS": {
+          "correct": 2,
+          "total": 4,
+          "accuracy_pct": 50.0,
+          "p50_ms": 1330.68,
+          "p95_ms": 2869.73
+        },
+        "PREFERENCES": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 443.63,
+          "p95_ms": 567.48
+        },
+        "REFLECTIONS": {
+          "correct": 0,
+          "total": 4,
+          "accuracy_pct": 0.0,
+          "p50_ms": 3433.46,
+          "p95_ms": 6090.24
+        }
+      }
+    },
+    "jev": {
+      "correct": 15,
+      "total": 24,
+      "accuracy_pct": 62.5,
+      "p50_ms": 445.72,
+      "p95_ms": 15219.92,
+      "sources": {
+        "decision": 17,
+        "llm": 7,
+        "rule": 0
+      },
+      "provider_stages": {
+        "ok": 24
+      },
+      "by_class": {
+        "DECISIONS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 438.0,
+          "p95_ms": 495.9
+        },
+        "EXPERIENCES": {
+          "correct": 1,
+          "total": 4,
+          "accuracy_pct": 25.0,
+          "p50_ms": 3150.24,
+          "p95_ms": 16894.76
+        },
+        "FACTS": {
+          "correct": 3,
+          "total": 4,
+          "accuracy_pct": 75.0,
+          "p50_ms": 575.13,
+          "p95_ms": 5424.47
+        },
+        "OBSERVATIONS": {
+          "correct": 2,
+          "total": 4,
+          "accuracy_pct": 50.0,
+          "p50_ms": 397.85,
+          "p95_ms": 13243.88
+        },
+        "PREFERENCES": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 429.21,
+          "p95_ms": 616.24
+        },
+        "REFLECTIONS": {
+          "correct": 1,
+          "total": 4,
+          "accuracy_pct": 25.0,
+          "p50_ms": 7233.66,
+          "p95_ms": 15219.92
+        }
+      }
+    },
+    "clef": {
+      "correct": 15,
+      "total": 24,
+      "accuracy_pct": 62.5,
+      "p50_ms": 3562.35,
+      "p95_ms": 16589.42,
+      "sources": {
+        "decision": 3,
+        "llm": 21,
+        "rule": 0
+      },
+      "provider_stages": {
+        "ok": 24
+      },
+      "by_class": {
+        "DECISIONS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 4993.38,
+          "p95_ms": 13374.19
+        },
+        "EXPERIENCES": {
+          "correct": 1,
+          "total": 4,
+          "accuracy_pct": 25.0,
+          "p50_ms": 2782.47,
+          "p95_ms": 4084.38
+        },
+        "FACTS": {
+          "correct": 2,
+          "total": 4,
+          "accuracy_pct": 50.0,
+          "p50_ms": 1777.67,
+          "p95_ms": 21608.44
+        },
+        "OBSERVATIONS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 3455.06,
+          "p95_ms": 16589.42
+        },
+        "PREFERENCES": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 3862.39,
+          "p95_ms": 5594.72
+        },
+        "REFLECTIONS": {
+          "correct": 0,
+          "total": 4,
+          "accuracy_pct": 0.0,
+          "p50_ms": 3962.8,
+          "p95_ms": 4528.52
+        }
+      }
+    },
+    "clef_flash": {
+      "correct": 16,
+      "total": 24,
+      "accuracy_pct": 66.67,
+      "p50_ms": 3263.6,
+      "p95_ms": 14058.57,
+      "sources": {
+        "decision": 3,
+        "llm": 21,
+        "rule": 0
+      },
+      "provider_stages": {
+        "ok": 24
+      },
+      "by_class": {
+        "DECISIONS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 2530.31,
+          "p95_ms": 8541.07
+        },
+        "EXPERIENCES": {
+          "correct": 1,
+          "total": 4,
+          "accuracy_pct": 25.0,
+          "p50_ms": 8797.81,
+          "p95_ms": 14058.57
+        },
+        "FACTS": {
+          "correct": 3,
+          "total": 4,
+          "accuracy_pct": 75.0,
+          "p50_ms": 737.55,
+          "p95_ms": 10270.4
+        },
+        "OBSERVATIONS": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 10260.67,
+          "p95_ms": 14370.1
+        },
+        "PREFERENCES": {
+          "correct": 4,
+          "total": 4,
+          "accuracy_pct": 100.0,
+          "p50_ms": 3468.69,
+          "p95_ms": 12562.95
+        },
+        "REFLECTIONS": {
+          "correct": 0,
+          "total": 4,
+          "accuracy_pct": 0.0,
+          "p50_ms": 2813.37,
+          "p95_ms": 9939.13
+        }
+      }
+    }
+  },
+  "retrieval": {
+    "baseline": {
+      "all": {
+        "correct": 26,
+        "total": 60,
+        "accuracy_pct": 43.33,
+        "p50_ms": 928.8,
+        "p95_ms": 1495.72
+      },
+      "categories": {
+        "direct": {
+          "correct": 8,
+          "total": 18,
+          "accuracy_pct": 44.44,
+          "p50_ms": 1028.39,
+          "p95_ms": 1891.78
+        },
+        "paraphrase": {
+          "correct": 3,
+          "total": 18,
+          "accuracy_pct": 16.67,
+          "p50_ms": 852.47,
+          "p95_ms": 1242.04
+        },
+        "original": {
+          "correct": 10,
+          "total": 12,
+          "accuracy_pct": 83.33,
+          "p50_ms": 1027.45,
+          "p95_ms": 2783.5
+        },
+        "unknown": {
+          "correct": 5,
+          "total": 12,
+          "accuracy_pct": 41.67,
+          "p50_ms": 857.87,
+          "p95_ms": 1346.27
+        }
+      },
+      "decision_stages": {
+        "disabled": 109
+      },
+      "rerank_ok": 60,
+      "http_errors": 0
+    },
+    "drex": {
+      "all": {
+        "correct": 29,
+        "total": 60,
+        "accuracy_pct": 48.33,
+        "p50_ms": 1225.43,
+        "p95_ms": 2844.45
+      },
+      "categories": {
+        "direct": {
+          "correct": 6,
+          "total": 18,
+          "accuracy_pct": 33.33,
+          "p50_ms": 1595.59,
+          "p95_ms": 6563.55
+        },
+        "paraphrase": {
+          "correct": 2,
+          "total": 18,
+          "accuracy_pct": 11.11,
+          "p50_ms": 1200.54,
+          "p95_ms": 3188.87
+        },
+        "original": {
+          "correct": 10,
+          "total": 12,
+          "accuracy_pct": 83.33,
+          "p50_ms": 1013.12,
+          "p95_ms": 1657.31
+        },
+        "unknown": {
+          "correct": 11,
+          "total": 12,
+          "accuracy_pct": 91.67,
+          "p50_ms": 1346.24,
+          "p95_ms": 5173.84
+        }
+      },
+      "decision_stages": {
+        "confident_bypass": 1,
+        "error_fallback": 1,
+        "ok": 43,
+        "original_bypass": 24,
+        "skipped": 42
+      },
+      "rerank_ok": 60,
+      "http_errors": 0
+    },
+    "jev": {
+      "all": {
+        "correct": 32,
+        "total": 60,
+        "accuracy_pct": 53.33,
+        "p50_ms": 1273.91,
+        "p95_ms": 2058.61
+      },
+      "categories": {
+        "direct": {
+          "correct": 8,
+          "total": 18,
+          "accuracy_pct": 44.44,
+          "p50_ms": 1487.0,
+          "p95_ms": 2146.89
+        },
+        "paraphrase": {
+          "correct": 3,
+          "total": 18,
+          "accuracy_pct": 16.67,
+          "p50_ms": 1271.17,
+          "p95_ms": 1923.41
+        },
+        "original": {
+          "correct": 10,
+          "total": 12,
+          "accuracy_pct": 83.33,
+          "p50_ms": 1114.39,
+          "p95_ms": 1930.45
+        },
+        "unknown": {
+          "correct": 11,
+          "total": 12,
+          "accuracy_pct": 91.67,
+          "p50_ms": 1285.34,
+          "p95_ms": 1959.66
+        }
+      },
+      "decision_stages": {
+        "confident_bypass": 1,
+        "ok": 45,
+        "original_bypass": 24,
+        "skipped": 41
+      },
+      "rerank_ok": 60,
+      "http_errors": 0
+    },
+    "clef": {
+      "all": {
+        "correct": 30,
+        "total": 60,
+        "accuracy_pct": 50.0,
+        "p50_ms": 1513.24,
+        "p95_ms": 3531.3
+      },
+      "categories": {
+        "direct": {
+          "correct": 7,
+          "total": 18,
+          "accuracy_pct": 38.89,
+          "p50_ms": 2411.73,
+          "p95_ms": 3974.62
+        },
+        "paraphrase": {
+          "correct": 3,
+          "total": 18,
+          "accuracy_pct": 16.67,
+          "p50_ms": 1623.24,
+          "p95_ms": 3531.3
+        },
+        "original": {
+          "correct": 10,
+          "total": 12,
+          "accuracy_pct": 83.33,
+          "p50_ms": 1014.89,
+          "p95_ms": 1579.77
+        },
+        "unknown": {
+          "correct": 10,
+          "total": 12,
+          "accuracy_pct": 83.33,
+          "p50_ms": 1423.44,
+          "p95_ms": 2799.65
+        }
+      },
+      "decision_stages": {
+        "confident_bypass": 1,
+        "ok": 45,
+        "original_bypass": 24,
+        "skipped": 41
+      },
+      "rerank_ok": 60,
+      "http_errors": 0
+    },
+    "clef_flash": {
+      "all": {
+        "correct": 29,
+        "total": 60,
+        "accuracy_pct": 48.33,
+        "p50_ms": 1376.72,
+        "p95_ms": 2871.43
+      },
+      "categories": {
+        "direct": {
+          "correct": 6,
+          "total": 18,
+          "accuracy_pct": 33.33,
+          "p50_ms": 1775.1,
+          "p95_ms": 3568.26
+        },
+        "paraphrase": {
+          "correct": 2,
+          "total": 18,
+          "accuracy_pct": 11.11,
+          "p50_ms": 1240.36,
+          "p95_ms": 2871.43
+        },
+        "original": {
+          "correct": 10,
+          "total": 12,
+          "accuracy_pct": 83.33,
+          "p50_ms": 992.94,
+          "p95_ms": 2778.66
+        },
+        "unknown": {
+          "correct": 11,
+          "total": 12,
+          "accuracy_pct": 91.67,
+          "p50_ms": 1292.67,
+          "p95_ms": 3651.2
+        }
+      },
+      "decision_stages": {
+        "confident_bypass": 1,
+        "ok": 44,
+        "original_bypass": 24,
+        "skipped": 42
+      },
+      "rerank_ok": 60,
+      "http_errors": 0
+    }
+  },
+  "auxiliary": {
+    "rule_baseline": {
+      "correct": 16,
+      "total": 24
+    },
+    "posthoc_exact_answer_coverage": {
+      "families_with_exact_anchors_in_vector_or_fts": 10,
+      "families": 18,
+      "excluded_positive_queries": 16,
+      "subset_total": 44,
+      "interpretation": "post-hoc index availability diagnostic, not new independent holdout and not proof that semantically equivalent evidence is absent",
+      "accuracy": {
+        "baseline": {
+          "correct": 21,
+          "total": 44
+        },
+        "drex": {
+          "correct": 26,
+          "total": 44
+        },
+        "jev": {
+          "correct": 27,
+          "total": 44
+        },
+        "clef": {
+          "correct": 26,
+          "total": 44
+        },
+        "clef_flash": {
+          "correct": 26,
+          "total": 44
+        }
+      }
+    },
+    "paired_retrieval": {
+      "drex": {
+        "improved": 6,
+        "regressed": 3,
+        "unchanged": 51
+      },
+      "jev": {
+        "improved": 6,
+        "regressed": 0,
+        "unchanged": 54
+      },
+      "clef": {
+        "improved": 5,
+        "regressed": 1,
+        "unchanged": 54
+      },
+      "clef_flash": {
+        "improved": 6,
+        "regressed": 3,
+        "unchanged": 51
+      }
+    }
+  },
+  "raw_classification_second_pass": {
+    "note": "Second direct-call pass on the same 24 frozen samples; no new independent samples. Same product prompts, .7 confidence policy recorded without LLM fallback. Raw argmax quality is separate from first-pass integrated quality.",
+    "models": {
+      "drex": {
+        "correct": 12,
+        "total": 24,
+        "valid": 24,
+        "confidence_accepted": 14,
+        "errors": 0,
+        "p50_ms": 442.88,
+        "p95_ms": 806.32,
+        "by_class": {
+          "FACTS": 4,
+          "PREFERENCES": 4,
+          "EXPERIENCES": 1,
+          "OBSERVATIONS": 1,
+          "REFLECTIONS": 0,
+          "DECISIONS": 2
+        }
+      },
+      "jev": {
+        "correct": 13,
+        "total": 24,
+        "valid": 24,
+        "confidence_accepted": 16,
+        "errors": 0,
+        "p50_ms": 453.19,
+        "p95_ms": 585.84,
+        "by_class": {
+          "FACTS": 3,
+          "PREFERENCES": 4,
+          "EXPERIENCES": 0,
+          "OBSERVATIONS": 1,
+          "REFLECTIONS": 1,
+          "DECISIONS": 4
+        }
+      },
+      "clef": {
+        "correct": 14,
+        "total": 24,
+        "valid": 24,
+        "confidence_accepted": 3,
+        "errors": 0,
+        "p50_ms": 857.97,
+        "p95_ms": 1337.12,
+        "by_class": {
+          "FACTS": 4,
+          "PREFERENCES": 4,
+          "EXPERIENCES": 0,
+          "OBSERVATIONS": 1,
+          "REFLECTIONS": 1,
+          "DECISIONS": 4
+        }
+      },
+      "clef_flash": {
+        "correct": 11,
+        "total": 24,
+        "valid": 24,
+        "confidence_accepted": 3,
+        "errors": 0,
+        "p50_ms": 521.7,
+        "p95_ms": 986.83,
+        "by_class": {
+          "FACTS": 3,
+          "PREFERENCES": 4,
+          "EXPERIENCES": 1,
+          "OBSERVATIONS": 1,
+          "REFLECTIONS": 0,
+          "DECISIONS": 2
+        }
+      }
+    }
+  },
+  "publication_note": "sanitized aggregate metrics only; raw memory text, prompts, source IDs, provider credentials and account IDs excluded",
+  "posthoc_scoring_review": {
+    "date": "2026-10-04",
+    "original_counts_preserved": true,
+    "semantic_ranking_established": false,
+    "withdrawn_interpretation": "Every paired literal-anchor regression was previously described as a false rejection; this was not supported by the receipts.",
+    "findings": [
+      "A Drex answer supplied the correct count without the literal code variable required by the scorer.",
+      "Concise CF answers retained an embedded-mode recommendation without the exact small-data phrase; semantic qualification needs separate review.",
+      "A shared historical-gallery question omitted a time reference despite multiple recorded counts.",
+      "One Drex layer query lost explicit answer evidence and retained a sentence about a different UI object.",
+      "One Flash version query filtered explicit answer evidence and returned not_found."
+    ],
+    "scope": "Posthoc diagnostics, not blind rescoring of all 60 cases. No replacement overall accuracy generated.",
+    "followup_report": "DECISION_CHINESE_DIAGNOSIS_20261004.md"
+  }
+}

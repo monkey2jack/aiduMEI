@@ -44,7 +44,11 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 688  # v22.0 雷霆审计 B1：+2 —— health.py 非 _ok 键降级探针的兜底。
+_BASELINE = 692  # f0.3++: +4 in loop_guard.py, explained below.
+# Guard admission/accounting must fail open for arbitrary internal failures (2).
+# Sync/async dispatch must count arbitrary tool failures and re-raise them (2).
+# These catches never claim success or rerun the tool; the new fault-injection
+# regressions pin that contract. The previous baseline was 688.
 # routes_v8.py 里 30 多个路由一律是 `except Exception: return {"status":"error"}`，
 # 路由层的契约就是「任何异常都变成 JSON，不让 500 裸奔」；单独给这一个收窄，
 # 换来的是漏网异常在这条路上变成 500，与同文件其余路由行为不一致。

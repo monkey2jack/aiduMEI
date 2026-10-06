@@ -1,4 +1,4 @@
-# Optional decision tasks (f0.3+)
+# Optional decision tasks (f0.3++)
 
 The decision channel is opt-in and disabled by default. Customers select the
 provider and model; Drex is not mandatory. Without it, the existing engine runs as before.
@@ -42,6 +42,7 @@ on save preserves the stored key. Send the complete `tasks` map when changing it
 |---|---|---|
 | `nace` | `https://drex.nace.ai/v1` | `drex-v1.5` |
 | `typesafe` | `https://api.typesafe.ai/v1` | `jev-1.13.0` |
+| `cloudflare` | `https://api.cloudflare.com/client/v4` | `clef` or `clef-flash` |
 | `systemone` | Customer-supplied HTTPS endpoint | Customer-supplied model ID |
 
 Examples are defaults for convenience, not mandatory model choices. Every
@@ -67,9 +68,48 @@ records both requested and actual IDs. Pin versions after calibration. A
 protocol-compatible model can still have different probability calibration,
 Chinese accuracy and latency: test representative workload and set its own
 retrieval threshold before relying on it. Classification retains the 0.7
-confidence gate and existing fallback. **We used Drex 1.5 for testing**; TypeSafe
-and custom-provider transport contracts have automated coverage, not a live Jev
-quality benchmark. [Measured benefits and costs](DECISION_EVALUATION.md).
+confidence gate and existing fallback. Historical f0.3+ tests used Drex 1.5;
+the later local evaluation compares Drex, Jev, Clef and Clef Flash with a
+decision-disabled baseline. Its task definitions, scores and limitations are
+recorded in [Measured benefits and costs](DECISION_EVALUATION.md).
+
+### Cloudflare Clef
+
+Cloudflare implements the same typed decision protocol, but its REST response
+is wrapped in the Cloudflare API envelope. Configure an Account ID separately;
+the service constructs the account-scoped route and unwraps `result` before it
+reaches the shared decision pipeline:
+
+```json
+{
+  "decision": {
+    "enabled": true,
+    "provider": "cloudflare",
+    "config": {
+      "model": "clef",
+      "openai_base_url": "https://api.cloudflare.com/client/v4",
+      "account_id": "<32-hex-character-account-id>",
+      "api_key": "",
+      "tasks": {"memory_type": true, "retrieval": true}
+    }
+  }
+}
+```
+
+Only `clef` and `clef-flash` are accepted for this provider. The Account ID
+must be 32 hexadecimal characters; credentials remain masked in `/config`,
+telemetry and the console. The current adapter sends no images because aiduMEI
+uses Clef for text and structured memory decisions. See the [official Clef
+model documentation](https://developers.cloudflare.com/workers-ai/models/clef/)
+and [Cloudflare REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/).
+
+The repository includes `scripts/decision_compare.py`, which runs the same
+Chinese memory-type, retrieval-support and score corpus through Drex, Jev and
+Clef. It reads keys only from `AIDUMEI_EVAL_*` environment variables, never
+accepts a key as a command-line argument, and writes sanitized JSON. The
+comparison table belongs in `docs/DECISION_EVALUATION.md` only after a live run
+with all three configured models; connectivity or vendor benchmark numbers are
+not substituted for aiduMEI measurements.
 
 `auto` checks up to 12 ambiguous candidates per stage, after scope filtering and
 rerank, before final result slots. A rerank score of at least 0.85 skips the new
@@ -126,6 +166,6 @@ No evidence from the component experiment justified enabling decision writes in
 these paths. New types can affect existing type-aware ranking, filters and decay;
 verify those effects on representative workload before enabling more tasks.
 
-Display identity: **f0.3+**. Package identity: **0.3.0+decision.1** (PEP 440 local
-version). GitHub release title and tag are exactly `f0.3+`. No PyPI upload is
+Display identity: **f0.3++**. Package identity: **0.3.0+decision.2** (PEP 440 local
+version). GitHub release title and tag are exactly `f0.3++`. No PyPI upload is
 included in this release.

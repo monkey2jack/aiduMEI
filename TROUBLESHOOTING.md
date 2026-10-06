@@ -2,6 +2,12 @@
 
 Every runbook follows the same pattern: symptom → probe → command → repair.
 
+## MCP fails at import, or returns `circuit_open`
+
+- Missing `mcp.server.fastmcp` / unsupported SDK: run `python -m pip install -r requirements.txt` in the interpreter used by the host, or `python -m pip install 'mcp==1.30.0'`. aiduMEI uses the official SDK 1.x; do not add the separate `fastmcp` package. See the [official SDK 1.x documentation](https://py.sdk.modelcontextprotocol.io/v1/).
+- `retry_count` / `loop_warning`: inspect the original error and correct parameters, credentials or service connectivity. A circuit opens after five identical failures within 60 seconds; respect `retry_after`, then make one recovery attempt. Success clears it. Logs: `mcp_server.log`, lines containing `[loop-guard]`.
+- Tune defaults through `AIDUMEI_MCP_LOOP_GUARD_THRESHOLD`, `AIDUMEI_MCP_LOOP_GUARD_WINDOW_S` and `AIDUMEI_MCP_LOOP_GUARD_COOLDOWN_S`; disable via `AIDUMEI_MCP_LOOP_GUARD=0`. The standalone Hermes plugin provides hints only. SDK validation errors, host turn budgets and REST session limits remain outside this MCP guard.
+
 ## 1. Service will not start
 
 - Probe: process log and bind address.

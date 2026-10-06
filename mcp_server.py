@@ -53,6 +53,20 @@ LAST_ID_FILE = os.environ.get(
 )
 API_BASE = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 
+
+def _mcp_principal() -> str:
+    """Return the configured MCP caller identity, never the requested target.
+
+    ``user_id`` in a tool call selects the memory hall being addressed.  It is
+    not proof of who is making the call.  The host integration may explicitly
+    set ``AIDUMEM_USER_ID``; the historical default remains the single-owner
+    fallback for loopback deployments.
+    """
+    return (
+        os.environ.get("AIDUMEM_USER_ID", "").strip()
+        or DEFAULT_USER_ID
+    )
+
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # ── 日志 ──
@@ -163,6 +177,10 @@ def _api_get(path: str, params: dict | None = None, timeout: int = 20) -> dict:
     """
     # v20.4.1a(C 面整改):urllib → httpx,与全仓 HTTP 客户端统一
     # (连接池/超时语义一致,少一套排障分支)。query 编码交给 httpx。
+    # v0.3++ A1：MCP 工具的 user_id 是目标殿；把同一 principal 明确带到
+    # 服务端，避免 REST 已收紧而 MCP 仍靠空 caller 运行。
+    params = dict(params or {})
+    params["caller_user_id"] = _mcp_principal()
     resp = httpx.get(f"{API_BASE}{path}", params=params,
                      headers=_api_headers(), timeout=timeout)
     if resp.status_code >= 400:
@@ -181,6 +199,10 @@ def _api_post(path: str, body: dict | None = None, timeout: int = 30,
 
     v22.0（雷霆审计 B6）：传输错误抛异常（isError=True），业务错误保留 dict。
     """
+    body = dict(body or {})
+    body["caller_user_id"] = _mcp_principal()
+    params = dict(params or {})
+    params["caller_user_id"] = _mcp_principal()
     clean_params = (
         {k: v for k, v in params.items() if v is not None and v != ""}
         if params else None
@@ -207,9 +229,53 @@ def _err(msg: str) -> str:
 # FastMCP 初始化
 # ═══════════════════════════════════════════════════════
 
-from mcp.server.fastmcp import FastMCP
+from importlib.metadata import PackageNotFoundError, version as package_version
 
-mcp = FastMCP("aidumem", log_level="INFO")
+_MCP_INSTALL_HELP = (
+    "aiduMEI MCP requires the official mcp SDK 1.x. "
+    "Run: python -m pip install 'mcp==1.30.0' "
+    "(or python -m pip install -r requirements.txt). "
+    "The separate fastmcp package is not used."
+)
+try:
+    if package_version("mcp").split(".")[0] != "1":
+        raise ImportError(_MCP_INSTALL_HELP)
+    from mcp.server.fastmcp import FastMCP
+except (ImportError, PackageNotFoundError) as exc:
+    raise RuntimeError(_MCP_INSTALL_HELP) from exc
+
+from ducky.loop_guard import LoopGuard
+import weakref
+import uuid
+
+
+class _GuardedFastMCP(FastMCP):
+    """Register every tool through one guard; scope SSE state per connection."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loop_guard = LoopGuard.from_env(logger=logger)
+        self._guard_sessions = weakref.WeakKeyDictionary()
+        self._guard_sessions_lock = threading.Lock()
+
+    def _guard_scope(self):
+        try:
+            session = self.get_context().session
+        except (ValueError, LookupError):
+            return "direct"  # Direct Python calls, outside an MCP request.
+        with self._guard_sessions_lock:
+            if session not in self._guard_sessions:
+                self._guard_sessions[session] = uuid.uuid4().hex
+            return self._guard_sessions[session]
+
+    def tool(self, *args, **kwargs):
+        register = super().tool(*args, **kwargs)
+
+        def decorator(fn):
+            return register(self.loop_guard.wrap(fn, self._guard_scope))
+        return decorator
+
+
+mcp = _GuardedFastMCP("aidumem", log_level="INFO")
 
 
 # ═══════════════════════════════════════════════════════
@@ -272,9 +338,8 @@ def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_
     # 一直不带它，于是整条 MCP 通路上 v21.2 的回声抑制（M2）根本不存在：
     # 服务端读不到 session 就整段跳过，不报错也无从察觉。不传仍是不过滤。
     # v22.0（雷霆审计 A3）：MCP 经 API token 调用，空 caller 不再放行。
-    # 工具语义是「查这个 user_id 的记忆」，caller 声明为同一 user_id
-    # 即「读自己殿」，与收紧前行为逐字一致。
-    _payload = {"query": query, "user_id": user_id, "caller_user_id": user_id,
+    # caller 来自宿主配置；工具传入的 user_id 仅选择目标。
+    _payload = {"query": query, "user_id": user_id, "caller_user_id": _mcp_principal(),
                 "top_k": top_k, "bank_id": bank_id}
     if session_id:
         _payload["session_id"] = session_id
@@ -349,7 +414,7 @@ def mem_delete_all(user_id: str = DEFAULT_USER_ID, confirm: bool = False, bank_i
 
     Args:
         user_id: 用户标识
-        confirm: 是否二次确认（清空 default 用户必须为 True）
+        confirm: 是否二次确认（清空任何用户都必须为 True）
     """
     result = _api_post("/delete_all", {"user_id": user_id, "confirm": confirm, "bank_id": bank_id})
     return _ok(result)
@@ -598,7 +663,7 @@ def core_memory_list(user_id: str = DEFAULT_USER_ID,
                      bank_id: str = DEFAULT_BANK_ID) -> str:
     """列出指定记忆域的核心记忆块（默认当前配置的记忆域）。"""
     result = _api_get("/api/core-memory", {
-        "user_id": user_id, "bank_id": bank_id, "caller_user_id": user_id,
+        "user_id": user_id, "bank_id": bank_id, "caller_user_id": _mcp_principal(),
     })
     return _ok(result)
 
@@ -614,7 +679,7 @@ def core_memory_get(block_key: str, user_id: str = DEFAULT_USER_ID,
         bank_id: 记忆所属库；默认 default
     """
     result = _api_get(f"/api/core-memory/{urllib.parse.quote(block_key)}", {
-        "user_id": user_id, "bank_id": bank_id, "caller_user_id": user_id,
+        "user_id": user_id, "bank_id": bank_id, "caller_user_id": _mcp_principal(),
     })
     return _ok(result)
 

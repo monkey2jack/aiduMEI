@@ -36,6 +36,8 @@ def _is_admin(caller: str) -> bool:
 
 def _try_admin_or_owner(owner: str, caller: str) -> dict | None:
     """返回 None=通过；返回 dict=应作为响应。"""
+    from ducky.security.auth import enforce_caller_binding
+    enforce_caller_binding(caller, "pantheon:manage")
     if not caller:
         return _err("caller 必填（v22.0 起管理面零匿名）", code="Unauthorized")
     if caller != owner and not _is_admin(caller):
@@ -57,7 +59,11 @@ def register_pantheon_routes(app: FastAPI) -> None:
             return _err(str(e))
 
     @app.get("/pantheon/halls")
-    def list_halls(include_inactive: bool = False):
+    def list_halls(include_inactive: bool = False, caller: str = ""):
+        from ducky.security.auth import _caller_bindings
+        if _caller_bindings() is not None:
+            from ducky.scope_auth import authorize_governance_view
+            authorize_governance_view("", "", "", caller)
         try:
             return {"status": "ok", "halls": pantheon.list_halls(include_inactive)}
         except Exception as e:
@@ -87,6 +93,8 @@ def register_pantheon_routes(app: FastAPI) -> None:
     @app.post("/pantheon/grant")
     def grant(grantor_user_id: str, grantee_user_id: str, actions: str = "read",
               bank_id: str = "*", expires_at: str = "", created_by: str = "", caller: str = ""):
+        from ducky.security.auth import enforce_caller_binding
+        enforce_caller_binding(caller, "pantheon:grant")
         try:
             deny = _try_admin_or_owner(grantor_user_id, caller)
             if deny:
@@ -99,6 +107,8 @@ def register_pantheon_routes(app: FastAPI) -> None:
 
     @app.post("/pantheon/grant/{grant_id}/revoke")
     def revoke(grant_id: str, caller: str = ""):
+        from ducky.security.auth import enforce_caller_binding
+        enforce_caller_binding(caller, "pantheon:revoke")
         try:
             if not _is_admin(caller):
                 return _err(f"revoke 须 admin（caller={caller or '空'}）", code="Forbidden")
@@ -108,6 +118,8 @@ def register_pantheon_routes(app: FastAPI) -> None:
 
     @app.get("/pantheon/grants")
     def list_grants(user_id: str, direction: str = "granted", caller: str = ""):
+        from ducky.security.auth import enforce_caller_binding
+        enforce_caller_binding(caller, "pantheon:list_grants")
         try:
             if not _is_admin(caller) and caller != user_id:
                 return _err(f"caller({caller}) 只能看自己相关授权", code="Forbidden")

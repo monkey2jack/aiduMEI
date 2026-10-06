@@ -34,6 +34,10 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     req = _declared(root / "requirements.txt")
     py = _declared(root / "pyproject.toml")
+    # The repository requirements path includes both API and MCP. Package
+    # installs keep MCP as an explicit extra, so compare that declared extra
+    # too; other optional features remain outside this install path.
+    py |= _declared(root / "pyproject.toml", section="mcp")
     missing_in_py = sorted(req - py)
     missing_in_req = sorted(py - req)
     if missing_in_py or missing_in_req:

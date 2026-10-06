@@ -36,7 +36,7 @@ _SECTION_FIELD_ALLOWLIST: dict[str, set] = {
     "vision": {"model", "openai_base_url", "api_key", "_note"},
     "embedder": {"model", "openai_base_url", "api_key", "embedding_dims", "_note"},
     "rerank": {"model", "openai_base_url", "api_key", "top_n", "_note"},
-    "decision": {"model", "openai_base_url", "api_key", "tasks", "users", "timeout_ms", "threshold", "mode", "_note"},
+    "decision": {"model", "openai_base_url", "api_key", "account_id", "tasks", "users", "timeout_ms", "threshold", "mode", "_note"},
     "vector_store": {"collection_name", "path", "host", "port", "embedding_model_dims", "_note"},
 }
 _URL_FIELDS = {"openai_base_url", "host"}
@@ -91,6 +91,8 @@ def _validate_decision_fields(cfg: dict, body: dict, old: dict) -> str | None:
             return "changing decision provider or endpoint requires an explicit API key"
     if provider_changed and not {"model", "openai_base_url"} <= set(cfg):
         return "changing decision provider requires explicit model and endpoint"
+    if provider_changed and candidate["provider"] == "cloudflare" and "account_id" not in cfg:
+        return "changing decision provider to cloudflare requires explicit account_id"
     return validate(candidate)
 
 
@@ -182,6 +184,8 @@ def _build_config_view() -> dict:
     lc = llm.get("config") or {}
     ec = emb.get("config") or {}
     rc = rer.get("config") or {} if isinstance(rer, dict) else {}
+    dec = raw.get("decision") or {}
+    dc = dec.get("config") or {} if isinstance(dec, dict) else {}
     vc = vis.get("config") or {} if isinstance(vis, dict) else {}
     vsc = vs.get("config") or {} if isinstance(vs, dict) else {}
     return {
@@ -225,10 +229,20 @@ def _build_config_view() -> dict:
             },
         },
         "decision": {
-            "enabled": (raw.get("decision") or {}).get("enabled", False) is True,
-            "provider": (raw.get("decision") or {}).get("provider"),
-            "config": {**((raw.get("decision") or {}).get("config") or {}),
-                       "api_key": _mask_key(((raw.get("decision") or {}).get("config") or {}).get("api_key"))},
+            "enabled": dec.get("enabled", False) is True,
+            "provider": dec.get("provider"),
+            "config": {
+                "model": dc.get("model"),
+                "openai_base_url": dc.get("openai_base_url"),
+                "account_id": dc.get("account_id"),
+                "api_key": _mask_key(dc.get("api_key")),
+                "tasks": dc.get("tasks", {"memory_type": True, "retrieval": True}),
+                "users": dc.get("users", []),
+                "timeout_ms": dc.get("timeout_ms", 2000),
+                "threshold": dc.get("threshold", 0.6),
+                "mode": dc.get("mode", "auto"),
+                "_note": dc.get("_note", ""),
+            },
         },
         "vision": {
             "provider": vis.get("provider") or llm.get("provider"),
@@ -316,6 +330,8 @@ def register_config_routes(app: FastAPI) -> None:
         名单内，否则 403。
         """
         from ducky.federation.routes import _is_admin_caller
+        from ducky.security.auth import enforce_caller_binding
+        enforce_caller_binding(caller, "config:write")
         if not _is_admin_caller(caller):
             return JSONResponse(
                 {"status": "error", "detail": "配置修改须 admin（AIDUMEI_FEDERATION_ADMINS）"},
@@ -376,6 +392,8 @@ def register_config_routes(app: FastAPI) -> None:
         v22.0（雷霆审计 B7）：须 admin。
         """
         from ducky.federation.routes import _is_admin_caller
+        from ducky.security.auth import enforce_caller_binding
+        enforce_caller_binding(caller, "config:write")
         if not _is_admin_caller(caller):
             return {"status": "error", "detail": "配置修改须 admin（AIDUMEI_FEDERATION_ADMINS）"}
         if os.environ.get("AIDUMEM_CONFIG_READONLY", "0").lower() in {"1", "true", "yes"}:
@@ -415,6 +433,8 @@ def register_config_routes(app: FastAPI) -> None:
         v22.0（雷霆审计 B7）：须 admin。
         """
         from ducky.federation.routes import _is_admin_caller
+        from ducky.security.auth import enforce_caller_binding
+        enforce_caller_binding(caller, "config:write")
         if not _is_admin_caller(caller):
             return {"status": "error", "detail": "口令修改须 admin（AIDUMEI_FEDERATION_ADMINS）"}
         from ducky.security.auth import (

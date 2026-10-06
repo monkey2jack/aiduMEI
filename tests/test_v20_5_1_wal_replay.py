@@ -106,7 +106,7 @@ def test_append_then_crash_pending_visible_after_restart(wal):
     assert pending[0].payload["bank_id"] == "default", "重放要用的作用域必须随条目幸存"
 
 
-def test_torn_tail_line_does_not_hide_pending(wal):
+def test_torn_tail_line_does_not_hide_pending(wal, monkeypatch):
     """①b：崩溃撕断正在追加的那一行 —— 坏行不许掩盖前面的欠账。
 
     WAL 是只追加账本：崩溃时最后一行只写出去一半是标准形态。读侧跳过
@@ -118,13 +118,17 @@ def test_torn_tail_line_does_not_hide_pending(wal):
         f.write('{"wal_id": "wal-t14-torn", "ope')  # 半个 JSON 行，无换行
 
     restarted = _reopen(wal)
-    assert [e.wal_id for e in restarted.get_pending_entries()] == ["wal-t14-1b"]
+    with pytest.raises(we.WALIntegrityError):
+        restarted.get_pending_entries()
 
     report = restarted.compact()
     assert report["unparsable_kept"] == 1, "坏行必须原样保留（丢弃即静默数据丢失）"
-    assert [e.wal_id for e in restarted.get_pending_entries()] == ["wal-t14-1b"], (
-        "compact 后欠账一条不许少"
-    )
+    with pytest.raises(we.WALIntegrityError):
+        restarted.get_pending_entries()
+    monkeypatch.setattr(we.WALEngine, "get_instance", classmethod(lambda cls: restarted))
+    report = we.reconcile_startup()
+    assert report["wal_integrity"] == "unknown"
+    assert report["reconciliation_paused"] is True
 
 
 # ══════════════════════════════════════════════════════════

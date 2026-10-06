@@ -15,6 +15,7 @@ import threading
 import time
 import sqlite3
 
+from ducky.mem0_compat import get_all_memories
 from ducky.utils import DEFAULT_USER_ID, get_text_conn
 from ducky.bank_contract import DEFAULT_BANK_ID, make_scope, raw_storage_key, scoped_storage_key
 from ducky.scope_sql import scope_clause
@@ -391,7 +392,7 @@ def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID, bank_i
         except Exception:
             from api_server import get_memory
         mem = get_memory()
-        raw = mem.get_all(filters={"user_id": user_id}, limit=limit)
+        raw = get_all_memories(mem, filters={"user_id": user_id}, limit=limit)
         items = raw.get("results", raw) if isinstance(raw, dict) else raw
         if not isinstance(items, list):
             return 0

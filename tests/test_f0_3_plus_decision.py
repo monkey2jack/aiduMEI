@@ -224,6 +224,37 @@ def test_low_or_unknown_classification_confidence_falls_back(channel, monkeypatc
     assert d.classify("deployment", "test-user-one", "work")[0] is None
 
 
+@pytest.mark.parametrize("choice", [[], {}], ids=["list", "object"])
+def test_invalid_classification_choice_preserves_llm_fallback_and_ledger(channel, tmp_path, monkeypatch, choice):
+    import sqlite3
+    from ducky import memory_types as mt
+
+    path = tmp_path / "facts.db"
+
+    def connect():
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    monkeypatch.setattr(mt, "get_facts_conn", connect)
+    monkeypatch.setattr(mt, "_checked", False)
+    fallback_calls = []
+
+    def fallback(text):
+        fallback_calls.append(text)
+        return "FACTS"
+
+    monkeypatch.setattr(mt, "_llm_classify", fallback)
+    monkeypatch.setitem(d.PROVIDERS, "nace", lambda *a: {"model": d.MODEL, "answers": {
+        "type": {"type": "choice", "choice": choice, "confidence": .99}}})
+
+    result = mt.classify_and_record("synthetic-ref", "Known synthetic fact", use_llm=True,
+                                    user_id="test-user-one", bank_id="work")
+    assert result["memory_type"] == "FACTS" and result["source"] == "llm"
+    assert fallback_calls == ["Known synthetic fact"]
+    assert mt.get_memory_type("synthetic-ref", user_id="test-user-one", bank_id="work") == "FACTS"
+
+
 def test_filter_precedes_final_limit_and_retains_rerank_order(channel, monkeypatch):
     from ducky import scoring, mem0_runtime as runtime
     monkeypatch.setattr(scoring, "get_batch_salience_records", lambda *a: {})
@@ -378,3 +409,94 @@ def test_environment_key_override_blocks_destination_switch(channel, monkeypatch
     cfg = {"model": "jev-1.13.0", "openai_base_url": "https://api.typesafe.ai/v1", "api_key": "new-synthetic-key"}
     assert client.put("/config/decision?caller=test-admin", json={"provider": "typesafe", "config": cfg}).status_code == 400
     assert path.read_bytes() == before
+
+
+def test_cloudflare_validation_requires_account_and_supported_model():
+    base = {"provider": "cloudflare", "config": {
+        "model": "clef", "openai_base_url": "https://api.cloudflare.com/client/v4",
+        "api_key": "synthetic-cloudflare-key"}}
+    assert d.validate(base) is not None
+    base["config"]["account_id"] = "0123456789abcdef0123456789abcdef"
+    assert d.validate(base) is None
+    base["config"]["model"] = "clef-unknown"
+    assert d.validate(base) is not None
+
+
+def test_cloudflare_adapter_builds_scoped_url_and_unwraps_result(channel, monkeypatch):
+    import requests
+    seen = []
+
+    class Reply:
+        status_code = 200
+
+        def json(self):
+            return {"success": True, "result": {
+                "model": "clef-flash",
+                "answers": {"p0": {"type": "noul", "noul": 0.91}},
+                "usage": {"input_tokens": 7},
+            }}
+
+    def post(endpoint, **kwargs):
+        seen.append((endpoint, kwargs))
+        return Reply()
+
+    monkeypatch.setattr(requests, "post", post)
+    cfg = {"provider": "cloudflare", "model": "clef-flash",
+           "openai_base_url": "https://api.cloudflare.com/client/v4",
+           "account_id": "0123456789abcdef0123456789abcdef",
+           "api_key": "synthetic-cloudflare-key", "timeout_ms": 2000}
+    result = d._cloudflare(cfg, {"query": "生日"}, {"p0": {"type": "noul"}})
+    assert result["answers"]["p0"]["noul"] == .91
+    assert result["usage"]["input_tokens"] == 7
+    assert seen[0][0].endswith("/accounts/0123456789abcdef0123456789abcdef/ai/run/@cf/cloudflare/clef-flash")
+    assert seen[0][1]["json"]["model"] == "clef-flash"
+    assert seen[0][1]["json"]["state"] == {"query": "生日"}
+    assert seen[0][1]["allow_redirects"] is False
+    assert "synthetic-cloudflare-key" not in json.dumps(d.telemetry())
+
+
+def test_cloudflare_adapter_rejects_failed_envelope_and_model_swap(channel, monkeypatch):
+    import requests
+
+    class Reply:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    cfg = {"provider": "cloudflare", "model": "clef",
+           "openai_base_url": "https://api.cloudflare.com/client/v4",
+           "account_id": "0123456789abcdef0123456789abcdef",
+           "api_key": "synthetic-cloudflare-key", "timeout_ms": 2000}
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Reply({"success": False, "errors": [{"code": 1}]}))
+    with pytest.raises(ValueError):
+        d._cloudflare(cfg, {}, {"p0": {"type": "noul"}})
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Reply({"success": True, "result": {
+        "model": "clef-flash", "answers": {}}}))
+    with pytest.raises(ValueError):
+        d._cloudflare(cfg, {}, {"p0": {"type": "noul"}})
+
+
+def test_cloudflare_config_view_masks_key_and_exposes_account_id(channel):
+    path, _, client = channel
+    raw = json.loads(path.read_text())
+    raw["decision"] = {"enabled": True, "provider": "cloudflare", "config": {
+        "model": "clef", "openai_base_url": "https://api.cloudflare.com/client/v4",
+        "account_id": "0123456789abcdef0123456789abcdef",
+        "api_key": "synthetic-cloudflare-key"}}
+    path.write_text(json.dumps(raw))
+    view = client.get("/config").json()["decision"]
+    assert view["provider"] == "cloudflare"
+    assert view["config"]["account_id"] == "0123456789abcdef0123456789abcdef"
+    assert view["config"]["api_key"] != "synthetic-cloudflare-key"
+    assert "synthetic-cloudflare-key" not in client.get("/config").text
+
+
+def test_decision_ui_contains_cloudflare_and_task_controls():
+    source = open("frontend/js/panels.js", encoding="utf-8").read()
+    for marker in ("DECISION MODEL", "edDecProvider", "cloudflare", "edDecAccount",
+                   "edDecMemoryType", "edDecRetrieval"):
+        assert marker in source

@@ -1,0 +1,125 @@
+{
+  "posthoc": true,
+  "single_candidate": true,
+  "full_text_chars": 3237,
+  "clipped_chars": 37,
+  "protocol_sha256": "32ae464f07d644bd44b5431a29ed0255f0b27dc4e9ea6dabc14d1f6ce18ca6d8",
+  "models": {
+    "drex": {
+      "full": {
+        "correct": 0,
+        "total": 2,
+        "probabilities": [
+          0.0463,
+          0.0463
+        ],
+        "errors": 0
+      },
+      "clipped": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.9891,
+          0.9891
+        ],
+        "errors": 0
+      },
+      "object_distractor": {
+        "correct": 0,
+        "total": 2,
+        "probabilities": [
+          0.6326,
+          0.6326
+        ],
+        "errors": 0
+      }
+    },
+    "jev": {
+      "full": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.82,
+          0.81
+        ],
+        "errors": 0
+      },
+      "clipped": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.86,
+          0.87
+        ],
+        "errors": 0
+      },
+      "object_distractor": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.32,
+          0.32
+        ],
+        "errors": 0
+      }
+    },
+    "clef": {
+      "full": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.9645,
+          0.9645
+        ],
+        "errors": 0
+      },
+      "clipped": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.959,
+          0.959
+        ],
+        "errors": 0
+      },
+      "object_distractor": {
+        "correct": 0,
+        "total": 2,
+        "probabilities": [
+          0.7619,
+          0.7619
+        ],
+        "errors": 0
+      }
+    },
+    "clef_flash": {
+      "full": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.9221,
+          0.9221
+        ],
+        "errors": 0
+      },
+      "clipped": {
+        "correct": 2,
+        "total": 2,
+        "probabilities": [
+          0.9303,
+          0.9303
+        ],
+        "errors": 0
+      },
+      "object_distractor": {
+        "correct": 0,
+        "total": 2,
+        "probabilities": [
+          0.6471,
+          0.6471
+        ],
+        "errors": 0
+      }
+    }
+  }
+}

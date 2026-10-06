@@ -1025,9 +1025,15 @@ def register_health_routes(app: FastAPI) -> None:
             pending_count = len(wal.get_pending_entries())
             probes["wal_engine_ok"] = True
             probes["wal_pending_entries"] = pending_count
+            probes["wal_integrity"] = "ok"
         except Exception as e:
             probes["wal_engine_ok"] = False
-            probes["wal_error"] = str(e)[:120]
+            from ducky.wal_engine import WALIntegrityError
+            probes["wal_integrity"] = "unknown"
+            if isinstance(e, WALIntegrityError):
+                probes["wal_integrity_error"] = str(e)[:120]
+            else:
+                probes["wal_error"] = str(e)[:120]
 
         # FTS 探针
         try:

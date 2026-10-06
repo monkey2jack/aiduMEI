@@ -47,6 +47,7 @@ class ConflictCheckRequest(BaseModel):
     text: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
     user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 class TreeNodeRequest(BaseModel):
@@ -56,6 +57,7 @@ class TreeNodeRequest(BaseModel):
     # v20.4.0（P1-6）：节点落在调用方自己的域里
     user_id: str = Field(default="default", max_length=ID_FIELD_MAX_CHARS)
     bank_id: str = Field(default="default", max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
 def register_octopus_routes(app: FastAPI) -> None:
@@ -63,6 +65,9 @@ def register_octopus_routes(app: FastAPI) -> None:
     def conflict_resolve_endpoint(req: ConflictCheckRequest):
         """显式触发冲突检测与消解"""
         try:
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(req.user_id, getattr(req, "caller_user_id", ""),
+                                 bank_id=req.bank_id, action="write")
             scope = make_scope(req.user_id, req.bank_id)
             res_fact = None
             if req.fact_key and req.fact_value:
@@ -93,9 +98,12 @@ def register_octopus_routes(app: FastAPI) -> None:
 
     @app.get("/tree/nodes")
     def tree_nodes_endpoint(root_path: str = Query("/aidu", description="根节点路径"),
-                            user_id: str = Query("default"), bank_id: str = Query("default")):
+                            user_id: str = Query("default"), bank_id: str = Query("default"),
+                            caller_user_id: str = Query("")):
         """查询树状结构子树（v20.4.0 P1-6：仅本域节点与计数）"""
         try:
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             nodes = get_subtree(root_path, user_id=user_id, bank_id=bank_id)
             return {"status": "ok", "root_path": root_path, "nodes": nodes, "count": len(nodes)}
         except Exception as e:
@@ -106,7 +114,14 @@ def register_octopus_routes(app: FastAPI) -> None:
     def tree_node_add_endpoint(req: TreeNodeRequest):
         """新增/更新树状节点"""
         try:
-            res = add_tree_node(req.name, req.parent_path, req.description,
+            from ducky.scope_auth import require_scope_access
+            require_scope_access(req.user_id, req.caller_user_id,
+                                 bank_id=req.bank_id, action="write")
+            from ducky.security.injection_guard import validate_and_sanitize_memory_content
+            is_safe, clean_description, rejection = validate_and_sanitize_memory_content(req.description)
+            if not is_safe:
+                raise HTTPException(status_code=400, detail=f"Memory content rejected: {rejection}")
+            res = add_tree_node(req.name, req.parent_path, clean_description,
                                 user_id=req.user_id, bank_id=req.bank_id)
             if "error" in res:
                 raise HTTPException(400, res["error"])

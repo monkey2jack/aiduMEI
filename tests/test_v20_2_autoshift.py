@@ -392,7 +392,7 @@ class TestDualIndex:
         from ducky.wal_engine import cascade_delete_all
         di.upsert_local_verbatim("dc_auto", "default", "将被清空的原文")
         di.enqueue_cloud_add({"messages": "欠着的蒸馏"}, "dc_auto", "default")
-        out = cascade_delete_all("dc_auto")
+        out = cascade_delete_all("dc_auto", confirm=True)
         det = out["details"]
         assert det.get("local_vectors_deleted") == 1, det
         assert det.get("pending_embeddings_deleted") == 1, det
@@ -490,7 +490,7 @@ class TestSelfAuditAdditions:
         di.enqueue_cloud_add({"messages": "将被删除租户的欠账原文"}, "race_u", "default")
         rows_snapshot_taken = di.pending_counts()["cloud"] == 1
         assert rows_snapshot_taken
-        cascade_delete_all("race_u")  # §15 清欠账
+        cascade_delete_all("race_u", confirm=True)  # §15 清欠账
         report = di.replay_pending(apply=True)
         assert report["replayed"] == 0, "已删租户的欠账被重放 —— 复活"
         assert not any("将被删除租户" in str(c.get("messages", ""))
