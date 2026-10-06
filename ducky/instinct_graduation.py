@@ -11,6 +11,7 @@ Aion Memory 设计哲学：
 import logging, time
 from typing import Optional
 
+from ducky.mem0_compat import get_all_memories
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,
     make_scope,
@@ -70,7 +71,8 @@ def scan_instincts(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> list
     # 非法作用域在取数前就抛，不许静默降级成全库扫描
     scope = make_scope(user_id, bank_id)
     try:
-        all_mem = memory.get_all(
+        all_mem = get_all_memories(
+            memory,
             filters=vector_scope_filters(scope.user_id, scope.bank_id), limit=10000
         )
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem
@@ -131,7 +133,8 @@ def graduate_to_skill(memory, user_id: str, group: dict,
     scope = make_scope(user_id, bank_id)
     try:
         # 获取完整记忆
-        all_mem = memory.get_all(
+        all_mem = get_all_memories(
+            memory,
             filters=vector_scope_filters(scope.user_id, scope.bank_id), limit=10000
         )
         results = all_mem.get("results", all_mem) if isinstance(all_mem, dict) else all_mem

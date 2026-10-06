@@ -1306,7 +1306,7 @@ async function renderSettings(body) {
 
   body.innerHTML =
     // ---- model config ----
-    '<div class="sec">' + secHead('模型配置', 'MODEL CONFIG', 'LLM / Embedding / Reranker') +
+    '<div class="sec">' + secHead('模型配置', 'MODEL CONFIG', 'LLM / Embedding / Reranker / Decision') +
       '<div id="cfgModels">' + renderModelConfig(cfg) + '</div>' +
       '<div class="cfg-actions">' +
         '<button class="cfg-btn" id="cfgEditModels">编辑配置 Edit Config</button>' +
@@ -1490,6 +1490,9 @@ function editModelConfig(body, cfg) {
   var emb = cfg.embedder || {};
   var rer = cfg.rerank || {};
   var vis = cfg.vision || {};
+  var dec = cfg.decision || {};
+  var decCfg = dec.config || {};
+  var decTasks = decCfg.tasks || {};
 
   var form = '<div class="editor mt10">' +
     '<div class="sec sec-tight"><h4 class="h4-blue">语言模型 LLM</h4></div>' +
@@ -1511,6 +1514,19 @@ function editModelConfig(body, cfg) {
     '<div class="mc-row"><span class="mc-k">Rerank API Key</span><input class="sinput mc-input" id="edRerKey" type="password" placeholder="可选，留空不修改"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Enabled</span><input type="checkbox" id="edRerEnabled" ' + ((rer && rer.enabled) ? 'checked' : '') + '></div>' +
     '<div class="hint py6">Reranker 为可选项，留空或取消勾选即不启用。<br><span class="en-label">Reranker is optional. Leave blank or uncheck to disable.</span></div>' +
+    '<div class="sec sec-gap"><h4 class="h4-orange">决策模型 DECISION MODEL</h4></div>' +
+    '<div class="mc-row"><span class="mc-k">Decision Enabled</span><input type="checkbox" id="edDecEnabled" ' + (dec.enabled ? 'checked' : '') + '></div>' +
+    '<div class="mc-row"><span class="mc-k">Provider</span><select class="sinput mc-input" id="edDecProvider">' +
+      ['nace', 'typesafe', 'cloudflare', 'systemone'].map(function (p) {
+        return '<option value="' + p + '" ' + ((dec.provider || 'nace') === p ? 'selected' : '') + '>' + p + '</option>';
+      }).join('') + '</select></div>' +
+    '<div class="mc-row"><span class="mc-k">Decision Model</span><input class="sinput mc-input" id="edDecModel" value="' + esc(decCfg.model || '') + '" placeholder="drex-v1.5 / jev-1.13.0 / clef"></div>' +
+    '<div class="mc-row"><span class="mc-k">Decision Base URL</span><input class="sinput mc-input" id="edDecUrl" value="' + esc(decCfg.openai_base_url || '') + '" placeholder="HTTPS base URL"></div>' +
+    '<div class="mc-row"><span class="mc-k">Cloudflare Account ID</span><input class="sinput mc-input" id="edDecAccount" value="' + esc(decCfg.account_id || '') + '" placeholder="仅 cloudflare / only for Cloudflare"></div>' +
+    '<div class="mc-row"><span class="mc-k">Decision API Key</span><input class="sinput mc-input" id="edDecKey" type="password" placeholder="留空不修改 / blank=no change"></div>' +
+    '<div class="mc-row"><span class="mc-k">Tasks</span><label><input type="checkbox" id="edDecMemoryType" ' + (decTasks.memory_type !== false ? 'checked' : '') + '> memory_type</label> <label><input type="checkbox" id="edDecRetrieval" ' + (decTasks.retrieval !== false ? 'checked' : '') + '> retrieval</label></div>' +
+    '<div class="mc-row"><span class="mc-k">Mode / Threshold / Timeout</span><select class="sinput" id="edDecMode"><option value="auto" ' + ((decCfg.mode || 'auto') === 'auto' ? 'selected' : '') + '>auto</option><option value="always" ' + (decCfg.mode === 'always' ? 'selected' : '') + '>always</option></select> <input class="sinput dec-threshold" id="edDecThreshold" type="number" min="0" max="1" step="0.01" value="' + esc(String(decCfg.threshold == null ? 0.6 : decCfg.threshold)) + '"> <input class="sinput dec-timeout" id="edDecTimeout" type="number" min="250" max="5000" step="50" value="' + esc(String(decCfg.timeout_ms == null ? 2000 : decCfg.timeout_ms)) + '"> ms</div>' +
+    '<div class="hint py6">决策模型是可选的自动辅助通道：负责记忆类型判断与候选证据核验；Reranker 仍负责排序。Cloudflare 选择 clef 或 clef-flash，并填写 32 位 Account ID。切换供应商时必须填写新密钥。<br><span class="en-label">Decision models are optional and automatic. Reranker still owns ordering. Cloudflare requires clef/clef-flash and a 32-character Account ID.</span></div>' +
     '<div class="ebar">' +
       '<button class="ebtn save" id="edSave">保存 Save</button>' +
       '<button class="ebtn cancel" id="edCancel">取消 Cancel</button>' +
@@ -1560,7 +1576,28 @@ function editModelConfig(body, cfg) {
       if (ru) patch.rerank.config.openai_base_url = ru;
       if (rk) patch.rerank.config.api_key = rk;
     }
-    if (!Object.keys(patch).length) { alert('没有改动 / No changes'); return; }
+    var dp = body.querySelector('#edDecProvider').value;
+    var dm = body.querySelector('#edDecModel').value.trim();
+    var du = body.querySelector('#edDecUrl').value.trim();
+    var da = body.querySelector('#edDecAccount').value.trim();
+    var dk = body.querySelector('#edDecKey').value.trim();
+    patch.decision = {
+      enabled: body.querySelector('#edDecEnabled').checked,
+      provider: dp,
+      config: {
+        tasks: {
+          memory_type: body.querySelector('#edDecMemoryType').checked,
+          retrieval: body.querySelector('#edDecRetrieval').checked
+        },
+        mode: body.querySelector('#edDecMode').value,
+        threshold: Number(body.querySelector('#edDecThreshold').value),
+        timeout_ms: Number(body.querySelector('#edDecTimeout').value)
+      }
+    };
+    if (dm) patch.decision.config.model = dm;
+    if (du) patch.decision.config.openai_base_url = du;
+    if (da) patch.decision.config.account_id = da;
+    if (dk) patch.decision.config.api_key = dk;
     try {
       for (var section in patch) {
         var r = await fetch('/api/config/' + section, {
@@ -1662,6 +1699,7 @@ function renderModelConfig(cfg) {
   const emb = cfg.embedder || {};
   const rer = cfg.rerank || {};
   const vis = cfg.vision || {};
+  const dec = cfg.decision || {};
 
   const card = function (title, en, m) {
     const provider = m.provider || '—';
@@ -1674,6 +1712,7 @@ function renderModelConfig(cfg) {
       '<div class="mc-row"><span class="mc-k">Model</span><b>' + esc(model) + '</b></div>' +
       '<div class="mc-row"><span class="mc-k">Base URL</span><code>' + esc(baseUrl) + '</code></div>' +
       '<div class="mc-row"><span class="mc-k">API Key</span><code>' + esc(keyMasked) + '</code></div>' +
+      (m.enabled === undefined ? '' : '<div class="mc-row"><span class="mc-k">Status</span><b>' + (m.enabled ? '已启用 ON' : '已关闭 OFF') + '</b></div>') +
       '</div>';
   };
 
@@ -1682,9 +1721,10 @@ function renderModelConfig(cfg) {
     card('多模态解析', 'VISION', vis) +
     card('向量模型', 'EMBEDDING', emb) +
     card('重排模型', 'RERANKER', rer) +
+    card('决策模型', 'DECISION MODEL', dec) +
   '</div>' +
-  '<div class="hint pt8">多模态模型默认复用 LLM 的连接信息（在 LLM 栏配置），也可独立配置。点击"编辑配置"即可修改。<br>' +
-    '<span class="en-label">Vision model shares LLM credentials by default, or can be set independently. Click Edit Config to modify.</span></div>';
+  '<div class="hint pt8">多模态模型默认复用 LLM 的连接信息（在 LLM 栏配置），也可独立配置。决策模型按供应商和任务自动生效，Reranker 继续负责排序。点击"编辑配置"即可修改。<br>' +
+    '<span class="en-label">Vision shares LLM credentials by default. Decision models run automatically by provider and task; Reranker still owns ordering. Click Edit Config to modify.</span></div>';
 }
 
 function renderReasoning(cfg) {

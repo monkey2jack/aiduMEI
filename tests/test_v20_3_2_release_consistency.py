@@ -266,10 +266,12 @@ def test_pending_is_refused_by_the_write_routes(tmp_path, monkeypatch):
     monkeypatch.setattr(I, "claim", lambda *a, **k: {"action": "pending", "key": "k1"})
     c = TestClient(A.app, raise_server_exceptions=False,
                    headers={"Authorization": "Bearer probe-token-not-a-real-secret"})
-    r = c.post("/add/raw", json={"content": "x", "user_id": "u", "bank_id": "default"},
+    r = c.post("/add/raw", json={"content": "x", "user_id": "u", "bank_id": "default",
+                                  "caller_user_id": "u"},
                headers={"Idempotency-Key": "k1"})
     assert r.status_code == 409, f"pending 状态下 /add/raw 回 {r.status_code}，应 409 且不写"
-    r2 = c.post("/add", json={"messages": "x", "user_id": "u", "bank_id": "default", "infer": False},
+    r2 = c.post("/add", json={"messages": "x", "user_id": "u", "bank_id": "default",
+                               "caller_user_id": "u", "infer": False},
                 headers={"Idempotency-Key": "k1"})
     assert r2.status_code == 409, f"pending 状态下 /add 回 {r2.status_code}"
 
@@ -401,7 +403,7 @@ def test_credentialed_instance_does_not_host_check(tmp_path, monkeypatch):
     import api_server as A  # noqa: F401
     monkeypatch.setenv("AIDUMEM_API_TOKEN", "probe-token-not-a-real-secret")
     with _RealServer(A.app) as s:
-        code = s.req("GET", "/facts?user_id=p&bank_id=default",
+        code = s.req("GET", "/facts?user_id=p&bank_id=default&caller_user_id=p",
                      headers={"Host": "memory.example.com", "Authorization": "Bearer probe-token-not-a-real-secret"})
     assert code == 200, f"有凭据 + 反代域名 Host 被误拒（{code}）"
 

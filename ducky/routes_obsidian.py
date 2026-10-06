@@ -42,6 +42,8 @@ class ObsidianSyncRequest(BaseModel):
     metadata: dict = Field(default_factory=dict)
     # v20 P0-2：同步目标记忆库。不传 = default 域（v19 行为零改动）
     bank_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
+    user_id: str = Field(default="default", max_length=ID_FIELD_MAX_CHARS)
+    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 def extract_wikilinks(content: str) -> list[str]:
     """提取 Markdown 中的 [[页面名]] 或 [[页面名|别名]] 双链语法"""
@@ -69,6 +71,23 @@ def register_obsidian_routes(app: FastAPI) -> None:
             raise HTTPException(403, "Obsidian 模块已禁用，请在配置中启用 _features.obsidian")
 
         try:
+            from ducky.scope_auth import require_scope_access
+            target_bank = req.bank_id or "default"
+            # v0.3++ keeps the historical Obsidian contract where metadata
+            # carried the owner.  An explicit request user always wins; the
+            # legacy default may be upgraded from metadata before authz.
+            metadata_user = str(req.metadata.get("user_id") or "").strip()
+            effective_user = (
+                metadata_user
+                if req.user_id == "default" and metadata_user
+                else req.user_id
+            )
+            require_scope_access(
+                effective_user,
+                req.caller_user_id,
+                bank_id=target_bank,
+                action="write",
+            )
             mem = get_memory()
 
             # 1. 抽取 wikilinks 双链
@@ -77,6 +96,10 @@ def register_obsidian_routes(app: FastAPI) -> None:
             # 2. 组装备忘录正文
             # 将 Obsidian 的标题和内容融合成事实
             text = f"# {req.title}\n{req.content}"
+            from ducky.security.injection_guard import validate_and_sanitize_memory_content
+            is_safe, text, rejection = validate_and_sanitize_memory_content(text)
+            if not is_safe:
+                raise HTTPException(status_code=400, detail=f"Memory content rejected: {rejection}")
 
             meta = req.metadata.copy()
             meta["source"] = "obsidian"
@@ -92,7 +115,7 @@ def register_obsidian_routes(app: FastAPI) -> None:
                 raise HTTPException(400, f"非法 bank_id: {be}")
 
             # 3. 落库（user_id 从请求 metadata 读取，缺省 default，保持通用）
-            user_id = req.metadata.get("user_id", "default")
+            user_id = effective_user
             from ducky.engine_mode import cloud_egress_allowed
             if cloud_egress_allowed("embedding"):
                 mem.add(text, user_id=user_id, metadata=meta)

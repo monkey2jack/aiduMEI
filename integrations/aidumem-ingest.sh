@@ -372,6 +372,9 @@ messages = [
 print(json.dumps({
     "messages": messages,
     "user_id": os.environ["_INGEST_UID_PIPE"],
+    # 殿级授权收紧：写路径同 search 一样声明 caller_cross_hall，否则持
+    # API token 的集成方在无 caller 时被默认跨殿隔离拒绝（auth_failed 403）。
+    "caller_user_id": os.environ["_INGEST_UID_PIPE"],
     "bank_id": os.environ["_INGEST_BANK_PIPE"],
     # async_mode 不是优化，是正确性：同步 /add 要跑完整抽取管线（生产实测
     # p50 约 4 秒，长尾未知），而宿主给 hook 的超时通常是个位数秒。超时被杀

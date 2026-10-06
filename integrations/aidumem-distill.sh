@@ -168,6 +168,9 @@ write_key = "shell-distill-" + hashlib.sha256(generation.encode("utf-8")).hexdig
 try:
     stored = _post("/add", {"messages": out["summary"],
                    "user_id": write_uid,
+                   # Scope hardening: bearer-token writes must declare their caller,
+                   # otherwise cross-hall isolation rejects them with auth_failed 403.
+                   "caller_user_id": write_uid,
                    "bank_id": write_bid,
                    "idempotency_key": write_key,
                    "async_mode": True,

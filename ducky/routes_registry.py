@@ -31,6 +31,8 @@ logger = logging.getLogger("aiduMEM.RoutesRegistry")
 
 def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities_fn) -> None:
     """按序注册所有端点：Core(HOT) -> v8 -> Clotho -> Extended -> Legacy -> Octopus"""
+    from ducky.scope_auth import ScopeRegistrar
+    app = ScopeRegistrar(app)
 
     # 1. 注册 HOT 核心路由 (Crud, Add, Search, Health)
     register_core_routes(app)

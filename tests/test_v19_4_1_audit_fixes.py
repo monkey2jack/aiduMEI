@@ -1584,12 +1584,12 @@ def test_readme_public_version_claim_matches_service_version():
     en = open(os.path.join(_REPO_ROOT, "README_EN.md"), encoding="utf-8").read()
     assert FULL_VERSION == current
 
-    m = re.search(r"当前公开版本\s*([vf]\d+\.\d+\+?)", zh)
+    m = re.search(r"当前公开版本\s*([vf]\d+\.\d+\+*)", zh)
     assert m, "README.md 缺少「当前公开版本 fX.Y」宣称"
     assert m.group(1) == current, (
         f"README.md 宣称当前公开版本 {m.group(1)}，version.py 是 {current}"
     )
-    m = re.search(r"current public release is\s*\*\*([vf]\d+\.\d+\+?)", en)
+    m = re.search(r"current public release is\s*\*\*([vf]\d+\.\d+\+*)", en)
     assert m, "README_EN.md 缺少「current public release is fX.Y」宣称"
     assert m.group(1) == current, (
         f"README_EN.md 宣称 current public release {m.group(1)}，version.py 是 {current}"
@@ -1599,14 +1599,14 @@ def test_readme_public_version_claim_matches_service_version():
     # 之后，就必须等于当前版本。措辞可以换，形态换不掉。
     # 历史记述请用过去时或去掉加粗，即可自然绕开本网 —— 这是有意为之：
     # 本守卫拦的是「现在时宣称」，不是「提到旧版本号」。
-    _NOW_ZH = r"(?:当前|现行|现在|目前)[^。\n]{0,12}?(?:公开|正式)[^。\n]{0,6}?版(?:本)?(?:为|是)?\s*\*\*([vf]\d+\.\d+\+?)"
-    _NOW_EN = r"(?:current|latest)\s+public\s+(?:release|version)\s+(?:is\s+)?\*\*([vf]\d+\.\d+\+?)"
+    _NOW_ZH = r"(?:当前|现行|现在|目前)[^。\n]{0,12}?(?:公开|正式)[^。\n]{0,6}?版(?:本)?(?:为|是)?\s*\*\*([vf]\d+\.\d+\+*)"
+    _NOW_EN = r"(?:current|latest)\s+public\s+(?:release|version)\s+(?:is\s+)?\*\*([vf]\d+\.\d+\+*)"
     assert re.search(_NOW_EN, "current public release is **f0.3+**").group(1) == "f0.3+"
-    assert re.search(_NOW_EN, "current public release is **f0.3**").group(1) != current
+    assert re.search(_NOW_EN, "current public release is **f0.3+**").group(1) != current
     # 旧措辞（历史沿革，保留网眼，防回退）
     _LEGACY = (
-        ("README.md", zh, r"保持\s*\*\*([vf]\d+\.\d+\+?)\*\*"),
-        ("README_EN.md", en, r"remain(?:ing|s)?\s*\*\*([vf]\d+\.\d+\+?)\*\*"),
+        ("README.md", zh, r"保持\s*\*\*([vf]\d+\.\d+\+*)\*\*"),
+        ("README_EN.md", en, r"remain(?:ing|s)?\s*\*\*([vf]\d+\.\d+\+*)\*\*"),
     )
     for name, text, pat in (
         ("README.md", zh, _NOW_ZH),

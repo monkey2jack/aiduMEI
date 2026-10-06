@@ -54,6 +54,7 @@ _GUARD_FILES: dict[str, str] = {
 
 # ── 脚本/钩子行为名单（不 import 产品包，但真执行脚本/钩子/产物）────────
 _SCRIPT_BEHAVIOR_FILES: dict[str, str] = {
+    "test_f0_3pp_mcp_stdio.py": "真实 MCP stdio 子进程与 HTTP 失败、熔断和恢复行为",
     "test_f0_2_commit_metadata_scan.py": "合成 Git 仓执行提交身份脱敏门禁的正反行为",
     "test_f0_2_ops_audit.py": "钩子、cron 与升级脚本的实际命令行为",
     "test_f0_2_release_scan_public_policy.py": "完整词表扫描与公开基线策略的命令行为",

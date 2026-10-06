@@ -73,10 +73,12 @@ _RAW_INJECTION_PATTERNS = re.compile(
     # 收窄成必带指令词（system prompt / system instruction / …），裸标记放行。
     r"|\[\s*(system|assistant|developer)\s+(prompt|message|instruction)s?\s*\]"
     r"|\[/?\s*(system|assistant|developer)\s+(prompt|message|instruction)s?\s*\]"
-    r"|<\s*/?\s*(system|assistant|developer)\s+(prompt|message|instruction)s?\s*>"
+    r"|<\s*(?:/\s*)?(system|assistant|developer)\s+(prompt|message|instruction)s?\s*>"
     # 中文指令覆盖与角色劫持
-    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部)*(的)?(所有|全部|之前|先前|历史)*(系统)?(指令|指示|提示词)"
-    r"|忘记(所有|一切|你学到的|你的记忆)*(的)?(系统)?(指令|提示词)"
+    # Adjacent Chinese groups share tokens.  Bound both so a near-match
+    # cannot split a long repetition between them with quadratic backtracking.
+    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部){0,8}(的)?(所有|全部|之前|先前|历史){0,8}(系统)?(指令|指示|提示词)"
+    r"|忘记(所有|一切|你学到的|你的记忆){0,8}(的)?(系统)?(指令|提示词)"
     r"|从现在(起|开始)?(你(是|将是)|扮演|假装)(无限制|越狱|DAN|不受约束)"
     r"|你现在的真实(系统)?(指令|提示词)是"
     r"|你的真实(系统)?(指令|提示词)是"
@@ -97,8 +99,8 @@ _NORMALIZED_INJECTION_PATTERNS = re.compile(
     r"|(fromnowonyouare|actas|pretendto|youarenow)(unrestricted|jailbroken|dan|danmode|developermode|evil)"
     r"|youmust(ignore|forget|override|bypass)(all)?(rule|instruction|systemprompt)"
     r"|override(all)?(system)?(prompt|instruction)"
-    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部)*(系统)?(指令|指示|提示词)"
-    r"|忘记(所有|一切|你学到的|你的记忆)*(系统)?(指令|提示词)"
+    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部){0,8}(系统)?(指令|指示|提示词)"
+    r"|忘记(所有|一切|你学到的|你的记忆){0,8}(系统)?(指令|提示词)"
     r"|从现在(起|开始)?(你是|扮演|假装)(无限制|越狱|dan|不受约束)|扮演无限制|无视(道德|系统|安全)?限制"
     r"|你的真实(系统)?(指令|提示词)是"
     r"|不要遵守(上述|任何|这些)?(系统)?(指令|提示词)",
@@ -111,25 +113,34 @@ def check_prompt_injection(content: str) -> Tuple[bool, str]:
 
     返回: (is_injection_detected, reason_description)
     """
-    if not content or not isinstance(content, str):
+    if not isinstance(content, str) or not content:
         return False, ""
+
+    # This function is also a public direct-call boundary.  Do not rely on
+    # validate_and_sanitize_memory_content() to enforce the budget first.
+    if len(content) > MAX_CONTENT_LENGTH:
+        return True, "MAX_LENGTH"
 
     # 1. 原始正则匹配
     match = _RAW_INJECTION_PATTERNS.search(content)
     if match:
-        matched_str = match.group(0).replace("\n", " ")
-        return True, f"Layer 1 direct pattern matched: '{matched_str[:40]}'"
+        return True, "Layer 1"
 
     # 2. 归一化正则匹配（抹除空格、标点、控制字符）
     # v22.0（雷霆审计 A11 · Kimi R-4）：先 NFKC 归一化——全角字母整段删除
     # 会让 `ｉｇｎｏｒｅ ｐｒｅｖｉｏｕｓ` 蒸发成空串而绕过第一层；NFKC 把
     # 全角折回半角，第二层正则才能命中。
     import unicodedata
-    normalized = _NORMALIZE_CLEAN_RE.sub("", unicodedata.normalize("NFKC", content)).lower()
+    folded = sanitize_control_chars(unicodedata.normalize("NFKC", content))
+    # Preserve marker syntax before removing punctuation: fullwidth ChatML
+    # or a control character inside a system token must still be detected.
+    if _RAW_INJECTION_PATTERNS.search(folded):
+        return True, "Layer 2"
+    normalized = _NORMALIZE_CLEAN_RE.sub("", folded).lower()
     if len(normalized) >= 4:
         norm_match = _NORMALIZED_INJECTION_PATTERNS.search(normalized)
         if norm_match:
-            return True, f"Layer 2 normalized pattern matched: '{norm_match.group(0)[:40]}'"
+            return True, "Layer 2"
 
     # 3. 重复行轰炸检测
     #
@@ -147,9 +158,9 @@ def check_prompt_injection(content: str) -> Tuple[bool, str]:
     lines = [ln for ln in _all if not _STRUCTURAL.match(ln)]
     if len(lines) > 6:
         counts = Counter(lines)
-        most_common_line, count = counts.most_common(1)[0]
+        _most_common_line, count = counts.most_common(1)[0]
         if count >= 10 and (count / len(lines)) > 0.6:
-            return True, f"Layer 3 repeated line attack detected (repetition: {count}/{len(lines)})"
+            return True, "Layer 3"
 
     return False, ""
 
@@ -243,17 +254,15 @@ def validate_and_sanitize_memory_content(content: str) -> Tuple[bool, str, Optio
 
     返回: (is_valid, sanitized_content, rejection_reason)
     """
-    if not content or not isinstance(content, str):
-        return False, "", "Empty or non-string content"
+    if not isinstance(content, str) or not content:
+        return False, "", "INVALID_CONTENT"
 
-    # 长度截断
+    # Reject the whole value.  Truncating would retain only a harmless prefix
+    # and leave an attacker-controlled suffix outside the validation decision.
     if len(content) > MAX_CONTENT_LENGTH:
-        logger.warning(
-            "Memory content length %d exceeds max %d, truncating",
-            len(content),
-            MAX_CONTENT_LENGTH,
-        )
-        content = content[:MAX_CONTENT_LENGTH]
+        logger.warning("🛡️ [InjectionGuard] REJECTED rule=MAX_LENGTH")
+        _record_rejection()
+        return False, "", "MAX_LENGTH"
 
     # 控制字符清洗（保留换行、回车、制表符）—— 与 sanitize_control_chars 同一实现
     cleaned = sanitize_control_chars(content)
@@ -263,22 +272,10 @@ def validate_and_sanitize_memory_content(content: str) -> Tuple[bool, str, Optio
     if is_injected:
         if GUARD_MODE == "enforce":
             _record_rejection()
-            # v20.4.0（三方审计 P2-6 · Codex P2-04）：正文片段可能含 token/
-            # 密码/隐私 —— 日志只记不可逆指纹 + 长度，正文永不落日志。
-            logger.warning(
-                "🛡️ [InjectionGuard] REJECTED prompt injection (len=%d): %s | sha256_16=%s",
-                len(cleaned),
-                reason,
-                __import__("hashlib").sha256(cleaned.encode()).hexdigest()[:16],
-            )
-            return False, cleaned, f"Prompt injection detected: {reason}"
+            logger.warning("🛡️ [InjectionGuard] REJECTED rule=%s", reason)
+            return False, cleaned, reason
         else:
-            logger.warning(
-                "🛡️ [InjectionGuard] [LOG_ONLY] Detected injection (len=%d): %s | sha256_16=%s",
-                len(cleaned),
-                reason,
-                __import__("hashlib").sha256(cleaned.encode()).hexdigest()[:16],
-            )
+            logger.warning("🛡️ [InjectionGuard] [LOG_ONLY] rule=%s", reason)
 
     return True, cleaned, None
 
