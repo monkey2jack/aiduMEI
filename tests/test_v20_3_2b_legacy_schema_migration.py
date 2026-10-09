@@ -181,6 +181,8 @@ def test_migration_failure_is_reported_into_the_degradation_ledger(tmp_path, mon
 
     class _NoAlter:
         def __init__(self, path): self._c = real_connect(path)
+        @property
+        def in_transaction(self): return self._c.in_transaction
         def execute(self, sql, *a, **k):
             if "ADD COLUMN" in sql:
                 raise sqlite3.OperationalError("attempt to write a readonly database")

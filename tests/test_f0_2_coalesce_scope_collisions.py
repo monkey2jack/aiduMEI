@@ -5,7 +5,9 @@ from ducky.speed import coalesce
 
 
 @pytest.fixture
-def queue(monkeypatch):
+def queue(monkeypatch, tmp_path):
+    from ducky import utils
+    monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
     monkeypatch.setattr(coalesce, '_coalesce_buf', {})
     monkeypatch.setattr(coalesce, 'load_speed_cfg', lambda: {
         'coalesce_max_parts': 100, 'coalesce_max_chars': 100_000,

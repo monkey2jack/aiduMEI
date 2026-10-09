@@ -24,12 +24,13 @@ ducky.governance — 治理管线：写入后审计 + provisional 语义 (v19.4.
     事件账本（B5）；candidate_facts 行本身就是全链路留痕
     （候选 → 评估 → 裁决 → committed，每步可查）。
 
-状态机（精简 5 态，不照搬 Mímir 12 态）
+状态机
     pending   已登记，待人审或等评估器
     evaluated 评估器已表态，仍待人审确认
     approved  （人审/快线批准瞬间的过渡态，立即推进 committed）
     rejected  规则或评估器驳回（归档 + tombstone 留痕）
     committed 正式生效（trust_score 恢复 0.50）
+    superseded 事实已变更/删除或出现更新候选；保留审计，不再裁决当前事实
 
 快线（Mímir 教训：宁窄勿宽）
     Mímir 的 fast_track 至今 0 条走过、人审积压 97 条。本层快线只认
@@ -45,6 +46,8 @@ ducky.governance — 治理管线：写入后审计 + provisional 语义 (v19.4.
     list_candidates(...)           候选队列查询（运维/前端面板/验收用）
 """
 from __future__ import annotations
+
+from fastapi import HTTPException
 
 import json
 import secrets
@@ -64,7 +67,7 @@ FAST_TRACK_CONFIDENCE = 0.9
 # 快线白名单宁窄勿宽（Mímir 教训）：只有用户偏好类
 FAST_TRACK_CATEGORIES = frozenset({"偏好", "preference", "preferences"})
 
-STATES = ("pending", "evaluated", "approved", "rejected", "committed")
+STATES = ("pending", "evaluated", "approved", "rejected", "committed", "superseded")
 
 _CANDIDATE_DDL = """
 CREATE TABLE IF NOT EXISTS candidate_facts (
@@ -142,6 +145,7 @@ def ensure_governance_schema() -> None:
     """幂等建表 + v20 作用域列迁移。对既有库是 no-op，异常只记日志不抛。"""
     try:
         conn = get_facts_conn()
+        outer_transaction = conn.in_transaction
         conn.execute(_CANDIDATE_DDL)
         # v19 存量表没有作用域列，ALTER 补齐；DEFAULT 'default' 让历史候选
         # 全部归入 default 库——与 facts 表作用域列的回填口径一致。
@@ -159,7 +163,8 @@ def ensure_governance_schema() -> None:
                 conn.execute(stmt)
             except Exception as exc:
                 logger.debug("candidate 索引跳过: %s", exc)
-        conn.commit()
+        if not outer_transaction:
+            conn.commit()
     except Exception as exc:
         logger.warning("candidate_facts 建表跳过（服务继续）: %s", exc)
 
@@ -438,6 +443,28 @@ def _set_provisional(conn, fact_id: int) -> None:
         conn.execute("UPDATE facts SET trust_score=? WHERE id=?", (PROVISIONAL_TRUST, fact_id))
 
 
+def _supersede_stale_candidate(conn, row) -> bool:
+    """在持有写事务时核对事实快照；旧候选不能裁决后来写入的事实。"""
+    fact = conn.execute("SELECT * FROM facts WHERE id=?", (row["fact_id"],)).fetchone()
+    owner, bank = _row_scope(row)
+    current = fact is not None and all(
+        fact[key] == row[key] for key in ("category", "fact_key", "fact_value"))
+    if current:
+        # 兼容尚无作用域列的旧库；存在的列必须精确一致。
+        current = all(key not in fact.keys() or (fact[key] or "default") == (value or "default")
+                      for key, value in (("user_id", owner), ("bank_id", bank)))
+        current = current and not bool(fact["archived"])
+    newer = conn.execute(
+        "SELECT 1 FROM candidate_facts WHERE fact_id=? AND candidate_id>? LIMIT 1",
+        (row["fact_id"], row["candidate_id"])).fetchone()
+    if current and newer is None:
+        return False
+    conn.execute(
+        "UPDATE candidate_facts SET status='superseded',review_reason=?,decided_at=? WHERE candidate_id=?",
+        ("fact_changed_or_candidate_replaced", _now_iso(), row["candidate_id"]))
+    return True
+
+
 # ── 对外入口 ────────────────────────────────────────────────────────
 
 def govern_fact_write(conn, fact_id: int, category: str, fact_key: str,
@@ -546,6 +573,7 @@ def evaluate_candidate(candidate_id: int, evaluator=None) -> dict:
     result = {"candidate_id": candidate_id, "status": "pending", "route": "human_review"}
     ensure_governance_schema()
     conn = get_facts_conn()
+    transaction_started = False
     try:
         row = conn.execute(
             "SELECT * FROM candidate_facts WHERE candidate_id=?", (candidate_id,)
@@ -558,6 +586,23 @@ def evaluate_candidate(candidate_id: int, evaluator=None) -> dict:
             return result
 
         ev = (evaluator or _llm_evaluate)(row["category"], row["fact_key"], row["fact_value"])
+        # 网络调用期间不持写锁。返回后串行核对与落地，禁止覆盖人审或
+        # 另一评估器已提交的裁决，也禁止旧文本的结论修改新版本事实。
+        conn.execute("BEGIN IMMEDIATE")
+        transaction_started = True
+        row = conn.execute(
+            "SELECT * FROM candidate_facts WHERE candidate_id=?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            result.update(route="not_found")
+            return result
+        if row["status"] != "pending":
+            result.update(status=row["status"], route="already_decided")
+            return result
+        if _supersede_stale_candidate(conn, row):
+            conn.commit()
+            result.update(status="superseded", route="superseded")
+            return result
         if not ev:
             # 评估器不可用/超时/垃圾 JSON → 保守人审，绝不自动批准
             conn.execute(
@@ -603,17 +648,51 @@ def evaluate_candidate(candidate_id: int, evaluator=None) -> dict:
         result["route"] = "error"
         return result
     finally:
+        if transaction_started and conn.in_transaction:
+            conn.rollback()
         conn.close()
 
 
+def _authorize_candidate_review(owner, bank, caller, expected_user, expected_bank, reason):
+    """Authorize the stored owner before comparing optional caller claims."""
+    from ducky.scope_auth import require_scope_access, sanitize_memory_or_raise
+    from ducky.bank_contract import make_scope
+    require_scope_access(owner, caller, bank_id=bank, action="write")
+    if expected_user is not None or expected_bank is not None:
+        claimed = make_scope(expected_user if expected_user is not None else owner,
+                             expected_bank if expected_bank is not None else bank)
+        if (claimed.user_id, claimed.bank_id) != (owner, bank):
+            raise HTTPException(403, "candidate scope mismatch")
+    return sanitize_memory_or_raise(reason) if reason else reason
+
+
+def _legacy_review_scope_error(owner, bank, user_id, bank_id) -> str:
+    """可信库调用显式声明 bank 时，同时核对 owner 与 bank 两轴。"""
+    try:
+        from ducky.bank_contract import normalize_bank_id
+        want = normalize_bank_id(bank_id)
+    except Exception:
+        return "非法 bank_id"
+    if (bank or "default") != want:
+        return "候选属于其他记忆库，越库裁决被拒"
+    want_uid = (user_id or DEFAULT_USER_ID).strip() or DEFAULT_USER_ID
+    if (owner or DEFAULT_USER_ID) != want_uid:
+        return "候选属于其他用户，越域裁决被拒"
+    return ""
+
+
 def review_candidate(candidate_id: int, decision: str, reason: str = "",
-                     user_id: str = DEFAULT_USER_ID, bank_id: str = "") -> dict:
+                     user_id: str = DEFAULT_USER_ID, bank_id: str = "",
+                     caller_user_id: str | None = None,
+                     expected_user_id: str | None = None,
+                     expected_bank_id: str | None = None) -> dict:
     """人审裁决（/governance/review）。decision ∈ approve | reject。
 
     只受理 pending / evaluated 状态的候选；已裁决的幂等返回现状。
     v20 P0-2：bank_id 传了就是作用域声明——与候选归属库不符时拒绝裁决、
     候选分毫不动（防 A 库的审核凭 candidate_id 归档 B 库的事实）；
-    不传保持 v19 管理员全权语义，存量调用零改动。
+    HTTP 必须传 caller_user_id，并按候选的真实 owner/bank 授权。
+    caller_user_id=None 仅为可信进程内旧库调用兼容，不能暴露为 HTTP 管理权限。
     """
     result = {"candidate_id": candidate_id, "status": "", "detail": ""}
     decision = (decision or "").strip().lower()
@@ -622,59 +701,78 @@ def review_candidate(candidate_id: int, decision: str, reason: str = "",
         return result
     ensure_governance_schema()
     conn = get_facts_conn()
+    transaction_started = False
     try:
         row = conn.execute(
             "SELECT * FROM candidate_facts WHERE candidate_id=?", (candidate_id,)
         ).fetchone()
         if not row:
+            if caller_user_id is not None:
+                raise HTTPException(404, "candidate not found")
             result["detail"] = "候选不存在"
             return result
         row_uid_pre, row_bid_pre = _row_scope(row)
-        if bank_id:
-            try:
-                from ducky.bank_contract import normalize_bank_id
-                want = normalize_bank_id(bank_id)
-            except Exception:
-                result["detail"] = "非法 bank_id"
-                return result
-            have = row_bid_pre or "default"
-            if have != want:
-                result["detail"] = "候选属于其他记忆库，越库裁决被拒"
-                return result
-            # v20.2.4（外审 F-08）：**user 轴此前完全没校验**。
-            # `_row_scope(row)` 就在下面几行取着，却只被拿去写账本，
-            # 不参与授权 —— 于是攻击者用自己的 user_id + 受害者的 bank_id
-            # 就能 reject 并归档受害者的事实（实测 archived 变 1）。
-            #
-            # 既有语义保留：不传 bank_id 仍是 v19 的管理员全权。但**一旦声明了
-            # 作用域，就两轴都得对上** —— 半个作用域不是作用域。
-            have_uid = row_uid_pre or DEFAULT_USER_ID
-            want_uid = (user_id or DEFAULT_USER_ID).strip() or DEFAULT_USER_ID
-            if have_uid != want_uid:
-                result["detail"] = "候选属于其他用户，越域裁决被拒"
+        if caller_user_id is not None:
+            reason = _authorize_candidate_review(
+                row_uid_pre, row_bid_pre, caller_user_id, expected_user_id,
+                expected_bank_id, reason)
+        elif bank_id:
+            # v20.2.4 F-08：显式声明作用域时不可只核对 bank 而遗漏 owner。
+            scope_error = _legacy_review_scope_error(
+                row_uid_pre, row_bid_pre, user_id, bank_id)
+            if scope_error:
+                result["detail"] = scope_error
                 return result
         if row["status"] not in ("pending", "evaluated"):
             result.update(status=row["status"], detail="已裁决，幂等返回")
             return result
+        # 授权完成后短事务重读。裁决状态检查与事实变更必须同一写锁保护。
+        conn.execute("BEGIN IMMEDIATE")
+        transaction_started = True
+        fresh = conn.execute(
+            "SELECT * FROM candidate_facts WHERE candidate_id=?", (candidate_id,)
+        ).fetchone()
+        if fresh is None:
+            if caller_user_id is not None:
+                raise HTTPException(404, "candidate not found")
+            result["detail"] = "候选不存在"
+            return result
+        if _row_scope(fresh) != _row_scope(row):
+            raise HTTPException(409, "candidate scope changed; retry review")
+        row = fresh
+        if row["status"] not in ("pending", "evaluated"):
+            result.update(status=row["status"], detail="已裁决，幂等返回")
+            return result
+        if _supersede_stale_candidate(conn, row):
+            conn.commit()
+            result.update(status="superseded", detail="事实已变更或候选已替换，保留旧审计记录")
+            return result
+        reviewer = caller_user_id or user_id
         row_uid, row_bid = _row_scope(row)
         if decision == "approve":
             _apply_approve(conn, candidate_id, row["fact_id"], row["fact_key"],
-                           user_id, reason or "human_approve", actor=user_id or "human",
+                           reviewer, reason or "human_approve", actor=reviewer or "human",
                            scope_user=row_uid, scope_bank=row_bid)
             result.update(status="committed", detail="人审批准")
         else:
             _apply_reject(conn, candidate_id, row["fact_id"], row["fact_key"],
                           row["category"], row["fact_value"], row["user_id"],
-                          reason or "human_reject", actor=user_id or "human",
+                          reason or "human_reject", actor=reviewer or "human",
                           scope_user=row_uid, scope_bank=row_bid)
             result.update(status="rejected", detail="人审驳回")
         conn.commit()
         return result
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("review_candidate 失败 candidate=%s: %s", candidate_id, exc)
+        if caller_user_id is not None:
+            raise HTTPException(500, "candidate review failed") from exc
         result["detail"] = str(exc)[:120]
         return result
     finally:
+        if transaction_started and conn.in_transaction:
+            conn.rollback()
         conn.close()
 
 
@@ -683,7 +781,8 @@ def list_candidates(status: str = "", user_id: str = "", limit: int = 50,
     """候选队列查询（运维/前端面板/验收用）。失败返回 []。
 
     v20 P0-2：bank_id / scope_user_id 是可选作用域过滤——传了只看本库
-    候选，不传保持 v19 管理员全量视图。user_id 仍按「归属」过滤，语义不同。
+    候选，不传保持可信库调用的全量视图。user_id 是 writer/source 过滤，
+    真正的资源所有者由 scope_user_id 表示；HTTP 边界必须传已授权的作用域。
     """
     try:
         ensure_governance_schema()

@@ -7,40 +7,61 @@ bash scripts/backup_gate.sh create upgrade-$(date +%F)
 bash scripts/backup_gate.sh verify <backup_dir>
 ```
 
-A valid backup has checksums, SQLite `quick_check`, and a verification marker. Store backups outside `/tmp` and outside the repository working tree.
+Keep backups outside `/tmp` and outside the repository. The backup includes an
+exact typed member manifest, checksums, SQLite online snapshots and durable
+business WAL. Verification rejects missing or extra files, links, ambiguous
+paths and corrupt SQLite. It preserves the originals while checking copies.
+Keep `mutation_journal.sqlite3` and `mutation_journal.identity.json` together.
+Neither a marker file alone nor a successful API response proves a valid backup.
 
-## Restore
+Per-file online snapshots are not an atomic cross-store snapshot. Record the
+acquisition window and reconcile concurrent writes. A running Qdrant server
+needs snapshots of each active collection through its own snapshot API; copying
+historical local `storage.sqlite` files does not back up that server.
 
-1. Stop or drain writes if the backend cannot safely restore concurrently.
-2. Restore the exact verified snapshot.
-3. Run `python scripts/e2e_smoke.py --json`.
-4. Do not declare recovery success until smoke exits 0.
-
-Vector snapshot restore:
-
-```bash
-python scripts/restore_backup.py <storage.sqlite> --dry-run
-python scripts/restore_backup.py <storage.sqlite>
-```
-
-The script requires an explicit snapshot path; it never guesses a historical backup.
-
-## Upgrade
+## Isolated restore and historical readback
 
 ```bash
-bash scripts/pre-upgrade-check.sh
-bash scripts/backup_gate.sh create upgrade-$(date +%F)
-git fetch origin && git reset --hard <exact-commit>
-pip install -r requirements.txt
-systemctl restart aidumem-api
-python scripts/e2e_smoke.py --json
-bash scripts/post-upgrade-check.sh
+bash scripts/restore_gate.sh --dry-run <backup_dir>
+# The parent must exist; the target itself must not exist.
+RESTORE_GATE_ALLOW_APPLY=1 AIDUMEM_DATA_DIR=/path/to/new-isolated-data bash scripts/restore_gate.sh --isolated <backup_dir>
+bash scripts/restore_gate.sh --drill /path/to/new-isolated-data <snapshot_id-from-restore-receipt> /path/to/historical-fixture.json
 ```
 
-## Rollback
+Apply holds an exclusive process lock and refuses existing targets, including
+live data directories. New incomplete targets are retained for inspection.
+It does not start a service or contact an API. The separate drill checks the
+restored directory identity, exact snapshot and an existing historical SQLite
+row in a managed child process. Its fixture has these fields:
 
-1. Stop the service.
-2. Restore code to the recorded exact commit.
-3. Restore data from the verified pre-upgrade backup.
-4. Restart and run e2e smoke.
-5. Record what failed and why rollback was needed.
+```json
+{"database":"facts.db","table":"facts","key_column":"id","key":123,
+ "value_column":"fact_value","expected_sha256":"<SHA256-of-the-original-UTF8-value>"}
+```
+
+Choose a real, unique row and freeze its expected hash before restoration.
+This proves local historical readback only. Verify Qdrant snapshots by restoring
+them into a separate empty server and checking historical points. Verify the
+restored application separately with the correct configuration, data paths,
+dependencies and service identity; an unrelated healthy endpoint is no proof.
+
+The older `scripts/restore_backup.py <storage.sqlite> --dry-run` previews replay
+of a local Qdrant snapshot through the configured API. Its apply mode writes
+records; it is not a whole-system recovery procedure or an online rollback tool.
+
+## Upgrade and rollback
+
+Before deployment, verify the exact candidate in isolation, record immediate
+backups and restore evidence, preserve configuration/hooks and confirm service
+account permissions. Follow [f0.4 operations](F04_UPGRADE.md) for journal and WAL
+compatibility, single-process ownership and repair boundaries.
+
+A code rollback restores the recorded code, hooks and only its own configuration
+changes. **Do not overlay old backup data onto normal writes received since the
+snapshot.** Inspect unresolved journal/WAL work and validate schema compatibility
+before starting an older reader. WAL conversion alone does not certify all
+application schemas. Record each recovery step and verify the intended service,
+historical records, new writes and all previously active maintenance jobs.
+
+Data recovery is a separate, explicitly scoped operation after diagnosis; it
+must not be an automatic side effect of a failed code deployment.

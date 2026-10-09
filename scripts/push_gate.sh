@@ -11,8 +11,9 @@ while IFS= read -r git_local_var; do
   [[ -z "$git_local_var" ]] || unset "$git_local_var"
 done <<< "$GIT_LOCAL_VARS"
 cd "$TOP"
-GATE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/aidumei-gate.XXXXXXXX")
-trap 'rm -rf "$GATE_TMP"' EXIT
+GATE_EVIDENCE_BASE="${AIDUMEI_GATE_EVIDENCE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/aidumei/gates}"
+mkdir -p "$GATE_EVIDENCE_BASE"
+GATE_TMP=$(mktemp -d "$GATE_EVIDENCE_BASE/run.XXXXXXXX")
 SCAN_WORDLIST="${AIDUMEI_SCAN_WORDLIST:-$HOME/.config/aidumei/f02_full_scan_words.txt}"
 SCAN_PUBLIC_WORDLIST="${AIDUMEI_SCAN_PUBLIC_WORDLIST:-$HOME/.config/aidumei/f02_public_identifiers.txt}"
 SCAN_REVIEWED_PUBLIC="${AIDUMEI_SCAN_REVIEWED_PUBLIC:-$HOME/.config/aidumei/f02_reviewed_public_lines.txt}"
@@ -35,6 +36,26 @@ if [[ -z "${PY}" ]]; then
 fi
 [[ -n "${PY}" ]] || { echo "🛑 [停推] 找不到带 pytest 的解释器（设 AIDUMEM_PYTHON）"; exit 1; }
 fail() { echo "🛑 [停推] $1"; exit 1; }
+finish_gate() {
+  gate_exit=$?
+  trap - EXIT
+  if "$PY" scripts/gate_receipt.py finish "$TOP" "$GATE_TMP" \
+    --exit-code "$gate_exit" --skipped "${GATE_SKIPPED:-}"; then
+    receipt_exit=0
+  else
+    receipt_exit=$?
+  fi
+  echo "  门禁原始日志与自动回执：$GATE_TMP"
+  if [[ "$gate_exit" -ne 0 ]]; then exit "$gate_exit"; fi
+  exit "$receipt_exit"
+}
+trap finish_gate EXIT
+"$PY" scripts/gate_receipt.py begin "$TOP" "$GATE_TMP"
+gate_step() {
+  step_name=$1
+  shift
+  "$PY" scripts/gate_receipt.py step "$TOP" "$GATE_TMP" --name "$step_name" -- "$@"
+}
 
 # v20.4.0（三方审计 P0-3 · 动态审计 🔴-3）：门禁结论必须带解释器口径 ——
 # 「四道关全过」在换一个解释器后就不成立，不写清在哪个环境过的，
@@ -52,7 +73,7 @@ print("+".join(present) if present else "无")
 EOF
 )"
 
-"$PY" -m pytest tests/ -q > "$GATE_TMP/tests.log" 2>&1 || fail "测试关未过（私有日志已清理）"
+gate_step tests "$PY" -m pytest tests/ -q --junitxml="$GATE_TMP/tests.xml" || fail "测试关未过（私有日志已保留）"
 
 # v20.2.5：静态关。只拦**真缺陷类** —— F821 未定义名（运行时 NameError，
 # 本版就抓到一条被 except 吞了很久的）、F811 重复定义。
@@ -64,19 +85,21 @@ EOF
 # 清零后入门禁；兼容门面的故意 re-export 走 `# noqa: F401` / `__all__` 登记，
 # 不在误删射程内。
 if "$PY" -c "import ruff" >/dev/null 2>&1; then
-  "$PY" -m ruff check ducky/ api_server.py mcp_server.py scripts/ conftest.py tests/ \
-      --select F821,F811,F841,F401,F541,W,UP015 --output-format concise > "$GATE_TMP/ruff.log" 2>&1 \
-      || fail "静态关未过（F821/F811/F841/F401/F541/W/UP015 全清零后入门禁；私有日志已清理）"
+  gate_step static "$PY" -m ruff check ducky/ api_server.py mcp_server.py scripts/ conftest.py tests/ \
+      --select F821,F811,F841,F401,F541,W,UP015 --output-format concise \
+      || fail "静态关未过（F821/F811/F841/F401/F541/W/UP015 全清零后入门禁；私有日志已保留）"
   echo "  ✅ 静态关：F821/F811/F841/F401/F541/W/UP015 零命中"
 else
   # 生产 venv 不装 lint 工具。**显式 SKIP 并计入**，不许静默当过（那就是假绿灯），
   # 也不许假红（那会逼人绕过整道关）。开发机推送前必须装 ruff。
   echo "  ⚪ 静态关：SKIP（本解释器无 ruff；此关由开发机推送前承担）"
   GATE_SKIPPED="${GATE_SKIPPED:-}static "
+  echo "ruff unavailable" > "$GATE_TMP/ruff.log"
+  "$PY" scripts/gate_receipt.py record "$TOP" "$GATE_TMP" --name static --exit-code 0 --skipped ruff_unavailable
 fi
 echo "  ✅ 测试关：$(tail -1 "$GATE_TMP/tests.log")"
 
-"$PY" -m compileall -q ducky api_server.py mcp_server.py mem0_sync.py tests scripts benchmarks > "$GATE_TMP/compile.log" 2>&1 \
+gate_step compile "$PY" -m compileall -q ducky api_server.py mcp_server.py mem0_sync.py tests scripts benchmarks \
   || fail "编译关未过"
 echo "  ✅ 编译关：0 语法错误"
 
@@ -89,7 +112,7 @@ txt=(); for f in "${files[@]}"; do
 done
 AIDUMEI_SCAN_WORDLIST="$SCAN_WORDLIST" AIDUMEI_SCAN_PUBLIC_WORDLIST="$SCAN_PUBLIC_WORDLIST" \
   AIDUMEI_SCAN_REVIEWED_PUBLIC="$SCAN_REVIEWED_PUBLIC" \
-  "$PY" scripts/release_scan.py --redact-report "${txt[@]}" > "$GATE_TMP/tree-scan.log" 2>&1 \
+  gate_step tree-scan "$PY" scripts/release_scan.py --redact-report "${txt[@]}" \
   || fail "脱密关·面①未过：$(grep -E '^总计(基线继承公开标识|逐行复核公开标识|扫描覆盖跳过|硬敏感命中) =' "$GATE_TMP/tree-scan.log" | tr '\n' ' ')"
 echo "  ✅ 脱密关面①：$(grep -E '^总计(基线继承公开标识|逐行复核公开标识|扫描覆盖跳过|硬敏感命中) =' "$GATE_TMP/tree-scan.log" | tr '\n' ' ')（射程 ${#txt[@]}）"
 
@@ -107,19 +130,20 @@ fi
 if [ -s "$GATE_TMP/messages.txt" ]; then
   AIDUMEI_SCAN_WORDLIST="$SCAN_WORDLIST" AIDUMEI_SCAN_PUBLIC_WORDLIST="$SCAN_PUBLIC_WORDLIST" \
     AIDUMEI_SCAN_REVIEWED_PUBLIC="$SCAN_REVIEWED_PUBLIC" \
-    "$PY" scripts/release_scan.py --redact-report "$GATE_TMP/messages.txt" > "$GATE_TMP/message-scan.log" 2>&1 \
+    gate_step message-scan "$PY" scripts/release_scan.py --redact-report "$GATE_TMP/messages.txt" \
     || fail "脱密关·面②（提交信息）未过"
   echo "  ✅ 脱密关面②：$(grep -E '^总计(基线继承公开标识|逐行复核公开标识|扫描覆盖跳过|硬敏感命中) =' "$GATE_TMP/message-scan.log" | tr '\n' ' ')"
+else
+  gate_step message-scan "$PY" -c 'print("No new commit messages in verified range")'
 fi
 # f0.3：身份面补齐标签 tagger（指着 HEAD 或落在新范围内的附注标签），
 # 并启用白名单模式——新提交与新标签的身份只许是项目身份或 GitHub noreply
 # （额外项目身份用 AIDUMEI_IDENTITY_ALLOWLIST='Name <email>' 登记）。
 # 被推送的每个引用（含其它分支与任意标签）另由 pre-push 钩子逐个扫描。
 AIDUMEI_SCAN_WORDLIST="$SCAN_WORDLIST" \
-  "$PY" scripts/commit_metadata_scan.py --base upstream/main --head HEAD \
-  --tags-in-range --require-allowlist \
-  > "$GATE_TMP/metadata-scan.log" 2>&1 \
-  || fail "脱密关·面②作者/提交者/标签 tagger 元数据未过（私有日志已清理）"
+  gate_step metadata-scan "$PY" scripts/commit_metadata_scan.py --base upstream/main --head HEAD \
+  --tags-in-range --require-allowlist --allow-diverged-base \
+  || fail "脱密关·面②作者/提交者/标签 tagger 元数据未过（私有日志已保留）"
 echo "  ✅ 脱密关面②元数据：$(cat "$GATE_TMP/metadata-scan.log")"
 if [[ -n "${GATE_SKIPPED:-}" ]]; then
   echo "  ── 四道关：$(echo "${GATE_SKIPPED}" | wc -w | tr -d ' ') 关 SKIP（${GATE_SKIPPED}），其余全过 ──"
@@ -154,6 +178,11 @@ except Exception:
     print("unreachable")
 EOF
 )
+echo "$WF_STATE" > "$GATE_TMP/workflow.log"
+wf_exit=0
+[[ "$WF_STATE" == "disabled_manually" ]] || wf_exit=1
+"$PY" scripts/gate_receipt.py record "$TOP" "$GATE_TMP" --name workflow --exit-code "$wf_exit" \
+  || fail "第五道关状态或执行回执未过"
 if [[ "${WF_STATE}" != "disabled_manually" ]]; then
   fail "第五道关未过：Tests workflow 当前状态=${WF_STATE}（维护者要求保持 disabled_manually）；请核对远端状态与维护裁决。"
 fi

@@ -160,6 +160,8 @@ def test_merge_real_enumeration_snapshot_and_delete_chain(monkeypatch, tmp_path,
             self.items = {r["id"]: r for r in rows}
             self.calls = []
             self.vector_store = self
+            from types import SimpleNamespace
+            self.client = SimpleNamespace(get_collections=lambda: SimpleNamespace(collections=[]))
 
         def get_all(self, filters=None, top_k=None):
             self.calls.append((dict(filters), top_k))

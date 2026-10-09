@@ -46,12 +46,12 @@ def _commit(
     return _git(repo, "rev-parse", "HEAD")
 
 
-def _scan(repo: Path, base: str, wordlist: Path) -> subprocess.CompletedProcess[str]:
+def _scan(repo: Path, base: str, wordlist: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop("AIDUMEI_SCAN_WORDS", None)
     env["AIDUMEI_SCAN_WORDLIST"] = str(wordlist)
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--base", base],
+        [sys.executable, str(SCRIPT), "--base", base, *extra],
         cwd=repo, env=env, capture_output=True, text=True, check=False,
     )
 
@@ -71,6 +71,27 @@ def test_exact_public_identity_inherits_wordlist_hit_without_exposing_it(tmp_pat
     assert "已公开身份词命中=2" in result.stdout
     assert "新身份硬命中=0" in result.stdout
     assert "public-maintainer" not in result.stdout + result.stderr
+    # Real public/private siblings: only the exact published identity may
+    # inherit hits. The private branch's earlier commits must remain in scope.
+    root = _git(repo, "rev-list", "--max-parents=0", base)
+    _git(repo, "checkout", "--detach", root)
+    sibling = _commit(repo, ("public-only", "public-only@users.noreply.github.com"))
+    _git(repo, "checkout", "--detach", base)
+    private = _commit(repo, ("private-fragment", "private-fragment@example.com"))
+    _commit(repo, known)
+    words.write_text("private-fragment\npublic-only@\n", encoding="utf-8")
+    assert _scan(repo, sibling, words).returncode == 2
+    rejected = _scan(repo, sibling, words, "--allow-diverged-base")
+    assert rejected.returncode == 1 and "新增提交=2" in rejected.stdout
+    assert "新身份硬命中=4" in rejected.stdout
+    _git(repo, "checkout", "--detach", base)
+    _commit(repo, known)
+    assert _scan(repo, sibling, words).returncode == 2
+    assert _scan(repo, sibling, words, "--allow-diverged-base").returncode == 0
+    _git(repo, "checkout", "--detach", private)
+    _git(repo, "checkout", "--orphan", "unrelated")
+    _commit(repo, known)
+    assert _scan(repo, sibling, words, "--allow-diverged-base").returncode == 2
 
 
 @pytest.mark.parametrize("bad_role", ["author", "committer"])

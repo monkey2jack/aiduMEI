@@ -54,6 +54,10 @@ _GUARD_FILES: dict[str, str] = {
 
 # ── 脚本/钩子行为名单（不 import 产品包，但真执行脚本/钩子/产物）────────
 _SCRIPT_BEHAVIOR_FILES: dict[str, str] = {
+    "test_f04_probe_guard.py": "真实子进程验证 SQLite URI 与文件写入隔离边界",
+    "test_f04_recall_windows.py": "真实宿主 shell 读钩子的有界证据窗口行为",
+    "test_f0_4_durability_http.py": "隔离子进程执行实际 API、mem0 与持久账本故障场景",
+    "test_f0_4_inner_durability.py": "真实 SDK 子进程验证写入确认后故障不触发重复写入",
     "test_f0_3pp_mcp_stdio.py": "真实 MCP stdio 子进程与 HTTP 失败、熔断和恢复行为",
     "test_f0_2_commit_metadata_scan.py": "合成 Git 仓执行提交身份脱敏门禁的正反行为",
     "test_f0_2_ops_audit.py": "钩子、cron 与升级脚本的实际命令行为",
@@ -90,6 +94,8 @@ def _collect_counts() -> Counter:
         [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q"],
         cwd=_ROOT, capture_output=True, text=True, timeout=300,
     )
+    if out.returncode:
+        raise RuntimeError("pytest collection failed; partial counts are not a valid total")
     counts: Counter = Counter()
     for line in out.stdout.splitlines():
         m = re.match(r"(tests/[^\s:]+?\.py)::", line)

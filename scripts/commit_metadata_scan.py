@@ -292,6 +292,7 @@ def scan_commit_metadata(
     repo: Path, base: str, head: str, words: list[str], *,
     tags: list[str] | tuple[str, ...] = (), tags_in_range: bool = False,
     require_allowlist: bool = False, allow: frozenset[Identity] = frozenset(),
+    allow_diverged_base: bool = False,
 ) -> ScanCounts:
     """BASE..HEAD 的新提交 + 指定/落在新范围内的附注标签（tagger）。"""
     if not words:
@@ -301,7 +302,14 @@ def scan_commit_metadata(
         ["git", "merge-base", "--is-ancestor", base, head],
         cwd=repo, capture_output=True, check=False,
     ).returncode:
-        raise MetadataScanError("公开基线不是候选提交的祖先")
+        if not allow_diverged_base:
+            raise MetadataScanError("公开基线不是候选提交的祖先")
+        # A public release may squash private development. BASE..HEAD still
+        # scans EVERY candidate commit absent from the actual public history.
+        # Require shared provenance, but never substitute the common ancestor
+        # for the actual public identity set or the declared scan range.
+        if not _git(repo, "merge-base", base, head).strip():
+            raise MetadataScanError("公开基线与候选没有共同来源")
 
     policy = _Policy(words, _public_identities(repo, base), require_allowlist, allow)
     counts = ScanCounts()
@@ -390,6 +398,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="upstream/main")
     parser.add_argument("--head", default="HEAD")
+    parser.add_argument("--allow-diverged-base", action="store_true",
+                        help="accept a related public sibling; still scan all BASE..HEAD commits")
     parser.add_argument("--tag", action="append", default=[],
                         help="also scan the tagger chain of this tag (repeatable)")
     parser.add_argument("--tags-in-range", action="store_true",
@@ -412,7 +422,8 @@ def main(argv: list[str] | None = None) -> int:
             counts = scan_commit_metadata(
                 Path.cwd(), args.base, args.head, words, tags=args.tag,
                 tags_in_range=args.tags_in_range,
-                require_allowlist=args.require_allowlist, allow=allow)
+                require_allowlist=args.require_allowlist, allow=allow,
+                allow_diverged_base=args.allow_diverged_base)
     except (MetadataScanError, OSError, UnicodeError, RuntimeError, ValueError):
         print("提交元数据扫描：不可核验，停推")
         return 2

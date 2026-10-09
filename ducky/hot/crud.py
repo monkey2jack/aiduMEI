@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 
+from ducky.mutation_journal import MutationUncertain
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
@@ -277,9 +279,10 @@ def register_crud_routes(app: FastAPI) -> None:
         memory_id: str = Query(..., description="要删除的记忆 id"),
         user_id: str = Query(DEFAULT_USER_ID),
         bank_id: str = Query(DEFAULT_BANK_ID),
+        caller_user_id: str = "",
     ):
         """`DELETE /delete?memory_id=…` —— 与 `POST /delete` 行为逐字相同。"""
-        return delete(DeleteRequest(memory_id=memory_id, user_id=user_id, bank_id=bank_id))
+        return delete(DeleteRequest(memory_id=memory_id, user_id=user_id, bank_id=bank_id, caller_user_id=caller_user_id))
 
     # 🪦 tombstone 遗忘层（v19.4.0 Mímir 借鉴 B3）：遗忘不是删除，留痕可恢复
     @app.get("/tombstones")
@@ -391,7 +394,8 @@ def register_crud_routes(app: FastAPI) -> None:
         try:
             from ducky.governance import list_candidates
             from ducky.scope_auth import authorize_governance_view
-            authorize_governance_view(user_id, scope_user_id, bank_id, caller_user_id)
+            scope_user_id, bank_id = authorize_governance_view(
+                user_id, scope_user_id, bank_id, caller_user_id)
             return {"status": "ok", "results": list_candidates(
                 status, user_id, limit, bank_id=bank_id, scope_user_id=scope_user_id)}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
@@ -412,16 +416,14 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "decision 必须是 approve 或 reject")
         try:
             from ducky.governance import review_candidate
-            from ducky.scope_auth import require_scope_access
-            require_scope_access(req.user_id, req.caller_user_id,
-                                 bank_id=req.bank_id, action="write")
-            # v20 P0-2：只有调用方显式声明了 bank_id 才启用越库裁决守卫——
-            # 模型字段有 DEFAULT_BANK_ID 缺省值，无脑透传会把「没传 bank 的
-            # 管理员全权裁决」误判成「default 库越权」，v19 存量调用全断。
-            explicit_bank = req.bank_id if "bank_id" in req.model_fields_set else ""
+            # Authorization occurs inside review_candidate against the loaded row,
+            # before any mutation. Omitted bank never grants administrative power.
             res = review_candidate(req.candidate_id, req.decision,
                                    reason=req.reason, user_id=req.user_id,
-                                   bank_id=explicit_bank)
+                                   bank_id=req.bank_id,
+                                   caller_user_id=req.caller_user_id,
+                                   expected_user_id=req.user_id if "user_id" in req.model_fields_set else None,
+                                   expected_bank_id=req.bank_id if "bank_id" in req.model_fields_set else None)
             return {"status": "ok", "details": res}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
@@ -440,6 +442,8 @@ def register_crud_routes(app: FastAPI) -> None:
             raise HTTPException(400, "fact_id 不能为空")
         if not req.source or not req.source.strip():
             raise HTTPException(400, "source（证据来源标识）不能为空")
+        from ducky.scope_auth import sanitize_memory_fields
+        req = req.model_copy(update={"source": sanitize_memory_fields(req.source)[0]})
         try:
             from ducky.opinion import set_opinion
             from ducky.scope_auth import require_scope_access
@@ -665,6 +669,9 @@ def register_crud_routes(app: FastAPI) -> None:
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
+        except MutationUncertain as exc:
+            from ducky.hot.add import mutation_error_detail
+            raise HTTPException(409, mutation_error_detail(exc)) from exc
         except HTTPException:
             raise
         except Exception as e:

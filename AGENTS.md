@@ -102,7 +102,7 @@ Verifies that all scripts and health fields needed for a full autoshift drill ar
 bash scripts/restore_gate.sh --dry-run <backup_dir>
 ```
 
-Verifies backup checksums and SQLite integrity, then (in apply mode) restores and runs e2e smoke. Apply mode requires `RESTORE_GATE_ALLOW_APPLY=1`.
+Verifies the complete backup member set, checksums and SQLite integrity. Apply mode requires `RESTORE_GATE_ALLOW_APPLY=1` and a nonexistent isolated `AIDUMEM_DATA_DIR`; it refuses an existing target. It does not start or test a service. Use the separate historical-row drill described in `docs/BACKUP_RESTORE.md`, followed by independent service and vector-server recovery verification.
 
 ## End-to-end data flow
 

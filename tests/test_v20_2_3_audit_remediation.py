@@ -646,7 +646,7 @@ def _current_release_blocks() -> dict[str, str]:
     ver = _service_version()
     out = {}
     src = open(os.path.join(_ROOT, "ducky", "version.py"), encoding="utf-8").read()
-    m = re.search(r"^v%s \(.*?(?=^v\d+\.\d+(?:\.\d+)? \()" % re.escape(ver),
+    m = re.search(r"^v%s \(.*?(?=^v\d+\.\d+(?:\.\d+)?(?:[+.-][^\s(]+)? \()" % re.escape(ver),
                   src, re.M | re.S)
     assert m, f"version.py 找不到 v{ver} 说明块"
     out["ducky/version.py"] = m.group(0)

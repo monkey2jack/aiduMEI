@@ -93,6 +93,7 @@ def ensure_ledger_schema() -> None:
     """幂等建表。对既有库是 no-op，任何异常只记日志不抛。"""
     try:
         conn = get_facts_conn()
+        outer_transaction = conn.in_transaction
         conn.execute(_LEDGER_DDL)
         _ensure_scope_columns(conn)
         for stmt in _LEDGER_INDEXES:
@@ -100,7 +101,8 @@ def ensure_ledger_schema() -> None:
                 conn.execute(stmt)
             except Exception as exc:
                 logger.debug("ledger 索引跳过: %s", exc)
-        conn.commit()
+        if not outer_transaction:
+            conn.commit()
     except Exception as exc:
         logger.warning("memory_events 建表跳过（服务继续）: %s", exc)
 

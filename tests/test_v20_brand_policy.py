@@ -330,7 +330,7 @@ _RUNTIME_OUT = [
     ),
     (
         "integrations/aidumem-inject.sh",
-        "['[aiduMEI Recall]']",
+        "'[aiduMEI Recall]'",
         "[aiduMEM Recall]",
         "注入进下一轮对话的前缀，用户直接读到",
     ),

@@ -213,15 +213,21 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/skill_crystallizer.py", "_MIN_USES_FOR_UTILITY"),
     ("ducky/skill_crystallizer.py", "col"), ("ducky/skill_crystallizer.py", "ddl"),
     ("ducky/text_fts.py", "' OR '.join(clauses)"), ("ducky/text_fts.py", "_MEMORIES_DDL"),
-    ("ducky/tombstone.py", "','.join(cols)"), ("ducky/tombstone.py", "placeholders"),
+    # f0.4 multirow restoration: placeholders depend only on the schema column count.
+    ("ducky/tombstone.py", "','.join(('?' for _ in cols))"),
+    ("ducky/tombstone.py", "','.join(cols)"),
     ("ducky/vector_backend.py", "marks"),
     ("ducky/verbatim_vault.py", "' OR '.join(clauses)"), ("ducky/verbatim_vault.py", "col"),
     ("ducky/verbatim_vault.py", "ddl"), ("ducky/verbatim_vault.py", "placeholders"),
-    ("ducky/wal_engine.py", "ref_ph"), ("ducky/wal_engine.py", "scope_sql"),
+    ("ducky/wal_engine.py", "ref_ph"),
     # f0.3（C9）：not_cleared 行数统计的表名插值。来源核对：只取自
     # DELETE_CHAIN_MATRIX 的 exempt 键（本文件字面量常量），且先经
     # sqlite_master 精确存在性校验；值（user_id/bank_id）一律走 ? 参数。
     ("ducky/wal_engine.py", "table"),
+    # f0.4 derived-store cleanup: both callers supply literal predicates,
+    # "user_id=?" or "user_id=? AND bank_id=?"; owner/bank values are bound
+    # separately. The scenes/observations table names are also fixed literals.
+    ("ducky/wal_engine.py", "predicate"),
 }
 
 
@@ -369,6 +375,9 @@ _MIGRATION_LEDGER = {
     # f0.3：幂等回执补 state 列（additive，NULL=旧行）；会话精华来源账本新表。
     ("ducky/idempotency.py", "ALTER", "idempotency_keys"),
     ("ducky/session_distill.py", "CREATE", "distill_sources"),
+    # f0.4 dedicated durable intent database; additive, no existing store rewrite.
+    ("ducky/mutation_journal.py", "CREATE", "mutations"),
+    ("ducky/mutation_journal.py", "CREATE", "journal_identity"),
 }
 
 

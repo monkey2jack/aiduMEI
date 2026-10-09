@@ -442,13 +442,15 @@ def classify_and_sync_memory(
                                payload={"memory_type": result["memory_type"]},
                                points=[memory_ref])
     except Exception as exc:
-        logger.debug("mem0 六型 metadata 同步跳过 ref=%s: %s", memory_ref, exc)
+        logger.warning("mem0 六型 metadata 同步失败: %s", type(exc).__name__)
+        raise
     try:
         from ducky.text_fts import _set_memory_type
         _set_memory_type(memory_ref, result["memory_type"],
                          user_id=user_id, bank_id=bank_id)
     except Exception as exc:
-        logger.debug("FTS 六型标签同步跳过 ref=%s: %s", memory_ref, exc)
+        logger.warning("FTS 六型标签同步失败: %s", type(exc).__name__)
+        raise
     return result
 
 

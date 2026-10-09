@@ -10,6 +10,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。
 # cron 不会加载 .env，若各脚本各自读环境变量，门禁一开就会集体静默 401。
 from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+from ducky.utils import DEFAULT_USER_ID, env_or_env_file  # noqa: E402
+
+# Use the deployed owner and caller, including cron's .env fallback. A token
+# bound to the owner cannot impersonate a synthetic health_check principal.
+_probe_scope = {
+    "user_id": DEFAULT_USER_ID,
+    "caller_user_id": DEFAULT_USER_ID,
+    "bank_id": env_or_env_file("AIDUMEI_BANK_ID", "default"),
+}
 
 
 # 仓库根 = 本文件上一级（scripts/ 的父目录），可用 AIDUMEM_HOME 覆盖
@@ -175,7 +184,7 @@ t0 = time.time()
 try:
     # v22.0（雷霆审计 A3）：持 Bearer token 调用必须带 caller_user_id，对齐众神殿安全门禁
     r = requests.post(f"{API_BASE}/search",
-        json={"query": "健康检查", "user_id": "health_check", "caller_user_id": "health_check", "limit": 1}, timeout=10, headers=_auth_headers())
+        json={"query": "健康检查", **_probe_scope, "limit": 1}, timeout=10, headers=_auth_headers())
     checks["aidumem_search"] = {"ok": r.status_code == 200, "code": r.status_code, "ms": int((time.time()-t0)*1000)}
 except Exception as e:
     checks["aidumem_search"] = {"ok": False, "error": str(e)[:100], "ms": int((time.time()-t0)*1000)}
@@ -183,7 +192,7 @@ except Exception as e:
 # ═══════════ 5. aiduMEM Stats ═══════════
 t0 = time.time()
 try:
-    r = requests.get(f"{API_BASE}/stats?user_id={os.environ.get('AIDUMEM_DEFAULT_USER_ID', 'default')}", timeout=10, headers=_auth_headers())
+    r = requests.get(f"{API_BASE}/stats", params=_probe_scope, timeout=10, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
         checks["aidumem_stats"] = {"ok": True, "total_memories": data.get("total", 0), "ms": int((time.time()-t0)*1000)}

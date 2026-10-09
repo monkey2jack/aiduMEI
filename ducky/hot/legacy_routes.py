@@ -53,6 +53,42 @@ def _scope_default(value: str, default: str) -> str:
 logger = logging.getLogger("aiduMEM.legacy.routes")
 
 
+# 注：v19.0 起 /reflect 端点由 ducky.routes_p0 提供真正的 LLM 反思引擎。
+# 这里只保留旧的「关联记忆检索」helper，供 /observe/related 继续使用。
+def _legacy_related_search(question: str, top_k: int, user_id: str, bank_id: str):
+    try:
+        from api_server import get_memory
+        mem = get_memory()
+        from ducky.bank_contract import vector_scope_filters, vector_item_in_bank
+        results = mem.search(question, filters=vector_scope_filters(user_id, bank_id), limit=top_k)
+        if isinstance(results, dict):
+            results = results.get("results", [])
+        if not isinstance(results, list):
+            results = []
+        results = [r for r in results if vector_item_in_bank(r, bank_id)]
+        return {"status":"ok","question":question,"results":results[:top_k]}
+    except Exception as e:
+        return {"status":"error","detail":str(e)}
+
+
+def _observation_owner_clause(conn, user_id):
+    """Legacy observations have one owner axis; bound access never widens it."""
+    from ducky.security.auth import binding_policy_active
+    uid = (user_id or "").strip()
+    bound = binding_policy_active()
+    has_owner = "user_id" in _observations_columns(conn)
+    if bound and not has_owner:
+        from fastapi import HTTPException
+        conn.close()
+        raise HTTPException(503, "observations require owner schema migration")
+    if bound or (uid and uid != DEFAULT_USER_ID and has_owner):
+        if bound or _strict_tenant_enabled():
+            return " AND user_id=?", [uid or DEFAULT_USER_ID]
+        # Empty historical owner is visible only in unbound relaxed mode.
+        return " AND (user_id=? OR user_id='' OR user_id IS NULL)", [uid]
+    return "", []
+
+
 def register_legacy_routes(app):
     """把 §6-§10 的全部 22 个端点注册到 FastAPI app 上"""
 
@@ -103,12 +139,8 @@ def register_legacy_routes(app):
                              bank_id=normalize_bank_id(bank_id), action="write")
         if not fact_key or not fact_value:
             return {"status":"error","detail":"fact_key 和 fact_value 不能为空"}
-        from ducky.security.injection_guard import validate_and_sanitize_memory_content
-        is_safe, sanitized_val, rejection = validate_and_sanitize_memory_content(fact_value)
-        if not is_safe:
-            logger.warning("🛡️ [InjectionGuard] /facts/add 拦截注入: %s", rejection)
-            return {"status": "error", "detail": f"Fact value rejected: {rejection}"}
-        fact_value = sanitized_val
+        from ducky.scope_auth import sanitize_memory_fields
+        category, fact_key, fact_value, source = sanitize_memory_fields(category, fact_key, fact_value, source)
         resolved_level = level if level else _auto_detect_level(category)
         summary = f"{fact_value[:60]}{'...' if len(fact_value)>60 else ''}"
         overview = fact_value
@@ -602,35 +634,21 @@ def register_legacy_routes(app):
         # `no such column: user_id` 500 —— 这正是本地测试库与生产库
         # schema 分叉能造成的伤害（v19.4.1 施工中在实机 schema 探针下发现）。
         # 迁移会补列，但补列可能因权限/锁失败，读取路径不能依赖它成功。
-        _uid = (user_id or "").strip()
-        if _uid and _uid != DEFAULT_USER_ID and "user_id" in _observations_columns(conn):
-            if _strict_tenant_enabled():
-                where += " AND user_id=?"; params.append(_uid)
-            else:
-                # 空 user_id 的历史行视为未标记归属，宽松档下对本机可见
-                where += " AND (user_id=? OR user_id='' OR user_id IS NULL)"; params.append(_uid)
+        owner_clause, owner_params = _observation_owner_clause(conn, user_id)
+        where += owner_clause
+        params.extend(owner_params)
         rows = conn.execute(f"SELECT * FROM observations {where} ORDER BY updated_at DESC LIMIT ?", params+[limit]).fetchall()
         conn.close()
         return {"status":"ok","observations":[dict(r) for r in rows],"count":len(rows)}
 
-    # 注：v19.0 起 /reflect 端点由 ducky.routes_p0 提供真正的 LLM 反思引擎。
-    # 这里只保留旧的「关联记忆检索」helper，供 /observe/related 继续使用。
-    def _legacy_related_search(question: str, top_k: int = 10, use_llm: bool = True):
-        try:
-            from api_server import get_memory
-            mem = get_memory()
-            results = mem.search(question, filters={"user_id": DEFAULT_USER_ID}, limit=top_k)
-            if isinstance(results, dict):
-                results = results.get("results", [])
-            if not isinstance(results, list):
-                results = []
-            return {"status":"ok","question":question,"results":results[:top_k]}
-        except Exception as e:
-            return {"status":"error","detail":str(e)}
-
     @app.get("/observe/related")
-    def get_related(query: str, top_k: int = 5):
-        return _legacy_related_search(query, top_k)
+    def get_related(query: str, top_k: int = 5, user_id: str = DEFAULT_USER_ID,
+                    bank_id: str = DEFAULT_BANK_ID, caller_user_id: str = ""):
+        from ducky.scope_auth import require_scope_access
+        from ducky.bank_contract import make_scope
+        scope = make_scope(user_id, bank_id)
+        require_scope_access(scope.user_id, caller_user_id, bank_id=scope.bank_id, action="read")
+        return _legacy_related_search(query, max(1, min(top_k, 100)), scope.user_id, scope.bank_id)
 
     # ── §9  Scene 聚类 + Persona ──
     @app.post("/scene/cluster")

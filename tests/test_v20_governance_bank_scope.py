@@ -292,8 +292,7 @@ def test_review_endpoint_bank_guard(monkeypatch):
         "candidate_id": cid, "decision": "reject",
         "reason": "端点越库尝试", "bank_id": "bank_a",
     })
-    assert r.status_code == 200, r.text
-    assert r.json()["details"]["status"] == "", "端点显式 bank 不符仍放行——守卫没接通"
+    assert r.status_code == 403, r.text  # f0.4: HTTP denial is explicit, no outer 200
     assert _cand(cid)["status"] == "pending"
     assert _rows("SELECT archived FROM facts WHERE id=?", (fid,))[0][0] == 0
 

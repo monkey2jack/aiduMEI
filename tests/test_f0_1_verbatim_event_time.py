@@ -84,12 +84,12 @@ def test_f01_inject_renders_time_with_memory():
     sh = open(os.path.join(repo, "integrations", "aidumem-inject.sh"),
               encoding="utf-8").read()
 
-    marker = "import re\nresults = result.get('results') or []"
+    marker = "results = result.get('results') or []"
     assert marker in sh, "注入渲染段锚点不在了——守卫失去着力点，请同步改判据"
-    body = sh[sh.index(marker):sh.index('"\n}', sh.index(marker))]
+    body = sh[sh.index(marker):sh.index('\nPY_EVIDENCE', sh.index(marker))]
 
     harness = (
-        "import os, re\n"
+        "import hashlib, html, json, os, re\n"
         "os.environ['AIDUMEM_SEARCH_LIMIT'] = '3'\n"
         "result = {'results': ["
         "{'memory': 'A事', 'created_at': '2026-09-20T10:11:12+00:00'},"
@@ -101,10 +101,10 @@ def test_f01_inject_renders_time_with_memory():
     assert r.returncode == 0, f"注入渲染段跑不起来（shell 内嵌 py 语法错会静默失效）：{r.stderr[:300]}"
     out = r.stdout
 
-    assert "· [2026-09-20] A事" in out, f"ISO 时间未渲染进注入块：{out!r}"
-    assert "· [1:56 pm on 8 May, 2023] B事" in out, f"非 ISO 事件时间未渲染：{out!r}"
+    assert any(line.startswith("· [2026-09-20] ") and '"text":"A事"' in line for line in out.splitlines()), f"ISO 时间未渲染进注入块：{out!r}"
+    assert any(line.startswith("· [1:56 pm on 8 May, 2023] ") and '"text":"B事"' in line for line in out.splitlines()), f"非 ISO 事件时间未渲染：{out!r}"
     # 负向对照：真没有时间就不硬造（与 build_context 同口径）
-    assert "· C事" in out and "[] C事" not in out, f"无时间条目被硬造了时间：{out!r}"
+    assert any(line.startswith("· {") and '"text":"C事"' in line for line in out.splitlines()), f"无时间条目被硬造了时间：{out!r}"
 
 
 # ── f0.1 补充守卫（依据用户审计的三处追问）──────────────────────────
@@ -118,15 +118,15 @@ def _inject_render(env_extra: dict) -> str:
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sh = open(os.path.join(repo, "integrations", "aidumem-inject.sh"),
               encoding="utf-8").read()
-    marker = "import re\nresults = result.get('results') or []"
+    marker = "results = result.get('results') or []"
     assert marker in sh, "注入渲染段锚点不在了——守卫失去着力点，请同步改判据"
-    body = sh[sh.index(marker):sh.index('"\n}', sh.index(marker))]
+    body = sh[sh.index(marker):sh.index('\nPY_EVIDENCE', sh.index(marker))]
 
     env_lines = "".join(
         "os.environ[%r] = %r\n" % (k, v) for k, v in env_extra.items()
     )
     harness = (
-        "import os, re\n"
+        "import hashlib, html, json, os, re\n"
         "os.environ['AIDUMEM_SEARCH_LIMIT'] = '3'\n"
         + env_lines +
         "result = {'results': ["
@@ -142,7 +142,7 @@ def _inject_render(env_extra: dict) -> str:
 def test_f01_inject_date_mode_off_drops_time():
     """AIDUMEI_INJECT_DATE=off 时不带时间——使用者嫌挤可以关掉。"""
     out = _inject_render({"AIDUMEI_INJECT_DATE": "off"})
-    assert "· A事" in out, f"off 模式下正文应照常渲染：{out!r}"
+    assert any(line.startswith("· {") and '"text":"A事"' in line for line in out.splitlines()), f"off 模式下正文应照常渲染：{out!r}"
     assert "[2026-09-20]" not in out, f"off 模式仍带了日期：{out!r}"
     # 负向对照：默认模式下同样的数据必须带日期，否则本用例没有区分力
     assert "[2026-09-20]" in _inject_render({}), "默认模式没带日期——off 的断言失去意义"
@@ -151,8 +151,8 @@ def test_f01_inject_date_mode_off_drops_time():
 def test_f01_inject_date_mode_minute_adds_time_of_day():
     """AIDUMEI_INJECT_DATE=minute 时精确到分——用于区分同一天内的先后。"""
     out = _inject_render({"AIDUMEI_INJECT_DATE": "minute"})
-    assert "· [2026-09-20 10:11] A事" in out, f"minute 模式未渲染到分：{out!r}"
-    assert "· [2026-09-20 22:45] B事" in out, f"minute 模式未渲染到分：{out!r}"
+    assert any(line.startswith("· [2026-09-20 10:11] ") and '"text":"A事"' in line for line in out.splitlines()), f"minute 模式未渲染到分：{out!r}"
+    assert any(line.startswith("· [2026-09-20 22:45] ") and '"text":"B事"' in line for line in out.splitlines()), f"minute 模式未渲染到分：{out!r}"
     # 负向对照：day 模式必须只到天，否则说明粒度开关根本没生效
     day_out = _inject_render({"AIDUMEI_INJECT_DATE": "day"})
     assert "10:11" not in day_out, f"day 模式漏出了时分——粒度开关未生效：{day_out!r}"
@@ -161,7 +161,7 @@ def test_f01_inject_date_mode_minute_adds_time_of_day():
 def test_f01_inject_date_mode_invalid_falls_back_to_day():
     """写错值按默认 day 走，不因为一个拼写错误把时间整段丢掉。"""
     out = _inject_render({"AIDUMEI_INJECT_DATE": "DaY_typo"})
-    assert "· [2026-09-20] A事" in out, f"非法值未回落 day：{out!r}"
+    assert any(line.startswith("· [2026-09-20] ") and '"text":"A事"' in line for line in out.splitlines()), f"非法值未回落 day：{out!r}"
 
 
 def test_f01_timestamp_key_priority_created_at_beats_recorded_at():

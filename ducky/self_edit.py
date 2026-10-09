@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,
+    make_scope,
     stamp_bank_metadata,
     vector_item_in_bank,
     vector_scope_filters,
@@ -36,6 +37,8 @@ from ducky.llm_client import COGNITIVE_MAX_TOKENS, call_llm
 from ducky.security.injection_guard import validate_and_sanitize_memory_content
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn
 from ducky.failure_ledger import feature_failed
+from ducky.mutation_journal import MutationUncertain, _check_scope, serialized_scope
+from ducky.mutation_fallback import require_no_sdk_since, sdk_attempt_count
 
 logger = logging.getLogger("aiduMEM.self_edit")
 
@@ -99,8 +102,12 @@ def ensure_self_edit_schema() -> None:
         )
         conn.commit()
         _checked = True
+    except MutationUncertain:
+        raise
     except Exception as e:
-        logger.warning(f"memory_edits 表初始化失败（服务继续）: {e}")
+        logger.warning("memory_edits 表初始化失败: %s", type(e).__name__)
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -139,6 +146,8 @@ def _search_candidates(memory, user_id: str, new_text: str, limit: int = 3,
             for r in results
             if isinstance(r, dict) and (r.get("memory") or "").strip()
         ]
+    except MutationUncertain:
+        raise
     except Exception as e:
         logger.debug(f"候选检索失败（降级）: {e}")
         return []
@@ -239,10 +248,11 @@ def _snapshot_old(memory, memory_id: str) -> str:
             item = got.get("results", [got]) if isinstance(got.get("results", {}), list) else [got]
             if isinstance(item, list) and item and isinstance(item[0], dict):
                 return str(item[0].get("memory") or item[0].get("content") or "").strip()
-            if isinstance(got, dict):
-                return str(got.get("memory") or got.get("content") or "").strip()
+            return str(got.get("memory") or got.get("content") or "").strip()
         if isinstance(got, list) and got and isinstance(got[0], dict):
             return str(got[0].get("memory") or got[0].get("content") or "").strip()
+    except MutationUncertain:
+        raise
     except Exception as e:
         logger.debug(f"memory.get 精查快照失败，回退 get_all: {e}")
 
@@ -256,6 +266,8 @@ def _snapshot_old(memory, memory_id: str) -> str:
             mid = item.get("id") or item.get("memory_id", "")
             if mid == memory_id:
                 return str(item.get("memory") or item.get("content") or "").strip()
+    except MutationUncertain:
+        raise
     except Exception as e:
         logger.debug(f"get_all 快照失败: {e}")
     return ""
@@ -273,19 +285,23 @@ def _log_edit(memory_id: str, user_id: str, action: str, old_content: str,
         )
         conn.commit()
         return int(cur.lastrowid or 0)
+    except MutationUncertain:
+        raise
     except Exception as e:
-        logger.warning(f"编辑账本写入失败: {e}")
-        return 0
+        logger.warning("编辑账本写入失败: %s", type(e).__name__)
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
+@serialized_scope
 def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
                      bank_id: str = DEFAULT_BANK_ID) -> Optional[dict]:
     """
     写入前自编辑入口。返回 None 表示「无需合并，按正常流程新增」；
     否则返回 {action, memory_id, merged_content, edit_id, confidence}。
-    LLM 不可用 / 判定全新 / 任何异常 → 一律 None（回退 Layer1 原流程）。
+    LLM 检测失败/判定全新可返回 None；SDK 已执行或结果不确定时必须上抛。
 
     🔴v20：``bank_id`` 此前**没有**这个形参，而 layer1_selfcheck.py:151 一直是
     ``self_edit_on_add(..., bank_id=bank_id)`` 这么调的 —— 每次 /add 都稳定抛
@@ -293,6 +309,9 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
     ``except Exception`` 收进一条 ``logger.debug``。结果是 P0-2 的 LLM 语义级
     去重在 v20 里**从未执行过一次**，日志上却什么都看不出来。
     """
+    scope = make_scope(user_id, bank_id)
+    user_id, bank_id = scope.user_id, scope.bank_id
+    _check_scope(user_id, bank_id)
     if not SELF_EDIT_ENABLED or memory is None:
         return None
 
@@ -302,6 +321,8 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
 
     try:
         relation = _detect_relation(memory, user_id, new_text, bank_id=bank_id)
+    except MutationUncertain:
+        raise
     except Exception as e:
         logger.debug(f"self-edit 检测异常（降级）: {e}")
         return None
@@ -320,10 +341,14 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
     merge_metadata = stamp_bank_metadata(metadata, bank_id)
     merge_metadata.pop("recorded_at", None)
 
+    before = sdk_attempt_count(user_id, bank_id)
     try:
         memory.update(memory_id, merged, metadata=merge_metadata)
+    except MutationUncertain:
+        raise
     except Exception as e:
-        logger.warning(f"self-edit 合并更新失败（降级为新增）: {e}")
+        require_no_sdk_since(before, user_id, bank_id, e)
+        logger.warning("self-edit 更新失败且尚无 SDK 调用；可降级")
         return None
 
     edit_id = _log_edit(
@@ -377,6 +402,9 @@ def rollback_edit(edit_id: int, memory=None, caller_user_id: str = "") -> dict:
         try:
             from ducky.mem0_runtime import get_memory
             mem = get_memory()
+        except MutationUncertain:
+            conn.close()
+            raise
         except Exception:
             mem = None
     if mem is None:
@@ -385,6 +413,9 @@ def rollback_edit(edit_id: int, memory=None, caller_user_id: str = "") -> dict:
 
     try:
         mem.update(memory_id, old_content)
+    except MutationUncertain:
+        conn.close()
+        raise
     except Exception as e:
         conn.close()
         return {"status": "error", "detail": f"恢复失败: {e}"}
@@ -397,18 +428,28 @@ def rollback_edit(edit_id: int, memory=None, caller_user_id: str = "") -> dict:
         # memory_edits 的快照里。原来这里硬写 category=""，等于每次回滚都顺手
         # 把这条记忆的分类抹掉一次。不传 = 让 _index_memory 沿用行上既有分类。
         _index_memory(memory_id, old_content, user_id=row["user_id"])
+    except MutationUncertain:
+        conn.close()
+        raise
     except Exception as e:
         feature_failed("index_memory", e)
-        logger.debug(f"回滚 FTS 同步跳过: {e}")
+        logger.warning("回滚 FTS 同步失败: %s", type(e).__name__)
+        conn.close()
+        raise
     try:
         from ducky.salience.core import on_memory_added
         # 🔴v20 故意不传作用域：memory_edits 只存 user_id 没有 bank_id，
         # 而 preserve_heat 的作用域刷新是「传任一就两列全盖」——只传 user
         # 会把命名库的 bank 戳重置回 'default'。不传 = 保留行上原有归属。
         on_memory_added(memory_id, content=old_content, preserve_heat=True)
+    except MutationUncertain:
+        conn.close()
+        raise
     except Exception as e:
         feature_failed("evolve_on_added", e)
-        logger.debug(f"回滚 salience 同步跳过: {e}")
+        logger.warning("回滚 salience 同步失败: %s", type(e).__name__)
+        conn.close()
+        raise
 
     conn.execute(
         "UPDATE memory_edits SET undone=1 WHERE edit_id=?", (edit_id,)

@@ -69,19 +69,22 @@ def register_octopus_routes(app: FastAPI) -> None:
             require_scope_access(req.user_id, getattr(req, "caller_user_id", ""),
                                  bank_id=req.bank_id, action="write")
             scope = make_scope(req.user_id, req.bank_id)
+            from ducky.scope_auth import sanitize_memory_fields
+            category, fact_key, fact_value, text = sanitize_memory_fields(
+                req.category, req.fact_key, req.fact_value, req.text)
             res_fact = None
             if req.fact_key and req.fact_value:
                 res_fact = resolve_fact_conflict(
-                    req.category,
-                    req.fact_key,
-                    req.fact_value,
+                    category,
+                    fact_key,
+                    fact_value,
                     user_id=scope.user_id,
                     bank_id=scope.bank_id,
                 )
             res_text = []
             if req.text:
                 res_text = scan_and_resolve_text_conflicts(
-                    req.text,
+                    text,
                     user_id=scope.user_id,
                     bank_id=scope.bank_id,
                 )
@@ -92,6 +95,8 @@ def register_octopus_routes(app: FastAPI) -> None:
                 "fact_override": res_fact,
                 "text_conflicts_invalidated": res_text,
             }
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("🐙 /conflict/resolve 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
@@ -106,6 +111,8 @@ def register_octopus_routes(app: FastAPI) -> None:
             require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
             nodes = get_subtree(root_path, user_id=user_id, bank_id=bank_id)
             return {"status": "ok", "root_path": root_path, "nodes": nodes, "count": len(nodes)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("🐙 /tree/nodes 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
@@ -117,11 +124,9 @@ def register_octopus_routes(app: FastAPI) -> None:
             from ducky.scope_auth import require_scope_access
             require_scope_access(req.user_id, req.caller_user_id,
                                  bank_id=req.bank_id, action="write")
-            from ducky.security.injection_guard import validate_and_sanitize_memory_content
-            is_safe, clean_description, rejection = validate_and_sanitize_memory_content(req.description)
-            if not is_safe:
-                raise HTTPException(status_code=400, detail=f"Memory content rejected: {rejection}")
-            res = add_tree_node(req.name, req.parent_path, clean_description,
+            from ducky.scope_auth import sanitize_memory_fields
+            name, parent_path, description = sanitize_memory_fields(req.name, req.parent_path, req.description)
+            res = add_tree_node(name, parent_path, description,
                                 user_id=req.user_id, bank_id=req.bank_id)
             if "error" in res:
                 raise HTTPException(400, res["error"])
@@ -138,6 +143,8 @@ def register_octopus_routes(app: FastAPI) -> None:
         try:
             crystals = list_crystals(status)
             return {"status": "ok", "crystals": crystals, "count": len(crystals)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("🐙 /crystals 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
@@ -148,6 +155,8 @@ def register_octopus_routes(app: FastAPI) -> None:
         try:
             detected = detect_and_crystallize_patterns()
             return {"status": "ok", "detected": detected, "count": len(detected)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("🐙 /crystals/detect 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
@@ -158,6 +167,8 @@ def register_octopus_routes(app: FastAPI) -> None:
         """记录一次技能复用成功/失败（P1-2 技能精炼）"""
         try:
             return record_skill_use(skill_name, success)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("🐙 /crystals/use 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))
@@ -168,6 +179,8 @@ def register_octopus_routes(app: FastAPI) -> None:
         try:
             archived = prune_low_utility_skills()
             return {"status": "ok", "archived": archived, "count": len(archived)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("🐙 /crystals/prune 错误: %s", e)
             raise HTTPException(500, api_error_detail(e))

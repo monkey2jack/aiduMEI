@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any, Dict, List, Optional
 
 from ducky.local_embed import LOCAL_EMBED_DIM, local_embed_texts
@@ -102,7 +103,6 @@ def verbatim_local_pid(user_id: str, bank_id: str, text: str) -> str:
     搭车 §0a 抓到的正文调本函数）。改这里的派生公式 = 同时改写入与
     删除两侧，绝不许只改一边。"""
     import hashlib
-    import uuid
     digest = hashlib.md5((text or "").strip().encode("utf-8"), usedforsecurity=False).hexdigest()
     return str(uuid.uuid5(uuid.NAMESPACE_URL,
                           f"aidumei:verbatim_local::{digest}::{user_id}::{bank_id}"))
@@ -132,7 +132,26 @@ def upsert_local_verbatim(user_id: str, bank_id: str, text: str,
     return upsert_local(pid, text[:2000], payload, client=client)
 
 
-def delete_local(point_ids: List[str], client=None) -> int:
+def _local_point_id(value):
+    """事实键与点位共享删除入口；只有 UUID/uint64 能指向 Qdrant 点。
+
+    不把事实键散列成新 ID，也不吞后端错误。十进制 ID 在 HTTP 层必须
+    保持整数类型（召回结果可能已将它串化），UUID 统一为标准形式。
+    """
+    if type(value) is int:
+        return value if 0 <= value < 2**64 else None
+    if not isinstance(value, str):
+        raise TypeError("local point identity must be a string or integer")
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        if value.isascii() and value.isdecimal() and len(value) <= 20:
+            integer = int(value)
+            return integer if integer < 2**64 else None
+        return None
+
+
+def delete_local(point_ids: List[str | int], client=None, *, user_id=None, bank_id="default") -> int:
     """删除链的本地腿：按 id 精确删（与云侧同一把钥匙）。返回**真的删掉了几个**。
 
     🔴v20.2.5-b：原实现 `return len(point_ids)` —— 报的是**请求了几个**，
@@ -142,10 +161,11 @@ def delete_local(point_ids: List[str], client=None) -> int:
     committed）。同一个模块里的 `delete_local_by_scope` 一直是对的
     —— 它先 count 再删、返回 count。**两个孪生函数，一个诚实一个不诚实。**
 
-    验存在性用 `retrieve`；拿不到这个 API 时（老客户端/测试替身）**照旧执行
-    删除**，但计数标为不可核实并回落到请求数 —— 宁可多报一个数字，不许
-    悄悄少删一个点。调用方要区分这两种情形就看日志。
+    f0.4：retrieve 或 delete 失败向上抛出；scope 调用者必须核实 payload
+    所有者，未知归属不删除。删除等待后端确认，不再把请求数当实际删除数。
     """
+    point_ids = list(dict.fromkeys(pid for value in point_ids
+                                  if (pid := _local_point_id(value)) is not None))
     if not point_ids:
         return 0
     try:
@@ -153,23 +173,36 @@ def delete_local(point_ids: List[str], client=None) -> int:
         existing = {c.name for c in client.get_collections().collections}
         if LOCAL_COLLECTION not in existing:
             return 0
-        present = None
-        if hasattr(client, "retrieve"):
-            try:
-                got = client.retrieve(collection_name=LOCAL_COLLECTION,
-                                      ids=list(point_ids), with_payload=False)
-                present = len(got or [])
-            except Exception as re_exc:
-                logger.debug("本地向量存在性核实失败，计数回落请求数: %s", re_exc)
-        client.delete(collection_name=LOCAL_COLLECTION, points_selector=point_ids)
-        if present is None:
-            logger.debug("本地向量删除计数不可核实（客户端无 retrieve），回落请求数 %d",
-                         len(point_ids))
-            return len(point_ids)
+        # Existence/read failures are unknown, never fabricated request counts.
+        got = client.retrieve(collection_name=LOCAL_COLLECTION, ids=list(point_ids),
+                              with_payload=user_id is not None)
+        if got is None:
+            raise RuntimeError("local retrieve returned an unknown result")
+        if user_id is not None:
+            from ducky.bank_contract import vector_item_bank
+            selected = []
+            for point in got:
+                payload = getattr(point, "payload", None)
+                if payload is None and isinstance(point, dict):
+                    payload = point.get("payload")
+                if not isinstance(payload, dict) or not isinstance(payload.get("user_id"), str) or not payload["user_id"]:
+                    raise RuntimeError("local point ownership unavailable")
+                if payload.get("user_id") == user_id and vector_item_bank(payload) == bank_id:
+                    selected.append(point.get("id") if isinstance(point, dict) else point.id)
+            point_ids = selected
+            present = len(selected)
+        else:
+            present = len(got)
+        if not present:
+            return 0
+        client.delete(collection_name=LOCAL_COLLECTION, points_selector=point_ids, wait=True)
         return int(present)
     except Exception as exc:
-        logger.warning("本地向量删除失败（%d 点）: %s", len(point_ids), exc)
-        return 0
+        from ducky.mem0_runtime import Mem0NotConfiguredError
+        if isinstance(exc, Mem0NotConfiguredError):
+            return 0
+        logger.warning("local delete failed; caller must retain repair intent: %s", exc)
+        raise
 
 
 def delete_local_by_scope(user_id: str, bank_id: str = "default", client=None) -> int:
@@ -187,11 +220,14 @@ def delete_local_by_scope(user_id: str, bank_id: str = "default", client=None) -
         before = client.count(LOCAL_COLLECTION, count_filter=flt, exact=True).count
         if before:
             client.delete(collection_name=LOCAL_COLLECTION,
-                          points_selector=qm.FilterSelector(filter=flt))
+                          points_selector=qm.FilterSelector(filter=flt), wait=True)
         return int(before)
     except Exception as exc:
-        logger.warning("本地向量按域删除失败 user=%s: %s", user_id, exc)
-        return 0
+        from ducky.mem0_runtime import Mem0NotConfiguredError
+        if isinstance(exc, Mem0NotConfiguredError):
+            return 0
+        logger.warning("local scope delete failed; caller must retain repair intent: %s", exc)
+        raise
 
 
 def search_local(query: str, user_id: str, bank_id: str = "default",

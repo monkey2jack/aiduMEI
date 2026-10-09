@@ -166,6 +166,15 @@ wire should do the same. Two things depend on it:
   attached. A read wire that omits it leaves `ingest_liveness` with no reach at
   all, and `/health` will say so rather than pretend everything is fine.
 
+Standalone MCP/REST retrieval may omit `session_id`. After enough such reads,
+`/health` reports `ingest_liveness_state: unknown` and a warning; this alone does
+not make the service degraded. `ingest_liveness_ok: true` means no missing-write
+failure was detected, not proof of host wiring. `--require-judgment` still rejects
+unknown wiring. With enough session-tagged reads and zero session-tagged writes,
+the probe remains degraded. The checker uses the server's `ingest_min_reads`
+threshold (default 5). A positive observation covers the aggregate 24-hour window,
+not every tenant, session or individual turn.
+
 ### Always pass `session_id` and `turn`
 
 Include them in the write payload's `metadata`:

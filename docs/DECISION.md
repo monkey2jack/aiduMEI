@@ -1,4 +1,4 @@
-# Optional decision tasks (f0.3++)
+# Optional decision tasks (f0.4)
 
 The decision channel is opt-in and disabled by default. Customers select the
 provider and model; Drex is not mandatory. Without it, the existing engine runs as before.
@@ -74,6 +74,19 @@ decision-disabled baseline. Its task definitions, scores and limitations are
 recorded in [Measured benefits and costs](DECISION_EVALUATION.md).
 
 ### Cloudflare Clef
+
+f0.4 fixes memory classification on Clef / Clef Flash: the Cloudflare path sends
+one `noul` question per label read from `ducky.memory_types.TYPE_LABELS`, instead
+of a `choice` question. The highest valid score is accepted only at >= 0.7;
+otherwise classification returns `(None, None)` for the existing caller fallback.
+The label list is not hard-coded. Retrieval already uses `noul` and keeps its
+protocol; non-Cloudflare classification keeps its existing contract. Credentials
+continue to come from settings and are not included in diagnostic output.
+
+The production integration check used six unique inputs covering six labels:
+6/6 matched, calls increased by six, failures did not increase, and retrieval
+remained usable. This small integration check is not an accuracy benchmark.
+[Full f0.4 verification scope](F04_VALIDATION.md).
 
 Cloudflare implements the same typed decision protocol, but its REST response
 is wrapped in the Cloudflare API envelope. Configure an Account ID separately;

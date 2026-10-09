@@ -830,6 +830,8 @@ def get_memory():
                 patch_llm_for_speed(m)
             except Exception as pe:
                 logger.warning(f"speed patch on init skip: {pe}")
+            from ducky.mutation_journal import install_memory_journal
+            install_memory_journal(m)
             sys._aidumem_singleton = m
             # 不再无条件宣称「已激活」—— 按补丁层的实际台账说话（铁律 7 宣称即承诺）
             _p = (_patch_state or {}).get("patches", {})
@@ -846,6 +848,7 @@ def get_memory():
             logger.info("mem0 后端未配置，按零凭据首跑路径返回 503")
             raise
         except Exception as e:
+            m = None  # never retain a partially initialized, unjournaled writer
             logger.error(f"mem0 初始化失败: {e}")
             raise HTTPException(503, _mem0_unavailable_detail(e))
 
@@ -967,20 +970,19 @@ def lazy_import_hybrid():
 # §4  salience 辅助
 # ═══════════════════════════════════════════════
 def register_salience_for_add(add_result, user_id: str = "", bank_id: str = ""):
-    """mem0.add() 返回后注册显著性（非关键路径，失败只打 debug）
+    """mem0.add() 返回后注册显著性；失败交由请求/job 持久记录待核验。
 
     v20 P0-2：调用方把写入作用域一并传来，salience 行盖 (user_id, bank_id)
     戳——conflict.py 分域配对靠它。不传 = default 域（v19 行为）。
     """
-    try:
-        results = add_result if isinstance(add_result, list) else add_result.get("results", [])
-        for r in results:
-            mid = r.get("id") or r.get("memory_id", "")
-            content = r.get("memory") or r.get("data") or ""
-            if mid:
-                on_memory_added(mid, content=content, user_id=user_id, bank_id=bank_id)
-    except Exception as e:
-        logger.debug(f"salience register skip: {e}")
+    results = add_result if isinstance(add_result, list) else (add_result or {}).get("results", [])
+    for r in results or []:
+        if not isinstance(r, dict):
+            continue
+        mid = r.get("id") or r.get("memory_id", "")
+        content = r.get("memory") or r.get("data") or ""
+        if mid:
+            on_memory_added(mid, content=content, user_id=user_id, bank_id=bank_id)
 
 
 def boost_salience_for_results(results):

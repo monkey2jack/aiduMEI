@@ -88,6 +88,13 @@ def register_obsidian_routes(app: FastAPI) -> None:
                 bank_id=target_bank,
                 action="write",
             )
+            from ducky.scope_auth import sanitize_memory_fields, sanitize_memory_structure
+            title, content = sanitize_memory_fields(req.title, req.content)
+            req = req.model_copy(update={
+                "title": title, "content": content,
+                "tags": sanitize_memory_structure(req.tags),
+                "metadata": sanitize_memory_structure(req.metadata),
+            })
             mem = get_memory()
 
             # 1. 抽取 wikilinks 双链

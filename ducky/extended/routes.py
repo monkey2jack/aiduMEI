@@ -99,8 +99,8 @@ def register_extended_routes(app, _get_memory_fn, _get_db_fn, _extract_entities_
         # bank 仍显式传入，读侧也按同一 scope 谓词收窄。
         from ducky.scope_auth import require_scope_access
         require_scope_access(DEFAULT_USER_ID, caller_user_id, bank_id=bank_id, action="write")
-        from ducky.scope_auth import sanitize_memory_or_raise
-        value = sanitize_memory_or_raise(value)
+        from ducky.scope_auth import sanitize_memory_fields
+        category, key, value = sanitize_memory_fields(category, key, value)
         db = _get_facts_conn()
         now = datetime.now(timezone.utc).isoformat()
         _cols = table_columns(db, "facts")

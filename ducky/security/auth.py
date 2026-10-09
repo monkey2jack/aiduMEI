@@ -399,7 +399,7 @@ def current_request_token_fingerprint() -> str:
 def _caller_bindings() -> dict[str, Any] | None:
     """AIDUMEI_CALLER_BINDINGS：`{"<token_sha256前16位>": ["agent_a", ...]}`。
 
-    返回 None = 未配置 → 调用方逐字走旧行为（兼容红线，v20.5.1 T-07）。
+    返回 None = 未配置；兼容模式保留旧行为，显式 strict 模式的 Bearer 请求拒绝。
     配置了但 JSON 非法/不是对象 → fail-closed 抛 403：安全档配置写错
     不能静默失效（与 scoring._evidence_gate_on「非法值按开」同一家训）。
     请求时实时解析，不做模块级定格 —— 与凭据读取同一纪律。
@@ -444,10 +444,10 @@ def _binding_mode() -> str:
 def enforce_caller_binding(caller: str, operation: str) -> None:
     """🛡️ caller↔凭据轻量绑定（v20.5.1 · T-07）：token 可代表的 agent_id 白名单。
 
-    强制条件**同时**成立才拦（缺一即按现状放行）：
-      ① 配置了 AIDUMEI_CALLER_BINDINGS；
-      ② 本请求经 Bearer / X-API-Token 过闸，且其指纹已登记在 bindings。
-    未配置 env 时本函数逐字等价于不存在 —— 这是兼容红线。
+    已登记的 Bearer / X-API-Token 始终校验 caller 白名单；strict 模式
+    同时拒绝未登记的凭据。off/permissive 下的未登记凭据保留迁移语义。
+    未配置 bindings 且未显式启用 strict 时保留单主人兼容行为。
+    f0.4: strict 缺绑定表也拒绝 Bearer，不能把配置遗漏当作关闭隔离。
     session cookie（控制台）与无凭据回环请求不带指纹，不参与绑定。
 
     v22.0（雷霆审计 A2）：`AIDUMEI_CALLER_BINDING_MODE` 第三态——
@@ -456,7 +456,9 @@ def enforce_caller_binding(caller: str, operation: str) -> None:
     """
     table = _caller_bindings()
     if table is None:
-        return
+        if _binding_mode() != "strict":
+            return
+        table = {}  # strict without a table is deny-all for bearer callers
     fp = current_request_token_fingerprint()
     if not fp or fp not in table:
         if fp:  # 未登记的 Bearer/X-API-Token 凭据（非 session cookie / 回环）
@@ -493,3 +495,19 @@ def enforce_caller_binding(caller: str, operation: str) -> None:
                         "请在 AIDUMEI_CALLER_BINDINGS 的白名单中补登，或换用对应凭据",
             },
         )
+
+
+def binding_policy_active() -> bool:
+    """Only bearer principals enter tenant mode; UI sessions remain owners."""
+    return bool(current_request_token_fingerprint()) and (
+        _caller_bindings() is not None or _binding_mode() == "strict")
+
+
+def resolve_bound_caller(caller: str, operation: str) -> str:
+    table = _caller_bindings() or {}
+    allowed = table.get(current_request_token_fingerprint(), [])
+    caller = str(caller or "").strip()
+    if not caller and isinstance(allowed, list) and len(allowed) == 1:
+        caller = str(allowed[0]).strip()
+    enforce_caller_binding(caller, operation)
+    return caller

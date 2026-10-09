@@ -6,12 +6,14 @@ import threading
 import time
 from typing import Any
 
-from ducky.bank_contract import DEFAULT_BANK_ID
+from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
 from ducky.speed.cache import cache_get, cache_key, cache_set
 from ducky.speed.config import load_speed_cfg, messages_to_text
 from ducky.speed.fastpath import try_fastpath_text
 from ducky.security.injection_guard import validate_and_sanitize_memory_content
 from ducky.failure_ledger import feature_failed
+from ducky.mutation_journal import MutationUncertain, _check_scope, serialized_scope
+from ducky.mutation_fallback import require_no_sdk_since, sdk_attempt_count
 
 logger = logging.getLogger("aiduMEM.speed")
 
@@ -64,11 +66,12 @@ def _read_extract_cache(user_id: str, text: str, metadata: dict, bank_id: str,
     return ck, None
 
 
+@serialized_scope
 def _dedup_update_existing(memory, user_id: str, text: str, metadata: dict,
                            bank_id: str, timing: dict, details: dict):
     """1) 去重：命中则就地 update。返回 (existing_id, action)。
 
-    update 失败回落 (None, "new")，流程继续走新增 —— 与抽函数前一致。
+    仅持久证据确认 SDK 尚未执行时允许回落 (None, "new")。
     """
     from ducky.layer1_selfcheck import dedup_check
 
@@ -77,12 +80,16 @@ def _dedup_update_existing(memory, user_id: str, text: str, metadata: dict,
     timing["dedup"] = int((time.time() - t1) * 1000)
     action = "new"
     if existing_id:
+        before = sdk_attempt_count(user_id, bank_id)
         try:
             memory.update(existing_id, text, metadata=metadata)
             action = "updated"
             details["existing_id"] = existing_id
             logger.info(f"Layer1 去重更新: {existing_id[:16]}")
-        except Exception:
+        except MutationUncertain:
+            raise
+        except Exception as exc:
+            require_no_sdk_since(before, user_id, bank_id, exc)
             existing_id = None
     return existing_id, action
 
@@ -108,6 +115,8 @@ def _merge_for_capacity(memory, user_id: str, bank_id: str, speed: dict,
                 daemon=True,
                 name="aiduMEM-cap-merge",
             ).start()
+        except MutationUncertain:
+            raise
         except Exception as e:
             logger.debug(f"async merge schedule skip: {e}")
         return False
@@ -169,7 +178,7 @@ def _add_fastpath_or_llm(memory, messages_json, text: str, user_id: str,
 def _index_fts_after_add(action: str, existing_id, add_result, text: str,
                          metadata: dict, user_id: str, bank_id: str,
                          timing: dict) -> None:
-    """4) FTS：updated 重索引既有行；否则索引 add_result 全部结果。失败只降级。"""
+    """4) FTS：updated 重索引既有行；否则索引 add_result 全部结果。失败保留待核验。"""
     t4 = time.time()
     try:
         from ducky.text_fts import _index_memory
@@ -193,10 +202,14 @@ def _index_fts_after_add(action: str, existing_id, add_result, text: str,
                     content = r.get("memory") or r.get("data") or text
                     if mid and content:
                         _index_memory(mid, content, user_id=user_id, category=category, bank_id=bank_id)
+    except MutationUncertain:
+        raise
     except Exception as e:
         feature_failed("index_memory", e)
-        logger.debug(f"FTS 索引跳过: {e}")
-    timing["fts"] = int((time.time() - t4) * 1000)
+        logger.warning("FTS index after SDK failed: %s", type(e).__name__)
+        raise
+    finally:
+        timing["fts"] = int((time.time() - t4) * 1000)
 
 
 def _summarize_add_result(add_result):
@@ -221,6 +234,7 @@ def _summarize_add_result(add_result):
     return stored, memories
 
 
+@serialized_scope
 def run_add_pipeline(
     memory,
     messages_json,
@@ -233,6 +247,9 @@ def run_add_pipeline(
     """
     高速写入主流程（供 layer1 / 异步 worker 调用）。
     """
+    scope = make_scope(user_id, bank_id)
+    user_id, bank_id = scope.user_id, scope.bank_id
+    _check_scope(user_id, bank_id)
     t0 = time.time()
     timing = {}
     details: dict[str, Any] = {}

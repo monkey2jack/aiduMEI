@@ -49,7 +49,7 @@ def test_all_three_blocks_wrapped():
     # 三个注入点都必须以 _wrap_block 包裹后 append 进 BLOCKS
     assert 'BLOCKS+=("$(_wrap_block "$CORE_CTX")")' in src, "CoreMemory 块未包装"
     assert 'BLOCKS+=("$(_wrap_block "$CP_CTX")")' in src, "Checkpoint 块未包装"
-    assert 'BLOCKS+=("$(_wrap_block "$SEARCH_CTX")")' in src, "search 块未包装"
+    assert 'BLOCKS+=("$(_wrap_block "$SEARCH_CTX" 4500)")' in src, "search 块未包装"
 
 
 def test_no_unwrapped_block_append():

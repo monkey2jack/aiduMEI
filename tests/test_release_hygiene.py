@@ -37,6 +37,18 @@ if _REPO_ROOT not in sys.path:
 from scripts import release_scan as rs  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolated_scan_policy(monkeypatch):
+    """These tests own synthetic wordlists; deployment policy stays in the gate.
+
+    Inheriting a public-policy digest for a different wordlist used to make
+    otherwise valid negative controls fail before scanning their sample.
+    """
+    for name in ("AIDUMEI_SCAN_WORDS", "AIDUMEI_SCAN_WORDLIST",
+                 "AIDUMEI_SCAN_PUBLIC_WORDLIST", "AIDUMEI_SCAN_REVIEWED_PUBLIC"):
+        monkeypatch.delenv(name, raising=False)
+
+
 # ── 1 / 2：词表外置，且空词表必须拒绝运行 ─────────────────────────────
 
 def test_module_has_no_builtin_wordlist():

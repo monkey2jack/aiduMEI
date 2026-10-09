@@ -97,6 +97,8 @@ class _FakeMem:
     """mem0 替身：记录 delete 调用，且把无作用域 delete_all 焊死为违规。"""
 
     def __init__(self, items, fail_get_all=False):
+        from types import SimpleNamespace
+        self.vector_store = SimpleNamespace(client=SimpleNamespace(get_collections=lambda: SimpleNamespace(collections=[])))
         self._items = list(items)
         self._fail = fail_get_all
         self.deleted: list[str] = []
@@ -241,7 +243,7 @@ def test_delete_all_enumeration_failure_never_falls_back_to_bulk(monkeypatch):
     assert det["vector_enumeration_complete"] is False
 
 
-def test_reconcile_replay_restores_bank_scope_and_confirm(monkeypatch):
+def test_reconcile_replay_restores_bank_scope_and_confirm(monkeypatch, tmp_path):
     """WAL 重放：payload.bank_id 是权威值；旧条目回落默认域；
     delete_all 重放补 confirm=True。"""
     import ducky.wal_engine as we
@@ -251,13 +253,13 @@ def test_reconcile_replay_restores_bank_scope_and_confirm(monkeypatch):
         we, "cascade_delete_memory",
         lambda mid, user_id=None, bank_id=None: calls.append(
             ("delete", mid, user_id, bank_id)
-        ),
+        ) or {"status": "committed"},
     )
     monkeypatch.setattr(
         we, "cascade_delete_all",
         lambda user_id=None, confirm=False, bank_id=None: calls.append(
             ("delete_all", user_id, confirm, bank_id)
-        ),
+        ) or {"status": "committed"},
     )
 
     entries = [
@@ -276,16 +278,10 @@ def test_reconcile_replay_restores_bank_scope_and_confirm(monkeypatch):
         ),
     ]
 
-    class _FakeWAL:
-        def get_pending_entries(self):
-            return entries
-
-        def mark_status(self, *a, **kw):
-            pass
-
-    monkeypatch.setattr(we.WALEngine, "get_instance", classmethod(
-        lambda cls: _FakeWAL()
-    ))
+    wal = we.WALEngine(str(tmp_path / "wal"))
+    for entry in entries:
+        wal.append(entry)
+    monkeypatch.setattr(we.WALEngine, "get_instance", classmethod(lambda cls: wal))
 
     report = we.reconcile_startup()
     assert report["recovered"] == 3 and report["failed"] == 0

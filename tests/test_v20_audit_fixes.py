@@ -17,6 +17,8 @@ import time
 
 import pytest
 
+from write_path_fixtures import isolated_write_stores as _isolated_write_stores  # noqa: F401 -- jia11 fixture
+
 import ducky.utils as utils
 
 
@@ -1445,7 +1447,7 @@ class _MustSemanticsStore:
 _MISSING = object()
 
 
-def test_jia11_a_default_write_must_not_supersede_another_banks_memory():
+def test_jia11_a_default_write_must_not_supersede_another_banks_memory(isolated_write_stores):
     """默认域写一条，**不许**把命名库 B 的记忆标成 superseded。
 
     ⚠️ 这条守的是「改错别人家的账」，不是一次报错。
@@ -1569,7 +1571,7 @@ class _NoopMemory:
         return None
 
 
-def test_jia11_both_add_wrapper_call_sites_pass_the_bank_into_evolution_tracking(monkeypatch):
+def test_jia11_both_add_wrapper_call_sites_pass_the_bank_into_evolution_tracking(monkeypatch, isolated_write_stores):
     """``layer1_add_wrapper`` 的**两个**调用点都得把 bank 透传下去。
 
     修法是「一处签名 + 两处透传」。只验签名不验调用点，等于只修了一半还发绿：
@@ -2475,13 +2477,18 @@ def test_jia14_merge_must_not_erase_the_category_while_it_preserves_the_heat():
     assert not problems, "；".join(problems)
 
 
-def test_jia14_rollback_restores_content_without_erasing_the_category():
+def test_jia14_rollback_restores_content_without_erasing_the_category(monkeypatch, tmp_path):
     """回滚还原的是**内容**，分类从来不在 ``memory_edits`` 的快照里。
 
     ``rollback_edit`` 原来硬写 ``category=""``：用户每点一次「撤销这次合并」，
     就顺手掉一次分类 —— 撤销这个动作自己造成了一次撤不回来的丢失。
     """
     from ducky.self_edit import _log_edit, rollback_edit
+    import ducky.self_edit as se
+    monkeypatch.setattr(se, "_checked", False)
+    from ducky.salience.db import ensure_db
+    monkeypatch.setattr(utils, "SALIENCE_DB", str(tmp_path / "salience.db"))
+    ensure_db()
 
     mid = "jia14-rollback-1"
     restored = "回滚目标：原始内容"

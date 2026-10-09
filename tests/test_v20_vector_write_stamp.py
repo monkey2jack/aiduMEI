@@ -14,6 +14,10 @@ from __future__ import annotations
 
 import pytest
 
+from write_path_fixtures import isolated_write_stores as _isolated_write_stores  # noqa: F401 -- opt-in fixture
+
+pytestmark = pytest.mark.usefixtures("isolated_write_stores")
+
 from ducky.bank_contract import DEFAULT_BANK_ID
 
 
@@ -84,6 +88,8 @@ def isolate_side_effects(monkeypatch):
     import ducky.layer1_selfcheck as l1
     import ducky.speed.pipeline as sp
 
+    monkeypatch.setattr(sp, "_index_fts_after_add", lambda *a, **k: None)
+    monkeypatch.setattr("ducky.mem0_runtime.register_salience_for_add", lambda *a, **k: None)
     monkeypatch.setattr(l1, "_index_after_add", lambda *a, **k: None)
     monkeypatch.setattr(l1, "_sync_indexes_after_update", lambda *a, **k: None)
     monkeypatch.setattr(l1, "track_knowledge_evolution", lambda *a, **k: None)

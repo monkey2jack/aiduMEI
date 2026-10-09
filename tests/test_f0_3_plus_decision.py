@@ -224,6 +224,92 @@ def test_low_or_unknown_classification_confidence_falls_back(channel, monkeypatc
     assert d.classify("deployment", "test-user-one", "work")[0] is None
 
 
+@pytest.fixture
+def clef_channel(channel, monkeypatch):
+    path, calls, client = channel
+    raw = json.loads(path.read_text())
+    raw["decision"]["provider"] = "cloudflare"
+    raw["decision"]["config"].update(model="clef-flash", account_id="0" * 32)
+    path.write_text(json.dumps(raw))
+    answers = {}
+
+    def provider(cfg, state, questions):
+        calls.append((dict(cfg), state, questions))
+        return {"model": cfg["model"], "answers": dict(answers)}
+
+    monkeypatch.setitem(d.PROVIDERS, "cloudflare", provider)
+    return path, calls, answers
+
+
+@pytest.mark.parametrize("model", ["clef", "clef-flash"])
+def test_clef_classification_uses_registry_and_highest_noul(clef_channel, monkeypatch, model):
+    from ducky import memory_types as mt
+    path, calls, answers = clef_channel
+    raw = json.loads(path.read_text())
+    raw["decision"]["config"]["model"] = model
+    path.write_text(json.dumps(raw))
+    monkeypatch.setitem(mt.TYPE_LABELS, "EXTRA_TEST_LABEL", "合成扩展类别")
+    answers.update({label: {"type": "noul", "noul": .71} for label in mt.TYPE_LABELS})
+    answers["EXTRA_TEST_LABEL"]["noul"] = .96
+    assert d.classify("x" * 4001, "test-user-one", "work") == ("EXTRA_TEST_LABEL", .96)
+    cfg, state, questions = calls[0]
+    assert cfg["model"] == model and state == {"text": "x" * 4000}
+    assert set(questions) == set(mt.TYPE_LABELS)
+    assert all(q["type"] == "noul" for q in questions.values())
+    assert all(label in questions[label]["instructions"] and description in questions[label]["instructions"]
+               for label, description in mt.TYPE_LABELS.items())
+    assert d.telemetry()["stages"][-1]["status"] == "ok"
+
+
+@pytest.mark.parametrize("score,expected", [(.6999, (None, None)), (.7, ("FACTS", .7)), (1, ("FACTS", 1.0))])
+def test_clef_classification_threshold(clef_channel, score, expected):
+    _, _, answers = clef_channel
+    answers["FACTS"] = {"type": "noul", "noul": score}
+    assert d.classify("synthetic fact", "test-user-one", "work") == expected
+
+
+@pytest.mark.parametrize("invalid", [None, True, "0.99", float("nan"), float("inf"), -1, 1.1])
+def test_clef_classification_rejects_invalid_scores(clef_channel, invalid):
+    _, _, answers = clef_channel
+    answers.update({"FACTS": {"type": "noul", "noul": invalid},
+                    "PREFERENCES": {"type": "noul", "noul": .8},
+                    "UNKNOWN": {"type": "noul", "noul": 1}})
+    assert d.classify("synthetic preference", "test-user-one", "work") == ("PREFERENCES", .8)
+
+
+@pytest.mark.parametrize("answer", [None, {}, {"type": "choice", "choice": "FACTS", "confidence": .99}])
+def test_clef_classification_missing_or_wrong_type_falls_back(clef_channel, answer):
+    _, _, answers = clef_channel
+    answers["FACTS"] = answer
+    assert d.classify("synthetic fact", "test-user-one", "work") == (None, None)
+
+
+def test_clef_classification_tie_uses_registry_order(clef_channel):
+    from ducky.memory_types import TYPE_LABELS
+    _, _, answers = clef_channel
+    answers.update({label: {"type": "noul", "noul": .9} for label in reversed(TYPE_LABELS)})
+    assert d.classify("synthetic tie", "test-user-one", "work") == (next(iter(TYPE_LABELS)), .9)
+
+
+def test_clef_classification_scope_and_task_switch(clef_channel):
+    path, calls, _ = clef_channel
+    assert d.classify("private fact", "other-user", "work") == (None, None)
+    raw = json.loads(path.read_text())
+    raw["decision"]["config"]["tasks"]["memory_type"] = False
+    path.write_text(json.dumps(raw))
+    assert d.classify("private fact", "test-user-one", "work") == (None, None)
+    assert not calls
+
+
+def test_clef_retrieval_retains_noul_protocol(clef_channel):
+    _, calls, answers = clef_channel
+    answers.update({"p0": {"type": "noul", "noul": .01}, "p1": {"type": "noul", "noul": .95}})
+    assert [row["id"] for row in d.filter_evidence("birthday?", rows(), "test-user-one", "work")] == ["answer"]
+    assert set(calls[0][2]) == {"p0", "p1"}
+    assert all(q["type"] == "noul" for q in calls[0][2].values())
+    assert d.telemetry()["stages"][-1]["status"] == "ok"
+
+
 @pytest.mark.parametrize("choice", [[], {}], ids=["list", "object"])
 def test_invalid_classification_choice_preserves_llm_fallback_and_ledger(channel, tmp_path, monkeypatch, choice):
     import sqlite3

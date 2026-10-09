@@ -10,6 +10,9 @@ delete / delete_all 两支调完级联删除就 `report["recovered"] += 1`，
 而是**账本永不收敛**。定级 P1，但必修 —— 一个报告「已恢复」却没闭合的账本，
 比没有账本更坏：它让运维以为对账成功了。
 
+f0.4 补充：以上幂等结论只适用于同一目标集合。旧格式裸 delete_all 无法证明
+集合未增长，须保留待人工审查；新协议在持久写入闸门保护下才自动修复。
+
 **P1-5**（Qwen 报，本方实测 body→422 / query→200）：MCP 工具把 `session_id`
 发进 JSON body，而 REST 端点是裸标量参数、FastAPI 从 **query** 绑定 → 恒 422。
 最难堪的是：**同一个提交** ad3ba6c 修了 `agent_integration_check.py` 的同型缺陷、
@@ -20,15 +23,17 @@ delete / delete_all 两支调完级联删除就 `report["recovered"] += 1`，
 """
 import pytest
 
+pytest_plugins = ["test_f04_recovery"]
+
 
 # ══════════════════════════════════════════════════════════
 # P1-3 · WAL 启动对账必须闭环
 # ══════════════════════════════════════════════════════════
 
 @pytest.fixture()
-def wal_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path / "d"))
-    monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "l"))
+def wal_env(world):
+    # Complete mem0 adapter (get_all/get/delete) instead of object(). Unknown
+    # snapshots must remain unknown; a broken test stub cannot imply absence.
     import ducky.wal_engine as we
     return we
 
@@ -45,7 +50,9 @@ def test_reconcile_closes_the_original_entry(wal_env):
         wal_id="beta-wal-close-1", operation="delete", user_id="u1", bank_id="default",
         payload={"memory_id": "nope-1", "bank_id": "default"}, status="pending"))
     assert "beta-wal-close-1" in _pending_ids(we), "夹具前提破了：条目没进 pending"
-    we.reconcile_startup()
+    report = we.reconcile_startup()
+    assert report["recovered"] == 1 and report["failed"] == 0
+    assert report["remaining"] == 0
     assert "beta-wal-close-1" not in _pending_ids(we), (
         "对账报了 recovered 却没闭合原条目 —— 每次重启都会重放，账本永不收敛"
     )
@@ -60,7 +67,9 @@ def test_reconcile_is_idempotent_across_restarts(wal_env):
         payload={"bank_id": "default"}, status="pending"))
     first = we.reconcile_startup()
     second = we.reconcile_startup()
-    assert first["pending_count"] >= 1
+    assert first["pending_count"] == first["recovered"] == 1
+    assert first["remaining"] == first["failed"] == 0
+    assert second["recovered"] == second["failed"] == 0
     assert second["pending_count"] == 0, (
         f"第二轮仍发现 {second['pending_count']} 条未决 —— 无限重放形态还在"
     )
@@ -77,11 +86,57 @@ def test_recovered_count_is_not_a_lie(wal_env):
             status="pending"))
     rep = we.reconcile_startup()
     remaining = [w for w in _pending_ids(we) if w.startswith("beta-wal-count-")]
+    assert rep["recovered"] == 3 - len(remaining)
+    assert rep["failed"] == rep["remaining"] == 0
     assert not remaining, f"报 recovered={rep['recovered']} 但仍有 {remaining} 未闭合"
 
 
-def test_unresolvable_entries_still_get_marked_failed(wal_env):
-    """**回归**：无法自动决议的写入照旧标 failed（原有行为不许被改掉）。"""
+def test_legacy_bare_delete_all_requires_review_across_restarts(wal_env):
+    from ducky import utils
+    we = wal_env
+    wal = we.WALEngine.get_instance()
+    # Serialize the actual historical unprotected format, not wal.append(v2).
+    entry = we.WALEntry(wal_id="legacy-broad", operation="delete_all", user_id="u2",
+                        bank_id="default", payload={"bank_id": "default"})
+    original = entry.to_json() + "\n"
+    wal.wal_file.write_text(original)
+    conn = utils.get_facts_conn()
+    conn.execute("INSERT INTO facts(category,fact_key,fact_value,user_id,bank_id) VALUES(?,?,?,?,?)",
+                 ('general', 'new-after-legacy-intent', 'preserve-new-record', 'u2', 'default'))
+    conn.commit()
+    for _ in range(2):
+        report = we.reconcile_startup()
+        assert report['pending_count'] == report['remaining'] == report['failed'] == 1
+        assert report['recovered'] == 0
+        assert report['review_required'] == ['legacy-broad']
+        assert _pending_ids(we) == ['legacy-broad']
+        assert conn.execute("SELECT fact_value FROM facts WHERE fact_key='new-after-legacy-intent'").fetchone()[0] == 'preserve-new-record'
+    conn.close()
+    assert wal.wal_file.with_name(wal.wal_file.name + '.pre-f04').read_text() == original
+
+
+def test_failed_snapshot_is_not_counted_as_recovered(wal_env, monkeypatch):
+    from ducky.mem0_runtime import get_memory
+    we = wal_env
+    wal = we.WALEngine.get_instance()
+    wal.append(we.WALEntry(wal_id='snapshot-unknown', operation='delete', user_id='u1',
+                           payload={'memory_id': 'x', 'bank_id': 'default'}))
+    memory = get_memory()
+    original = memory.get_all
+    def unavailable(**kwargs):
+        raise OSError('injected backend enumeration outage')
+    monkeypatch.setattr(memory, 'get_all', unavailable)
+    report = we.reconcile_startup()
+    assert report['recovered'] == 0 and report['remaining'] == report['failed'] == 1
+    assert _pending_ids(we) == ['snapshot-unknown']
+    monkeypatch.setattr(memory, 'get_all', original)
+    repaired = we.reconcile_startup()
+    assert repaired['recovered'] == 1 and repaired['remaining'] == 0
+    assert we.reconcile_startup()['recovered'] == 0
+
+
+def test_unresolvable_entries_stay_visible_for_durable_owner(wal_env):
+    """不能自动决议的写入计入 failed，保留原始未决意图供持久写入模块核验。"""
     we = wal_env
     wal = we.WALEngine.get_instance()
     wal.append(we.WALEntry(
@@ -89,7 +144,7 @@ def test_unresolvable_entries_still_get_marked_failed(wal_env):
         payload={}, status="pending"))
     rep = we.reconcile_startup()
     assert rep["failed"] >= 1
-    assert "beta-wal-unknown" not in _pending_ids(we)
+    assert "beta-wal-unknown" in _pending_ids(we)
 
 
 # ══════════════════════════════════════════════════════════
@@ -113,6 +168,36 @@ def test_mcp_session_end_reaches_the_endpoint(tmp_path, monkeypatch):
     assert body.status_code == 422, (
         "端点签名变了（现在能收 body）—— 若确已改成模型入参，请同步改本守卫判据"
     )
+    # Exercise the actual tool -> HTTP binding -> route -> session store. A
+    # route-only query test missed the MCP tool's omitted owner/bank arguments.
+    import importlib.util
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+    import ducky.routes_v8 as routes
+    import ducky.pipeline.memory_persistence as persistence
+    spec = importlib.util.spec_from_file_location(
+        "_scoped_mcp_session", Path(__file__).resolve().parents[1] / "mcp_server.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    monkeypatch.setattr(tool, "httpx", SimpleNamespace(get=c.get, post=c.post))
+    monkeypatch.setattr(tool, "API_BASE", "http://testserver")
+    monkeypatch.setattr(tool, "_mcp_principal", lambda: "scope-owner")
+    reflected = []
+    monkeypatch.setattr(routes, "_trigger_session_end_reflect",
+                        lambda user, **kw: reflected.append((user, kw["bank_id"])))
+    monkeypatch.setattr(persistence, "_sessions", {})
+    scope = {"user_id": "scope-owner", "bank_id": "scope-bank"}
+    sid = "mcp-scope-lifecycle"
+    assert json.loads(tool.session_start(**scope, session_id=sid))["status"] == "ok"
+    for wrong in ({**scope, "user_id": "other-owner"}, {**scope, "bank_id": "other-bank"}):
+        assert json.loads(tool.session_report(sid, **wrong)).get("status") != "ok"
+        assert json.loads(tool.session_end(sid, **wrong)).get("status") != "ok"
+        assert json.loads(tool.session_report(sid, **scope))["status"] == "ok"
+    assert reflected == []
+    assert json.loads(tool.session_end(sid, **scope))["status"] == "ok"
+    assert reflected == [("scope-owner", "scope-bank")]
+    assert json.loads(tool.session_report(sid, **scope)).get("status") != "ok"
 
 
 def test_no_mcp_tool_sends_query_params_in_the_body():

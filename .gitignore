@@ -92,6 +92,15 @@ scan_words.txt
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
 
 # macOS 扩展属性伴生文件（AppleDouble）。
 # v20：本机 50 个文件带 xattr，`tar` 默认会为它们生成 `._xxx` 伴生条目 ——

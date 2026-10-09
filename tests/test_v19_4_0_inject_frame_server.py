@@ -147,7 +147,7 @@ def _extract_wrap_block() -> str:
     return "".join(out)
 
 
-def test_hook_wrap_block_skips_already_wrapped():
+def test_hook_wrap_block_escapes_previously_wrapped_data():
     snippet = _extract_wrap_block()
     assert snippet, "hook 里找不到 _wrap_block"
     script = (
@@ -162,5 +162,6 @@ def test_hook_wrap_block_skips_already_wrapped():
     assert proc.returncode == 0, proc.stderr
     plain_out, wrapped_out = proc.stdout.split("---\n", 1)
     assert "<memory>" in plain_out, "未包装内容应被包装"
-    assert wrapped_out.count("<memory>") == 1, "已包装内容被二次包装了"
-    assert wrapped_out.startswith("[以下为召回的记忆数据"), "已包装内容应原样透传"
+    assert wrapped_out.count("<memory>") == 1, "出口仅有一组有效边界"
+    assert wrapped_out.startswith("[以下为召回的记忆数据")
+    assert "&lt;memory&gt;" in wrapped_out, "已有边界也作为数据转义"

@@ -10,32 +10,14 @@ tests/test_v21_sidecar_epistemic.py — v21.0 收口 🔴-1/🔴-2 守卫
 """
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import time
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import ducky.utils as utils
+from write_path_fixtures import isolated_write_stores as _isolated_write_stores  # noqa: F401 -- opt-in fixture
 
-_tmp_dir = tempfile.mkdtemp(prefix="aidumem_v21_sidecar_")
-
-import ducky.utils as utils  # noqa: E402
-
-utils.FACTS_DB = os.path.join(_tmp_dir, "facts.db")
-
-
-@pytest.fixture(autouse=True)
-def setup_test_db():
-    fd, db_path = tempfile.mkstemp(prefix="facts_", suffix=".db", dir=_tmp_dir)
-    os.close(fd)
-    utils.FACTS_DB = db_path
-    from ducky.schema_bootstrap import ensure_core_schema
-    from ducky.federation.schema import ensure_federation_schema
-    ensure_core_schema(force=True)
-    ensure_federation_schema(force=True)
-    yield
+pytestmark = pytest.mark.usefixtures("isolated_write_stores")
 
 
 # ── 1. schema v7 ─────────────────────────────────────────────────────────────
@@ -117,8 +99,26 @@ def test_pattern_extract_no_longer_mislabeled_referenced():
 
 # ── 5. layer1 登记点打标（🔴-1 真实缝位）────────────────────────────────────
 
-def test_layer1_index_after_add_stamps_sidecar():
+def test_layer1_index_after_add_stamps_sidecar(monkeypatch):
     from ducky.layer1_selfcheck import _index_after_add
+    from ducky import mem0_runtime
+
+    class VectorReplica:
+        """Only the external vector transport is replaced; indexing stays real."""
+        collection_name = 'synthetic-sidecar'
+
+        def __init__(self):
+            self.vector_store = self
+            self.client = self
+            self.points = {'uuid-l1-1': {}, 'uuid-l1-2': {}}
+
+        def set_payload(self, *, collection_name, payload, points):
+            assert collection_name == self.collection_name
+            for memory_id in points:
+                self.points[memory_id].update(payload)
+
+    replica = VectorReplica()
+    monkeypatch.setattr(mem0_runtime, 'get_memory', lambda: replica)
     _index_after_add({"results": [{"id": "uuid-l1-1", "memory": "用户喜欢手冲咖啡"}]},
                      user_id="dudu", bank_id="default", infer=True)
     _index_after_add({"results": [{"id": "uuid-l1-2", "memory": "原文直写"}]},
@@ -131,6 +131,20 @@ def test_layer1_index_after_add_stamps_sidecar():
     conn.close()
     assert r1[0] == "reasoned", "LLM 蒸馏经手必须 reasoned"
     assert r2[0] == "user_provided", "确定性直写必须 user_provided"
+    facts = utils.get_facts_conn()
+    text = utils.get_text_conn()
+    for memory_id, payload in replica.points.items():
+        recorded = facts.execute(
+            "SELECT memory_type FROM memory_types WHERE memory_ref_raw=? AND user_id=? AND bank_id=?",
+            (memory_id, 'dudu', 'default'),
+        ).fetchone()[0]
+        assert payload['memory_type'] == recorded
+        assert text.execute(
+            "SELECT memory_type FROM memories WHERE id=? AND user_id=? AND bank_id=?",
+            (memory_id, 'dudu', 'default'),
+        ).fetchone()[0] == recorded
+    facts.close()
+    text.close()
 
 
 def test_federation_route_marks_referenced():

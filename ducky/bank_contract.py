@@ -249,6 +249,7 @@ def ensure_memory_banks_schema(conn: Any | None = None) -> dict[str, Any]:
     """
     own_conn = conn is None
     conn = conn or get_facts_conn()
+    outer_transaction = conn.in_transaction
     added: list[str] = []
     try:
         conn.execute(
@@ -320,7 +321,9 @@ def ensure_memory_banks_schema(conn: Any | None = None) -> dict[str, Any]:
             "(user_id, bank_id, display_name) VALUES (?, ?, ?)",
             (DEFAULT_USER_ID, DEFAULT_BANK_ID, "Default memory bank"),
         )
-        conn.commit()
+        # 初始化可能嵌在事实写入/治理裁决内，不能提交调用方的半笔事务。
+        if not outer_transaction:
+            conn.commit()
         return {"status": "ok", "added_columns": added}
     except Exception as exc:
         logger.warning("memory_banks schema 初始化失败（服务继续）: %s", exc)

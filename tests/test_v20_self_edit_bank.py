@@ -22,6 +22,10 @@ import inspect
 
 import pytest
 
+from write_path_fixtures import isolated_write_stores as _isolated_write_stores  # noqa: F401 -- opt-in fixture
+
+pytestmark = pytest.mark.usefixtures("isolated_write_stores")
+
 import ducky.self_edit as se
 from ducky.bank_contract import DEFAULT_BANK_ID
 
@@ -65,7 +69,7 @@ class _FakeMemory:
 
 @pytest.fixture()
 def stub_llm(monkeypatch):
-    """把 LLM 与编辑账本换成桩，用例不碰网络也不碰 facts.db。"""
+    """替换 LLM 与编辑日志；其余 SQLite、WAL 和持久化守卫保持真实。"""
     monkeypatch.setattr(se, "_log_edit", lambda *a, **k: 42)
 
     def _set(verdict: str):
@@ -201,7 +205,6 @@ def test_layer1_add_wrapper_reaches_self_edit(stub_llm):
     返回里根本不会出现 details.self_edit。
     """
     from ducky.layer1_selfcheck import layer1_add_wrapper
-
     mem = _FakeMemory()
     out = layer1_add_wrapper(mem, _MSG, "alice", {"source": "chat"}, bank_id="default")
 
@@ -209,3 +212,24 @@ def test_layer1_add_wrapper_reaches_self_edit(stub_llm):
     assert "self_edit" in out["details"], (
         "self-edit 没生效 —— 说明它又被异常吞了（TypeError 或 NameError）"
     )
+
+
+def test_isolated_self_edit_still_blocks_its_own_real_wal_debt(stub_llm, isolated_write_stores):
+    """Isolation must not turn off the durable gate that caught suite pollution."""
+    from ducky.wal_engine import WALEntry
+    from ducky.mutation_journal import MutationUncertain
+
+    wal = isolated_write_stores.wal
+    wal.append(WALEntry(wal_id='self-edit-local-debt', timestamp=1, operation='delete',
+                       user_id='alice', bank_id='work', payload={'memory_id': 'm1'}))
+    raw = wal.wal_file.read_bytes()
+    memory = _FakeMemory(candidate_bank='work')
+    with pytest.raises(MutationUncertain) as failure:
+        se.self_edit_on_add(memory, 'alice', _MSG, {}, bank_id='work')
+    assert failure.value.repair_source == 'wal'
+    assert memory.updated is None and memory.search_filters is None
+    assert wal.wal_file.read_bytes() == raw
+    # The same real ledger still permits the unrelated default-bank writer.
+    clean = _FakeMemory()
+    assert se.self_edit_on_add(clean, 'alice', _MSG, {})['action'] == 'duplicate'
+    assert clean.updated is not None

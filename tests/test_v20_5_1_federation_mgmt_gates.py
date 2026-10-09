@@ -23,6 +23,12 @@ from ducky.federation.routes import register_federation_routes
 def fed_client(tmp_path, monkeypatch):
     """独立 facts 库的联邦路由 client（绝不碰真实 data/）。"""
     monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path))
+    from ducky import utils, schema_bootstrap
+    from ducky.federation import schema
+    # utils freezes the DB path on import; setting env alone cannot isolate it.
+    monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
+    monkeypatch.setattr(schema_bootstrap, "_done", False)
+    monkeypatch.setattr(schema, "_migrated", False)
     monkeypatch.delenv("AIDUMEI_ALLOW_IMPLICIT_CALLER", raising=False)
     monkeypatch.delenv("AIDUMEI_CALLER_BINDINGS", raising=False)
     monkeypatch.delenv("AIDUMEI_FEDERATION_ADMINS", raising=False)

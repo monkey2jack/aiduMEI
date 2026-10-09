@@ -6,7 +6,6 @@ the host.  Every engine and child process uses an isolated temporary ledger.
 from __future__ import annotations
 
 import builtins
-import json
 import os
 from pathlib import Path
 import selectors
@@ -59,23 +58,17 @@ def test_bad_rows_fail_reads_survive_compact_and_pause_startup(wal, monkeypatch,
     wal.mark_status("settled", "committed")
     with open(wal.wal_file, "ab") as handle:
         handle.write(bad_row)
-    if bad_row.endswith(b"\n"):
+    before = wal.wal_file.read_bytes()
+    # f0.4 refuses to append behind corruption and never rewrites/reorders it.
+    with pytest.raises(we.WALIntegrityError):
         wal.append(_entry("pending-after"))
-
     with pytest.raises(we.WALIntegrityError, match="行无法解析"):
         wal.get_pending_entries()
-    report = wal.compact(keep_recent_seconds=0)
-    assert report["unparsable_kept"] == 1
-    assert report["dropped"] == 1
-    expected = {"pending-before", "pending-after"} if bad_row.endswith(b"\n") else {"pending-before"}
-    assert report["kept"] == len(expected)
-    compacted = wal.wal_file.read_bytes()
-    assert compacted.endswith(bad_row.rstrip(b"\n") + b"\n")
-    valid_rows = [we.WALEntry.from_json(line) for line in compacted.decode().splitlines()]
-    assert {entry.wal_id for entry in valid_rows if entry} == expected
-    reopened = we.WALEngine(str(wal.wal_dir))
     with pytest.raises(we.WALIntegrityError):
-        reopened.get_pending_entries()
+        wal.compact(keep_recent_seconds=0)
+    assert wal.wal_file.read_bytes() == before
+    compacted = before
+    reopened = we.WALEngine(str(wal.wal_dir))
 
     cascade, finish = _use_for_startup(reopened, monkeypatch)
     _assert_unknown(we.reconcile_startup())
@@ -327,7 +320,7 @@ def test_directory_durability_error_keeps_pending_and_startup_unknown(wal, monke
     report = we.reconcile_startup()
     assert report["wal_integrity"] == "unknown"
     assert report["reconciliation_paused"] is True
-    assert "error" in report["compacted"]
+    assert report["wal_integrity_error"]  # append now fsyncs the directory too
     assert "pending_replay_spawned" not in report
 
 
@@ -479,6 +472,6 @@ def test_multiple_processes_append_status_and_compact_without_losing_pending(wal
         assert report["unparsable_kept"] == 0
         assert all(entry.payload == {"worker": entry.wal_id.split("-")[1], "index": int(entry.wal_id.split("-")[2])}
                    for entry in pending)
-        assert {json.loads(line)["wal_id"] for line in reopened.wal_file.read_text().splitlines()} == expected
+        assert {we.WALEntry.from_json(line).wal_id for line in reopened.wal_file.read_text().splitlines()} == expected
     finally:
         _stop_children(children)

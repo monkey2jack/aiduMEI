@@ -129,6 +129,18 @@ async def _lifespan(_app: "FastAPI"):
     _enforce_public_binding_policy()
     # v20.3.2-beta（外审 P0-3）：单进程契约与公网熔断同级，**同样在起线程之前**。
     _enforce_single_process_policy()
+    from ducky.process_lock import acquire_api_process_lock
+    from ducky.utils import DATA_DIR
+    acquire_api_process_lock(DATA_DIR)
+    # Establish durable write debt before any background writer or request can run.
+    # A corrupt/unreadable journal prevents startup; uncertain writes stay held
+    # for explicit repair rather than being blindly submitted to the SDK again.
+    from ducky.mutation_journal import startup_recover
+    recovery = startup_recover()
+    if recovery.get("error") or recovery.get("integrity") != "ok":
+        raise RuntimeError("mutation journal startup integrity check failed")
+    if recovery.get("status") != "ok":
+        logger.warning("Durable writes require repair: %d", recovery.get("repair_required", 0))
     # v20.3.2 正式版（用户审计 H / GLM F-3）：设了本系统**不读**的 AIDUME?_ 变量，大概率是
     # 拼错了前缀（AIDUMEM_/AIDUMEI_ 双前缀 90+ 个，分界无规律）。此前静默按默认值跑 ——
     # 作者本人同一版本踩了两次。现在启动期扫 os.environ，未知名字 WARNING + 最接近的正确名。
@@ -1020,19 +1032,23 @@ def _start_background() -> None:
     except Exception as _vs:
         logger.warning(f"📼 Verbatim Vault 建表跳过（主服务仍会启动）: {_vs}")
     init_core_memory()
-    try:
-        from ducky.gear import ensure_half_open_probe_daemon
-        ensure_half_open_probe_daemon()
-    except Exception as _gear_probe_exc:
-        logger.warning("⚠️ Gear 半开主动探测启动跳过: %s", _gear_probe_exc)
     # 启动 WAL 对账与自愈（v19.2.0 P0-DATA）
     try:
         from ducky.wal_engine import reconcile_startup
         _rec_report = reconcile_startup()
         if _rec_report.get("recovered", 0) > 0:
             logger.info("🔧 [WAL Reconcile] 成功自愈恢复 %d 条挂起事务", _rec_report["recovered"])
+        if _rec_report.get("remaining") != 0 or _rec_report.get("reconciliation_paused"):
+            logger.warning("WAL recovery needs attention: remaining=%s integrity=%s",
+                           _rec_report.get("remaining"), _rec_report.get("wal_integrity", "unknown"))
     except Exception as _re:
         logger.warning(f"⚠️ WAL 启动对账异常: {_re}")
+
+    try:
+        from ducky.gear import ensure_half_open_probe_daemon
+        ensure_half_open_probe_daemon()
+    except Exception as _gear_probe_exc:
+        logger.warning("⚠️ Gear 半开主动探测启动跳过: %s", _gear_probe_exc)
 
     # 启动自检：实体词表漏配是「静默故障」——闸门会把涉及自定义人名/
     # 项目代号的查询判成 no_signal 而零召回，不报错也不留痕。v15 起

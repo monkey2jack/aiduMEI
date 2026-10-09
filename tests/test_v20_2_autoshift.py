@@ -54,7 +54,7 @@ class _FakeQdrant:
         for p in points:
             col[str(p.id)] = (list(p.vector), dict(p.payload or {}))
 
-    def delete(self, collection_name, points_selector):
+    def delete(self, collection_name, points_selector, wait=True):
         col = self.cols.get(collection_name, {})
         if isinstance(points_selector, list):
             for pid in points_selector:
@@ -67,7 +67,7 @@ class _FakeQdrant:
 
     def retrieve(self, collection_name, ids, **kw):
         col = self.cols.get(collection_name, {})
-        return [type("P", (), {"id": i})() for i in ids if str(i) in col]
+        return [type("P", (), {"id": i, "payload": col[str(i)][1]})() for i in ids if str(i) in col]
 
     def count(self, collection_name, count_filter=None, exact=True):
         col = self.cols.get(collection_name, {})
@@ -187,6 +187,11 @@ def rig(monkeypatch, tmp_path):
 
     monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
     monkeypatch.setattr(utils, "TEXT_FTS_DB", str(tmp_path / "text_fts.db"))
+    monkeypatch.setattr(utils, "SALIENCE_DB", str(tmp_path / "salience.db"))
+    from ducky.salience.db import ensure_db
+    from ducky import memory_types
+    monkeypatch.setattr(memory_types, "_checked", False)
+    ensure_db()
     gear.reset_gear_for_tests()
     for prefix in ("AIDUMEI_GEAR_", "AIDUMEI_LLM_GEAR_"):
         for suffix, value in (("TRIP_FAILURES", "3"), ("RECOVER_SUCCESSES", "2"),
@@ -207,6 +212,7 @@ def rig(monkeypatch, tmp_path):
                         lambda ts: [_bigram_vec(f"local::{t}") for t in ts])
     ensure_core_schema(force=True)
     _init_text_fts()
+    memory_types.ensure_memory_types_schema()
     di.ensure_pending_schema()
 
     from fastapi import FastAPI
@@ -846,7 +852,7 @@ class TestLLMGearWriteWiring:
         # 挡内写入照样落库：内容进了 fake mem（嵌入活着，云向量照打）
         assert any("挡内秒回写入" in str(c["messages"]) for c in fake.add_calls)
 
-    def test_non_llm_failure_keeps_old_semantics_and_pure_signal(self, rig, monkeypatch):
+    def test_non_llm_failure_requires_repair_and_keeps_pure_signal(self, rig, monkeypatch):
         import ducky.hot.add as hot_add
         client, fake, http, di = rig
 
@@ -861,13 +867,11 @@ class TestLLMGearWriteWiring:
         for i in range(4):
             r = http.post("/add", json={"messages": f"非 LLM 故障写入 {i}",
                                         "user_id": "u_nl"})
-            assert r.status_code == 200
-            assert r.json().get("distillation") is None, \
-                "非 LLM 故障不该打蒸馏跳过注记"
+            assert r.status_code == 409
+            assert r.json()["detail"]["status"] == "repair_required"
         assert gear.llm_current_mode() == "full", \
             "ValueError 污染了 LLM 腿信号（Y2 写侧版失守）"
-        assert all(v is True for v in infer_seen), \
-            "非 LLM 故障的降级分支必须透传 infer（v20 纪律）"
+        assert infer_seen == [], "未完成的流水线不许盲目重新新增"
 
     def test_half_open_recovers_via_real_adds(self, rig, monkeypatch):
         from types import SimpleNamespace
@@ -899,16 +903,10 @@ class TestLLMGearWriteWiring:
             "半开两次真实写入成功仍未升挡——恢复链断了"
 
     def test_direct_write_inner_llm_error_self_purifies(self, rig, monkeypatch):
-        """fallback 自身纯化：非 LLM 故障降级直写（infer 透传 True）时
-        内层 mem.add 撞上 LLMError → 就地降 infer=False，不 500。"""
+        """Direct adapter refusal before SDK dispatch permits infer=False fallback."""
         import ducky.hot.add as hot_add
         client, fake, http, di = rig
 
-        def crashy_layer1():
-            def _w(mem, msgs, uid, meta, bank_id="default", infer=True):
-                raise ValueError("非 LLM 故障")
-            return _w
-        monkeypatch.setattr(hot_add, "lazy_import_layer1", crashy_layer1)
         orig_add = fake.add
         infer_seen: list = []
 
@@ -919,9 +917,12 @@ class TestLLMGearWriteWiring:
             return orig_add(messages, user_id=user_id, metadata=metadata, **kw)
         monkeypatch.setattr(fake, "add", add_llm_dead)
 
-        r = http.post("/add", json={"messages": "双重故障写入", "user_id": "u_dj"})
-        assert r.status_code == 200, "fallback 自己 500 了——洞③还在"
-        assert r.json().get("distillation") == "skipped_llm_error"
+        from ducky.mutation_journal import scope_lock
+        with scope_lock("u_dj", "default"):
+            result = hot_add._direct_write(fake, "u_dj", "双重故障写入", {}, True,
+                                          bank_id="default")
+        assert result["status"] == "ok"
+        assert result.get("distillation") == "skipped_llm_error"
         assert infer_seen == [True, False], infer_seen
         assert gear.llm_gear_status()["consecutive_failures"] == 1, \
             "直写内层的 LLMError 没有上报挡位"
@@ -1143,7 +1144,7 @@ def test_completed_summary_route_preserves_write_and_origin(rig, monkeypatch, fa
     def pipeline(mem, msgs, uid, meta, *, infer, bank_id):
         seen.append((infer, dict(meta)))
         if fallback:
-            raise ValueError("exercise direct fallback")
+            raise _mk_llm_error()  # No SDK call has happened in this attempt.
         return {"status": "ok", "action": "observed"}
 
     monkeypatch.setattr(hot_add, "lazy_import_layer1", lambda: pipeline)
@@ -1157,8 +1158,8 @@ def test_completed_summary_route_preserves_write_and_origin(rig, monkeypatch, fa
     assert seen[0][0] is (not summary)
     assert bool(seen[0][1].get("no_coalesce")) is summary
     if fallback:
-        assert writes[-1]["infer"] is (not summary)
-        assert stamps[-1] == "reasoned"
+        assert writes[-1]["infer"] is False
+        assert stamps[-1] == ("reasoned" if summary else "user_provided")
     replay = http.post("/add", json=body)
     assert replay.json()["idempotency_replayed"] is True
     assert len(seen) == 1

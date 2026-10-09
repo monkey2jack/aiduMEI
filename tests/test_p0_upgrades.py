@@ -256,6 +256,11 @@ def test_self_edit_parse_decision_invalid():
 
 def test_self_edit_log_and_list_and_rollback(monkeypatch):
     from ducky.self_edit import ensure_self_edit_schema, _log_edit, list_edits, rollback_edit
+    from ducky.text_fts import _init_text_fts
+    import ducky.self_edit as se
+    monkeypatch.setattr(se, "_checked", False)
+    monkeypatch.setattr(utils, "TEXT_FTS_DB", os.path.join(_tmp_dir, "text_fts.db"))
+    _init_text_fts()
 
     ensure_self_edit_schema()
     mem = _FakeMemory()

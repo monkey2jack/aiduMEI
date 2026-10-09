@@ -317,7 +317,7 @@ def test_index_fts_after_add_new_results_field_order(monkeypatch):
     assert calls == [("a", "正文A"), ("b", "正文B"), ("c", "原文")]
 
 
-def test_index_fts_after_add_failure_only_degrades(monkeypatch):
+def test_index_fts_after_add_failure_propagates_for_repair(monkeypatch):
     import ducky.text_fts as tf
 
     def _boom(memory_id, content, user_id="default", category=None, bank_id="default"):
@@ -327,7 +327,8 @@ def test_index_fts_after_add_failure_only_degrades(monkeypatch):
     failed: list = []
     monkeypatch.setattr(sp, "feature_failed", lambda name, exc=None, detail="": failed.append(name))
     timing: dict = {}
-    sp._index_fts_after_add("updated", "mid-1", None, "文本", {}, "u1", "default", timing)
+    with pytest.raises(RuntimeError, match="FTS 库锁死"):
+        sp._index_fts_after_add("updated", "mid-1", None, "文本", {}, "u1", "default", timing)
     assert "fts" in timing, "失败也要记耗时 —— 遥测键一个不许少"
     assert failed == ["index_memory"], "失败必须进故障账本，不许静默"
 

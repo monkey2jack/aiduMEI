@@ -41,7 +41,7 @@ INJECT_FRAME_TOP = (
 #     默认值）。若粗暴强过滤，这些历史记忆将永久召回不到，
 #     属于生产数据可见性回退，违反零破坏铁律。
 #
-# 因此租户可见性分两档，语义显式写清、不含糊：
+# 无凭据绑定时，历史可见性分两档：
 #     宽松档（默认，向后兼容）：
 #         user_id 缺省或等于 DEFAULT_USER_ID → 全库可见。
 #         这是单机自托管的既有语义，存量部署升级后行为零变化。
@@ -52,6 +52,9 @@ INJECT_FRAME_TOP = (
 #     严格档（AIDUMEM_STRICT_TENANT=1 显式开启）：
 #         可见集合 = agent_id=user_id ∨ source=user_id
 #         不再兜住未标记数据，适用于确实要做租户硬隔离的部署。
+#     f0.4 凭据绑定档：只用 canonical user_id + bank_id 精确过滤，
+#         不用 source/agent_id 推断归属，默认主人也不能读取其他用户。
+#         缺少迁移后的 canonical 列时拒绝可见，不回退到历史全量视图。
 #
 # 注意：本层只收窄「可见范围」，绝不删改任何数据。
 def _strict_tenant_enabled() -> bool:
@@ -69,12 +72,14 @@ def fact_visible_to_tenant(conn, fact_id, user_id: str | None, bank_id: str = DE
         因此：宽松档保持原行为（不做额外校验，避免给单机用户添麻烦）；
         严格档下按可见性校验，不可见即视为不存在。
 
-    conn 不存在该表或查询失败时返回 True（放行）—— 校验失败不应变成拒绝服务。
+    查询失败按不可见处理；仅无绑定模式的历史缺表/缺列保留兼容放行。
     """
-    if not _strict_tenant_enabled():
+    from ducky.security.auth import binding_policy_active
+    bound = binding_policy_active()
+    if not bound and not _strict_tenant_enabled():
         return True
     uid = (user_id or "").strip()
-    if not uid or uid == DEFAULT_USER_ID:
+    if not bound and (not uid or uid == DEFAULT_USER_ID):
         return True
     try:
         clause, params = tenant_clause(uid, bank_id=bank_id, conn=conn)
@@ -88,7 +93,7 @@ def fact_visible_to_tenant(conn, fact_id, user_id: str | None, bank_id: str = DE
         # /opinions、/events/history 都靠它把门。锁、损坏、I/O、未知异常，
         # 一律按不可见处理；只有 legacy schema（表/列还没建过）才是兼容路径。
         msg = str(exc).lower()
-        if "no such column" in msg or "no such table" in msg:
+        if not bound and ("no such column" in msg or "no such table" in msg):
             logger.debug("fact_visible_to_tenant: legacy schema 兼容放行: %s", exc)
             return True
         logger.warning(
@@ -143,6 +148,14 @@ def tenant_clause(
     prefix = f"{alias}." if alias else ""
     migrated = _facts_has_bank_column(conn) if conn is not None else False
 
+    from ducky.security.auth import binding_policy_active
+    if binding_policy_active():
+        # Authenticated tenant mode never uses legacy source/agent attribution
+        # or the default-owner all-users view as a visibility shortcut.
+        if not migrated:
+            return " AND 1=0", []
+        return f" AND {prefix}bank_id=? AND {prefix}user_id=?", [bank, uid or DEFAULT_USER_ID]
+
     if migrated:
         if (not uid or uid == DEFAULT_USER_ID) and bank == DEFAULT_BANK_ID:
             return f" AND {prefix}bank_id=?", [bank]
@@ -177,6 +190,11 @@ def tenant_clause(
             params,
         )
 
+    return _legacy_tenant_clause(uid, bank, prefix)
+
+
+def _legacy_tenant_clause(uid: str, bank: str, prefix: str) -> tuple[str, list[str]]:
+    """Unmigrated, unbound stores retain the legacy visibility policy."""
     # —— 未迁移库：v19 原形，一个字符都不动 ——
     if (not uid or uid == DEFAULT_USER_ID) and bank == DEFAULT_BANK_ID:
         return "", []
