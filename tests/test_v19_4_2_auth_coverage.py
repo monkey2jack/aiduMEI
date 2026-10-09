@@ -624,7 +624,7 @@ def _current_version_records():
 
     version_py = (_ROOT / "ducky" / "version.py").read_text(encoding="utf-8")
     v = re.search(
-        r"^v%s \((.*?)(?=^v\d+\.\d+(?:\.\d+)? \()" % re.escape(SERVICE_VERSION),
+        r"^v%s \((.*?)(?=^v\d+\.\d+(?:\.\d+)?(?:\+[A-Za-z0-9.]+)? \()" % re.escape(SERVICE_VERSION),
         version_py, re.M | re.S,
     )
     assert v, f"ducky/version.py 找不到 v{SERVICE_VERSION} 说明块"

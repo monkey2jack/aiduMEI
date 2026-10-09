@@ -114,7 +114,10 @@ def _strip_and_guard_fact(fact_key, fact_value):
     if not fact_key or not fact_value:
         return fact_key, fact_value, {"status": "error", "detail": "fact_key 和 fact_value 不能为空"}
     from ducky.security.injection_guard import validate_and_sanitize_memory_content
+    key_safe, fact_key, key_rejection = validate_and_sanitize_memory_content(fact_key)
     is_safe, sanitized_val, rejection = validate_and_sanitize_memory_content(fact_value)
+    if not key_safe:
+        return fact_key, fact_value, {"status": "error", "detail": f"Fact key rejected: {key_rejection}"}
     if not is_safe:
         logger.warning("🛡️ [InjectionGuard] 联邦写入拦截注入: %s", rejection)
         return fact_key, fact_value, {"status": "error", "detail": f"Fact value rejected: {rejection}"}
@@ -333,6 +336,16 @@ def write_fact(
     fact_key, fact_value, err = _strip_and_guard_fact(fact_key, fact_value)
     if err is not None:
         return err
+
+    from ducky.security.injection_guard import validate_and_sanitize_memory_content
+    clean_fields = []
+    for value in (category, source, tags):
+        if value:
+            safe, value, rejection = validate_and_sanitize_memory_content(value)
+            if not safe:
+                return {"status": "error", "detail": f"Fact metadata rejected: {rejection}"}
+        clean_fields.append(value)
+    category, source, tags = clean_fields
 
     category, agent_id, profile, scope, resolved_tier, recorded_at, decay_at = (
         _normalize_scope_tier(

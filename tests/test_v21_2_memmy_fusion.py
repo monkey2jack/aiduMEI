@@ -14,6 +14,7 @@ tests/test_v21_2_memmy_fusion.py — v21.2 Memmy 融改验收守卫（M1/M2/M4/M
 """
 from __future__ import annotations
 
+import ast
 import os
 import sys
 import tempfile
@@ -441,11 +442,13 @@ def test_index_after_add_takes_origin_from_metadata_not_contextvar():
         "仍在直接读 contextvar —— 隐式通道少一次 set 就静默变空")
     # 调用点必须真的把 metadata 传进去（签名有、调用不传 = 白护栏）
     mod_src = inspect.getsource(l1)
-    calls = [ln for ln in mod_src.splitlines() if "_index_after_add(" in ln
-             and "def _index_after_add" not in ln and "``" not in ln]
+    calls = [node for node in ast.walk(ast.parse(mod_src)) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "_index_after_add"]
     assert calls, "找不到 _index_after_add 调用点 —— 守卫失去着力点"
-    for ln in calls:
-        assert "metadata=metadata" in ln, f"调用点没传 metadata: {ln.strip()}"
+    for call in calls:
+        assert any(kw.arg == "metadata" and isinstance(kw.value, ast.Name)
+                   and kw.value.id == "metadata" for kw in call.keywords), (
+            f"调用点没传 metadata: {ast.get_source_segment(mod_src, call)}")
 
 
 def test_track_knowledge_evolution_also_takes_explicit_origin():
@@ -1087,7 +1090,6 @@ def test_five_minute_watchdog_reads_the_degradation_list():
     此前它只确认「/health 这个接口还活着」，于是服务端算出来的所有降级
     对定时哨兵一律不可见 —— 探针再准也没有任何自动化通路会因此变红。
     """
-    import ast
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "scripts" / "health_check.py") \
         .read_text(encoding="utf-8")
@@ -1411,7 +1413,6 @@ def test_search_logs_retrieval_on_the_main_path_not_only_the_funnel():
     写入活性探针拿这张表当「有人在用」的证据，读到的却全是自己的心跳。
     （「挂钩必须落真实缝位」的第三次复发。）
     """
-    import ast
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
     src = (root / "ducky" / "hot" / "search.py").read_text(encoding="utf-8")
@@ -1638,7 +1639,6 @@ def test_distill_endpoint_only_extracts_and_can_be_rerun():
     # 判据走 AST 并**剥掉 docstring**：端点的说明文字里就写着「由调用方再
     # POST /add」，substring 会把这句解释当成代码，判成「端点内部落库了」。
     # （本仓老账：注释冒充代码，一轮绊三次。）
-    import ast
     tree = ast.parse(src)
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "session_distill")

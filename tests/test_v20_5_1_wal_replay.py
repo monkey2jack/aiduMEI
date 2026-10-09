@@ -121,8 +121,10 @@ def test_torn_tail_line_does_not_hide_pending(wal, monkeypatch):
     with pytest.raises(we.WALIntegrityError):
         restarted.get_pending_entries()
 
-    report = restarted.compact()
-    assert report["unparsable_kept"] == 1, "坏行必须原样保留（丢弃即静默数据丢失）"
+    before = restarted.wal_file.read_bytes()
+    with pytest.raises(we.WALIntegrityError):
+        restarted.compact()
+    assert restarted.wal_file.read_bytes() == before
     with pytest.raises(we.WALIntegrityError):
         restarted.get_pending_entries()
     monkeypatch.setattr(we.WALEngine, "get_instance", classmethod(lambda cls: restarted))
@@ -200,47 +202,33 @@ def test_repeated_replay_n_times_equals_once(replay_env):
 # ④ committed/failed 终态不被 replay 复活
 # ══════════════════════════════════════════════════════════
 
-def test_terminal_status_never_resurrected_by_replay(replay_env):
+def test_committed_not_replayed_but_historical_failed_is_repaired(replay_env):
     wal, store = replay_env
-    wal.append(_delete_entry("wal-t14-4a", "m-done"))
-    wal.mark_status("wal-t14-4a", "committed")
-    wal.append(_delete_entry("wal-t14-4b", "m-dead"))
-    wal.mark_status("wal-t14-4b", "failed", error="上轮已判死")
-
+    wal.append(_delete_entry("done", "m-done"))
+    wal.mark_status("done", "committed")
+    wal.append(_delete_entry("failed", "m-failed"))
+    wal.mark_status("failed", "failed", error="backend unavailable")
     restarted = _reopen(wal)
-    assert restarted.get_pending_entries() == [], (
-        "终态条目（committed/failed）重启后不许回到 pending"
-    )
-
-    # compact 把终态折叠进条目行之后（时间新鲜所以保留），同样不许复活
-    restarted.compact(keep_recent_seconds=86400)
-    assert restarted.get_pending_entries() == []
-
-    rep = we.reconcile_startup()
-    assert rep["pending_count"] == 0 and rep["recovered"] == 0 and rep["failed"] == 0
-    assert store.delete_calls == [] and store.delete_all_calls == [], (
-        "终态条目一次都不许被重放"
-    )
+    assert [e.wal_id for e in restarted.get_pending_entries()] == ["failed"]
+    restarted.compact(0)
+    assert [e.wal_id for e in restarted.get_pending_entries()] == ["failed"]
+    report = we.reconcile_startup()
+    assert report["recovered"] == 1 and report["failed"] == 0
+    assert store.delete_calls == [("m-failed", "u1", "default")]
+    assert we.reconcile_startup()["recovered"] == 0
 
 
-def test_replay_failure_closes_failed_and_stays_failed(replay_env, monkeypatch):
-    """重放自身炸了的条目闭合为 failed（不留 pending 下轮再炸），且此后不复活。"""
+def test_replay_failure_remains_visible_and_can_repair(replay_env, monkeypatch):
     wal, store = replay_env
-    wal.append(_delete_entry("wal-t14-4c", "m-boom"))
-
-    def _boom(memory_id, user_id="default", bank_id="default"):
-        raise RuntimeError("删除面炸了（模拟）")
-
-    monkeypatch.setattr(we, "cascade_delete_memory", _boom)
-    first = we.reconcile_startup()
-    assert first["failed"] == 1 and first["recovered"] == 0
-    assert wal.get_pending_entries() == [], "失败也要闭合 —— 留 pending 等于下次重启再炸一遍"
-
-    # 故障修好之后重启：failed 终态不许被复活重放（与 committed 同等待遇）
+    wal.append(_delete_entry("retry", "m-boom"))
+    def broken(*a, **kw):
+        raise OSError("backend failed")
+    monkeypatch.setattr(we, "cascade_delete_memory", broken)
+    assert we.reconcile_startup()["failed"] == 1
+    assert [e.wal_id for e in wal.get_pending_entries()] == ["retry"]
     monkeypatch.setattr(we, "cascade_delete_memory", store.cascade_delete_memory)
-    restarted_rep = we.reconcile_startup()
-    assert restarted_rep["pending_count"] == 0 and restarted_rep["recovered"] == 0
-    assert store.delete_calls == [], "failed 终态被 replay 复活了"
+    assert we.reconcile_startup()["recovered"] == 1
+    assert not wal.get_pending_entries()
 
 
 def test_status_flip_line_does_not_turn_back_to_pending(wal):
@@ -252,9 +240,10 @@ def test_status_flip_line_does_not_turn_back_to_pending(wal):
     wal.append(_delete_entry("wal-t14-5a", "m-flip"))
     wal.mark_status("wal-t14-5a", "committed")
     # 手写一行指向同一 id 的 failed 覆盖（终态翻转同样不许回弹 pending）
-    wal.append(we.WALEntry(
-        wal_id="status-flip", operation="update", status="failed",
-        payload={"target_wal_id": "wal-t14-5a", "updated_status": "failed"}))
+    with pytest.raises(we.WALIntegrityError):
+        wal.append(we.WALEntry(
+            wal_id="status-flip", operation="update", status="failed",
+            payload={"target_wal_id": "wal-t14-5a", "updated_status": "failed"}))
 
     restarted = _reopen(wal)
     assert restarted.get_pending_entries() == []

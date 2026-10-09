@@ -19,6 +19,9 @@ import platform
 import re
 import sqlite3
 import threading
+import hashlib
+import math
+import functools
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -26,7 +29,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from ducky.mem0_compat import get_all_memories
-from ducky.utils import DATA_DIR, DEFAULT_USER_ID, get_facts_conn
+from ducky.utils import DATA_DIR, DEFAULT_USER_ID, get_facts_conn, get_obs_conn, get_scenes_conn
+from ducky.scope_sql import scope_clause
 from ducky.bank_contract import (
     DEFAULT_BANK_ID,
     legacy_fact_scope_predicate,
@@ -114,10 +118,10 @@ VECTOR_ENUM_LIMIT = 100_000
 def _vector_items(raw: Any) -> list[dict[str, Any]]:
     """Normalize the shapes returned by mem0/fakes to a list of dicts."""
     if isinstance(raw, dict):
-        raw = raw.get("results", raw.get("memories", []))
-    if not isinstance(raw, list):
-        return []
-    return [item for item in raw if isinstance(item, dict)]
+        raw = raw.get("results", raw.get("memories"))
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError("invalid vector enumeration shape")
+    return raw
 
 
 def _vector_item_id(item: dict[str, Any]) -> str:
@@ -313,10 +317,190 @@ class WALEntry:
     @classmethod
     def from_json(cls, line: str) -> Optional[WALEntry]:
         try:
-            d = json.loads(line.strip())
-            return cls(**d)
-        except Exception:
+            raw = json.loads(line.strip())
+            if isinstance(raw, dict) and raw.get("format") == 2:
+                raw = raw["entry"]
+            if not isinstance(raw, dict) or not {"wal_id", "timestamp", "user_id", "operation", "payload", "status"} <= raw.keys():
+                raise ValueError("missing required WAL fields")
+            entry = cls(**raw)
+            _validate_entry(entry)
+            return entry
+        except (ValueError, TypeError, KeyError):
             return None
+
+
+def _validate_entry(entry):
+    for key in ("wal_id", "user_id", "bank_id"):
+        value = getattr(entry, key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("invalid " + key)
+    if not isinstance(entry.error, str):
+        raise ValueError("invalid error")
+    try:
+        valid_time = type(entry.timestamp) in (float, int) and math.isfinite(entry.timestamp) and entry.timestamp >= 0
+    except OverflowError:
+        valid_time = False
+    if not valid_time:
+        raise ValueError("invalid timestamp")
+    if entry.operation not in {"add", "delete", "delete_all", "update", "refine"}:
+        raise ValueError("invalid operation")
+    if entry.status not in {"pending", "committed", "failed"} or not isinstance(entry.payload, dict):
+        raise ValueError("invalid status/payload")
+    _validate_entry_payload(entry)
+    # Reject NaN/Infinity nested in future operation payloads.
+    json.dumps(asdict(entry), allow_nan=False)
+
+
+def _validate_entry_payload(entry):
+    target = entry.payload.get("target_wal_id")
+    if "target_wal_id" in entry.payload:
+        if entry.operation != "update" or not isinstance(target, str) or not target or entry.payload.get("updated_status") not in {"pending", "committed", "failed"}:
+            raise ValueError("invalid status update")
+    if "patch" in entry.payload and not isinstance(entry.payload["patch"], dict):
+        raise ValueError("invalid payload patch")
+    if "patch" in entry.payload and any(k in entry.payload["patch"] for k in ("memory_id", "user_id", "bank_id", "target_wal_id")):
+        raise ValueError("scope/target patch forbidden")
+    if entry.operation == "delete" and (not isinstance(entry.payload.get("memory_id"), str) or not entry.payload["memory_id"].strip()):
+        raise ValueError("delete requires memory_id")
+    for key in ("user_id", "bank_id"):
+        if key in entry.payload and (not isinstance(entry.payload[key], str) or not entry.payload[key].strip()):
+            raise ValueError("invalid scope")
+
+
+def _canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _envelope(entry, seq, previous):
+    row = {"format": 2, "seq": seq, "prev": previous, "entry": asdict(entry)}
+    row["checksum"] = hashlib.sha256(_canonical(row).encode()).hexdigest()
+    return row
+
+
+def _read_record(line, seq, previous, modern):
+    raw = json.loads(line)
+    entry = WALEntry.from_json(line)
+    if entry is None:
+        raise ValueError("schema")
+    if isinstance(raw, dict) and "format" in raw:
+        if raw.get("format") != 2 or set(raw) != {"format", "seq", "prev", "entry", "checksum"}:
+            raise ValueError("envelope schema")
+        digest = raw.pop("checksum")
+        if digest != hashlib.sha256(_canonical(raw).encode()).hexdigest():
+            raise ValueError("checksum mismatch")
+        if type(raw["seq"]) is not int or raw["seq"] <= 0 or (seq and raw["seq"] != seq + 1) or raw["prev"] != previous:
+            raise ValueError("sequence/chain mismatch")
+        return entry, raw["seq"], digest, True
+    if modern:
+        raise ValueError("legacy row after protected records")
+    return entry, seq + 1, hashlib.sha256((previous + line).encode()).hexdigest(), False
+
+
+def _reduce_record(entries, entry, modern):
+    target = entry.payload.get("target_wal_id")
+    if target:
+        if target not in entries:
+            raise ValueError("orphan status update")
+        old = entries[target]
+        status = entry.payload["updated_status"]
+        if old.status == "committed" and status != "committed":
+            raise ValueError("committed intent cannot reopen")
+        old.status, old.error = status, entry.error
+        old.payload.update(entry.payload.get("patch", {}))
+        return
+    if entry.wal_id in entries:
+        raise ValueError("duplicate intent ID")
+    if not modern and entry.operation == "delete_all":
+        # Historical broad intents lack a persisted write fence/target set.
+        # Explicit review prevents a restart erasing newly created records.
+        entry.payload["legacy_scope_review_required"] = True
+    entries[entry.wal_id] = entry
+
+
+# One ownership lock covers reading the candidate list AND executing it. Nested
+# derived cascades reuse the lock in this thread, while other processes block.
+_OWNER_LOCKS = {}
+_OWNER_GUARD = threading.Lock()
+_OWNER_DEPTH = threading.local()
+_REPLAY_ENTRY = contextvars.ContextVar("wal_replay_entry", default=None)
+
+
+@contextmanager
+def mutation_ownership(wal=None):
+    wal = wal or WALEngine.get_instance()
+    path = str(wal.wal_dir.resolve() / "recovery.owner.lock")
+    with _OWNER_GUARD:
+        lock = _OWNER_LOCKS.setdefault(path, threading.RLock())
+    with lock:
+        active = getattr(_OWNER_DEPTH, "active", set())
+        if path in active:
+            yield
+        else:
+            with _file_lock(Path(path), exclusive=True):
+                _OWNER_DEPTH.active = active | {path}
+                try:
+                    yield
+                finally:
+                    _OWNER_DEPTH.active = active
+
+
+def _owned_mutation(fn):
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        # Validate identity before confirmation, both before locks/WAL access.
+        if fn.__name__ == "cascade_delete_all":
+            uid = kwargs.get("user_id", args[0] if args else None)
+            if not isinstance(uid, str) or not uid.strip():
+                raise ValueError("user_id 必须显式指定")
+            confirm = kwargs.get("confirm", args[1] if len(args) > 1 else False)
+            if not confirm:
+                raise ValueError("清空用户全量记忆必须传递 confirm=True")
+        if fn.__name__ == "cascade_delete_all":
+            uid = kwargs.get("user_id", args[0] if args else None)
+            bank = kwargs.get("bank_id", args[2] if len(args) > 2 else DEFAULT_BANK_ID)
+        else:
+            uid = kwargs.get("user_id", args[1] if len(args) > 1 else DEFAULT_USER_ID)
+            bank = kwargs.get("bank_id", args[2] if len(args) > 2 else DEFAULT_BANK_ID)
+        from ducky.mutation_journal import forgetting_guard
+        with forgetting_guard(uid, bank), mutation_ownership():
+            replay = _REPLAY_ENTRY.get()
+            if replay is not None:
+                live = next((e for e in WALEngine.get_instance().entries() if e.wal_id == replay.wal_id), None)
+                if live is None or live.status == "committed":
+                    return {"status": "committed", "already_completed": True}
+            return fn(*args, **kwargs)
+    return wrapped
+
+
+def _begin_delete(wal, entry):
+    replay = _REPLAY_ENTRY.get()
+    if replay is not None and replay.operation == entry.operation and replay.user_id == entry.user_id and replay.payload.get("memory_id") == entry.payload.get("memory_id"):
+        _REPLAY_ENTRY.set(None)  # Derived child deletes must get their own ID.
+        return replay.wal_id
+    return wal.append(entry)
+
+
+class DeletionPending(RuntimeError):
+    """An unresolved destructive operation fences new writes in this scope."""
+
+    def __init__(self, wal_id):
+        self.wal_id = wal_id
+        super().__init__("delete repair required: " + wal_id)
+
+
+def assert_scope_writable(user_id, bank_id=DEFAULT_BANK_ID):
+    """Call under journal scope_lock before ANY ordinary write side effect.
+
+    Prevents an interrupted delete_all from widening to newly accepted writes
+    on a later replay. Corrupt WAL raises WALIntegrityError (also fail closed).
+    This does not take the mutation ownership lock, so journal -> WAL order is
+    consistent. Deletion/repair itself must not call this write-only gate.
+    """
+    scope = make_scope(user_id, bank_id)
+    for entry in WALEngine.get_instance().get_pending_entries():
+        bank = entry.payload.get("bank_id") or entry.bank_id
+        if entry.operation in {"delete", "delete_all"} and entry.user_id == scope.user_id and bank == scope.bank_id:
+            raise DeletionPending(entry.wal_id)
 
 
 class WALEngine:
@@ -342,157 +526,132 @@ class WALEngine:
                     cls._instance = cls()
         return cls._instance
 
+    def _read_locked(self):
+        """Validate every record before reducing it. Never salvage/reorder damage."""
+        entries = {}
+        self._has_legacy = False
+        seq, previous, modern = 0, "", False
+        try:
+            try:
+                self.wal_file.stat()
+            except FileNotFoundError:
+                return entries, seq, previous
+            with open(self.wal_file, encoding="utf-8") as handle:
+                for line_no, line in enumerate(handle, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        entry, seq, previous, modern = _read_record(line, seq, previous, modern)
+                        self._has_legacy = self._has_legacy or not modern
+                        _reduce_record(entries, entry, modern)
+                    except (ValueError, TypeError, KeyError) as exc:
+                        raise WALIntegrityError(f"WAL 第 {line_no} 行无法解析或验证: {exc}；原文保留，暂停自动对账") from exc
+        except (OSError, UnicodeError) as exc:
+            raise WALIntegrityError(f"读取 WAL 失败: {exc}") from exc
+        return entries, seq, previous
+
     def append(self, entry: WALEntry) -> str:
-        """追加一条 WAL 记录并执行 fsync 落盘。"""
-        line = entry.to_json() + "\n"
-        with self._write_lock:
-            with _file_lock(self.lock_file, exclusive=True):
-                with open(self.wal_file, "a", encoding="utf-8") as f:
-                    f.seek(0, os.SEEK_END)
-                    f.write(line)
-                    f.flush()
-                    os.fsync(f.fileno())
-        logger.debug("WAL append: %s [%s] user=%s", entry.wal_id, entry.operation, entry.user_id)
-        self.compact_if_large()  # P1-17：锁外体积触发
+        """Append an fsynced SHA-256 chained, sequenced record under the lock."""
+        try:
+            _validate_entry(entry)
+        except (ValueError, TypeError) as exc:
+            raise WALIntegrityError(f"invalid WAL entry: {exc}") from exc
+        with self._write_lock, _file_lock(self.lock_file, exclusive=True):
+            entries, seq, previous = self._read_locked()
+            target = entry.payload.get("target_wal_id")
+            if target:
+                if target not in entries:
+                    raise WALIntegrityError("orphan status update")
+                if entries[target].status == "committed" and entry.payload["updated_status"] != "committed":
+                    raise WALIntegrityError("committed intent cannot reopen")
+            elif entry.wal_id in entries:
+                raise WALIntegrityError("duplicate intent ID")
+            row = _envelope(entry, seq + 1, previous)
+            with open(self.wal_file, "a", encoding="utf-8") as handle:
+                handle.write(_canonical(row) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            _fsync_directory(self.wal_dir)
+        self.compact_if_large()
         return entry.wal_id
 
-    def mark_status(self, wal_id: str, status: Literal["committed", "failed"], error: str = "") -> None:
-        """记录状态变更（以新行追加形式，保障只追加写性能）。"""
-        entry = WALEntry(
-            wal_id=wal_id,
-            status=status,
-            error=error,
-            operation="update",
-            payload={"target_wal_id": wal_id, "updated_status": status},
-        )
-        self.append(entry)
+    def mark_status(self, wal_id: str, status, error: str = "", *, patch=None) -> None:
+        payload = {"target_wal_id": wal_id, "updated_status": status}
+        if patch is not None:
+            payload["patch"] = patch
+        self.append(WALEntry(wal_id=wal_id, status=status, error=error,
+                             operation="update", payload=payload))
 
-    # v20.3.2 正式版（P1-17 · Gemini P0-1）：账本只追加不收敛 —— 每条写 + 每次状态更新
-    # 各一行，无界增长；且 get_pending_entries 每次全量 O(n) 解析。compaction 把终态条目
-    # 与其状态行折叠/丢弃，pending 一条不丢，tmp 写 + fsync + os.replace 原子替换。
+    def checkpoint(self, wal_id: str, **patch) -> None:
+        """Durably retain a delete plan/progress on the original intent."""
+        self.mark_status(wal_id, "pending", patch=patch)
+
     COMPACT_SIZE_TRIGGER = 10 * 1024 * 1024
 
     def compact(self, keep_recent_seconds: float = 86400.0) -> Dict[str, Any]:
-        """收敛账本：pending 全留；终态条目只留最近 keep_recent_seconds 内的（状态折叠进条目）。"""
-        with self._write_lock:
-            with _file_lock(self.lock_file, exclusive=True):
-                try:
-                    before = self.wal_file.stat().st_size
-                except FileNotFoundError:
-                    return {"kept": 0, "dropped": 0, "unparsable_kept": 0, "bytes_before": 0, "bytes_after": 0}
-                entries_by_id: Dict[str, WALEntry] = {}
-                order: List[str] = []
-                status_updates: Dict[str, tuple] = {}
-                bad = 0
-                bad_lines: List[str] = []
-                try:
-                    with open(self.wal_file, encoding="utf-8") as f:
-                        for line in f:
-                            entry = WALEntry.from_json(line)
-                            if not entry:
-                                if line.strip():
-                                    bad += 1
-                                    # 保留坏行；get_pending_entries 会把它报告为未知完整性状态。
-                                    bad_lines.append(line.rstrip("\n"))
-                                continue
-                            tgt = entry.payload.get("target_wal_id")
-                            if tgt:
-                                status_updates[tgt] = (entry.payload.get("updated_status", ""),
-                                                       entry.payload.get("error", "") or entry.error)
-                            else:
-                                if entry.wal_id not in entries_by_id:
-                                    order.append(entry.wal_id)
-                                entries_by_id[entry.wal_id] = entry
-                except (OSError, UnicodeError) as exc:
-                    raise WALIntegrityError(f"读取 WAL 失败: {exc}") from exc
-                now = time.time()
-                kept: List[WALEntry] = []
-                dropped = 0
-                for wid in order:
-                    ent = entries_by_id[wid]
-                    final_status, err = status_updates.get(wid, (ent.status, ent.error))
-                    if final_status:
-                        ent.status = final_status  # type: ignore[assignment]
-                    if err:
-                        ent.error = err
-                    if ent.status == "pending" or (now - float(ent.timestamp or 0)) < keep_recent_seconds:
-                        kept.append(ent)
-                    else:
-                        dropped += 1
-                tmp = self.wal_file.with_name(self.wal_file.name + ".tmp")
-                with open(tmp, "w", encoding="utf-8") as f:
-                    for ent in kept:
-                        f.write(ent.to_json() + "\n")
-                    for raw in bad_lines:
-                        f.write(raw + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, self.wal_file)
-                _fsync_directory(self.wal_dir)
-                after = self.wal_file.stat().st_size
+        with self._write_lock, _file_lock(self.lock_file, exclusive=True):
+            entries, seq, _ = self._read_locked()
+            before = self.wal_file.stat().st_size if self.wal_file.exists() else 0
+            kept = [e for e in entries.values() if e.status != "committed" or time.time() - e.timestamp < keep_recent_seconds]
+            # Preserve the exact pre-migration ledger (including its old status
+            # records). No tombstone retention or failed-intent purge occurs.
+            if before and self._has_legacy:
+                backup = self.wal_file.with_name(self.wal_file.name + ".pre-f04")
+                if not backup.exists():
+                    with open(self.wal_file, "rb") as src, open(backup, "xb") as dst:
+                        dst.write(src.read()); dst.flush(); os.fsync(dst.fileno())
+                    _fsync_directory(self.wal_dir)
+            tmp = self.wal_file.with_name(self.wal_file.name + ".tmp")
+            previous = ""
+            with open(tmp, "w", encoding="utf-8") as handle:
+                for entry in kept:
+                    seq += 1
+                    row = _envelope(entry, seq, previous)
+                    previous = row["checksum"]
+                    handle.write(_canonical(row) + "\n")
+                handle.flush(); os.fsync(handle.fileno())
+            os.replace(tmp, self.wal_file)
+            _fsync_directory(self.wal_dir)
+            after = self.wal_file.stat().st_size
             self.compactions += 1
-            # 滞回：账本若全是近期条目，收敛后仍可能 > 阈值；不设滞回会每次 append 重写整个文件
             self._compact_floor = after * 2 if after > self.COMPACT_SIZE_TRIGGER else 0
-            if bad:
-                logger.warning("WAL compaction：%d 条坏行已原样保留（需人工核查格式损坏来源）", bad)
-            if dropped or bad:
-                logger.info("WAL compaction：留 %d 丢 %d（坏行保留 %d）%d→%d 字节", len(kept), dropped, bad, before, after)
-            return {"kept": len(kept), "dropped": dropped, "unparsable_kept": bad,
+            return {"kept": len(kept), "dropped": len(entries) - len(kept), "unparsable_kept": 0,
                     "bytes_before": before, "bytes_after": after}
 
-    def compact_if_large(self) -> Optional[Dict[str, Any]]:
-        """append 后的体积触发（锁外调用：_write_lock 不可重入）。"""
+    def compact_if_large(self):
         try:
             if self.wal_file.exists() and self.wal_file.stat().st_size > max(self.COMPACT_SIZE_TRIGGER, self._compact_floor):
                 return self.compact()
         except Exception as exc:
-            logger.warning("WAL 体积触发 compaction 失败（留账）: %s", exc)
+            logger.warning("WAL compaction failed; original preserved: %s", exc)
         return None
 
-    def get_pending_entries(self) -> List[WALEntry]:
-        """读取所有未提交的有效操作。
-
-        A malformed row or read failure is an integrity failure, never an empty
-        pending list.  Returning ``[]`` here would allow startup reconciliation
-        to report a healthy ledger while an operation is hidden behind a bad row.
-        """
-        entries_by_id: Dict[str, WALEntry] = {}
-        status_updates: Dict[str, str] = {}
-
+    def entries(self):
         with _file_lock(self.lock_file, exclusive=False):
-            try:
-                try:
-                    self.wal_file.stat()
-                except FileNotFoundError:
-                    return []
-                with open(self.wal_file, encoding="utf-8") as f:
-                    for line_no, line in enumerate(f, 1):
-                        entry = WALEntry.from_json(line)
-                        if not entry:
-                            if line.strip():
-                                raise WALIntegrityError(
-                                    f"WAL 第 {line_no} 行无法解析；原文保留，暂停自动对账"
-                                )
-                            continue
-                        if entry.payload.get("target_wal_id"):
-                            status_updates[entry.payload["target_wal_id"]] = entry.payload.get("updated_status", "")
-                        else:
-                            entries_by_id[entry.wal_id] = entry
-            except WALIntegrityError:
-                raise
-            except (OSError, UnicodeError) as exc:
-                raise WALIntegrityError(f"读取 WAL 失败: {exc}") from exc
+            return list(self._read_locked()[0].values())
 
-        pending = []
-        for wid, ent in entries_by_id.items():
-            final_status = status_updates.get(wid, ent.status)
-            if final_status == "pending":
-                pending.append(ent)
-        return pending
+    def get_pending_entries(self) -> List[WALEntry]:
+        # Historical failed rows are unresolved work, not disposable terminals.
+        return [e for e in self.entries() if e.status in {"pending", "failed"}]
+
+    def recovery_status(self):
+        """Read-only integration interface for health/startup. No backend I/O."""
+        try:
+            entries = self.entries()
+            unresolved = [e for e in entries if e.status != "committed"]
+            return {"integrity": "ok", "pending": len(unresolved),
+                    "failed": sum(e.status == "failed" for e in unresolved),
+                    "needs_attention": bool(unresolved),
+                    "operations": [{"wal_id": e.wal_id, "operation": e.operation,
+                                    "status": e.status, "has_error": bool(e.error)} for e in unresolved]}
+        except WALIntegrityError as exc:
+            return {"integrity": "unknown", "pending": None, "failed": None,
+                    "needs_attention": True, "operations": [], "error": str(exc)}
 
 
 # ── 多仓原子级联删除协调器 ─────────────────────────────────────────
 
+@_owned_mutation
 def cascade_delete_memory(
     memory_id: str,
     user_id: str = DEFAULT_USER_ID,
@@ -518,7 +677,7 @@ def cascade_delete_memory(
     user_id = scope.user_id
     bank_id = scope.bank_id
     wal = WALEngine.get_instance()
-    wal_id = wal.append(WALEntry(
+    wal_id = _begin_delete(wal, WALEntry(
         user_id=user_id,
         operation="delete",
         payload={"memory_id": memory_id, "user_id": user_id, "bank_id": bank_id},
@@ -526,6 +685,7 @@ def cascade_delete_memory(
 
     res = {
         "memory_id": memory_id,
+        "wal_id": wal_id,
         "user_id": user_id,
         "bank_id": bank_id,
         "mem0_vector": False,
@@ -551,6 +711,13 @@ def cascade_delete_memory(
     res["raw_handle_hash"] = _raw_hash or None
 
     try:
+        from ducky.mutation_journal import erase_target
+        try:
+            res["journal_erasure"] = erase_target(user_id, bank_id, memory_id)
+        except Exception as exc:
+            _layer_failed("mutation_journal", exc)
+            wal.mark_status(wal_id, "pending", error="journal erasure failed")
+            return {"status": "failed", "details": res, "failed_layers": _failed_layers}
         # 0z. 🔴P0-4b（v19.4.1 实机冒烟）：memory_id 形如 "verbatim:<n>" 时，
         #     这是 /search 返回原文证据时给出的句柄 —— 调用方手里只有它。
         #     此类条目往往没有对应的 mem0 记忆，走下面的常规链一条也删不掉
@@ -582,9 +749,32 @@ def cascade_delete_memory(
         _derived_keys = _derived_source_keys(memory_id, user_id, bank_id,
                                              _content_for_verbatim)
 
-        # 0. 🪦 tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
-        #    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。
-        _snapshot_before_cascade_delete(memory_id, user_id, bank_id, res)
+        # Preserve the original complete snapshot and text across partial
+        # retries; otherwise an already-deleted FTS layer loses the local key.
+        original = next(e for e in wal.entries() if e.wal_id == wal_id)
+        saved = original.payload.get("delete_snapshot") or {}
+        if saved:
+            res["tombstone_id"] = saved.get("tombstone_id")
+            if res["tombstone_id"]:
+                snapshot_conn = get_facts_conn()
+                try:
+                    predicate, params = scope_clause(make_scope(user_id, bank_id))
+                    previous_snapshot = snapshot_conn.execute(
+                        "SELECT content_snapshot FROM tombstones WHERE tombstone_id=?" + predicate,
+                        [res["tombstone_id"], *params]).fetchone()
+                    if previous_snapshot is None:
+                        raise WALIntegrityError("recovery snapshot missing; refusing destructive replay")
+                    _content_for_verbatim = previous_snapshot[0] or _content_for_verbatim
+                finally:
+                    snapshot_conn.close()
+        else:
+            try:
+                _snapshot_before_cascade_delete(memory_id, user_id, bank_id, res)
+            except Exception as exc:
+                _layer_failed("snapshot", exc)
+                wal.mark_status(wal_id, "pending", error="snapshot unavailable")
+                return {"status": "failed", "details": res, "failed_layers": _failed_layers}
+            wal.checkpoint(wal_id, delete_snapshot={"tombstone_id": res["tombstone_id"]})
 
         # 1. mem0 向量删除（实现在 _cascade_single_vector）。**获取后端**这道
         #    边界例外地留在编排层：守卫
@@ -628,8 +818,8 @@ def cascade_delete_memory(
         _cascade_single_verbatim(user_id, bank_id, memory_id, _content_for_verbatim,
                                  res, _layer_failed)
         _cascade_single_workspace(user_id, bank_id, memory_id, res, _layer_failed)
-        _cascade_single_local_vector(memory_id, res)
-        _cascade_single_verbatim_local(user_id, bank_id, _content_for_verbatim, res)
+        _cascade_single_local_vector(memory_id, res, _layer_failed)
+        _cascade_single_verbatim_local(user_id, bank_id, _content_for_verbatim, res, _layer_failed)
 
         # 9. f0.3 (C1): session summaries derived from this item go too
         #    (right to delete covers derived records; tombstoned, restorable).
@@ -647,7 +837,7 @@ def cascade_delete_memory(
                 "failed_layers": _failed_layers,
                 "not_cleared": delete_chain_exemptions()}
     except Exception as exc:
-        wal.mark_status(wal_id, "failed", error=str(exc))
+        wal.mark_status(wal_id, "pending", error=str(exc))
         logger.error("级联删除记忆失败: %s", exc)
         raise
 
@@ -697,6 +887,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "store:verbatim":   ("clean",  "cascade_delete_verbatim（§6）"),
     "store:workspace":  ("clean",  "ws_clear 内存+SQLite 双清（§7，v20.1 整改轮补齐 —— 外审 z P1-01：此前已删内容以 found/workspace_hit 复活）"),
     "store:qdrant_local": ("clean", "v20.2 自动挡本地向量库（mem0_local，512 维）：(user_id, bank_id) 谓词删除（§14）；单删按同源 id 精确删"),
+    "store:mutation_journal": ("clean", "f0.4：forgetting_guard 下 erase_scope 擦除输入/结果正文并取消待执行任务；保留不含正文的 forgotten 回执；单删使用 erase_target"),
     "pending_embeddings": ("clean", "v20.2 自动挡欠账账本：载荷含用户原文，(user_id, bank_id) 谓词删除（§15）——欠着的债也是债，删除承诺覆盖它"),
     # ── 显式申报的已知残留（申报不是沉默；沉默才是本矩阵要消灭的东西）──
     "observations":       ("clean",  "R-18(v20.1.1)：user 轴谓词删除（§12）——表无 bank 列，user 轴是它拥有的全部作用域表达力；v7 存量空 user_id 行不属于任何租户，不动"),
@@ -724,7 +915,6 @@ def _count_facts_table(conn: Any, table: str, scope: Any) -> tuple:
                         (table,)).fetchone():
         return 0, "absent"
     from ducky.bank_contract import visible_user_clause
-    from ducky.scope_sql import scope_clause
     cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
     count_sql = f'SELECT COUNT(*) FROM "{table}" WHERE 1=1'
     if {"user_id", "bank_id"} <= cols:
@@ -785,6 +975,7 @@ def not_cleared_with_counts(scope: Any) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+@_owned_mutation
 def cascade_delete_all(
     user_id: str,
     confirm: bool = False,
@@ -809,7 +1000,7 @@ def cascade_delete_all(
     if not confirm:
         raise ValueError(f"清空用户({user_id})全量记忆必须传递 confirm=True")
     wal = WALEngine.get_instance()
-    wal_id = wal.append(WALEntry(
+    wal_id = _begin_delete(wal, WALEntry(
         user_id=user_id,
         operation="delete_all",
         payload={"user_id": user_id, "bank_id": bank_id},
@@ -846,6 +1037,13 @@ def cascade_delete_all(
     _layer_failed = _make_layer_failure_recorder(_failed_layers)
 
     try:
+        from ducky.mutation_journal import erase_scope
+        try:
+            res["journal_erasure"] = erase_scope(user_id, bank_id)
+        except Exception as exc:
+            _layer_failed("mutation_journal", exc)
+            wal.mark_status(wal_id, "pending", error="journal erasure failed")
+            return {"status": "failed", "details": res, "failed_layers": _failed_layers}
         # ``evolve`` and the salience ledger do not historically carry a
         # tenant column, so collect every exact identifier *before* deleting
         # anything.  Never use a user-only query for this set: the same
@@ -942,7 +1140,7 @@ def cascade_delete_all(
                 "failed_layers": _failed_layers,
                 "not_cleared": not_cleared_with_counts(scope)}
     except Exception as exc:
-        wal.mark_status(wal_id, "failed", error=str(exc))
+        wal.mark_status(wal_id, "pending", error=str(exc))
         logger.error("级联清空全部记忆失败: %s", exc)
         raise
 
@@ -975,29 +1173,51 @@ def _cascade_single_verbatim_handle(
     turn's content-derived local vector point (§8b; the handle branch used to
     leave it recallable in the lite/local gear).
     """
-    # Resolved before the delete: content and session of the row.
-    keys = _derived_source_keys(memory_id, user_id, bank_id, "")
-    reason, actor = _CASCADE_ORIGIN.get() or ("cascade_delete_verbatim", "wal_engine")
-    try:
-        from ducky.tombstone import snapshot_before_delete
-        res["tombstone_id"] = snapshot_before_delete(
-            memory_id,
-            user_id=user_id,
-            bank_id=bank_id,
-            reason=reason,
-            actor=actor,
-        )
-    except Exception as te:
-        logger.debug("tombstone 快照跳过: %s", te)
+    # A retry must retain the original content-derived local key even after
+    # the primary turn has already been removed.
+    original = next(e for e in wal.entries() if e.wal_id == wal_id)
+    saved = original.payload.get("delete_snapshot")
+    if saved is not None:
+        res["tombstone_id"] = saved.get("tombstone_id")
+        keys = saved.get("source_keys", {})
+        if res["tombstone_id"]:
+            conn = get_facts_conn()
+            try:
+                predicate, params = scope_clause(make_scope(user_id, bank_id))
+                row = conn.execute("SELECT content_snapshot FROM tombstones WHERE tombstone_id=?" + predicate,
+                                   [res["tombstone_id"], *params]).fetchone()
+                if row is None:
+                    raise WALIntegrityError("verbatim recovery snapshot missing")
+                keys["content"] = row[0]
+            finally:
+                conn.close()
+    else:
+        keys = _derived_source_keys(memory_id, user_id, bank_id, "") or {}
+        reason, actor = _CASCADE_ORIGIN.get() or ("cascade_delete_verbatim", "wal_engine")
+        try:
+            from ducky.tombstone import snapshot_before_delete
+            res["tombstone_id"] = snapshot_before_delete(
+                memory_id, user_id=user_id, bank_id=bank_id,
+                reason=reason, actor=actor, strict=True)
+        except Exception as exc:
+            layer_failed("snapshot", exc)
+            wal.mark_status(wal_id, "pending", error="snapshot unavailable")
+            return {"status": "failed", "details": res, "failed_layers": failed_layers}
+        wal.checkpoint(wal_id, delete_snapshot={
+            "tombstone_id": res["tombstone_id"],
+            "source_keys": {"refs": sorted(keys.get("refs", [])), "sessions": sorted(keys.get("sessions", []))}})
     try:
         from ducky.verbatim_vault import delete_verbatim_by_id
         res["verbatim"] = delete_verbatim_by_id(user_id, memory_id, bank_id=bank_id)
+        from ducky.tombstone import capture_verbatim_rows
+        if capture_verbatim_rows(memory_id, make_scope(user_id, bank_id)):
+            raise RuntimeError("verbatim delete did not clear its selected rows")
     except Exception as ve:
         logger.warning("原文层按 id 删除失败: %s", ve)
         layer_failed("verbatim", ve)
-    if int(res.get("verbatim") or 0) > 0 and (keys or {}).get("content"):
-        _cascade_single_verbatim_local(user_id, bank_id, keys["content"], res)
-    if int(res.get("verbatim") or 0) > 0:
+    if (keys or {}).get("content"):
+        _cascade_single_verbatim_local(user_id, bank_id, keys["content"], res, layer_failed)
+    if int(res.get("verbatim") or 0) > 0 or saved is not None:
         mem, backend_ok = _derived_lookup_memory()
         _cascade_single_derived(mem, make_scope(user_id, bank_id), memory_id, keys,
                                 res, layer_failed, backend_ok=backend_ok)
@@ -1008,7 +1228,7 @@ def _cascade_single_verbatim_handle(
         _outcome = ("failed" if {f["layer"] for f in failed_layers}
                     & _CRITICAL_LAYERS else "partial")
         if _outcome == "failed":
-            wal.mark_status(wal_id, "failed", error="verbatim")
+            wal.mark_status(wal_id, "pending", error="verbatim")
     else:
         _outcome = "committed" if res["matched"] else "not_found"
         wal.mark_status(wal_id, "committed")
@@ -1022,7 +1242,7 @@ def _snapshot_before_cascade_delete(
     memory_id: str, user_id: str, bank_id: str, res: Dict[str, Any]
 ) -> None:
     """tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
-    误删可一键恢复。快照失败只记日志，绝不阻断删除主链路。
+    误删可一键恢复。读取未知态阻断可恢复删除。
 
     f0.3 (C1): a delete issued by the derived-summary cascade is attributed
     as ``cascade_delete_derived`` so restore tooling can select it."""
@@ -1035,9 +1255,10 @@ def _snapshot_before_cascade_delete(
             bank_id=bank_id,
             reason=reason,
             actor=actor,
+            strict=True,
         )
-    except Exception as te:
-        logger.debug("tombstone 快照跳过: %s", te)
+    except Exception:
+        raise
 
 
 def _cascade_single_vector(
@@ -1142,7 +1363,6 @@ def _delete_pending_ids(scope: Any, ids: list) -> int:
     ids = [int(i) for i in (ids or [])]
     if not ids:
         return 0
-    from ducky.scope_sql import scope_clause
     frag, params = scope_clause(scope, flavor="canonical")
     conn = get_facts_conn()
     try:
@@ -1259,9 +1479,10 @@ def _cascade_single_fts(
         from ducky.text_fts import get_text_conn
         tconn = get_text_conn()
         storage_id = scoped_storage_key(memory_id, scope)
+        predicate, params = scope_clause(scope)
         _fc = tconn.execute(
-            "DELETE FROM memories WHERE id IN (?, ?) AND user_id=? AND bank_id=?",
-            (storage_id, f"fact:{storage_id}", scope.user_id, scope.bank_id),
+            "DELETE FROM memories WHERE id IN (?, ?)" + predicate,
+            [storage_id, f"fact:{storage_id}", *params],
         ).rowcount
         tconn.commit()
         tconn.close()
@@ -1291,63 +1512,19 @@ def _cascade_single_facts(
         # 这个形状（raw_drawer.py 里 `fact_key = f"raw:{content_hash}"`），
         # 而前三个键拿的是完整句柄，于是拼出 `raw:raw-<hash>-<rand>`，
         # 与库里的键永远差一截。实机冒烟里 `"facts": 0` 就是它。
-        exact_keys = (memory_id, f"fact:{memory_id}", f"raw:{memory_id}")
-        _raw_fact_key = f"raw:{raw_hash}" if raw_hash else None
-        # 本地自算 storage_id，**不与 FTS 层共用变量**：那一个定义在 FTS 的
-        # try 内部，一旦 get_text_conn() 抛错就根本没被赋值，这里再引用
-        # 就是 NameError —— 而它会被本块的 except 吞掉，表现为
-        # 「facts 清理整段被跳过」，且日志只有一行 debug。
+        from ducky.tombstone import facts_delete_selection, _fact_rows, SnapshotIncomplete
         storage_id = scoped_storage_key(memory_id, scope)
-        # 🔴v20：作用域必须进入删除条件本身。
-        #
-        # 旧写法分两支，两支都漏了 bank_id，且 default 支**一个作用域
-        # 条件都没有**：
-        #
-        #     if user_id == "default":
-        #         DELETE FROM facts WHERE id=? OR fact_key=? ...   # 全库
-        #     else:
-        #         ... AND (source=? OR agent_id=?)                 # 无 bank
-        #
-        # 后果分两级。默认用户删 id=X，会把**所有租户、所有域**里叫 X
-        # 的行一起删掉；具名租户删 X，会把自己 work 域和 home 域的 X
-        # 一起删掉 —— 域隔离恰恰是 v20 的立身之本，却在唯一不可逆的
-        # 那条路径上失效。而 `res["facts"] = c1` 只回报一个 rowcount，
-        # 多删了照样是个好看的数字，不抛错、不告警：静默数据丢失。
-        #
-        # 删除路径的取舍与读取相反：少删可以重试，多删无法挽回。
-        # 因此这里一律走**严格作用域**，渠道标记只对「确实没有正规主人」
-        # 的老行在默认域内回落，且回落绝不越过已有归属。
-        # 🔴v20.0：作用域谓词只许有一处实现。
-        #
-        # 这里曾把 legacy_fact_scope_predicate 的 SQL 连注释一起**手抄
-        # 一遍**，于是同一份契约有了两个副本。本文件顶部明明已经 import 了
-        # 那个函数、cascade_delete_all 也在调它，唯独这条单条删除路径走的
-        # 是复制品。后果是可以预料的：占位符口径在共享函数里放宽之后，
-        # 手抄件没跟上，单条删除继续对存量行失明 —— 删除返回 ok、
-        # rowcount=0，又是一次静默失败。
-        #
-        # 契约抄两遍，就一定会改一遍漏一遍。改成调用，副本消失。
-        scope_sql, own_params = legacy_fact_scope_predicate(scope)
-        # 🧬 v20.5.0 正式版（用户审计 🟡-5b）：删除前先取将删行的 id，
-        # 删除后同事务补 DELETE 终链——「删过什么」必须留痕。
-        _del_ids = [
-            r[0] for r in conn.execute(
-                f"""SELECT id FROM facts
-                   WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=? OR
-                          (? IS NOT NULL AND fact_key=?))
-                     AND (1=1{scope_sql})""",
-                (memory_id, exact_keys[0], exact_keys[1], exact_keys[2],
-                 _raw_fact_key, _raw_fact_key, *own_params),
-            ).fetchall()
-        ]
-        c1 = conn.execute(
-            f"""DELETE FROM facts
-               WHERE (id=? OR fact_key=? OR fact_key=? OR fact_key=? OR
-                      (? IS NOT NULL AND fact_key=?))
-                 AND (1=1{scope_sql})""",
-            (memory_id, exact_keys[0], exact_keys[1], exact_keys[2],
-             _raw_fact_key, _raw_fact_key, *own_params),
-        ).rowcount
+        where, params = facts_delete_selection(memory_id, scope)
+        conn.execute("BEGIN IMMEDIATE")
+        current = [dict(r) for r in conn.execute("SELECT * FROM facts WHERE " + where, params).fetchall()]
+        tid = res.get("tombstone_id")
+        saved = conn.execute("SELECT facts_snapshot FROM tombstones WHERE tombstone_id=?", (tid,)).fetchone() if tid else None
+        snapshot = _fact_rows(saved[0]) if saved and saved[0] else []
+        if any(row not in snapshot for row in current):
+            conn.rollback()
+            raise SnapshotIncomplete("facts changed since snapshot; preserving unmatched rows")
+        _del_ids = [r["id"] for r in current]
+        c1 = conn.execute("DELETE FROM facts WHERE " + where, params).rowcount
         try:
             from ducky.memory_lineage import record_terminal_lineage
             for _fid in _del_ids:
@@ -1390,8 +1567,13 @@ def _cascade_single_facts(
         conn.close()
         res["facts"] = c1
     except Exception as e:
+        if "conn" in locals():
+            conn.rollback()
         logger.warning("facts.db 清理失败: %s", e)
         layer_failed("facts", e)
+    finally:
+        if "conn" in locals():
+            conn.close()
 
 
 def _cascade_single_salience(
@@ -1451,6 +1633,9 @@ def _cascade_single_verbatim(
             res["verbatim"] = delete_verbatim_by_content(
                 user_id, content, bank_id=bank_id
             )
+            from ducky.tombstone import capture_verbatim_rows
+            if capture_verbatim_rows(memory_id, make_scope(user_id, bank_id), content):
+                raise RuntimeError("verbatim delete did not clear its selected rows")
         else:
             logger.debug("原文层清理跳过：未能定位该记忆正文 (%s)", memory_id)
     except Exception as ve:
@@ -1477,22 +1662,22 @@ def _cascade_single_workspace(
         layer_failed("workspace", we)
 
 
-def _cascade_single_local_vector(memory_id: str, res: Dict[str, Any]) -> None:
+def _cascade_single_local_vector(memory_id: str, res: Dict[str, Any], layer_failed) -> None:
     """§8 本地向量单删（v20.2 自动挡 WP-F）。双索引同源 id ——
     云侧删了本地不删，降挡时已删内容会从备胎索引复活。
 
-    本层失败**不进**失败账本（原实现即如此）：本地索引是备胎，
-    delete_all 的 §14 按域谓词删仍是全量兜底。
+    f0.4：本层承载正文，任何删除失败进入原事务，等待修复重试。
     """
     try:
         from ducky.dual_index import delete_local
-        res["local_vector_deleted"] = delete_local([memory_id]) > 0
+        ids = res.get("raw_handle_resolved_ids") if res.get("raw_handle_hash") else [memory_id]
+        res["local_vector_deleted"] = delete_local(ids or [], user_id=res["user_id"], bank_id=res["bank_id"]) > 0
     except Exception as e:
-        logger.debug("本地向量单删跳过: %s", e)
+        layer_failed("local_vectors", e)
 
 
 def _cascade_single_verbatim_local(
-    user_id: str, bank_id: str, content: str, res: Dict[str, Any]
+    user_id: str, bank_id: str, content: str, res: Dict[str, Any], layer_failed
 ) -> None:
     """§8b verbatim 本地点（v20.2.1 外审 R3）：这类点的 id 由 (原文, 域)
     派生、不与 memory_id 同源，§8 的钥匙够不着 —— 搭车 §0a 抓到的正文
@@ -1504,9 +1689,9 @@ def _cascade_single_verbatim_local(
         if content:
             from ducky.dual_index import delete_local as _dl, verbatim_local_pid
             _vpid = verbatim_local_pid(user_id, bank_id, content)
-            res["verbatim_local_vector_deleted"] = _dl([_vpid]) > 0
+            res["verbatim_local_vector_deleted"] = _dl([_vpid], user_id=user_id, bank_id=bank_id) > 0
     except Exception as e:
-        logger.debug("verbatim 本地点单删跳过: %s", e)
+        layer_failed("local_vectors", e)
 
 
 def _single_delete_matched(res: Dict[str, Any]) -> bool:
@@ -1549,7 +1734,7 @@ def _single_delete_verdict(
         wal.mark_status(wal_id, "committed")
     elif _names & _CRITICAL_LAYERS:
         outcome = "failed"
-        wal.mark_status(wal_id, "failed",
+        wal.mark_status(wal_id, "pending",
                         error="; ".join(sorted(_names)) or "unknown")
     else:
         # **刻意不 mark**：留在 pending，让重放还有机会（与全量删除一致）。
@@ -1613,14 +1798,13 @@ def _cascade_all_fts(
 
         tconn = get_text_conn()
         try:
+            predicate, params = scope_clause(scope)
             rows = tconn.execute(
-                "SELECT id FROM memories WHERE user_id=? AND bank_id=?",
-                (scope.user_id, scope.bank_id),
+                "SELECT id FROM memories WHERE 1=1" + predicate, params,
             ).fetchall()
             tenant_ids.update(str(r[0]) for r in rows if r[0])
             c_fts = tconn.execute(
-                "DELETE FROM memories WHERE user_id=? AND bank_id=?",
-                (scope.user_id, scope.bank_id),
+                "DELETE FROM memories WHERE 1=1" + predicate, params,
             ).rowcount or 0
             tconn.commit()
             res["fts_cleared"] = c_fts
@@ -1904,43 +2088,39 @@ def _cascade_all_observations(scope: Any, res: Dict[str, Any], layer_failed: Any
     全文。表只有 user 轴（无 bank 列——老账本），user 轴就是它拥有的全部
     作用域表达力；v7 存量空 user_id 行不属于任何租户，不动。表未建过 =
     该库从未启用，跳过不告警。"""
-    try:
-        oconn = get_facts_conn()
-        try:
-            if oconn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='observations'"
-            ).fetchone():
-                ocols = {r[1] for r in oconn.execute("PRAGMA table_info(observations)")}
-                if "user_id" in ocols:
-                    cur = oconn.execute(
-                        "DELETE FROM observations WHERE user_id=?", (scope.user_id,))
-                    oconn.commit()
-                    res["observations_deleted"] = int(cur.rowcount or 0)
-        finally:
-            oconn.close()
-    except Exception as e:
-        logger.warning("observations delete_all 清理失败: %s", e)
-        layer_failed("observations", e)
+    _cascade_derived_stores(
+        "observations", (get_obs_conn, get_facts_conn),
+        "user_id=?", (scope.user_id,), res, layer_failed)
 
 
 def _cascade_all_scenes(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
     """§13 场景库（v20.1.1 R-18）。v20 起自带全轴列，谓词直删。"""
-    try:
-        sconn = get_facts_conn()
+    _cascade_derived_stores(
+        "scenes", (get_scenes_conn, get_facts_conn),
+        "user_id=? AND bank_id=?", (scope.user_id, scope.bank_id), res, layer_failed)
+
+
+def _cascade_derived_stores(table, connectors, predicate, parameters, res, layer_failed):
+    """Delete from the writer's independent DB and historical co-located table.
+
+    SQL identifiers/predicates are fixed by the two callers above. A failed
+    physical store keeps the WAL unsettled even if the other store succeeds.
+    Legacy unowned observations remain untouched by the exact owner predicate.
+    """
+    res[table + "_deleted"] = 0
+    for connect in connectors:
         try:
-            if sconn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scenes'"
-            ).fetchone():
-                cur = sconn.execute(
-                    "DELETE FROM scenes WHERE user_id=? AND bank_id=?",
-                    (scope.user_id, scope.bank_id))
-                sconn.commit()
-                res["scenes_deleted"] = int(cur.rowcount or 0)
-        finally:
-            sconn.close()
-    except Exception as e:
-        logger.warning("scenes delete_all 清理失败: %s", e)
-        layer_failed("scenes", e)
+            conn = connect()
+            try:
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    with conn:
+                        cur = conn.execute(f"DELETE FROM {table} WHERE {predicate}", parameters)
+                    res[table + "_deleted"] += int(cur.rowcount or 0)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("%s delete_all store cleanup failed: %s", table, exc)
+            layer_failed(table, exc)
 
 
 def _cascade_all_v21_governance(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
@@ -1948,8 +2128,6 @@ def _cascade_all_v21_governance(scope: Any, res: Dict[str, Any], layer_failed: A
     两张表都带 (user_id, bank_id) 域键——候选草稿与学到的偏好画像同样
     是租户数据，delete_all 的擦除承诺覆盖它们。
     作用域片段走 scope_clause() canonical（新代码默认入口，零手拼）。"""
-    from ducky.scope_sql import scope_clause
-
     frag, params = scope_clause(scope, flavor="canonical")
     for table, key, base_sql in (
         ("reflection_candidates", "reflection_candidates_deleted",
@@ -2043,7 +2221,7 @@ def _cascade_all_verdict(
         wal.mark_status(wal_id, "committed")
     elif _names & _CRITICAL:
         outcome = "failed"
-        wal.mark_status(wal_id, "failed",
+        wal.mark_status(wal_id, "pending",
                         error="critical layers failed: " + ",".join(sorted(_names & _CRITICAL)))
     else:
         outcome = "partial"
@@ -2054,6 +2232,11 @@ def _cascade_all_verdict(
 
 
 def _pause_reconcile(report: Dict[str, Any], exc: WALIntegrityError) -> Dict[str, Any]:
+    # A partial count obtained before corruption/lock failure is not a current
+    # count. In particular, the normal path's initial zero must never survive.
+    report["remaining"] = None
+    report.setdefault("review_required", [])
+    report.setdefault("reconciled_at", time.time())
     report.update({
         "wal_integrity": "unknown",
         "wal_integrity_error": str(exc)[:240],
@@ -2064,6 +2247,15 @@ def _pause_reconcile(report: Dict[str, Any], exc: WALIntegrityError) -> Dict[str
 
 
 def reconcile_startup() -> Dict[str, Any]:
+    try:
+        wal = WALEngine.get_instance()
+        with _file_lock(wal.wal_dir / "startup.replay.lock", exclusive=True):
+            return _reconcile_owned()
+    except WALIntegrityError as exc:
+        return _pause_reconcile({"pending_count": None, "recovered": 0, "failed": 0}, exc)
+
+
+def _reconcile_owned() -> Dict[str, Any]:
     """服务启动自检与对账自愈。"""
     wal = WALEngine.get_instance()
     report = {
@@ -2072,6 +2264,8 @@ def reconcile_startup() -> Dict[str, Any]:
         "failed": 0,
         "reconciled_at": time.time(),
         "wal_integrity": "ok",
+        "remaining": 0,
+        "review_required": [],
     }
     try:
         pending = wal.get_pending_entries()
@@ -2082,54 +2276,37 @@ def reconcile_startup() -> Dict[str, Any]:
         logger.info("🔍 [WAL Reconcile] 启动对账完成：无挂起事务，数据状态健康")
         return _finish_reconcile(report)
 
-    logger.warning("🔍 [WAL Reconcile] 发现 %d 条未决 WAL 事务，开始自动恢复...", len(pending))
     for ent in pending:
+        token = _REPLAY_ENTRY.set(ent)
         try:
-            # v20.0：重放必须恢复完整作用域。payload 里的 bank_id 是权威值
-            # （v19 旧条目没有该键，回落到条目字段再回落 default）。
-            replay_bank = ent.payload.get("bank_id") or ent.bank_id or DEFAULT_BANK_ID
-            # 🔴v20.3.2-beta（外审 P1-3）：**重放完必须闭合原条目。**
-            # cascade_delete_* 内部铸的是**新**的 wal_id、committed 的是那个新 id；
-            # 原条目 ent.wal_id 从来没人标过。于是它永久 pending：每次重启重放一次、
-            # WAL 只增不减、report["recovered"] 是假账、/health 的 WAL 水位失真。
-            # 级联删除幂等，所以这不是数据损坏，而是**账本永不收敛** ——
-            # 一个报告「已恢复」却没闭合的账本，比没有账本更坏。
+            replay_bank = ent.payload.get("bank_id") or ent.bank_id
             if ent.operation == "delete":
-                mid = ent.payload.get("memory_id")
-                if mid:
-                    cascade_delete_memory(mid, user_id=ent.user_id, bank_id=replay_bank)
-                    wal.mark_status(ent.wal_id, "committed")
-                    report["recovered"] += 1
-                else:
-                    # 没有 memory_id 的 delete 条目无法重放，也不许留在 pending 里
-                    wal.mark_status(ent.wal_id, "failed",
-                                    error="delete entry carries no memory_id")
-                    report["failed"] += 1
+                result = cascade_delete_memory(ent.payload["memory_id"], user_id=ent.user_id, bank_id=replay_bank)
             elif ent.operation == "delete_all":
-                # WAL 条目的存在即证明原调用已通过 confirm 闸门；
-                # 重放时补 confirm=True，所有用户的全量删除都要过确认闸门。
-                cascade_delete_all(user_id=ent.user_id, confirm=True, bank_id=replay_bank)
+                if ent.payload.get("legacy_scope_review_required"):
+                    report.setdefault("review_required", []).append(ent.wal_id)
+                    report["failed"] += 1
+                    continue
+                result = cascade_delete_all(user_id=ent.user_id, confirm=True, bank_id=replay_bank)
+            else:
+                # Ordinary add/update belongs to its durable journal owner.
+                # Keep the historical bytes/intent and report manual work.
+                report["failed"] += 1
+                continue
+            if isinstance(result, dict) and result.get("status") in {"committed", "not_found", "ok"} and not result.get("failed_layers"):
                 wal.mark_status(ent.wal_id, "committed")
                 report["recovered"] += 1
             else:
-                # 记录为无法自动决议的写入，标记 failed 供运维审计
-                wal.mark_status(ent.wal_id, "failed", error="Unresolved startup transaction")
+                wal.mark_status(ent.wal_id, "pending", error="cascade incomplete: " + str((result or {}).get("status")))
                 report["failed"] += 1
         except WALIntegrityError as exc:
-            # Lock/durability failure leaves the transaction outcome unknown;
-            # do not append a misleading terminal status or replay more entries.
             return _pause_reconcile(report, exc)
-        except Exception as err:
-            logger.error("Reconcile 恢复失败 wal_id=%s: %s", ent.wal_id, err)
-            # 失败也要闭合：留在 pending 里等于下次重启再炸一遍，而且账本永不收敛。
-            # 标 failed 供运维审计（与 else 支的处置一致）。
-            try:
-                wal.mark_status(ent.wal_id, "failed", error=f"replay failed: {err}")
-            except WALIntegrityError as exc:
-                return _pause_reconcile(report, exc)
-            except Exception as mark_err:
-                logger.error("Reconcile 无法标记 wal_id=%s: %s", ent.wal_id, mark_err)
+        except Exception as exc:
+            wal.mark_status(ent.wal_id, "pending", error=f"replay failed: {type(exc).__name__}")
             report["failed"] += 1
+        finally:
+            _REPLAY_ENTRY.reset(token)
+    report["remaining"] = len(wal.get_pending_entries())
 
     return _finish_reconcile(report)
 
@@ -2154,8 +2331,11 @@ def _finish_reconcile(report: Dict[str, Any]) -> Dict[str, Any]:
         report["compacted"] = {"error": str(exc)[:120]}
     try:
         from ducky.dual_index import spawn_replay_daemon
-        report["pending_replay_spawned"] = spawn_replay_daemon(
-            source="reconcile_startup")
+        # A pending deletion must settle before background writes can revive
+        # source material. The write-side scope fence independently enforces it.
+        report["pending_replay_spawned"] = (
+            spawn_replay_daemon(source="reconcile_startup")
+            if not report.get("remaining") else False)
     except Exception as exc:
         logger.warning("启动欠账重放挂起失败（留账）: %s", exc)
         report["pending_replay_spawned"] = False

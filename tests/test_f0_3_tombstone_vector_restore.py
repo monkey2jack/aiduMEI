@@ -31,6 +31,8 @@ class _Store:
     """Signature-aligned with mem0.vector_stores.qdrant.Qdrant insert/get/delete."""
 
     def __init__(self):
+        from types import SimpleNamespace
+        self.client = SimpleNamespace(get_collections=lambda: SimpleNamespace(collections=[]))
         self.points: dict = {}
         self.inserts = 0
 
@@ -170,21 +172,25 @@ def test_restore_brings_the_point_back_with_its_original_id(world):
 
 def test_restore_is_idempotent_across_a_partial_first_attempt(world, monkeypatch):
     fake, q = world
-    import ducky.text_fts as fts
     from ducky.tombstone import restore_tombstone
     pid = _memory(fake)
     tid = _delete(pid)
-    real = fts._index_memory
-
-    def broken(memory_id, content, user_id="default", category=None, bank_id="default",
-               memory_type=None):
-        raise sqlite3.OperationalError("database is locked (simulated)")
-
-    monkeypatch.setattr(fts, "_index_memory", broken)
+    import ducky.tombstone as tombstone
+    real_conn = tombstone.get_text_conn
+    class BrokenConnection:
+        def __init__(self):
+            self.conn = real_conn()
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+        def execute(self, sql, *args):
+            if sql.startswith("INSERT INTO memories"):
+                raise sqlite3.OperationalError("database is locked (simulated)")
+            return self.conn.execute(sql, *args)
+    monkeypatch.setattr(tombstone, "get_text_conn", BrokenConnection)
     first = restore_tombstone(tid, user_id="alice", bank_id="work")
     assert first["status"] == "partial" and first["restored"] is False
     assert q("SELECT restored_at FROM tombstones WHERE tombstone_id=?", (tid,))[0]["restored_at"] is None
-    monkeypatch.setattr(fts, "_index_memory", real)
+    monkeypatch.setattr(tombstone, "get_text_conn", real_conn)
     second = restore_tombstone(tid, user_id="alice", bank_id="work")
     assert second["status"] == "ok", second
     assert second["layers"]["vector"] == "already_present"

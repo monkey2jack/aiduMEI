@@ -44,6 +44,40 @@ _API_PORT_FALLBACK = 8767
 
 logger = logging.getLogger("aiduMEM.hot")
 
+
+def _mutation_journal_probe():
+    """Expose durable write debt without payloads or invented zero counts."""
+    from ducky.mutation_journal import journal_health
+    state = journal_health()
+    probe = {
+        "mutation_journal_ok": state.get("status") == "ok",
+        "mutation_journal_status": state.get("status", "unknown"),
+        "mutation_journal_integrity": state.get("integrity", "unknown"),
+        "mutation_journal_automatic_replay": False,
+    }
+    for name in ("counts", "repair_required", "failed_durable_jobs", "error"):
+        if name in state:
+            probe["mutation_journal_" + name] = state[name]
+    return probe
+
+
+def _wal_recovery_probe():
+    from ducky.wal_engine import WALEngine
+    try:
+        state = WALEngine.get_instance().recovery_status()
+        probe = {"wal_engine_ok": not state["needs_attention"],
+                 "wal_integrity": state["integrity"],
+                 "wal_pending_entries": state["pending"],
+                 "wal_failed_entries": state["failed"],
+                 "wal_repair_operations": state["operations"]}
+        if state["needs_attention"]:
+            probe["wal_engine_detail"] = "unresolved operations or unknown WAL integrity"
+        return probe
+    except Exception as exc:
+        return {"wal_engine_ok": False, "wal_integrity": "unknown",
+                "wal_pending_entries": None, "wal_failed_entries": None,
+                "wal_error": type(exc).__name__}
+
 # v21.2.0 写入活性探针的判据阈值。
 # 定阈依据（不是拍脑袋）：实测一个真实在用的部署 24h 检索量约 24 次、
 # 7 天约 169 次。取 5 —— 远低于真实使用量（不会漏报接线错误），
@@ -734,11 +768,9 @@ def register_health_routes(app: FastAPI) -> None:
         # 没有一个在回答「今天该进来的进来了吗」。体检报告全绿的人，
         # 可能已经三天没吃饭。
         #
-        # 判据：把「读」和「写」放在一起比。只读不写是**接线错误**的铁证 ——
-        # 一个真在被使用的记忆系统不可能长期只出不进。
-        #   · 有检索、且窗口内写入为 0        → 降级（接线漏了写钩子）
-        #   · 没检索                          → 不判（没人用，不是故障）
-        #   · 有写入                          → 健康，如实报数
+        # 判据只使用带 session 的对话检索；独立 MCP/REST 允许不带 session。
+        # 足够对话检索却零对话写入才降级；缺少会话样本仅说明无法验证接线。
+        # liveness_ok 表示未检测到缺写，state 才区分已观测读写与无法判断。
         try:
             from ducky.utils import get_facts_conn as _ing_conn_fn
             from datetime import datetime as _idt, timedelta as _itd, timezone as _itz
@@ -819,17 +851,16 @@ def register_health_routes(app: FastAPI) -> None:
             probes["ingest_turn_writes_24h"] = _ing_turn_writes
             probes["ingest_reads_24h"] = _ing_reads
             probes["ingest_conv_reads_24h"] = _ing_conv_reads
+            probes["ingest_min_reads"] = _INGEST_MIN_READS
 
-            # 三态，不是两态。少了中间那一态就会在两个方向上都撒谎：
-            #   红   有人在对话（conv_reads 够）却零对话写入 → 写线断了
-            #   提示 完全没有对话检索、但巡检说明服务活着 → 读线没透传 session，
-            #        既判不了写线，M2 回声抑制也在空转。这时报「写线断了」是
-            #        冤枉人，报「一切正常」是白护栏 —— 只能如实说「读线该升级」。
-            #   绿   其余（含样本不足：没人用不是故障）
+            # 缺少 session 不能证明旧钩子故障，也不能证明宿主接线正常。
+            # 保留显式 unknown 和 warnings，严格接线验收仍须拒绝未知结果。
             _ing_bad = _ing_conv_reads >= _INGEST_MIN_READS and _ing_turn_writes == 0
-            _ing_blind = (_ing_conv_reads == 0 and _ing_reads >= _INGEST_MIN_READS
-                          and _ing_turn_writes == 0)
+            _ing_blind = _ing_conv_reads == 0 and _ing_reads >= _INGEST_MIN_READS
             probes["ingest_liveness_ok"] = not _ing_bad
+            probes["ingest_liveness_state"] = (
+                "missing_writes" if _ing_bad else
+                "unknown" if _ing_conv_reads < _INGEST_MIN_READS else "observed")
             if _ing_bad:
                 DegradationTracker.record_degradation(
                     "ingest_liveness",
@@ -838,16 +869,17 @@ def register_health_routes(app: FastAPI) -> None:
                     "多为后台通路）。宿主多半只挂了注入钩子、没挂写入钩子 —— "
                     "记忆只出不进＝在失忆。现成脚本见 docs/AGENT_INTEGRATION.md「两条线」，"
                     "或运行 scripts/check_ingest_wiring.py")
-            elif _ing_blind:
-                probes["ingest_liveness_note"] = (
-                    f"无法判断：{_ing_window_h}h 内 {_ing_reads} 次检索没有一次带 session，"
-                    "说明读线是不透传 session 的旧版本。升级 aidumem-inject.sh 后本探针才有射程；"
-                    "在那之前 M2 回声抑制也一直在空转（检索侧拿不到会话就不做排除）。")
-                DegradationTracker.record_degradation(
-                    "ingest_liveness",
-                    probes["ingest_liveness_note"], severity="warning")
+            else:
+                DegradationTracker.clear_degradation("ingest_liveness")
+                if _ing_blind:
+                    probes["ingest_liveness_note"] = (
+                        f"无法判断宿主接线：{_ing_window_h}h 内 {_ing_reads} 次检索均未带 session。"
+                        "独立 MCP/REST 检索允许省略会话；这些请求不启用 M2 回声抑制。"
+                        "如已配置宿主自动记忆，请检查读写钩子的会话透传，"
+                        "完成真实对话后运行 scripts/check_ingest_wiring.py --require-judgment。")
         except Exception as _ing_exc:
             probes["ingest_liveness_ok"] = None
+            probes["ingest_liveness_state"] = "error"
             probes["ingest_liveness_error"] = str(_ing_exc)[:120]
 
         # v22.0（雷霆审计 B12 · Kimi Y-1）：谱系完整性探针。
@@ -1017,23 +1049,10 @@ def register_health_routes(app: FastAPI) -> None:
         probes.update(_rerank_probe())
         from ducky.decision import health as decision_health
         probes.update(decision_health())
+        probes.update(_mutation_journal_probe())
 
-        # WAL 探针
-        try:
-            from ducky.wal_engine import WALEngine
-            wal = WALEngine.get_instance()
-            pending_count = len(wal.get_pending_entries())
-            probes["wal_engine_ok"] = True
-            probes["wal_pending_entries"] = pending_count
-            probes["wal_integrity"] = "ok"
-        except Exception as e:
-            probes["wal_engine_ok"] = False
-            from ducky.wal_engine import WALIntegrityError
-            probes["wal_integrity"] = "unknown"
-            if isinstance(e, WALIntegrityError):
-                probes["wal_integrity_error"] = str(e)[:120]
-            else:
-                probes["wal_error"] = str(e)[:120]
+        # Integrity alone does not prove that interrupted deletions were repaired.
+        probes.update(_wal_recovery_probe())
 
         # FTS 探针
         try:
@@ -1357,6 +1376,9 @@ def register_health_routes(app: FastAPI) -> None:
         for active_deg in DegradationTracker.get_degraded_summary():
             if active_deg not in degraded:
                 degraded.append(active_deg)
+
+        if probes.get("ingest_liveness_state") == "unknown" and probes.get("ingest_liveness_note"):
+            warnings.append("ingest_liveness: " + probes["ingest_liveness_note"])
 
         # 裸奔告警（P0-1）：门禁未启用时明确写进 warnings，
         # 不让「以为设了密码就安全」的部署方继续误会。

@@ -147,8 +147,9 @@ def test_cloud_decision_search_outlives_old_deadline_and_honors_override(tmp_pat
 
 @pytest.mark.parametrize("query,kind,padding,visible", [
     ("Give the exact wording of the rollout", "VERBATIM", 160, True),
-    ("Summarize the rollout", "VERBATIM", 160, False),
-    ("Give the exact wording of the rollout", "FACTS", 160, False),
+    ("Summarize the rollout", "VERBATIM", 160, True),
+    ("Give the exact wording of the rollout", "FACTS", 160, True),
+    ("Summarize the rollout", "VERBATIM", 360, False),
     ("Give the exact wording of the rollout", "VERBATIM", 520, False),
 ])
 def test_injected_source_and_quote_budget_reach_the_model(tmp_path, query, kind, padding, visible):

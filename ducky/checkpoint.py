@@ -47,13 +47,9 @@ def _norm_scope(user_id: str, bank_id: str) -> tuple[str, str]:
 
 
 def _ensure_table():
-    """确保 checkpoints 表、租户轴两列及索引存在"""
+    """Check the actual connection; process-global readiness cannot identify a database."""
     global _table_checked
-    if _table_checked:
-        return
     with _init_lock:
-        if _table_checked:
-            return
         conn = get_facts_conn()
         try:
             conn.execute("""

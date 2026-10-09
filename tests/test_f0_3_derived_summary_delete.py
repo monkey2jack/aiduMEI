@@ -30,6 +30,8 @@ class _Store:
     """Signature-aligned with mem0.vector_stores.qdrant.Qdrant insert/get/delete."""
 
     def __init__(self):
+        from types import SimpleNamespace
+        self.client = SimpleNamespace(get_collections=lambda: SimpleNamespace(collections=[]))
         self.points: dict = {}
 
     def insert(self, vectors, payloads=None, ids=None):

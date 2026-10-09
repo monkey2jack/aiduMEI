@@ -15,13 +15,17 @@ v11.1 Opus 升级：SQLite 持久化层，进程重启后工作区自动恢复�
 """
 
 import json, os, time, threading, logging, sqlite3
+import hashlib
+from pathlib import Path
 from typing import Optional
 from collections import OrderedDict
 
 from ducky.utils import quick_sim, DATA_DIR
 from ducky.bank_contract import DEFAULT_BANK_ID, make_scope
+from ducky.scope_sql import scope_clause
 
 logger = logging.getLogger("aiduMEM.workspace")
+_WORKSPACE_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 # ── 配置 ──
 WORKSPACE_CAPACITY = 20       # 工作区最大容量
@@ -177,13 +181,49 @@ def _db_upsert(user_id: str, memory_id: str, data: dict, bank_id: str = DEFAULT_
         logger.warning(f"Workspace DB upsert 失败: {e}")
 
 
-def _db_delete(user_id: str, memory_id: str, bank_id: str = DEFAULT_BANK_ID):
+def _eviction_receipt(row, eviction):
+    """Log committed cache eviction evidence without memory text/metadata.
+
+    Logging is observational, not a second durable store. Missing logs cannot
+    prove an eviction; operators must retain original service logs for an audit.
+    """
+    stable = {k: v for k, v in row.items() if k not in {"access_count", "last_accessed"}}
+    record = {
+        "schema": 2, "kind": "workspace_eviction",
+        "sha": os.environ.get("AIDUMEI_BUILD_SHA", ""),
+        "db": "workspace.db", "table": "workspace",
+        "source_file": "ducky/pipeline/memory_workspace.py",
+        "source_sha256": _WORKSPACE_SOURCE_SHA256,
+        "user_id": row["user_id"], "bank_id": row["bank_id"], "memory_id": row["memory_id"],
+        "key": hashlib.sha256(repr((row["user_id"], row["bank_id"], row["memory_id"])).encode()).hexdigest(),
+        "body_sha256": hashlib.sha256(row["text"].encode()).hexdigest(),
+        "immutable_row_sha256": hashlib.sha256(json.dumps(stable, sort_keys=True, ensure_ascii=False,
+                                                          separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
+        "stored_state": {k: row[k] for k in ("access_count", "last_accessed")},
+        "committed_epoch": time.time(), **eviction,
+    }
+    logger.info("workspace_eviction_receipt %s", json.dumps(record, sort_keys=True, ensure_ascii=True, allow_nan=False))
+
+
+def _db_delete(user_id: str, memory_id: str, bank_id: str = DEFAULT_BANK_ID, *, eviction=None):
     """从 SQLite 删除一条"""
     try:
         conn = _get_db_conn()
-        conn.execute("DELETE FROM workspace WHERE user_id = ? AND bank_id = ? AND memory_id = ?", (user_id, bank_id, memory_id))
-        conn.commit()
-        conn.close()
+        try:
+            clause, params = scope_clause(make_scope(user_id, bank_id))
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM workspace WHERE memory_id = ?" + clause,
+                               [memory_id, *params]).fetchone() if eviction is not None else None
+            removed = conn.execute("DELETE FROM workspace WHERE memory_id = ?" + clause,
+                                   [memory_id, *params]).rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        if row is not None and removed == 1:
+            try:
+                _eviction_receipt(dict(row), eviction)
+            except Exception as exc:
+                logger.warning("Workspace eviction receipt unavailable: %s", type(exc).__name__)
     except Exception as e:
         logger.warning(f"Workspace DB delete 失败: {e}")
 
@@ -335,15 +375,27 @@ def ws_push(user_id: str, memory_id: str, text: str,
             }
             # LRU 淘汰
             if len(ws) > WORKSPACE_CAPACITY:
-                evicted_key, _ = ws.popitem(last=False)
+                ordered_ids = list(ws)
+                evicted_key, evicted_data = ws.popitem(last=False)
+                eviction = {
+                    "reason": "lru", "observed_epoch": now,
+                    "ordered_ids_before": ordered_ids, "ordered_ids_after": list(ws),
+                    "inserted_memory_id": memory_id,
+                    "state_at_eviction": {
+                        "access_count": evicted_data["access_count"],
+                        "last_accessed": evicted_data["last_accessed"],
+                        "body_sha256": hashlib.sha256(evicted_data["text"].encode()).hexdigest(),
+                    },
+                }
                 logger.debug(f"Workspace 淘汰: {evicted_key[:16]} (LRU)")
 
         # 持久化当前记忆
         _db_upsert(scope.user_id, memory_id, ws[memory_id], scope.bank_id)
 
-    # 淘汰的也要从 SQLite 删
-    if evicted_key:
-        _db_delete(scope.user_id, evicted_key, scope.bank_id)
+        # Keep the same lock through the disk deletion: a concurrent push must
+        # not reinsert this identity between the memory eviction and SQL DELETE.
+        if evicted_key:
+            _db_delete(scope.user_id, evicted_key, scope.bank_id, eviction=eviction)
 
     _maybe_cleanup(now)
 
@@ -403,7 +455,7 @@ def ws_clear(user_id: str, bank_id: str = DEFAULT_BANK_ID) -> int:
         scope = make_scope(user_id, bank_id)
         evicted = _workspace.pop(_scope_key(scope.user_id, scope.bank_id), None)
         n = len(evicted) if evicted else 0
-    _db_delete_user(scope.user_id, scope.bank_id)
+        _db_delete_user(scope.user_id, scope.bank_id)
     logger.info(f"Workspace 清空: user={scope.user_id}, bank={scope.bank_id}, 内存条数={n}")
     return n
 
@@ -418,7 +470,7 @@ def ws_evict(user_id: str, memory_id: str, bank_id: str = DEFAULT_BANK_ID) -> bo
     with _ws_lock:
         ws = _workspace.get(_scope_key(scope.user_id, scope.bank_id))
         hit = bool(ws and ws.pop(memory_id, None) is not None)
-    _db_delete(scope.user_id, memory_id, scope.bank_id)
+        _db_delete(scope.user_id, memory_id, scope.bank_id)
     return hit
 
 
@@ -432,7 +484,6 @@ def _maybe_cleanup(now: float):
     _last_cleanup = now
 
     evicted = 0
-    evicted_pairs = []
     with _ws_lock:
         for uid in list(_workspace.keys()):
             ws = _workspace[uid]
@@ -442,8 +493,15 @@ def _maybe_cleanup(now: float):
                 and data.get("access_count", 1) <= 2
             ]
             for mid in stale:
-                del ws[mid]
-                evicted_pairs.append((uid, mid))
+                data = ws.pop(mid)
+                user_id, _, bank_id = uid.partition("\x1f")
+                _db_delete(user_id, mid, bank_id or DEFAULT_BANK_ID, eviction={
+                    "reason": "ttl", "observed_epoch": now,
+                    "state_at_eviction": {
+                        "access_count": data["access_count"], "last_accessed": data["last_accessed"],
+                        "body_sha256": hashlib.sha256(data["text"].encode()).hexdigest(),
+                    },
+                })
                 evicted += 1
             if not ws:
                 del _workspace[uid]
@@ -457,9 +515,5 @@ def _maybe_cleanup(now: float):
     # 淘汰、永远留在盘上，进程一重启 _db_load_all 又原样捞回来：清理形同
     # 虚设，workspace.db 只涨不消。分隔符 \x1f 已被 _SCOPE_RE 排除在合法
     # user/bank 之外，故此处按它拆分是安全的。
-    for uid, mid in evicted_pairs:
-        user_id, _, bank_id = uid.partition("\x1f")
-        _db_delete(user_id, mid, bank_id or DEFAULT_BANK_ID)
-
     if evicted:
         logger.info(f"Workspace 清理: {evicted} 条冷记忆")

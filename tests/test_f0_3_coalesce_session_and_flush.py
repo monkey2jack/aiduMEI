@@ -19,7 +19,9 @@ from ducky.speed import coalesce
 
 
 @pytest.fixture
-def queue(monkeypatch):
+def queue(monkeypatch, tmp_path):
+    from ducky import utils
+    monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
     monkeypatch.setattr(coalesce, "_coalesce_buf", {})
     monkeypatch.setattr(coalesce, "load_speed_cfg", lambda: {
         "coalesce_max_parts": 100, "coalesce_max_chars": 100_000,
@@ -87,8 +89,10 @@ class _Mem:
     """Signature-aligned with mem0.Memory.add / get_all / search."""
 
     def __init__(self):
+        from types import SimpleNamespace
         self.adds = []
         self.fail_direct = False
+        self.vector_store = SimpleNamespace(client=object(), collection_name="")
 
     def add(self, messages, *, user_id=None, agent_id=None, run_id=None, metadata=None,
             timestamp=None, expiration_date=None, infer=True, memory_type=None, prompt=None):
@@ -115,6 +119,17 @@ def rig(monkeypatch, tmp_path):
 
     monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
     monkeypatch.setattr(utils, "TEXT_FTS_DB", str(tmp_path / "text_fts.db"))
+    monkeypatch.setattr(utils, "SALIENCE_DB", str(tmp_path / "salience.db"))
+    # Match startup schemas; missing tables must not pass via swallowed errors.
+    from ducky.schema_bootstrap import ensure_core_schema
+    from ducky.salience.db import ensure_db
+    from ducky.text_fts import _init_text_fts
+    from ducky import memory_types
+    monkeypatch.setattr(memory_types, "_checked", False)
+    ensure_core_schema(force=True)
+    ensure_db()
+    _init_text_fts()
+    memory_types.ensure_memory_types_schema()
     monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")   # no local leg in this rig
     monkeypatch.setattr(coalesce, "_coalesce_buf", {})
     monkeypatch.setattr(coalesce, "_coalesce_flush_cb", None)
@@ -201,7 +216,8 @@ def test_manual_flush_reports_failure_instead_of_ok(rig):
     assert body["flushed"][0]["ok"] is False and body["flushed"][0]["error"]
     job = client.get(f"/add/job/{queued['job_id']}",
                      params={"user_id": "alice", "bank_id": "work"}).json()["job"]
-    assert job["status"] == "error"
+    assert job["status"] == "repair_required"
+    assert job["durable"] is False
 
 
 def test_manual_flush_partial_is_207(rig, monkeypatch):
