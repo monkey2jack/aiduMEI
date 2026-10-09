@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from ducky.api_models import (
@@ -57,17 +57,21 @@ def register_p0_routes(app: FastAPI) -> None:
 
         降级：LLM 未配置/失败时返回空洞察，不报错。
         """
+        from ducky.scope_auth import sanitize_memory_fields
+        source, topic = sanitize_memory_fields(req.source, req.topic)
         from ducky.reflect import run_reflect
 
         try:
             return run_reflect(
                 user_id=req.user_id,
                 top_k=req.top_k,
-                source=req.source,
+                source=source,
                 save=req.save,
-                topic=req.topic,
+                topic=topic,
                 bank_id=req.bank_id,
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"/reflect 失败: {e}")
             return {"status": "error", "detail": str(e), "insights": []}
@@ -87,6 +91,8 @@ def register_p0_routes(app: FastAPI) -> None:
                 user_id=user_id, limit=limit, insight_type=insight_type, bank_id=bank_id
             )
             return {"status": "ok", "insights": rows, "count": len(rows)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"/reflect/list 失败: {e}")
             return {"status": "error", "detail": str(e), "insights": []}
@@ -101,6 +107,8 @@ def register_p0_routes(app: FastAPI) -> None:
                 "status": "ok",
                 "context": inject_reflections(user_id=user_id, limit=limit, bank_id=bank_id),
             }
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"/reflect/context 失败: {e}")
             return {"status": "error", "detail": str(e), "context": ""}
@@ -114,6 +122,8 @@ def register_p0_routes(app: FastAPI) -> None:
         try:
             rows = list_edits(user_id=user_id, limit=limit, include_undone=include_undone)
             return {"status": "ok", "edits": rows, "count": len(rows)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"/self-edit/edits 失败: {e}")
             return {"status": "error", "detail": str(e), "edits": []}
@@ -129,6 +139,8 @@ def register_p0_routes(app: FastAPI) -> None:
 
         try:
             return rollback_edit(req.edit_id, caller_user_id=req.caller_user_id)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"/self-edit/rollback 失败: {e}")
             return {"status": "error", "detail": str(e)}

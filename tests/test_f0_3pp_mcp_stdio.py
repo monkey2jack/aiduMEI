@@ -38,7 +38,10 @@ def test_stdio_breaker_stops_http_and_recovers(tmp_path):
     env.update(AIDUMEM_HOME=str(ROOT), AIDUMEM_ENV_FILE=str(tmp_path / "empty.env"),
                AIDUMEM_DATA_DIR=str(tmp_path / "data"), AIDUMEM_LOG_DIR=str(tmp_path / "logs"),
                AIDUMEM_API_BASE=f"http://127.0.0.1:{http.server_port}",
-               AIDUMEI_MCP_LOOP_GUARD_COOLDOWN_S="0.1", NO_PROXY="127.0.0.1,localhost")
+               # A real subprocess round trip can exceed 100 ms on a busy host.
+               # Keep the circuit open through the rejection assertion, then
+               # exercise recovery using the actual wire retry_after contract.
+               AIDUMEI_MCP_LOOP_GUARD_COOLDOWN_S="5", NO_PROXY="127.0.0.1,localhost")
     (tmp_path / "empty.env").write_text("")
 
     async def run():
@@ -57,7 +60,8 @@ def test_stdio_breaker_stops_http_and_recovers(tmp_path):
                 assert results[1]["retry_count"] == 2
                 assert "loop_warning" in results[2]
                 assert results[5]["error"] == "circuit_open"
-                await asyncio.sleep(0.15)
+                assert 1 <= results[5]["retry_after"] <= 5
+                await asyncio.sleep(results[5]["retry_after"] + 0.05)
                 response[0] = {"status": "ok", "durable": True}
                 assert (await call())["status"] == "ok"
                 response[0] = {"error": "synthetic service failure"}

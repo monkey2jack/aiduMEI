@@ -86,7 +86,8 @@ def _require_caller(caller_agent_id: str, *, operation: str) -> str:
     配置了 AIDUMEI_CALLER_BINDINGS 且本请求 token 指纹已登记时强制
     caller ∈ 白名单；未配置该 env 时行为与此前逐字一致。
     """
-    caller = (caller_agent_id or "").strip()
+    from ducky.security.auth import resolve_bound_caller
+    caller = resolve_bound_caller(caller_agent_id, operation)
     if not caller:
         if _implicit_caller_allowed():
             return ""
@@ -123,7 +124,8 @@ def _enforce_grant(
 
     只在 HTTP 边界拦（routes 层 PEP），不动 recall/broadcast 内部
     梯子——梯子是库内检索逻辑，策略归边界。"""
-    caller = (caller_agent_id or "").strip()
+    from ducky.security.auth import resolve_bound_caller
+    caller = resolve_bound_caller(caller_agent_id, f"federation:{action}")
     if not caller:
         # v20.5.0 正式版（用户审计 🔴-2）：空 caller 不再默认放行——
         # 「不传 caller + 传 victim 的 agent_id」就是冒充本人。默认拒绝，
@@ -192,6 +194,16 @@ def _enforce_lineage_read(memory_id: str, caller: str) -> None:
     _enforce_grant(owner, caller, "read")
 
 
+def _require_agent_owner(agent_id: str, caller_agent_id: str, *, operation: str):
+    """Agent mutations share the same self-or-admin authorization boundary."""
+    caller = _require_caller(caller_agent_id, operation=operation)
+    if caller and caller != agent_id and not _is_admin_caller(caller):
+        from fastapi import HTTPException
+        raise HTTPException(403, {"error": operation.removesuffix("_agent") + "_forbidden",
+                                  "hint": "只能修改自己（caller == agent_id），或由 admin 代劳"})
+    return caller
+
+
 def register_federation_routes(app: FastAPI) -> None:
     """注册联邦层全部端点。启动时顺带跑一次幂等迁移。"""
     ensure_federation_schema()
@@ -210,16 +222,9 @@ def register_federation_routes(app: FastAPI) -> None:
         # 无门槛时任何持 Bearer 者可改写他人 display_name/endpoint，
         # 且 ON CONFLICT 会把已 deactivate 的 agent 重新激活（active=1），
         # 等于 deactivate 被 register 反制。规则：本人或 admin。
-        caller = _require_caller(caller_agent_id, operation="register_agent")
-        if caller and caller != agent_id and not _is_admin_caller(caller):
-            from fastapi import HTTPException
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "register_forbidden",
-                    "hint": "只能注册/刷新自己（caller == agent_id），或由 admin 代劳",
-                },
-            )
+        _require_agent_owner(agent_id, caller_agent_id, operation="register_agent")
+        from ducky.scope_auth import sanitize_memory_fields
+        display_name, description = sanitize_memory_fields(display_name, description)
         return _safe(
             registry_mod.register_agent,
             agent_id,
@@ -230,26 +235,22 @@ def register_federation_routes(app: FastAPI) -> None:
         )
 
     @app.post("/federation/agents/heartbeat")
-    def federation_heartbeat(agent_id: str = DEFAULT_AGENT):
-        # 有意不加 caller 门槛：心跳是高频自保信号，registry.heartbeat 对未注册
-        # id 自动补注册是文档化的宽容设计；伪造心跳的最坏后果是让一个 agent
-        # 「看起来在线」，不读不写他人数据。改这里要先想清楚生产 cron 的调用形态。
+    def federation_heartbeat(agent_id: str = DEFAULT_AGENT, caller_agent_id: str = ""):
+        from ducky.security.auth import binding_policy_active
+        if binding_policy_active():
+            caller = _require_caller(caller_agent_id, operation="heartbeat")
+            if caller != agent_id and not _is_admin_caller(caller):
+                from fastapi import HTTPException
+                raise HTTPException(403, "heartbeat owner mismatch")
+        # Legacy single-owner cron keeps its implicit heartbeat. Bound callers
+        # must own the agent (or be an explicitly configured administrator).
         return _safe(registry_mod.heartbeat, agent_id)
 
     @app.post("/federation/agents/deactivate")
     def federation_deactivate(agent_id: str, caller_agent_id: str = ""):
         # 🛡️ v20.5.1（T-06）：无门槛时任何持 Bearer 者可休眠任意 agent ——
         # 联邦面 DoS。规则：本人或 admin。
-        caller = _require_caller(caller_agent_id, operation="deactivate_agent")
-        if caller and caller != agent_id and not _is_admin_caller(caller):
-            from fastapi import HTTPException
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "deactivate_forbidden",
-                    "hint": "只能休眠自己（caller == agent_id），或由 admin 代劳",
-                },
-            )
+        _require_agent_owner(agent_id, caller_agent_id, operation="deactivate_agent")
         return _safe(registry_mod.deactivate_agent, agent_id)
 
     @app.get("/federation/agents")
@@ -285,6 +286,14 @@ def register_federation_routes(app: FastAPI) -> None:
     ):
         # 🛡️ v20.5.0a P0-2：跨 Agent 检索须持有效 Grant（单机/本 Agent 回环放行）
         _enforce_grant(agent_id, caller_agent_id, "read", category=category or "")
+        from ducky.security.auth import binding_policy_active
+        if binding_policy_active():
+            from ducky.scope_auth import require_scope_access
+            from ducky.bank_contract import make_scope
+            scope = make_scope(user_id, bank_id)
+            require_scope_access(scope.user_id, caller_agent_id, bank_id=scope.bank_id, action="read")
+            user_id, bank_id = scope.user_id, scope.bank_id
+
         # v20 P0-2：opt-in 作用域——传了就四级梯子全收窄，不传 = v19 全库。
         # 非法作用域由 _safe 包成结构化 error（联邦层约定不抛 500）。
         return _safe(
@@ -322,6 +331,12 @@ def register_federation_routes(app: FastAPI) -> None:
     ):
         # 🛡️ v20.5.0a P0-2：跨 Agent 写入须持 write Grant（单机/本 Agent 回环放行）
         _enforce_grant(agent_id, caller_agent_id, "write", category=category)
+        from ducky.scope_auth import sanitize_memory_fields, require_scope_access
+        category, fact_key, fact_value, tags, source = sanitize_memory_fields(category, fact_key, fact_value, tags, source)
+        from ducky.security.auth import binding_policy_active
+        if binding_policy_active():
+            require_scope_access(user_id, caller_agent_id, bank_id=bank_id, action="write")
+
         return _safe(
             write_fact,
             category,
@@ -352,7 +367,9 @@ def register_federation_routes(app: FastAPI) -> None:
     ):
         # 🛡️ v20.5.0a P0-2：跨 Agent 拉取广播须持 read Grant
         #（拉的是 peers 共享事实，owner 侧按 agent_id 判）
-        _enforce_grant(agent_id, caller_agent_id, "read")
+        from ducky.security.auth import binding_policy_active
+        action = "write" if binding_policy_active() and not preview else "read"
+        _enforce_grant(agent_id, caller_agent_id, action)
         return _safe(
             broadcast_mod.collect_updates,
             agent_id,

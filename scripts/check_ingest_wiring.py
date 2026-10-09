@@ -24,7 +24,7 @@ aiduMEI 有两条独立的链路，**必须都接上**才算能用：
     python3 scripts/check_ingest_wiring.py --url http://... --token xxx
     python3 scripts/check_ingest_wiring.py --json           # 机器可读
 
-退出码：0 = 接线正常 / 1 = 接线有问题 / 2 = 连不上服务
+退出码：0 = 未检测到问题（非严格模式可含未知）/ 1 = 接线问题或会话缺失 / 2 = 无法判断
 """
 from __future__ import annotations
 
@@ -76,6 +76,8 @@ def diagnose(health: dict, *, require_judgment: bool = False) -> tuple[int, list
         # 同步引擎等后台通路，它们不为零不代表对话在被记下来。
         "turn_writes_24h": probes.get("ingest_turn_writes_24h"),
         "liveness_ok": probes.get("ingest_liveness_ok"),
+        "liveness_state": probes.get("ingest_liveness_state"),
+        "min_reads": probes.get("ingest_min_reads", 5),
         "session_coverage": probes.get("epistemic_session_coverage"),
         "distill_sessions_24h": probes.get("distill_sessions_24h"),
         "distill_made_24h": probes.get("distill_made_24h"),
@@ -107,17 +109,22 @@ def diagnose(health: dict, *, require_judgment: bool = False) -> tuple[int, list
         _r = f"检索 {reads} 次" + (f"（来自对话 {conv_r} 次）" if conv_r is not None else "")
         lines.append(f"最近 24 小时：{_r} · 写入 {writes} 条（来自对话 {turn_w} 条）")
 
-    # 读线是旧版本（不透传 session）时，既判不了写线、M2 也在空转 —— 必须
-    # 说出来，不许当成「一切正常」。判据与 /health 的第三态同源。
-    if (conv_r is not None and conv_r == 0 and reads >= 5
+    threshold = facts["min_reads"]
+    if type(threshold) is not int or threshold < 1:
+        threshold = 5
+    if facts["liveness_state"] == "error" or facts["liveness_ok"] is None:
+        lines.append("⚠️  写入活性探针不可用，无法判断接线；请检查服务端诊断。")
+        return 2, lines, facts
+
+    # 不带 session 是合法的独立 MCP/REST 用法；不能据此断言宿主版本过旧。
+    if (conv_r is not None and conv_r == 0 and reads >= threshold
             and facts["liveness_ok"] is not False):
         lines += [
             "",
             "⚠️  无法判断写线：这 24 小时的检索没有一次带 session，",
-            "   说明读线是不透传 session 的旧版本（拿到的全是定时巡检心跳）。",
-            "   后果有两个：本检查失去射程，且 M2 回声抑制一直在空转",
-            "   （检索侧拿不到会话，就不会排除本会话刚写入的内容）。",
-            "   修法：升级 integrations/aidumem-inject.sh 后重启宿主网关。",
+            "   独立 MCP/REST 调用允许省略会话；这些检索不启用 M2 回声抑制。",
+            "   如已配置宿主自动记忆，请检查读写钩子的 session 透传，",
+            "   完成真实对话后重跑 --require-judgment；当前不能证明接线正常。",
         ]
         return (1 if require_judgment else 0), lines, facts
 
@@ -139,7 +146,7 @@ def diagnose(health: dict, *, require_judgment: bool = False) -> tuple[int, list
         ]
         return 1, lines, facts
 
-    if (conv_r if conv_r is not None else reads) < 5:
+    if facts["liveness_state"] == "unknown" or (conv_r if conv_r is not None else reads) < threshold:
         lines += ["", "ℹ️  检索次数太少，还判断不了接线是否正常 —— 正常用一阵再来看。"]
         # 「样本不足」是**无法判断**，不是「一切正常」。默认仍返回 0，
         # 免得假红灯挡住刚部署的人；但用户审计点名（🟡-3）：同一个脚本里
@@ -188,7 +195,7 @@ def main() -> int:
     ap.add_argument("--token", default=DEFAULT_TOKEN)
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--require-judgment", action="store_true",
-                    help="拒绝沉默通过：样本不足或读线旧版本时以非 0 退出。"
+                    help="拒绝沉默通过：样本不足或缺少会话标识时以非 0 退出。"
                          "CI / 验收场景用它 —— 默认行为不挡刚部署的新系统，"
                          "但那也意味着一个刚装好就断线的系统会一路绿过去。")
     args = ap.parse_args()

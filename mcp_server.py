@@ -268,10 +268,13 @@ class _GuardedFastMCP(FastMCP):
             return self._guard_sessions[session]
 
     def tool(self, *args, **kwargs):
+        # Internal registration metadata, not an exposed tool argument. Only
+        # fields the implementation actually JSON-decodes may be normalized.
+        json_fields = kwargs.pop("fingerprint_json_fields", ())
         register = super().tool(*args, **kwargs)
 
         def decorator(fn):
-            return register(self.loop_guard.wrap(fn, self._guard_scope))
+            return register(self.loop_guard.wrap(fn, self._guard_scope, json_fields=json_fields))
         return decorator
 
 
@@ -282,7 +285,7 @@ mcp = _GuardedFastMCP("aidumem", log_level="INFO")
 # ① 核心记忆 CRUD
 # ═══════════════════════════════════════════════════════
 
-@mcp.tool()
+@mcp.tool(fingerprint_json_fields=("messages",))
 def mem_add(messages: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """添加记忆到 aiduMEI（自动提炼 + 向量化存储）。
 
@@ -463,7 +466,7 @@ def facts_search(query: str, limit: int = 10, user_id: str = DEFAULT_USER_ID, ba
         query: 搜索关键词
         limit: 返回条数，默认 10
     """
-    result = _api_get("/facts/search", {"query": query, "limit": limit, "user_id": user_id, "bank_id": bank_id})
+    result = _api_get("/facts/search", {"query": query, "top_k": limit, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
@@ -566,7 +569,7 @@ def code_graph_view(path: str = "") -> str:
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
-def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = "default",
+def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
                   session_id: str = "") -> str:
     """开始一个新会话，建立记忆锚点。
 
@@ -589,17 +592,21 @@ def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = "default",
 
 
 @mcp.tool()
-def session_end(session_id: str) -> str:
+def session_end(session_id: str, user_id: str = DEFAULT_USER_ID,
+                bank_id: str = DEFAULT_BANK_ID) -> str:
     """结束会话，触发记忆沉淀和显著性更新。
 
     Args:
         session_id: 要结束的会话标识
+        user_id: 创建会话的用户标识
+        bank_id: 创建会话的记忆库标识
     """
     # 🔴v20.3.2-beta（外审 P1-5）：端点是 `def session_end(session_id: str)` ——
     # 裸标量参数，FastAPI 从 **query** 绑定。发进 body 会恒 422。
     # 同型缺陷在 ad3ba6c 已修过 scripts/agent_integration_check.py 一处，
     # 这一处漏了 —— 「加完一处漏一处」。元守卫现在按 FastAPI 依赖图判绑定来源。
-    result = _api_post("/session/end", None, params={"session_id": session_id})
+    result = _api_post("/session/end", None,
+                       params={"session_id": session_id, "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 
@@ -611,15 +618,19 @@ def session_list() -> str:
 
 
 @mcp.tool()
-def session_report(session_id: str) -> str:
+def session_report(session_id: str, user_id: str = DEFAULT_USER_ID,
+                   bank_id: str = DEFAULT_BANK_ID) -> str:
     """获取指定会话的详细记忆报告。
 
     Args:
         session_id: 会话标识
+        user_id: 创建会话的用户标识
+        bank_id: 创建会话的记忆库标识
     """
     # v20.2.4（外审 F-21）：API 侧是 @app.get("/session/report")，这里用的是 POST
     # —— 405 一路被 _ok() 包成正常返回，调用方看不出工具坏了。
-    result = _api_get("/session/report", {"session_id": session_id})
+    result = _api_get("/session/report", {"session_id": session_id,
+                                         "user_id": user_id, "bank_id": bank_id})
     return _ok(result)
 
 

@@ -7,7 +7,8 @@ errors=0
 check() {
   local description="$1"
   shift
-  if "$@" >/dev/null 2>&1; then
+  # Keep command output in the enclosing acceptance log, including failures.
+  if "$@"; then
     printf 'PASS %s\n' "$description"
   else
     printf 'FAIL %s\n' "$description" >&2
@@ -99,7 +100,7 @@ check "DOC-capacity and restore docs exist" bash -c 'test -f docs/CAPACITY.md &&
 # 有人记得改尺子。
 VER="$(python3 -c 'import re;print(re.search(r"SERVICE_VERSION = \"([^\"]+)\"", open("ducky/version.py").read()).group(1))' 2>/dev/null || true)"
 MAJOR_MINOR="$(printf '%s' "${VER}" | cut -d. -f1-2)"
-PUBLIC_VER="$(python3 -c 'import re; m=re.search(r"^FULL_VERSION = \"([^\"]+)\"", open("ducky/version.py").read(), re.M); print(m.group(1) if m else "")' 2>/dev/null || true)"
+PUBLIC_VER="$(python3 -c 'from ducky.version import PUBLIC_RELEASE_VERSION; print(PUBLIC_RELEASE_VERSION)' 2>/dev/null || true)"
 if [[ -z "${PUBLIC_VER}" ]]; then PUBLIC_VER="v${MAJOR_MINOR}"; fi
 check "DOC-README versions match version.py (${PUBLIC_VER} / ${VER})" bash -c '
   test -n "$1" && test -n "$2" &&
@@ -189,7 +190,7 @@ fi
 check "hard gate: pytest sentinel subset exits 0" bash -c '
   "$1" -m pytest tests/test_v20_3_1_gear_probe.py tests/test_v20_3_1_drill_autoshift.py \
     tests/test_v20_3_1_integration_check.py tests/test_v20_3_1_idempotency_paths.py \
-    tests/test_first_run_experience.py -q >/dev/null 2>&1
+    tests/test_first_run_experience.py -q
 ' _ "${PY}"
 # v20.3.2 正式版（用户审计 C）：用例名说「exits 0」，判据原先只测 `test -x` —— 与 P2-16
 # 同型，同一个文件里。27 项全 PASS 有一项是这么 PASS 的。现在真跑。

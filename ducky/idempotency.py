@@ -51,11 +51,13 @@ class ClaimState(dict):
     consumers and equality checks see the same dict as before."""
 
     claimed_at: float | None = None
+    fingerprint: str = ""
 
 
-def _new_claim(key: str, now: float) -> ClaimState:
+def _new_claim(key: str, now: float, fingerprint: str = "") -> ClaimState:
     state = ClaimState(action="new", key=key)
     state.claimed_at = now
+    state.fingerprint = fingerprint
     return state
 
 
@@ -253,6 +255,10 @@ def claim(key: str, user_id: str, bank_id: str, fingerprint_payload: Any) -> dic
     if not normalized:
         return {"action": "new", "key": ""}
     fingerprint = _fingerprint(fingerprint_payload)
+    from ducky.mutation_journal import idempotency_receipt
+    durable = idempotency_receipt(normalized, user_id, bank_id, fingerprint)
+    if durable is not None:
+        return durable
     now = time.time()
     try:
         conn = _connect()
@@ -277,7 +283,7 @@ def claim(key: str, user_id: str, bank_id: str, fingerprint_payload: Any) -> dic
         if cur.rowcount == 1:
             # claimed_at is the claim token: settle/release of an async job
             # only touches the row it claimed (a later takeover is not ours).
-            return _new_claim(normalized, now)
+            return _new_claim(normalized, now, fingerprint)
         row = conn.execute(
             "SELECT fingerprint, response_json, created_at, state FROM idempotency_keys "
             "WHERE idempotency_key=? AND user_id=? AND bank_id=?",
@@ -308,7 +314,7 @@ def claim(key: str, user_id: str, bank_id: str, fingerprint_payload: Any) -> dic
         )
         conn.commit()
         if cur.rowcount == 1:
-            return _new_claim(normalized, now)
+            return _new_claim(normalized, now, fingerprint)
         return {"action": "pending", "key": normalized}
     except _WORK_ERRORS as exc:
         try:
@@ -415,7 +421,8 @@ def job_binding(state: dict, key: str, user_id: str, bank_id: str) -> dict | Non
     if not normalized or (state or {}).get("action") != "new":
         return None
     return {"key": normalized, "user_id": user_id, "bank_id": bank_id,
-            "claimed_at": claim_token(state)}
+            "claimed_at": claim_token(state),
+            "fingerprint": getattr(state, "fingerprint", "")}
 
 
 def _durable_receipt(result: Any, job_id: str, key: str) -> dict:

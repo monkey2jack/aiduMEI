@@ -23,6 +23,10 @@ from __future__ import annotations
 
 import pytest
 
+from write_path_fixtures import isolated_write_stores as _isolated_write_stores  # noqa: F401 -- opt-in fixture
+
+pytestmark = pytest.mark.usefixtures("isolated_write_stores")
+
 from ducky.bank_contract import DEFAULT_BANK_ID
 from ducky.layer1_selfcheck import auto_merge_similar, check_capacity, dedup_check
 from ducky.speed.cache import cache_key

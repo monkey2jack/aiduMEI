@@ -33,6 +33,17 @@ from ducky.bank_contract import (
 logger = logging.getLogger("aiduMEM.hot")
 
 
+def _observe_final_evidence(query, rows, user_id, bank_id):
+    """Optional observation must never turn a working recall into an error."""
+    try:
+        from ducky.decision_assessment import assess_evidence
+        _, observation = assess_evidence(query, rows, user_id, bank_id, final=True)
+        return observation
+    except Exception as exc:
+        return {"status": "unknown", "reason": "assessment_error",
+                "error_type": type(exc).__name__, "action": "observe_only", "applied": False}
+
+
 def _annotate_memory_types(results: list, *, user_id: str = "default",
                            bank_id: str = "default") -> None:
     """把六型分类结果回填到检索结果（P2-3 / v19.2.0：单次 SQL 批量加载，消除 N+1 读查询）。
@@ -446,12 +457,14 @@ def register_search_routes(app: FastAPI) -> None:
                     if ws_verdict == "found":
                         ws_basis = "workspace_hit"
                     _log_search_result(req, ws_hits, _search_t0)
+                    observation = _observe_final_evidence(req.query, ws_hits, uid, bank_id)
                     return {
                         "status": "ok", "results": ws_hits,
                         "_workspace_hit": True,
                         "_recall_path": "workspace",
                         "_rerank": {"status": "not_invoked"},
                         "_decision": decision_telemetry(),
+                        "_evidence_assessment": observation,
                         "_recall_strength": ws_strength,
                         "_recall_legs": {"workspace": "hit"},
                         # 如实说明这条快路没走打分出口：MMR 多样性与错误签名
@@ -530,6 +543,9 @@ def register_search_routes(app: FastAPI) -> None:
             # 闸门拦了多少、M2/M4/M6/M1 到底生没生效，全写进了一条死路。
             # 本轮审计的结论是「要有数据面旁证」，那就得先让证据到得了调用方。
             gate_telem = last_gate_telemetry()
+            # Enforce the public output budget even on a degraded backend or
+            # an adapter that returned more rows than requested.
+            del results[effective_limit:]
             # v20：召回强度随响应下发。整改前「5 条 0.66」和「5 条 0.42」
             # 在响应里长得一模一样，调用方无从判断这批东西值不值得信。
             strength = _final_recall_strength(results, _main_strength, _allow_rr)
@@ -581,11 +597,13 @@ def register_search_routes(app: FastAPI) -> None:
                 _this_mode = "lite"
             else:
                 _this_mode = _gs["mode"]
+            observation = _observe_final_evidence(req.query, results, uid, bank_id)
             resp = {
                 "status": "ok", "results": results,
                 "_recall_path": recall_path,
                 "_rerank": rerank_telem,
                 "_decision": decision_telemetry(),
+                "_evidence_assessment": observation,
                 "_gate": gate_telem,
                 "_recall_strength": strength,
                 "_recall_legs": recall_telem,
@@ -620,6 +638,8 @@ def register_search_routes(app: FastAPI) -> None:
     def search_trace(req: SearchRequest):
         """搜索记忆 + Recall Funnel trace（带分阶段耗时）"""
         try:
+            from ducky.decision import reset_telemetry
+            reset_telemetry()
             from ducky.pantheon import authorize_cross_hall, HallError
             try:
                 authorize_cross_hall(req.user_id, getattr(req, "caller_user_id", ""),

@@ -1,10 +1,12 @@
-"""The direct-write helper keeps batch scope and independent index legs."""
+"""Direct writes retain batch scope and propagate incomplete side effects."""
 from __future__ import annotations
 
 import sqlite3
+import pytest
 
 
-def test_direct_write_results_keep_batch_bank_and_survive_fts_failure(monkeypatch):
+@pytest.mark.parametrize('fail', [False, True])
+def test_direct_write_results_keep_batch_bank_and_propagate_fts_failure(monkeypatch, fail):
     from ducky.hot import add as hot_add
     import ducky.text_fts as text_fts
     import ducky.memory_types as memory_types
@@ -15,7 +17,7 @@ def test_direct_write_results_keep_batch_bank_and_survive_fts_failure(monkeypatc
 
     def index(memory_id, content, **scope):
         indexed.append((memory_id, content, scope))
-        if memory_id == "one":
+        if fail and memory_id == "one":
             raise sqlite3.OperationalError("temporary FTS lock")
 
     monkeypatch.setattr(text_fts, "_index_memory", index)
@@ -25,16 +27,22 @@ def test_direct_write_results_keep_batch_bank_and_survive_fts_failure(monkeypatc
     monkeypatch.setattr(hot_add, "feature_failed",
                         lambda name, exc: failed.append((name, type(exc))))
 
-    hot_add._index_direct_results(
-        [{"id": "one", "memory": "first"},
-         {"id": "two", "memory": "second"},
-         {"memory": "no id"}],
-        user_id="alice", bank_id="work", category="tech",
-    )
+    def run():
+        hot_add._index_direct_results(
+            [{"id": "one", "memory": "first"},
+             {"id": "two", "memory": "second"},
+             {"memory": "no id"}],
+            user_id="alice", bank_id="work", category="tech",
+        )
+    if fail:
+        with pytest.raises(sqlite3.OperationalError, match="temporary FTS lock"):
+            run()
+    else:
+        run()
 
-    assert [row[0] for row in indexed] == ["one", "two"]
-    assert [row[0] for row in typed] == ["one", "two"]
+    assert [row[0] for row in indexed] == (["one"] if fail else ["one", "two"])
+    assert [row[0] for row in typed] == ([] if fail else ["one", "two"])
     assert all(row[2]["bank_id"] == "work" for row in indexed + typed)
     assert all(row[2]["user_id"] == "alice" for row in indexed + typed)
     assert all(row[2]["category"] == "tech" for row in indexed)
-    assert failed == [("index_memory", sqlite3.OperationalError)]
+    assert failed == ([("index_memory", sqlite3.OperationalError)] if fail else [])

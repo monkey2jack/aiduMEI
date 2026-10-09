@@ -126,7 +126,7 @@ def test_page_title_is_the_canonical_brand(page):
     text = (_FRONTEND / page).read_text(encoding="utf-8")
     m = re.search(r"<title>(.*?)</title>", text, re.S)
     assert m, f"{page} 缺少 <title>"
-    assert m.group(1).strip() == "aiduMEI⚕爱嘟优忆思", (
+    assert m.group(1).strip() == "aiduMEI☤爱嘟优忆思", (
         f"{page} 标题为 {m.group(1).strip()!r}，与规范品牌形式不符"
     )
 

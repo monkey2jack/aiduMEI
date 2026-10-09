@@ -50,6 +50,12 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         if not req.content or not req.content.strip():
             raise HTTPException(400, "content 不能为空")
 
+        from ducky.scope_auth import sanitize_memory_fields, sanitize_memory_structure
+        req = req.model_copy(update={
+            "source": sanitize_memory_fields(req.source)[0],
+            "metadata": sanitize_memory_structure(req.metadata),
+        })
+
         # ── 幂等收口（v20.3.1）─────────────────────────────────────────
         # 与 /add 同一 claim/finalize 契约；payload 用 content_hash 前缀
         # 而非全文（幂等指纹不需要存原文第二份，hash 足够区分负载）。
