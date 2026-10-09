@@ -12,6 +12,7 @@ from ducky.utils import DEFAULT_USER_ID
 from ducky.speed.config import load_speed_cfg, messages_to_text
 from ducky.speed.fastpath import try_fastpath_text
 from ducky.speed.jobs import job_update
+from ducky.mutation_journal import serialized_scope
 from ducky.speed.stats import (
     _record_wave_from_batch,
     coalesce_stats_snapshot,
@@ -227,6 +228,19 @@ def coalesce_should_buffer(
     return True, f"ok:{cfg['profile']}"
 
 
+def _persist_coalesce_request(user_id, bank_id, job_id, messages_json, metadata, infer):
+    from ducky.mutation_journal import accept_job, attach_job_input
+    if not job_id:
+        job_id = accept_job({"user_id": user_id, "bank_id": bank_id,
+                             "messages": messages_json, "metadata": metadata or {},
+                             "infer": infer})
+    else:
+        attach_job_input(job_id, messages=messages_json, metadata=metadata or {}, infer=infer,
+                         user_id=user_id, bank_id=bank_id)
+    return job_id
+
+
+@serialized_scope
 def coalesce_enqueue(
     user_id: str,
     messages_json,
@@ -245,6 +259,7 @@ def coalesce_enqueue(
       buffered=True  → 已入队等待；可能顺带 ready 一条旧缓冲
       merged_ready   → 本次触发立即冲刷（条数/字数满），附 messages
     """
+    job_id = _persist_coalesce_request(user_id, bank_id, job_id, messages_json, metadata, infer)
     md = dict(metadata or {})
     cfg = _coalesce_cfg(md)
     profile = cfg["profile"]

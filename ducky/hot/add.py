@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from functools import partial
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -18,8 +20,17 @@ from ducky.mem0_runtime import (
 from ducky.bank_contract import ensure_bank_registered, make_scope
 from ducky.failure_ledger import feature_failed
 from ducky.api_errors import api_error_detail
+from ducky.mutation_journal import MutationUncertain, execute_request, execution_guard
+from ducky.mutation_fallback import require_no_sdk_since, sdk_attempt_count as _sdk_attempt_count
 
 logger = logging.getLogger("aiduMEM.hot")
+
+
+def mutation_error_detail(exc):
+    """Content-free error contract shared by /add and /update."""
+    return {"status": "repair_required", "mutation_id": exc.mutation_id,
+            "reason": exc.reason, "automatic_replay": False,
+            "message": "Write outcome requires backend verification; do not blindly retry."}
 
 
 def _index_direct_results(add_result, *, user_id: str, bank_id: str,
@@ -38,18 +49,24 @@ def _index_direct_results(add_result, *, user_id: str, bank_id: str,
             from ducky.text_fts import _index_memory
             _index_memory(memory_id, content, user_id=user_id,
                           category=category, bank_id=bank_id)
+        except MutationUncertain:
+            raise
         except (ImportError, sqlite3.Error, OSError, RuntimeError,
                 ValueError, TypeError) as exc:
             feature_failed("index_memory", exc)
-            logger.debug("FTS index on add 跳过: %s", exc)
+            logger.warning("FTS index on add 失败: %s", type(exc).__name__)
+            raise
         try:
             from ducky.memory_types import classify_and_sync_memory
             classify_and_sync_memory(memory_id, content, user_id=user_id,
                                      bank_id=bank_id)
+        except MutationUncertain:
+            raise
         except (ImportError, sqlite3.Error, OSError, RuntimeError,
                 ValueError, TypeError, AttributeError) as exc:
             feature_failed("memory_type_classify", exc)
-            logger.debug("六型分类跳过: %s", exc)
+            logger.warning("六型分类失败: %s", type(exc).__name__)
+            raise
 
 
 def _flush_http_response(report: dict):
@@ -62,6 +79,407 @@ def _flush_http_response(report: dict):
     return JSONResponse(status_code=code, content=report)
 
 
+def _store_ingress(user_id, bank_id, messages_json, md, _full_text, text_preview):
+    """Called only under a durable request/job intent and the scope lock."""
+    ensure_bank_registered(make_scope(user_id, bank_id))
+    # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文保真层
+    # 注入防御通过后，把逐字原文并行落库（mem0 抽取之外的第二层）。
+    # 幂等去重 + 失败干净降级，绝不阻断主链路。
+    try:
+        from ducky.verbatim_vault import store_verbatim
+        store_verbatim(user_id, messages_json, md, bank_id=bank_id)
+    except MutationUncertain:
+        raise
+    except Exception as _ve:
+        feature_failed("store_verbatim", _ve)
+        logger.debug(f"📼 [VerbatimVault] 原文落库跳过: {_ve}")
+
+    # f0.3 (C1 / S-1): a session summary records which sources it was
+    # derived from, in every engine mode (local/lite never create a
+    # vector payload), so deleting a source can cascade to it.
+    # No-op for ordinary writes; never raises.
+    from ducky.session_distill import record_summary_sources
+    record_summary_sources(user_id, bank_id, md, _full_text)
+
+    # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
+    try:
+        from ducky.conflict_resolver import scan_and_resolve_text_conflicts
+        scan_and_resolve_text_conflicts(text_preview, user_id=user_id, bank_id=bank_id)
+    except MutationUncertain:
+        raise
+    except Exception as _ce:
+        logger.warning(f"🐙 [ConflictResolver] 隐式检测异常: {_ce}")
+
+    # 🧩 v20.1 WP-A: 确定性抽取层 —— LLM 之外的第二事实来源。
+    # 放在路由层（异步分发之前）：同步 / async job / coalesce 三条
+    # 通路都必然经过这里，且看到的是合并前的原始请求文本。
+    # LLM 空返回时，日期/版本/指令/偏好等硬事实仍有确定性通路落
+    # facts 层（source='pattern_extract'，可按来源精确清除）。
+    # 失败进 failure_ledger，绝不阻断主链路。
+    try:
+        from ducky.pattern_extract import extract_and_store
+        extract_and_store(_full_text, user_id=user_id,
+                          bank_id=bank_id,
+                          recorded_at=md.get("recorded_at"))
+    except MutationUncertain:
+        raise
+    except Exception as _pe:
+        feature_failed("pattern_extract", _pe)
+        logger.warning(f"🧩 [PatternExtract] 确定性抽取跳过: {_pe}")
+
+    # 🪫 v20.2 自动挡（WP-F/WP-H）：
+    # ① 原文本地向量 —— lite 挡语义召回的语料，路由层单点写入
+    #    （三条通路全覆盖，与 pattern_extract 同位置哲学），软失败
+    #    进欠账绝不阻断。
+    # ② lite 挡分流 —— 云嵌入熔断期间完全绕开 mem0 主体（LLM 蒸馏
+    #    + 云向量整笔进欠账，升挡后重放走完整管线），确定性层
+    #    （pattern facts / verbatim / 本地向量）已在上方全部落完。
+    #    挡位如实回给调用方，蒸馏延迟不装没事。
+    try:
+        from ducky.dual_index import upsert_local_verbatim
+        upsert_local_verbatim(user_id, bank_id, _full_text)
+    except MutationUncertain:
+        raise
+    except Exception as _lv:
+        feature_failed("dual_index_local", _lv)
+        logger.debug(f"🪫 [DualIndex] 原文本地向量跳过: {_lv}")
+
+
+def _write_mode():
+    from ducky.engine_mode import cloud_leg_enabled
+    from ducky.gear import current_mode
+    return "local" if not cloud_leg_enabled() else current_mode()
+
+
+def _local_response(mode, user_id, bank_id, messages, metadata):
+    if mode == "local":
+        return {"status": "ok", "action": "local_only", "engine_mode": "local",
+                "detail": "本地档：按部署配置写入本地原文、硬事实和索引"}
+    from ducky.dual_index import enqueue_cloud_add
+    enqueue_cloud_add({"messages": messages, "metadata": dict(metadata)}, user_id, bank_id)
+    return {"status": "ok", "action": "deferred_distillation", "engine_mode": "lite",
+            "detail": "硬事实与原文已落库，云端蒸馏已入欠账，待恢复后补算"}
+
+
+def _mark_job_failed(job_id):
+    from ducky.add_speed import job_update
+    try:
+        job_update(job_id, status="error")
+    except (OSError, sqlite3.Error, RuntimeError, KeyError):
+        # The durable queued/started record remains recoverable on startup.
+        logger.error("Cannot persist failed job state: %s; repair required", job_id)
+
+
+def _admit_job(job_id, user_id, bank_id, callback):
+    try:
+        with execution_guard(user_id, bank_id, job_ids=[job_id]):
+            return callback()
+    except Exception as exc:
+        _mark_job_failed(job_id)
+        raise MutationUncertain(job_id) from exc
+
+
+def _direct_write(mem, uid, msgs, meta, infer_effective, *, bank_id, note=None):
+    """确定性直写（layer1 之外的兜底通路）。infer_effective 由
+    调用方决定：非 LLM 故障透传调用方的 infer（v20 纪律——显式
+    免抽取不许偷偷变回 LLM 抽取）；LLM 故障/挡位 open 强制
+    False（否则 fallback 里还藏着一次 mem0 内部 LLM 调用 ——
+    2026-08-26 实弹里网关恰好复活才没暴露的洞）。"""
+    from ducky.origin_context import set_origin_from_metadata, reset_origin, is_session_summary
+    attempts_before = _sdk_attempt_count(uid, bank_id)
+    _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
+    try:
+        try:
+            add_result = mem.add(msgs, user_id=uid, metadata=meta,
+                                 infer=infer_effective)
+        except MutationUncertain:
+            raise
+        except Exception as _de:
+            # fallback 自身纯化：直写内层再撞 LLMError（infer=True
+            # 且 LLM 恰在此刻死）→ 上报挡位并就地降为 infer=False，
+            # 绝不让 fallback 自己 500。非 LLM 异常照旧上抛。
+            if type(_de).__name__ != "LLMError":
+                raise
+            require_no_sdk_since(attempts_before, uid, bank_id, _de)
+            from ducky.gear import record_llm_failure
+            record_llm_failure(str(_de))
+            logger.warning(f"直写内层 LLM 失败，就地降为确定性直写: {_de}")
+            # v20.2.5（用户实测 🟢）：把降级语义说人话 —— 用户看到 skipped_llm_error
+            # 不知道自己的内容到底存没存进去。原文已落库、蒸馏待补，
+            # 这两件事都得说出来。机器可读的枚举值保留在 code 里。
+            note = note or "skipped_llm_error"
+            add_result = mem.add(msgs, user_id=uid, metadata=meta,
+                                 infer=False)
+        # v21.2 M2/M1：复位**之前**先把 origin 捞出来 —— 下面的
+        # sidecar 打标与 episode 登记都要用它，复位后就读不到了。
+        from ducky.origin_context import get_origin as _get_origin
+        _origin_snapshot = _get_origin()
+    finally:
+        reset_origin(_origin_token)
+    # 🏷️ v21.0 收口（生产用户审计 🔴-1）：主链路 mem0 产物的出身
+    # 登记进 sidecar——infer 用过 LLM 即 reasoned，直写即 user_provided。
+    try:
+        from ducky.epistemic import stamp_memory_refs
+        _rs = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
+        _refs = [r.get("id") or r.get("memory_id") for r in _rs if isinstance(r, dict)]
+        # v22.1（建议一）：is_bot=True 的记忆默认降权——
+        # 多 bot 协作或群聊场景，转述内容可能误记为「用户的原始偏好」，
+        # 身份认知倒挂。bot 记忆标 fuzzy（而非 reasoned），检索排序靠后。
+        _is_bot = bool((meta or {}).get("_origin_is_bot"))
+        _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective or is_session_summary(meta) else "user_provided")
+        stamp_memory_refs([r for r in _refs if r],
+                          _mode,
+                          user_id=uid, bank_id=bank_id,
+                          source=str((meta or {}).get("_origin_agent") or "add"),
+                          origin=_origin_snapshot)
+        # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。
+        # 无 session_id（cron / 后台作业）一律不记 —— 轨迹统计只认
+        # 真有会话的写入，不许被无主写入稀释。失败留待核验。
+        try:
+            from ducky.evolve_mem import record_episode_step
+            record_episode_step([r for r in _refs if r],
+                                session_id=_origin_snapshot[1],
+                                user_id=uid, bank_id=bank_id)
+        except MutationUncertain:
+            raise
+        except Exception as _ee:
+            logger.warning("episode step 登记失败: %s", type(_ee).__name__)
+            raise
+    except MutationUncertain:
+        raise
+    except Exception as _se:
+        logger.warning("epistemic sidecar 打标失败: %s", type(_se).__name__)
+        raise
+    register_salience_for_add(add_result, user_id=uid, bank_id=bank_id)
+    # A queued batch owns this bank, regardless of which later
+    # request registered the process-global callback.
+    _index_direct_results(add_result, user_id=uid, bank_id=bank_id,
+                          category=(meta or {}).get("category"))
+    out = {"status": "ok", "action": "direct"}
+    if note:
+        # 诚实注记（additive，不动既有契约）：这条写入没做蒸馏。
+        out["distillation"] = note
+        # v20.2.5（用户实测 🟢）：机器可读的枚举值留在 `distillation`
+        # 不动（既有调用方在判等），人话另开一个字段。
+        # 用户看到裸的 `skipped_llm_error` 不知道自己的内容到底存没存
+        # 进去 —— 而答案是「原文已落库、蒸馏待补」，这两件事都得说。
+        _human = {
+            "skipped_llm_error": "LLM 暂不可用：原文与硬事实已落库，"
+                                 "语义蒸馏待恢复后补算",
+            "deferred_distillation": "LLM 挡位打开：本次跳过蒸馏，"
+                                     "原文已落库，恢复后补算",
+            "local_only": "本地档：仅写本地索引，未使用任何云端服务",
+        }.get(note)
+        if _human:
+            out["distillation_note"] = _human
+    return out
+
+
+def _run_pipeline(mem, uid, msgs, meta, *, bank_id, infer):
+    # Every batch carries its own explicit scope; no last-request closure.
+    # ⚙️ v20.2.2 LLM 腿挡位：open 态不再逐请求撞超时——直接
+    # 确定性直写秒回（原文/硬事实/云向量照落，内容照样可召回；
+    # 欠的只是蒸馏精修，故障账本与事件账本可查）。closed/half-open
+    # 走真实蒸馏，半开拿真实写入当探针（命门教训）。
+    batch_infer = bool(infer)
+    attempts_before = _sdk_attempt_count(uid, bank_id)
+    from ducky.origin_context import set_origin_from_metadata, reset_origin
+    _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
+    from ducky.gear import record_llm_failure, record_llm_success, should_try_llm
+    try:
+        _try_llm = should_try_llm()
+    except MutationUncertain:
+        raise
+    except Exception:
+        _try_llm = True
+    try:
+        if not _try_llm and batch_infer:
+            return _direct_write(mem, uid, msgs, meta, False, bank_id=bank_id,
+                                 note="skipped_llm_gear_open")
+        _r = lazy_import_layer1()(
+            mem, msgs, uid, meta,
+            bank_id=bank_id, infer=batch_infer,
+        )
+        # 成功信号只在 LLM 真被使用过时上报（infer=False 的
+        # layer1 整段跳过 LLM——记成功就是假信号）。
+        if batch_infer:
+            record_llm_success()
+        # 🏷️ v21.0 收口：主链路打标在 layer1 _index_after_add
+        # （本包装器吞掉 results，路由层拿不到 ref）
+        return _r
+    except MutationUncertain:
+        raise
+    except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
+        feature_failed("index_memory", e)
+        logger.warning("Layer 1 failed; checking durable evidence before fallback")
+        # 信号纯净（Y2 教训的写侧版）：只有 LLMError 形态计入
+        # LLM 腿；FTS/salience 等非 LLM 崩溃不许污染挡位。
+        if type(e).__name__ == "LLMError" and _sdk_attempt_count(uid, bank_id) == attempts_before:
+            require_no_sdk_since(attempts_before, uid, bank_id, e)
+            record_llm_failure(str(e))
+            return _direct_write(mem, uid, msgs, meta, False, bank_id=bank_id,
+                                 note="skipped_llm_error")
+        # A later index/gear failure does not prove the SDK wrote nothing.
+        # Let the outer request/job journal hold the operation for repair.
+        raise
+    finally:
+        reset_origin(_origin_token)  # 🟢-1：配对复位（含降级分支返回前）
+
+
+def _execute_batch(mem, uid, msgs, meta, job_ids, *, bank_id="default", infer=True):
+    """合并包 / 单条异步包统一执行，并把结果回写到所有关联 job。"""
+    jids = list(job_ids or [])
+    with execution_guard(uid, bank_id, job_ids=jids):
+        return _run_batch(mem, uid, msgs, meta, jids, bank_id=bank_id, infer=infer)
+
+
+def _run_batch(mem, uid, msgs, meta, jids, *, bank_id, infer):
+    from ducky.add_speed import job_update
+    try:
+        for jid in jids:
+            job_update(jid, status="running")
+        result = _run_pipeline(mem, uid, msgs, meta or {}, bank_id=bank_id,
+                               infer=infer)
+        # 标注 coalesce 信息到 result.details
+        if isinstance(result, dict):
+            details = dict(result.get("details") or {})
+            if (meta or {}).get("coalesced"):
+                details["coalesced"] = True
+                details["coalesce_count"] = (meta or {}).get("coalesce_count")
+                details["coalesce_reason"] = (meta or {}).get("coalesce_reason")
+                details["coalesce_profile"] = (meta or {}).get("coalesce_profile")
+                result = {**result, "details": details}
+        payload = {"status": "done", "result": result}
+        if jids:
+            primary, *rest = jids
+            job_update(primary, **payload)
+            for jid in rest:
+                job_update(
+                    jid,
+                    status="done",
+                    result={
+                        **(result if isinstance(result, dict) else {"status": "ok"}),
+                        "coalesce_follower": True,
+                        "primary_job_id": primary,
+                    },
+                )
+        return result
+    except Exception as be:
+        logger.error(f"add batch failed jobs={jids}: {be}")
+        for jid in jids:
+            _mark_job_failed(jid)
+        raise
+
+
+
+def _dispatch_async(req, background_tasks, job_id, messages_json, md, infer_flag,
+                    text_preview, run_batch, finalize):
+    from ducky.add_speed import coalesce_should_buffer, coalesce_enqueue, job_update
+    # 短句连发 → 合并队列（省 LLM）
+    should, why = coalesce_should_buffer(
+        req.user_id, messages_json, md, async_mode=True
+    )
+    if should:
+        enq = coalesce_enqueue(
+            req.user_id, messages_json, md, job_id=job_id,
+            bank_id=req.bank_id,          # F-04：scope 随 batch 落库
+            infer=infer_flag,
+        )
+        # 若顺带带出已到期的旧包 / 满额包，立刻后台执行
+        batches = []
+        if enq.get("merged_ready") and enq.get("messages"):
+            batches.append({
+                "user_id": enq.get("user_id") or req.user_id,
+                "bank_id": enq.get("bank_id") or req.bank_id,
+                "infer": bool(enq.get("infer", infer_flag)),
+                "messages": enq["messages"],
+                "metadata": enq.get("metadata") or md,
+                "job_ids": enq.get("job_ids") or [job_id],
+            })
+        for extra_batch in (enq.get("also_ready") or []):
+            batches.append(extra_batch)
+
+        for b in batches:
+            background_tasks.add_task(
+                run_batch,
+                b["user_id"],
+                b["messages"],
+                b.get("metadata") or {},
+                b.get("job_ids") or [],
+                bank_id=b.get("bank_id") or req.bank_id,
+                infer=bool(b.get("infer", infer_flag)),
+            )
+
+        if enq.get("buffered"):
+            job_update(
+                job_id,
+                status="coalescing",
+                result={
+                    "status": "coalescing",
+                    "action": "coalesce_buffered",
+                    "count": enq.get("count"),
+                    "key": enq.get("key"),
+                    "profile": enq.get("profile"),
+                    "idle_sec": enq.get("idle_sec"),
+                    "window_sec": enq.get("window_sec"),
+                },
+            )
+            # Accepted input is durable; backend completion still awaits ACK.
+            return finalize({
+                "status": "accepted",
+                "durable": False,
+                "accepted_durable": True,
+                "action": "coalesce_buffered",
+                "job_id": job_id,
+                "infer": infer_flag,
+                "message": "短句已入合并队列，空闲后一次总结落库",
+                "preview": text_preview,
+                "coalesce": {
+                    "count": enq.get("count"),
+                    "key": enq.get("key"),
+                    "profile": enq.get("profile"),
+                    "idle_sec": enq.get("idle_sec"),
+                    "window_sec": enq.get("window_sec"),
+                },
+            }, provisional=True)
+        # 当前句触发了满额即时冲刷
+        return finalize({
+            "status": "accepted",
+            "durable": False,
+            "accepted_durable": True,
+            "action": "coalesce_flushed",
+            "job_id": job_id,
+            "infer": infer_flag,
+            "message": "合并包已提交后台总结落库",
+            "preview": text_preview,
+            "coalesce": {
+                "count": enq.get("count"),
+                "reason": enq.get("flush_reason"),
+                "key": enq.get("key"),
+                "profile": enq.get("profile"),
+            },
+        }, provisional=True)
+
+    # 不进合并：单条异步
+    def _bg_job(jid=job_id, msgs=messages_json, meta=md,
+                uid=req.user_id, bid=req.bank_id, inf=infer_flag):
+        run_batch(uid, msgs, meta, [jid], bank_id=bid, infer=inf)
+
+    background_tasks.add_task(_bg_job)
+    return finalize({
+        "status": "accepted",
+        "durable": False,
+        "accepted_durable": True,
+        "action": "async_queued",
+        "job_id": job_id,
+        "infer": infer_flag,
+        "message": "已收下，后台正在总结落库",
+        "preview": text_preview,
+        "coalesce_skip": why,
+    }, provisional=True)
+
+
+
 def register_add_routes(app: FastAPI) -> None:
     @app.post("/add")
     def add(req: AddRequest, background_tasks: BackgroundTasks = None, request: Request = None):
@@ -72,20 +490,19 @@ def register_add_routes(app: FastAPI) -> None:
         短句连发（async）：进入 coalesce 队列，idle/window 到后合并一次 LLM。
         默认同步：完整抽取后返回，兼容旧调用方。
         """
-        # v20.4.0（三方审计 P0-1 · 动态审计 🔴-1 = Kimi P1-1）：claim 成功后的
-        # 每一个失败出口（注入 400 / mem0 503 / 管线 500）都必须释放幂等键，
-        # 否则死键押着同 key 的合法重试 600 秒恒 409。只释放**本请求自己
-        # claim 到的键**（pending/conflict 属他人在途租约，释放即拆掉并发
-        # 重复写保护）。finalize 收口后清空槽位，成功路径不受影响。
+        # Only pre-intent validation failures release this request's claim.
+        # Once work is durable, its repair/replay receipt remains authoritative.
         _idem_claimed: list = []
+        durable_owned: list = []
 
         def _release_failed_claim():
-            if not _idem_claimed:
+            if durable_owned or not _idem_claimed:
                 return
             k, uid, bid = _idem_claimed.pop()
             try:
                 from ducky import idempotency
-                idempotency.release(k, uid, bid)
+                idempotency.release(k, uid, bid,
+                                    claimed_at=idempotency.claim_token(idempotency_state))
             except Exception as _re:
                 logger.warning(f"失败出口释放幂等键失败（key={k}）: {_re}")
 
@@ -102,6 +519,8 @@ def register_add_routes(app: FastAPI) -> None:
             scope = make_scope(req.user_id, req.bank_id)
             req.user_id = _normalize_user_id(scope.user_id) if scope.user_id else "default"
             req.bank_id = scope.bank_id
+            from ducky.scope_auth import sanitize_memory_structure
+            req = req.model_copy(update={"metadata": sanitize_memory_structure(req.metadata)})
             # v0.3++ A1：所有租户写入口经过同一 caller/scope 政策点。
             # action=write 禁止借用只读 grant 替他殿写入。
             from ducky.scope_auth import require_scope_access
@@ -122,17 +541,16 @@ def register_add_routes(app: FastAPI) -> None:
                            f"AIDUMEI_RATE_ADD_GLOBAL_PER_MIN 调整（0=关闭）",
                     headers={"Retry-After": str(_retry)},
                 )
-            ensure_bank_registered(make_scope(req.user_id, req.bank_id))
             # v20.3 user-audit P2: retries must not create duplicate memories.
             from ducky import idempotency
-            idempotency_payload = {
+            idempotency_payload = deepcopy({
                 "messages": req.messages,
                 "user_id": req.user_id,
                 "bank_id": req.bank_id,
                 "infer": req.infer,
                 "async_mode": req.async_mode,
                 "metadata": req.metadata,
-            }
+            })
             idempotency_state = idempotency.claim(
                 req.idempotency_key, req.user_id, req.bank_id, idempotency_payload
             )
@@ -142,16 +560,12 @@ def register_add_routes(app: FastAPI) -> None:
                 response["request_id"] = idempotency_state["key"]
                 return response
             if idempotency_state["action"] == "pending":
-                # v20.3.2 正式版（P1-10）：同键的前一个请求还在处理中。原实现对 pending
-                # 不做任何事、继续往下写 —— 幂等键在并发重试下反而制造重复。
-                # v20.4.0（P0-1）：失败请求现在立即释放键，pending 真的只剩
-                # 「上一个请求还在跑」这一种含义 —— 文案照实说。
-                raise HTTPException(
-                    409,
-                    "idempotency_key is held by an in-flight request; failed requests "
-                    "release the key immediately, so retry shortly (in-flight lease "
-                    "expires after 600s)",
-                )
+                raise HTTPException(409, {
+                    "status": idempotency_state.get("reason") or "pending",
+                    "mutation_id": idempotency_state.get("job_id"),
+                    "automatic_replay": False,
+                    "message": "Request is in flight or requires verified repair before retry.",
+                })
             if idempotency_state["action"] == "new" and idempotency_state.get("key"):
                 _idem_claimed.append(
                     (req.idempotency_key, req.user_id, req.bank_id))
@@ -170,9 +584,8 @@ def register_add_routes(app: FastAPI) -> None:
                 档（用户最可能首跑的档）失效。每条早返回构造完响应都
                 过这里：落账 + 回填 request_id，一个实现不抄五遍。
 
-                f0.3 (C2): async hand-offs pass provisional=True -- the key is
-                handed to the job (bound in job_create), which settles it as
-                durable on success or releases it on failure.
+                Async hand-offs are provisional. The durable job journal
+                remains authoritative even if legacy key settlement fails.
                 """
                 if req.idempotency_key and idempotency_state["action"] != "disabled":
                     from ducky import idempotency
@@ -187,11 +600,8 @@ def register_add_routes(app: FastAPI) -> None:
 
 
             from ducky.add_speed import (
-                coalesce_enqueue,
-                coalesce_should_buffer,
                 ensure_coalesce_worker,
                 job_create,
-                job_update,
                 load_speed_cfg,
                 messages_to_text,
                 patch_llm_for_speed,
@@ -366,403 +776,42 @@ def register_add_routes(app: FastAPI) -> None:
             _full_text = messages_to_text(messages_json)
             text_preview = _full_text[:120]
 
-            # 📼 v19.4.0 明镜工程 Phase 1: Verbatim Vault 原文保真层
-            # 注入防御通过后，把逐字原文并行落库（mem0 抽取之外的第二层）。
-            # 幂等去重 + 失败干净降级，绝不阻断主链路。
-            try:
-                from ducky.verbatim_vault import store_verbatim
-                store_verbatim(req.user_id, messages_json, md, bank_id=req.bank_id)
-            except Exception as _ve:
-                feature_failed("store_verbatim", _ve)
-                logger.debug(f"📼 [VerbatimVault] 原文落库跳过: {_ve}")
+            mode = _write_mode()
+            use_async = async_flag and background_tasks is not None and mode not in ("local", "lite")
+            run_batch = partial(_execute_batch, mem)
+            if mode not in ("local", "lite"):
+                register_coalesce_flusher(run_batch)
+                ensure_coalesce_worker()
 
-            # f0.3 (C1 / S-1): a session summary records which sources it was
-            # derived from, in every engine mode (local/lite never create a
-            # vector payload), so deleting a source can cascade to it.
-            # No-op for ordinary writes; never raises.
-            from ducky.session_distill import record_summary_sources
-            record_summary_sources(req.user_id, req.bank_id, md, _full_text)
+            def _apply_validated():
+                durable_owned.append(True)
+                _store_ingress(req.user_id, req.bank_id, messages_json, md, _full_text, text_preview)
+                if mode in ("local", "lite"):
+                    return _finalize_and(_local_response(
+                        mode, req.user_id, req.bank_id, messages_json, md))
+                if use_async:
+                    return _dispatch_async(req, background_tasks, job_id, messages_json,
+                                           md, infer_flag, text_preview, run_batch, _finalize_and)
+                out = _run_pipeline(mem, req.user_id, messages_json, md,
+                                    bank_id=req.bank_id, infer=infer_flag)
+                return _finalize_and({**out, "infer": infer_flag})
 
-            # 🐙 v16.0 Opus Octopod (opus八爪鱼): 写入前触发隐式冲突检测与消解
-            try:
-                from ducky.conflict_resolver import scan_and_resolve_text_conflicts
-                scan_and_resolve_text_conflicts(text_preview, user_id=req.user_id, bank_id=req.bank_id)
-            except Exception as _ce:
-                logger.warning(f"🐙 [ConflictResolver] 隐式检测异常: {_ce}")
-
-            # 🧩 v20.1 WP-A: 确定性抽取层 —— LLM 之外的第二事实来源。
-            # 放在路由层（异步分发之前）：同步 / async job / coalesce 三条
-            # 通路都必然经过这里，且看到的是合并前的原始请求文本。
-            # LLM 空返回时，日期/版本/指令/偏好等硬事实仍有确定性通路落
-            # facts 层（source='pattern_extract'，可按来源精确清除）。
-            # 失败进 failure_ledger，绝不阻断主链路。
-            try:
-                from ducky.pattern_extract import extract_and_store
-                extract_and_store(_full_text, user_id=req.user_id,
-                                  bank_id=req.bank_id,
-                                  recorded_at=md.get("recorded_at"))
-            except Exception as _pe:
-                feature_failed("pattern_extract", _pe)
-                logger.warning(f"🧩 [PatternExtract] 确定性抽取跳过: {_pe}")
-
-            # 🪫 v20.2 自动挡（WP-F/WP-H）：
-            # ① 原文本地向量 —— lite 挡语义召回的语料，路由层单点写入
-            #    （三条通路全覆盖，与 pattern_extract 同位置哲学），软失败
-            #    进欠账绝不阻断。
-            # ② lite 挡分流 —— 云嵌入熔断期间完全绕开 mem0 主体（LLM 蒸馏
-            #    + 云向量整笔进欠账，升挡后重放走完整管线），确定性层
-            #    （pattern facts / verbatim / 本地向量）已在上方全部落完。
-            #    挡位如实回给调用方，蒸馏延迟不装没事。
-            try:
-                from ducky.dual_index import upsert_local_verbatim
-                upsert_local_verbatim(req.user_id, req.bank_id, _full_text)
-            except Exception as _lv:
-                feature_failed("dual_index_local", _lv)
-                logger.debug(f"🪫 [DualIndex] 原文本地向量跳过: {_lv}")
-            try:
-                from ducky.engine_mode import cloud_leg_enabled
-                from ducky.gear import current_mode
-                if not cloud_leg_enabled():
-                    # 🔋 本地档（v20.2.3）：零 token、零外部网络。确定性抽取、
-                    # 原文、本地向量已在上方全部落完，云侧**不入欠账** ——
-                    # 欠账的语义是「等恢复后补算」，而本地档没有「恢复」
-                    # 这回事（是部署方的选择，不是故障）。入了就是永不清零
-                    # 的假水位，会把 /health 的欠账探针变成噪声。
-                    return _finalize_and({
-                        "status": "ok",
-                        "action": "local_only",
-                        "engine_mode": "local",
-                        "detail": "本地档：硬事实、原文与本地向量已落库并可召回；"
-                                  "按部署配置不调用云端 LLM 与云嵌入（零 token）",
-                    })
-                if current_mode() == "lite":
-                    from ducky.dual_index import enqueue_cloud_add
-                    enqueue_cloud_add(
-                        {"messages": req.messages if isinstance(req.messages, str)
-                         else messages_json, "metadata": dict(md)},
-                        req.user_id, req.bank_id)
-                    return _finalize_and({
-                        "status": "ok",
-                        "action": "deferred_distillation",
-                        "engine_mode": "lite",
-                        "detail": "云嵌入熔断中：硬事实与原文已确定性落库并可召回；"
-                                  "LLM 蒸馏与云向量已入欠账，服务恢复后自动补算",
-                    })
-            except HTTPException:
-                raise
-            except Exception as _ge:
-                logger.warning(f"⚙️ [Gear] 挡位分流异常（回落 full 路径）: {_ge}")
-
-            def _direct_write(uid, msgs, meta, infer_effective, *, bank_id, note=None):
-                """确定性直写（layer1 之外的兜底通路）。infer_effective 由
-                调用方决定：非 LLM 故障透传调用方的 infer（v20 纪律——显式
-                免抽取不许偷偷变回 LLM 抽取）；LLM 故障/挡位 open 强制
-                False（否则 fallback 里还藏着一次 mem0 内部 LLM 调用 ——
-                2026-08-26 实弹里网关恰好复活才没暴露的洞）。"""
-                from ducky.origin_context import set_origin_from_metadata, reset_origin
-                _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
-                try:
-                    add_result = mem.add(msgs, user_id=uid, metadata=meta,
-                                         infer=infer_effective)
-                except Exception as _de:
-                    # fallback 自身纯化：直写内层再撞 LLMError（infer=True
-                    # 且 LLM 恰在此刻死）→ 上报挡位并就地降为 infer=False，
-                    # 绝不让 fallback 自己 500。非 LLM 异常照旧上抛。
-                    if type(_de).__name__ != "LLMError":
-                        raise
-                    from ducky.gear import record_llm_failure
-                    record_llm_failure(str(_de))
-                    logger.warning(f"直写内层 LLM 失败，就地降为确定性直写: {_de}")
-                    # v20.2.5（用户实测 🟢）：把降级语义说人话 —— 用户看到 skipped_llm_error
-                    # 不知道自己的内容到底存没存进去。原文已落库、蒸馏待补，
-                    # 这两件事都得说出来。机器可读的枚举值保留在 code 里。
-                    note = note or "skipped_llm_error"
-                    add_result = mem.add(msgs, user_id=uid, metadata=meta,
-                                         infer=False)
-                # v21.2 M2/M1：复位**之前**先把 origin 捞出来 —— 下面的
-                # sidecar 打标与 episode 登记都要用它，复位后就读不到了。
-                from ducky.origin_context import get_origin as _get_origin
-                _origin_snapshot = _get_origin()
-                reset_origin(_origin_token)  # 🟢-1：mem.add 临界区结束即复位
-                # 🏷️ v21.0 收口（生产用户审计 🔴-1）：主链路 mem0 产物的出身
-                # 登记进 sidecar——infer 用过 LLM 即 reasoned，直写即 user_provided。
-                try:
-                    from ducky.epistemic import stamp_memory_refs
-                    _rs = add_result if isinstance(add_result, list) else (add_result.get("results") if isinstance(add_result, dict) else [])
-                    _refs = [r.get("id") or r.get("memory_id") for r in _rs if isinstance(r, dict)]
-                    # v22.1（建议一）：is_bot=True 的记忆默认降权——
-                    # 多 bot 协作或群聊场景，转述内容可能误记为「用户的原始偏好」，
-                    # 身份认知倒挂。bot 记忆标 fuzzy（而非 reasoned），检索排序靠后。
-                    _is_bot = bool((meta or {}).get("_origin_is_bot"))
-                    _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective or is_session_summary(meta) else "user_provided")
-                    stamp_memory_refs([r for r in _refs if r],
-                                      _mode,
-                                      user_id=uid, bank_id=bank_id,
-                                      source=str((meta or {}).get("_origin_agent") or "add"),
-                                      origin=_origin_snapshot)
-                    # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。
-                    # 无 session_id（cron / 后台作业）一律不记 —— 轨迹统计只认
-                    # 真有会话的写入，不许被无主写入稀释。失败只吞不炸主链路。
-                    try:
-                        from ducky.evolve_mem import record_episode_step
-                        record_episode_step([r for r in _refs if r],
-                                            session_id=_origin_snapshot[1],
-                                            user_id=uid, bank_id=bank_id)
-                    except Exception as _ee:
-                        logger.debug(f"episode step 登记跳过: {_ee}")
-                except Exception as _se:
-                    logger.debug(f"epistemic sidecar 打标跳过: {_se}")
-                register_salience_for_add(add_result, user_id=uid, bank_id=bank_id)
-                # A queued batch owns this bank, regardless of which later
-                # request registered the process-global callback.
-                _index_direct_results(add_result, user_id=uid, bank_id=bank_id,
-                                      category=(meta or {}).get("category"))
-                out = {"status": "ok", "action": "direct"}
-                if note:
-                    # 诚实注记（additive，不动既有契约）：这条写入没做蒸馏。
-                    out["distillation"] = note
-                    # v20.2.5（用户实测 🟢）：机器可读的枚举值留在 `distillation`
-                    # 不动（既有调用方在判等），人话另开一个字段。
-                    # 用户看到裸的 `skipped_llm_error` 不知道自己的内容到底存没存
-                    # 进去 —— 而答案是「原文已落库、蒸馏待补」，这两件事都得说。
-                    _human = {
-                        "skipped_llm_error": "LLM 暂不可用：原文与硬事实已落库，"
-                                             "语义蒸馏待恢复后补算",
-                        "deferred_distillation": "LLM 挡位打开：本次跳过蒸馏，"
-                                                 "原文已落库，恢复后补算",
-                        "local_only": "本地档：仅写本地索引，未使用任何云端服务",
-                    }.get(note)
-                    if _human:
-                        out["distillation_note"] = _human
-                return out
-
-            def _run_pipeline(uid, msgs, meta, *, bank_id=None, infer=None):
-                # v20.2.4（外审 F-04）：bank 走**参数**，默认回退闭包里的
-                # req.bank_id（同请求内的同步调用行为不变）。跨请求的 coalesce
-                # 冲刷必须显式传 batch 自带的 scope —— 全局回调是进程级单例，
-                # 闭包里那个 req 属于「最后一次注册的请求」。
-                # ⚙️ v20.2.2 LLM 腿挡位：open 态不再逐请求撞超时——直接
-                # 确定性直写秒回（原文/硬事实/云向量照落，内容照样可召回；
-                # 欠的只是蒸馏精修，故障账本与事件账本可查）。closed/half-open
-                # 走真实蒸馏，半开拿真实写入当探针（命门教训）。
-                bank_id = bank_id or req.bank_id
-                batch_infer = infer_flag if infer is None else bool(infer)
-                from ducky.origin_context import set_origin_from_metadata, reset_origin
-                _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
-                from ducky.gear import record_llm_failure, record_llm_success, should_try_llm
-                try:
-                    _try_llm = should_try_llm()
-                except Exception:
-                    _try_llm = True
-                if not _try_llm and batch_infer:
-                    return _direct_write(uid, msgs, meta, False, bank_id=bank_id,
-                                         note="skipped_llm_gear_open")
-                try:
-                    _r = lazy_import_layer1()(
-                        mem, msgs, uid, meta,
-                        bank_id=bank_id, infer=batch_infer,
-                    )
-                    # 成功信号只在 LLM 真被使用过时上报（infer=False 的
-                    # layer1 整段跳过 LLM——记成功就是假信号）。
-                    if batch_infer:
-                        record_llm_success()
-                    # 🏷️ v21.0 收口：主链路打标在 layer1 _index_after_add
-                    # （本包装器吞掉 results，路由层拿不到 ref）
-                    return _r
-                except Exception as e:   # P2-5（v19.4.1）：ImportError 是 Exception 子类，元组冗余
-                    feature_failed("index_memory", e)
-                    logger.warning(f"Layer 1 自检异常，降级为直接写入: {e}")
-                    # 信号纯净（Y2 教训的写侧版）：只有 LLMError 形态计入
-                    # LLM 腿；FTS/salience 等非 LLM 崩溃不许污染挡位。
-                    if type(e).__name__ == "LLMError":
-                        record_llm_failure(str(e))
-                        return _direct_write(uid, msgs, meta, False, bank_id=bank_id,
-                                             note="skipped_llm_error")
-                    # v20：非 LLM 故障的降级分支照旧尊重 infer —— 否则
-                    # 调用方显式要的免抽取写入会在降级时偷偷变回 LLM 抽取，
-                    # 确定性通路就成了「大部分时候确定」。
-                    return _direct_write(uid, msgs, meta, batch_infer, bank_id=bank_id)
-                finally:
-                    reset_origin(_origin_token)  # 🟢-1：配对复位（含降级分支返回前）
-
-            def _execute_batch(uid, msgs, meta, job_ids, *, bank_id=None, infer=None):
-                """合并包 / 单条异步包统一执行，并把结果回写到所有关联 job。"""
-                jids = list(job_ids or [])
-                for jid in jids:
-                    job_update(jid, status="running")
-                try:
-                    result = _run_pipeline(uid, msgs, meta or {}, bank_id=bank_id,
-                                           infer=infer)
-                    # 标注 coalesce 信息到 result.details
-                    if isinstance(result, dict):
-                        details = dict(result.get("details") or {})
-                        if (meta or {}).get("coalesced"):
-                            details["coalesced"] = True
-                            details["coalesce_count"] = (meta or {}).get("coalesce_count")
-                            details["coalesce_reason"] = (meta or {}).get("coalesce_reason")
-                            details["coalesce_profile"] = (meta or {}).get("coalesce_profile")
-                            result = {**result, "details": details}
-                    payload = {"status": "done", "result": result}
-                    if jids:
-                        primary, *rest = jids
-                        job_update(primary, **payload)
-                        for jid in rest:
-                            job_update(
-                                jid,
-                                status="done",
-                                result={
-                                    **(result if isinstance(result, dict) else {"status": "ok"}),
-                                    "coalesce_follower": True,
-                                    "primary_job_id": primary,
-                                },
-                            )
-                    return result
-                except Exception as be:
-                    logger.error(f"add batch failed jobs={jids}: {be}")
-                    for jid in jids:
-                        job_update(jid, status="error", error=str(be)[:300])
-                    raise
-
-            # 注册 coalesce 冲刷回调 + 后台 worker（只一次）
-            def _coalesce_cb(uid, msgs, meta, job_ids, *, bank_id="default", infer=True):
-                # v20.2.4（F-04）：scope 从 batch 参数来，**不读闭包里的 req**
-                # f0.3 (C4): return the outcome -- the manual flush endpoint
-                # reports per-batch action/fallback instead of a bare "ok".
-                return _execute_batch(uid, msgs, meta, job_ids, bank_id=bank_id,
-                                      infer=infer)
-
-            register_coalesce_flusher(_coalesce_cb)
-            ensure_coalesce_worker()
-
-            # ── 异步路径 ──
-            if async_flag and background_tasks is not None:
-                # v20.4.0（P1-5 · Kimi P2-2）：job 记录带全两轴，查询端校验归属
-                # f0.3 (C2): the job inherits this request's idempotency claim
-                # *before* it can run (a coalesce worker may flush at once).
-                job_id = job_create({"text_preview": text_preview,
-                                     "user_id": req.user_id,
-                                     "bank_id": req.bank_id,
-                                     "idempotency": idempotency.job_binding(
-                                         idempotency_state, req.idempotency_key,
-                                         req.user_id, req.bank_id)})
-
-                # 短句连发 → 合并队列（省 LLM）
-                should, why = coalesce_should_buffer(
-                    req.user_id, messages_json, md, async_mode=True
-                )
-                if should:
-                    enq = coalesce_enqueue(
-                        req.user_id, messages_json, md, job_id=job_id,
-                        bank_id=req.bank_id,          # F-04：scope 随 batch 落库
-                        infer=infer_flag,
-                    )
-                    # 若顺带带出已到期的旧包 / 满额包，立刻后台执行
-                    batches = []
-                    if enq.get("merged_ready") and enq.get("messages"):
-                        batches.append({
-                            "user_id": enq.get("user_id") or req.user_id,
-                            "bank_id": enq.get("bank_id") or req.bank_id,
-                            "infer": bool(enq.get("infer", infer_flag)),
-                            "messages": enq["messages"],
-                            "metadata": enq.get("metadata") or md,
-                            "job_ids": enq.get("job_ids") or [job_id],
-                        })
-                    for extra_batch in (enq.get("also_ready") or []):
-                        batches.append(extra_batch)
-
-                    for b in batches:
-                        background_tasks.add_task(
-                            _execute_batch,
-                            b["user_id"],
-                            b["messages"],
-                            b.get("metadata") or {},
-                            b.get("job_ids") or [],
-                            bank_id=b.get("bank_id") or req.bank_id,
-                            infer=bool(b.get("infer", infer_flag)),
-                        )
-
-                    if enq.get("buffered"):
-                        job_update(
-                            job_id,
-                            status="coalescing",
-                            result={
-                                "status": "coalescing",
-                                "action": "coalesce_buffered",
-                                "count": enq.get("count"),
-                                "key": enq.get("key"),
-                                "profile": enq.get("profile"),
-                                "idle_sec": enq.get("idle_sec"),
-                                "window_sec": enq.get("window_sec"),
-                            },
-                        )
-                        # v20.4.0（P2-8 · Kimi P3-1）：accepted ≠ durable ——
-                        # 合并缓冲/job 状态在进程内存，重启即失。响应如实声明，
-                        # 落盘重放列 v20.5 候选（拍板戊：先诚实披露）。
-                        return _finalize_and({
-                            "status": "accepted",
-                            "durable": False,
-                            "action": "coalesce_buffered",
-                            "job_id": job_id,
-                            "infer": infer_flag,
-                            "message": "短句已入合并队列，空闲后一次总结落库",
-                            "preview": text_preview,
-                            "coalesce": {
-                                "count": enq.get("count"),
-                                "key": enq.get("key"),
-                                "profile": enq.get("profile"),
-                                "idle_sec": enq.get("idle_sec"),
-                                "window_sec": enq.get("window_sec"),
-                            },
-                        }, provisional=True)
-                    # 当前句触发了满额即时冲刷
-                    return _finalize_and({
-                        "status": "accepted",
-                        "durable": False,
-                        "action": "coalesce_flushed",
-                        "job_id": job_id,
-                        "infer": infer_flag,
-                        "message": "合并包已提交后台总结落库",
-                        "preview": text_preview,
-                        "coalesce": {
-                            "count": enq.get("count"),
-                            "reason": enq.get("flush_reason"),
-                            "key": enq.get("key"),
-                            "profile": enq.get("profile"),
-                        },
-                    }, provisional=True)
-
-                # 不进合并：单条异步
-                def _bg_job(jid=job_id, msgs=messages_json, meta=md,
-                            uid=req.user_id, bid=req.bank_id, inf=infer_flag):
-                    _execute_batch(uid, msgs, meta, [jid], bank_id=bid, infer=inf)
-
-                background_tasks.add_task(_bg_job)
-                return _finalize_and({
-                    "status": "accepted",
-                    "durable": False,
-                    "action": "async_queued",
-                    "job_id": job_id,
-                    "infer": infer_flag,
-                    "message": "已收下，后台正在总结落库",
-                    "preview": text_preview,
-                    "coalesce_skip": why,
-                }, provisional=True)
-
-            out = _run_pipeline(req.user_id, messages_json, md)
-            # v20：回显 infer —— 调用方（尤其跑分适配器）据此断言服务端
-            # 真的按免抽取写入执行了，而不是把这个字段静默丢掉。
-            if isinstance(out, dict):
-                out = {**out, "infer": infer_flag}
-            if req.idempotency_key:
-                out = {**out, "request_id": req.idempotency_key}
-                if idempotency_state["action"] != "disabled":
-                    from ducky import idempotency
-                    idempotency.finalize(
-                        req.idempotency_key, req.user_id, req.bank_id, out,
-                        claimed_at=idempotency.claim_token(idempotency_state),
-                    )
-                    _idem_claimed.clear()  # P0-1：已落账
-            return out
+            if use_async:
+                job_id = job_create({
+                    "text_preview": text_preview, "user_id": req.user_id,
+                    "bank_id": req.bank_id, "messages": messages_json,
+                    "metadata": md, "infer": infer_flag,
+                    "original_request": idempotency_payload,
+                    "idempotency": idempotency.job_binding(
+                        idempotency_state, req.idempotency_key, req.user_id, req.bank_id),
+                })
+                durable_owned.append(True)
+                return _admit_job(job_id, req.user_id, req.bank_id, _apply_validated)
+            return execute_request(req.user_id, req.bank_id, idempotency_payload,
+                                   _apply_validated, request_key=req.idempotency_key)
+        except MutationUncertain as exc:
+            _release_failed_claim()  # scope refusal before our own intent can release safely
+            raise HTTPException(409, mutation_error_detail(exc)) from exc
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
@@ -770,7 +819,7 @@ def register_add_routes(app: FastAPI) -> None:
             _release_failed_claim()  # P0-1：拒绝（400/503/...）不许押着幂等键
             raise
         except Exception as e:
-            _release_failed_claim()  # P0-1：写没成功，键就不该占位
+            _release_failed_claim()  # only safe before any durable intent
             feature_failed("index_memory", e)
             feature_failed("store_verbatim", e)
             logger.error(f"add 失败: {e}")

@@ -31,14 +31,33 @@ _VOLATILE_ARGUMENT_KEYS = frozenset({
 })
 
 
-def canonicalize_arguments(value):
-    """Remove top-level tracing noise; preserve nested business inputs."""
+def canonicalize_arguments(value, *, json_fields=()):
+    """Normalize only schema-declared JSON strings, never arbitrary text.
+
+    Parsed values are tagged so invalid/raw strings cannot collide with valid
+    JSON. Content whitespace, array order, nested IDs and all business scope
+    fields stay significant. Malformed JSON retains its exact failing input.
+    """
     if isinstance(value, dict):
-        return {
+        result = {
             str(key): item
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
             if str(key).lower() not in _VOLATILE_ARGUMENT_KEYS
         }
+        for key in json_fields:
+            item = result.get(key)
+            if not isinstance(item, str):
+                continue
+            try:
+                parsed = json.loads(item)
+                # Non-finite values are accepted by Python's JSON parser but
+                # not canonical JSON. Keep those inputs in the raw branch.
+                json.dumps(parsed, allow_nan=False)
+            except (ValueError, TypeError, RecursionError):
+                result[key] = ["raw-json-string", item]
+            else:
+                result[key] = ["parsed-json", parsed]
+        return result
     return value
 
 
@@ -49,11 +68,13 @@ def retry_hint(count):
     return hint
 
 
-def fingerprint(tool, arguments, scope="stdio"):
-    raw = json.dumps([str(scope), str(tool), canonicalize_arguments(arguments)],
+def fingerprint(tool, arguments, scope="stdio", *, json_fields=()):
+    raw = json.dumps([str(scope), str(tool), canonicalize_arguments(arguments, json_fields=json_fields)],
                      sort_keys=True, ensure_ascii=False,
                      separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(raw.encode()).hexdigest()
+    # json.loads accepts escaped lone surrogates. Hash them deterministically
+    # instead of raising UnicodeEncodeError and falling through admission.
+    return hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
 def failed_result(result):
@@ -151,8 +172,11 @@ class LoopGuard:
             if probe and self._states.get(key) is state:
                 state.probing = False
 
-    def wrap(self, fn, scope=lambda: "stdio"):
+    def wrap(self, fn, scope=lambda: "stdio", *, json_fields=()):
         signature = inspect.signature(fn)
+        json_fields = frozenset(json_fields)
+        if not json_fields.issubset(signature.parameters):
+            raise ValueError("JSON fingerprint fields must exist in the tool schema")
 
         def prepare(args, kwargs):
             if not self.enabled:
@@ -160,7 +184,8 @@ class LoopGuard:
             try:
                 bound = signature.bind(*args, **kwargs)
                 bound.apply_defaults()
-                token, rejection = self.begin(fingerprint(fn.__name__, bound.arguments, scope()))
+                token, rejection = self.begin(fingerprint(
+                    fn.__name__, bound.arguments, scope(), json_fields=json_fields))
                 if rejection:
                     self.logger.warning("[loop-guard] %s circuit_open retry_after=%s",
                                    fn.__name__, rejection["retry_after"])

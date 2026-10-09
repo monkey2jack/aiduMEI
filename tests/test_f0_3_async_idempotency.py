@@ -291,7 +291,7 @@ BODY = {"messages": "distilled summary of the session", "user_id": "alice",
         "idempotency_key": "shell-distill-abc", "metadata": {"no_coalesce": True}}
 
 
-def test_failed_async_write_is_retried_not_replayed(route, db):
+def test_failed_async_write_requires_reconciliation_before_retry(route, db):
     client, mem = route
     mem.broken = True
     first = client.post("/add", json=BODY)
@@ -301,7 +301,14 @@ def test_failed_async_write_is_retried_not_replayed(route, db):
     mem.broken = False
     second = client.post("/add", json=BODY)
     assert second.json().get("idempotency_replayed") is not True
-    assert mem.adds == [BODY["messages"]], "the retry did not execute the write"
+    assert second.status_code == 409 and mem.adds == []
+    from ducky import mutation_journal
+    repair, = mutation_journal.list_repairs("alice", "work")
+    mutation_journal.resolve_mutation(repair['id'], "alice", "work",
+        resolution='confirmed_not_applied', evidence='synthetic backend inspected: no writes')
+    third = client.post("/add", json=BODY)
+    assert third.status_code == 200
+    assert mem.adds == [BODY["messages"]], "verified-absent repair must permit an explicit retry"
 
 
 def test_successful_async_write_replays_the_durable_receipt(route, db):

@@ -88,6 +88,8 @@ _BRAND_DISCOURSE_FILES = {
 
 # ── 按（文件, 精确字面量）豁免：一次性值，逐条写清为什么必须留旧名 ──────
 _ALLOWED_LITERALS = {
+    ("tests/test_f04_recall_windows.py", "[aiduMEM Recall]"):
+        "旧标题负向断言：确认实际宿主注入输出不再含此字面量；不是产品输出",
     ("ducky/federation/schema.py", "aiduMEM local primary agent"):
         "_SEED_DESCRIPTION_LEGACY：存量行回填的等值匹配针，删了老库就改不动",
     ("scripts/consolidator.py", "aiduMEM 记忆 升级 配置"):

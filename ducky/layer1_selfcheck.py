@@ -14,6 +14,7 @@ from typing import Optional
 
 from .bank_contract import (
     DEFAULT_BANK_ID,
+    make_scope,
     stamp_bank_metadata,
     vector_item_in_bank,
     vector_scope_filters,
@@ -21,6 +22,8 @@ from .bank_contract import (
 from .utils import get_facts_conn, jaccard_sim
 from ducky.mem0_compat import get_all_memories
 from ducky.failure_ledger import feature_failed
+from ducky.mutation_journal import MutationUncertain, _check_scope, serialized_scope
+from ducky.mutation_fallback import require_no_sdk_since, sdk_attempt_count
 
 logger = logging.getLogger("aiduMEM.selfcheck")
 
@@ -97,6 +100,8 @@ def check_capacity(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> dict
             "pct": round(pct, 3),
             "needs_merge": pct >= CAPACITY_THRESHOLD,
         }
+    except MutationUncertain:
+        raise
     except Exception as e:
         logger.warning(f"容量检查失败: {e}")
         return {"total": 0, "max": MAX_CAPACITY, "pct": 0, "needs_merge": False}
@@ -135,6 +140,8 @@ def dedup_check(memory, user_id: str, new_text: str,
         # with different conclusions look like duplicates.
         if existing_text and _text_similarity(new_text, existing_text) > DEDUP_THRESHOLD:
             return top.get("id", "")
+    except MutationUncertain:
+        raise
     except Exception as e:
         logger.debug(f"去重检查跳过: {e}")
     return None
@@ -280,6 +287,8 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
                         if snapshot_id is None:
                             logger.warning("tombstone snapshot unavailable; preserving %s", str(mid)[:8])
                             continue
+                    except MutationUncertain:
+                        raise
                     except (OSError, ValueError, TypeError, KeyError, ImportError,
                             AttributeError, RuntimeError) as te:
                         # Automated pruning must keep a recoverable copy. A
@@ -291,6 +300,8 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
                         result = cascade_delete_memory(mid, user_id=user_id, bank_id=bank_id)
                         if result and result.get("status") in ("ok", "committed"):
                             deleted_total += 1
+                    except MutationUncertain:
+                        raise
                     except Exception as e:
                         logger.debug(f"删除记忆 {str(mid)[:8]} 失败: {e}")
                 merged += 1
@@ -299,11 +310,43 @@ def auto_merge_similar(memory, user_id: str, max_groups: int = 5,
 
         logger.info(f"Layer1 自动合并: {merged} 组, 删除 {deleted_total} 条（判据=内容相似度>{DEDUP_THRESHOLD}）")
         return {"merged_groups": merged, "deleted": deleted_total}
+    except MutationUncertain:
+        raise
     except Exception as e:
         logger.warning(f"自动合并失败: {e}")
         return {"merged_groups": 0, "deleted": 0}
 
 
+def _try_self_edit(memory, messages_json, user_id, metadata, bank_id):
+    before = sdk_attempt_count(user_id, bank_id)
+    try:
+        from ducky.self_edit import self_edit_on_add
+        return self_edit_on_add(memory, user_id, messages_json, metadata, bank_id=bank_id)
+    except MutationUncertain:
+        raise
+    except Exception as error:
+        require_no_sdk_since(before, user_id, bank_id, error)
+        feature_failed("self_edit", error)
+        logger.debug("self-edit unavailable before SDK dispatch; deterministic fallback allowed")
+        return None
+
+
+def _update_duplicate(memory, existing_id, text, metadata, user_id, bank_id, details):
+    before = sdk_attempt_count(user_id, bank_id)
+    try:
+        memory.update(existing_id, text, metadata=metadata)
+    except MutationUncertain:
+        raise
+    except Exception as error:
+        require_no_sdk_since(before, user_id, bank_id, error)
+        logger.warning("Layer1 去重更新失败，持久记录确认无 SDK 调用，降级为新增: %s", type(error).__name__)
+        details["dedup_update_failed"] = {"existing_id": existing_id,
+                                           "error": f"{type(error).__name__}: {str(error)[:200]}"}
+        return False
+    return True
+
+
+@serialized_scope
 def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank_id: str = "default",
                        infer: bool = True) -> dict:
     """
@@ -327,6 +370,8 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
     # 的通道（mem0.add 只认 messages/user_id/metadata）。不盖这个戳，命名域的
     # 向量与默认域的向量在 payload 上无法区分，向量侧的域隔离就等于不存在。
     # 在函数口上盖一次，下面 update/add 三个出口全部继承。
+    scope = make_scope(user_id, bank_id)
+    user_id, bank_id = scope.user_id, scope.bank_id
     metadata = stamp_bank_metadata(metadata, bank_id)
 
     # A summary is already derived. Store it as its own record: another
@@ -347,66 +392,34 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
     else:
         text = str(messages_json)
 
-    # Step 0: P0-2 记忆去重自编辑（LLM 语义级判重，先行；失败降级回 Jaccard）
-    # infer=False 时整段跳过：这一步会调 LLM 判定「新旧是否同一件事」
-    # 并合成 merged_content，是确定性通路上最大的一处不确定来源。
+    _check_scope(user_id, bank_id)
     if infer:
-        try:
-            from ducky.self_edit import self_edit_on_add
-            self_edit_result = self_edit_on_add(memory, user_id, messages_json, metadata, bank_id=bank_id)
-            if self_edit_result:
-                details["self_edit"] = self_edit_result
-                action = self_edit_result["action"]
-                # self-edit 直接更新了既有记忆内容，记忆向量与文本索引会因
-                # update 而异动；热度与 FTS 仍需同步，否则合并后的记忆在
-                # 检索侧被降权/漏检。这里做保守同步，失败不阻断返回。
-                _sync_indexes_after_update(
-                    memory,
-                    memory_id=self_edit_result.get("memory_id", ""),
-                    content=self_edit_result.get("merged_content", text),
-                    user_id=user_id, bank_id=bank_id,
-                )
-                elapsed_ms = int((time.time() - start) * 1000)
-                details["ms"] = elapsed_ms
-                return {
-                    "status": "ok",
-                    "action": action,
-                    "details": details,
-                }
-        except Exception as se:
-            feature_failed("self_edit", se)
-            logger.debug(f"self-edit 跳过（降级）: {se}")
+        edited = _try_self_edit(memory, messages_json, user_id, metadata, bank_id)
+        if edited:
+            details["self_edit"] = edited
+            _sync_indexes_after_update(memory, memory_id=edited.get("memory_id", ""),
+                                       content=edited.get("merged_content", text),
+                                       user_id=user_id, bank_id=bank_id)
+            details["ms"] = int((time.time() - start) * 1000)
+            return {"status": "ok", "action": edited["action"], "details": details}
     else:
         details["self_edit_skipped"] = "infer=false"
 
     # Step 1: 去重检查
     existing_id = None if session_summary else dedup_check(memory, user_id, text, bank_id=bank_id)
     if existing_id:
-        try:
-            # Lethe v9.2.0: 触发演化追踪 (在更新前运行，便于捕获相似关系)
-            track_knowledge_evolution(memory, user_id, text, existing_id, bank_id=bank_id, metadata=metadata)
-            memory.update(existing_id, text, metadata=metadata)
+        # Evolution side effects and post-update indexes are outside the SDK
+        # fallback block. Their failure cannot be mistaken for an absent write.
+        track_knowledge_evolution(memory, user_id, text, existing_id, bank_id=bank_id, metadata=metadata)
+        if _update_duplicate(memory, existing_id, text, metadata, user_id, bank_id, details):
             action = "updated"
             details["existing_id"] = existing_id
-            logger.info(f"Layer1 去重更新: {existing_id[:16]}")
-            # 🔴2：更新既有记忆后同步热度与 FTS，避免检索侧漏检/降权
-            _sync_indexes_after_update(memory, memory_id=existing_id, content=text, user_id=user_id, bank_id=bank_id)
-        except Exception as ue:
-            # update 失败就走新增 —— 但**必须留痕**。
-            # 去重命中却更新失败，结果是库里多出一条重复记忆，而返回的
-            # action="new" 与「本来就是一条新记忆」在调用方看来一模一样。
-            # 不记这一笔，坏掉的更新通路可以坏很久而没有任何东西发红：
-            # 用户只会觉得「记忆怎么越来越重复」，查不到根因。
-            # 语义不变（照旧降级新增），只是把降级这件事说出来。
-            logger.warning(
-                f"Layer1 去重更新失败，降级为新增: {existing_id[:16]} {type(ue).__name__}: {ue}"
-            )
-            details["dedup_update_failed"] = {
-                "existing_id": existing_id,
-                "error": f"{type(ue).__name__}: {str(ue)[:200]}",
-            }
+            _sync_indexes_after_update(memory, memory_id=existing_id, content=text,
+                                       user_id=user_id, bank_id=bank_id)
+        else:
             add_result = memory.add(messages_json, user_id=user_id, metadata=metadata, infer=infer)
-            _index_after_add(add_result, user_id=user_id, category=(metadata or {}).get("category"), bank_id=bank_id, infer=infer, metadata=metadata)
+            _index_after_add(add_result, user_id=user_id, category=metadata.get("category"),
+                             bank_id=bank_id, infer=infer, metadata=metadata)
             action = "new"
     else:
         # Step 2: 容量检查
@@ -419,12 +432,10 @@ def layer1_add_wrapper(memory, messages_json, user_id: str, metadata: dict, bank
 
         # Lethe v9.2.0: 写入前进行演化追踪，将可能被新记忆取代的旧记忆置为 superseded
         import hashlib
-        try:
-            new_id_placeholder = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-            if not session_summary:
-                track_knowledge_evolution(memory, user_id, text, new_id_placeholder, bank_id=bank_id, metadata=metadata)
-        except Exception as e:
-            logger.warning(f"写入前演化追踪失败: {e}")
+        new_id_placeholder = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
+        if not session_summary:
+            track_knowledge_evolution(memory, user_id, text, new_id_placeholder,
+                                      bank_id=bank_id, metadata=metadata)
 
         # Step 3: 写入
         # 🔴2：主链写入路径必须登记 salience + FTS 索引，否则新记忆全文搜不到、热度不累计。
@@ -447,14 +458,14 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
 
     正常新增路径此前只调 memory.add()，既不注册显著性、也不写全文索引，
     导致新记忆热度不累计、FTS/BM25 全文搜不到（向量召回不受影响）。
-    此处统一补齐，任何一步失败静默降级不阻断写入。
+    此处统一补齐；失败向上传递，由请求/job 留下待核验记录。
     🔴7：同时按 AIDUMEM_TYPE_CLASSIFY_ENABLED 做写时六型分类落账本。
     """
     if add_result is None:
         return
     # v21.0 收口（生产用户审计 🔴-1）：出身打标落在本登记点——layer1 包装器吞掉
     # mem0 的 results，路由层拿不到 ref。infer=True（LLM 蒸馏经手）→ reasoned；
-    # infer=False（确定性直写）→ user_provided。失败静默降级不阻断写入。
+    # infer=False（确定性直写）→ user_provided。失败由请求/job 保留待核验。
     try:
         from ducky.epistemic import stamp_memory_refs
         from ducky.origin_context import is_session_summary, origin_from_metadata
@@ -483,16 +494,25 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
             if _origin[1]:
                 record_episode_step([r for r in _refs if r], user_id=user_id,
                                     bank_id=bank_id, session_id=_origin[1])
+        except MutationUncertain:
+            raise
         except Exception as _ee:
-            logger.debug(f"episode step 登记跳过: {_ee}")
+            logger.warning(f"episode step 登记跳过: {_ee}")
+            raise
+    except MutationUncertain:
+        raise
     except Exception as e:
-        logger.debug(f"epistemic sidecar 打标跳过: {e}")
+        logger.warning(f"epistemic sidecar 打标跳过: {e}")
+        raise
     try:
         from ducky.mem0_runtime import register_salience_for_add
         register_salience_for_add(add_result, user_id=user_id, bank_id=bank_id)
+    except MutationUncertain:
+        raise
     except Exception as e:
         feature_failed("salience_register", e)
-        logger.debug(f"salience 登记跳过: {e}")
+        logger.warning(f"salience 登记跳过: {e}")
+        raise
 
     results = (
         add_result if isinstance(add_result, list)
@@ -508,9 +528,12 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
         try:
             from ducky.text_fts import _index_memory
             _index_memory(mid, content, user_id=user_id, category=category, bank_id=bank_id)
+        except MutationUncertain:
+            raise
         except Exception as e:
             feature_failed("index_memory", e)
-            logger.debug(f"FTS index on add 跳过: {e}")
+            logger.warning(f"FTS index on add 跳过: {e}")
+            raise
         _classify_memory_type_on_add(mid, content, user_id=user_id, bank_id=bank_id)
 
 
@@ -518,21 +541,23 @@ def _classify_memory_type_on_add(memory_id: str, content: str, *, user_id: str =
     """🔴7：写时六型分类。默认关闭（规则分类），开 AIDUMEM_TYPE_CLASSIFY_ENABLED 后用 LLM。
 
     此前 classify_and_record 生产零调用、六型只能手动 backfill。这里接进主链，
-    环境变量控制是否用 LLM；失败静默降级不阻断写入。
+    环境变量控制是否用 LLM；失败交由请求/job 保留待核验。
     """
     try:
         from ducky.memory_types import classify_and_sync_memory
         classify_and_sync_memory(memory_id, content, user_id=user_id, bank_id=bank_id)
+    except MutationUncertain:
+        raise
     except Exception as e:
         feature_failed("memory_type_classify", e)
-        logger.debug(f"写时六型分类跳过: {e}")
+        logger.warning(f"写时六型分类跳过: {e}")
+        raise
 
 
 def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: str, bank_id: str = "default") -> None:
     """self-edit 合并/冲突更新记忆后，补做热度登记与 FTS 索引刷新。
 
-    与 /add 正常写入路径保持一致；任何一步失败都静默降级，不阻断
-    self-edit 的返回（记忆内容本身已经更新成功）。
+    SDK 已经成功；后续失败必须向上传递，绝不能落到新增降级路径。
     """
     if not memory_id:
         return
@@ -543,18 +568,24 @@ def _sync_indexes_after_update(memory, memory_id: str, content: str, user_id: st
         from ducky.salience.core import on_memory_added
         on_memory_added(memory_id, content=content, preserve_heat=True,
                         user_id=user_id, bank_id=bank_id)
+    except MutationUncertain:
+        raise
     except Exception as e:
         feature_failed("evolve_on_added", e)
-        logger.debug(f"self-edit 热度登记跳过: {e}")
+        logger.warning(f"self-edit 热度登记跳过: {e}")
+        raise
     try:
         from ducky.text_fts import _index_memory
         # 🔴v20 甲14 故意不传 category：上面刚用 preserve_heat=True 保住了热度，
         # 这里原来却硬写 category=""，同一个函数里一半在保、一半在毁。合并只改
         # 内容不改分类，不传 = 让 _index_memory 沿用行上既有分类。
         _index_memory(memory_id, content, user_id=user_id, bank_id=bank_id)
+    except MutationUncertain:
+        raise
     except Exception as e:
         feature_failed("index_memory", e)
-        logger.debug(f"self-edit FTS 索引刷新跳过: {e}")
+        logger.warning(f"self-edit FTS 索引刷新跳过: {e}")
+        raise
 
 
 def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str = "new_item",
@@ -585,6 +616,7 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
     Qdrant 的 must 语义会把没有 bank_id 字段的 v19 存量点全判为不匹配，召回
     直接归零），所以默认域下**复筛是唯一承重的那一半**——而生产跑的正是默认域。
     """
+    writing = False
     try:
         # 1. 查找最相似的候选记忆 (避开新写入的这一条)
         results = memory.search(new_text, filters=vector_scope_filters(user_id, bank_id), limit=5)
@@ -645,7 +677,23 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
             #    未迁移库（无列）如实退回旧五列写法。）
             from ducky.origin_context import origin_from_metadata
             _oa, _os, _ot = origin_from_metadata(metadata)
-            conn = get_facts_conn()
+            writing = True
+            _record_evolution(old_id, new_id, relation, sim, reason, (_oa, _os, _ot))
+            logger.info(f"Lethe 演化追踪: {old_id[:8]} -[{relation}]-> {new_id[:8]} (sim={sim:.2f})")
+    except MutationUncertain:
+        raise
+    except Exception as e:
+        if writing:
+            raise
+        logger.warning(f"演化追踪读取失败: {e}")
+
+
+def _record_evolution(old_id, new_id, relation, sim, reason, origin):
+    """One atomic SQL transaction; rollback/close even when a write fails."""
+    _oa, _os, _ot = origin
+    conn = get_facts_conn()
+    try:
+        with conn:
             _ke_cols = {r[1] for r in conn.execute(
                 "PRAGMA table_info(knowledge_evolution)").fetchall()}
             if "origin_agent" in _ke_cols:
@@ -672,8 +720,5 @@ def track_knowledge_evolution(memory, user_id: str, new_text: str, new_id: str =
                     "INSERT OR REPLACE INTO memory_states (memory_id, state, reason, source) VALUES (?, 'active', 'new_evolution_active', 'evolution')",
                     (new_id,)
                 )
-            conn.commit()
-            conn.close()
-            logger.info(f"Lethe 演化追踪: {old_id[:8]} -[{relation}]-> {new_id[:8]} (sim={sim:.2f})")
-    except Exception as e:
-        logger.warning(f"演化追踪失败: {e}")
+    finally:
+        conn.close()

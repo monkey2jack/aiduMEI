@@ -371,7 +371,7 @@ class AiduMemProvider(MemoryProvider):
         self._ended_sessions: set[tuple[str, int]] = set()
         self._distill_payloads: Dict[tuple[str, int], Dict[str, Any]] = {}
 
-    def _scope_query(self, *, caller: bool = False) -> str:
+    def _scope_query(self, *, caller: bool = True) -> str:
         params = {"user_id": self._client.user_id,
                   "bank_id": self._client.bank_id}
         if caller:
@@ -736,6 +736,7 @@ class AiduMemProvider(MemoryProvider):
                 "/add",
                 body={
                     "messages": combined,
+                    "caller_user_id": self._client.user_id,
                     "user_id": self._client.user_id,
                     "bank_id": self._client.bank_id,
                     "idempotency_key": write_key,
@@ -779,6 +780,7 @@ class AiduMemProvider(MemoryProvider):
                 "/add",
                 body={
                     "messages": blob,
+                    "caller_user_id": self._client.user_id,
                     "user_id": self._client.user_id,
                     "bank_id": self._client.bank_id,
                     "idempotency_key": write_key,
@@ -937,6 +939,7 @@ class AiduMemProvider(MemoryProvider):
                         return
                     body = {
                         "messages": summary,
+                        "caller_user_id": self._client.user_id,
                         "user_id": out.get("user_id") or self._client.user_id,
                         "bank_id": out.get("bank_id") or self._client.bank_id,
                         "idempotency_key": f"hermes-distill-{uuid.uuid4().hex}",
@@ -1045,6 +1048,7 @@ class AiduMemProvider(MemoryProvider):
                 "/add",
                 body={
                     "messages": content[:8000],
+                    "caller_user_id": self._client.user_id,
                     "user_id": self._client.user_id,
                     "bank_id": self._client.bank_id,
                     "metadata": {"source": "hermes_tool",

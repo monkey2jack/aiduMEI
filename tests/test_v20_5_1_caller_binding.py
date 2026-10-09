@@ -132,12 +132,12 @@ def test_broken_bindings_json_fails_closed(monkeypatch):
     assert _detail_error(exc_info.value) == "caller_bindings_misconfigured"
 
 
-def test_implicit_caller_escape_hatch_not_bound(monkeypatch):
-    """逃生门放行的空 caller 不参与绑定（没有身份可绑）——旧单机语义不变。"""
+def test_implicit_caller_resolves_to_bound_identity(monkeypatch):
+    """f0.4: implicit compatibility must not erase a registered principal."""
     monkeypatch.setenv("AIDUMEI_ALLOW_IMPLICIT_CALLER", "1")
     _bindings_env(monkeypatch, {auth_mod.fingerprint_token(_TOKEN_A): ["agent_a"]})
     auth_mod.set_request_token_fingerprint(_TOKEN_A)
-    assert _require_caller("", operation="list_agents") == ""
+    assert _require_caller("", operation="list_agents") == "agent_a"
 
 
 # ── 2. 穿透级：真实中间件 → contextvar → 联邦端点 ─────────────────────

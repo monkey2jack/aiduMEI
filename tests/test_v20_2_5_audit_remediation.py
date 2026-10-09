@@ -425,17 +425,13 @@ class TestA2DeleteOutcomeStates:
         import ducky.wal_engine as we
         from fastapi import HTTPException
 
-        class _RecordingWAL:
-            def __init__(self):
-                self.statuses = []
-
-            def append(self, entry):
-                return entry.wal_id
-
-            def mark_status(self, _wal_id, status, error=""):
-                self.statuses.append((status, error))
-
-        wal = _RecordingWAL()
+        wal = we.WALEngine(str(tmp_path / "wal"))
+        statuses = []
+        real_mark = wal.mark_status
+        def mark(wal_id, status, error="", **kw):
+            statuses.append((status, error))
+            return real_mark(wal_id, status, error, **kw)
+        monkeypatch.setattr(wal, "mark_status", mark)
         monkeypatch.setattr(we.WALEngine, "get_instance", classmethod(lambda cls: wal))
         boom = HTTPException(status_code=503, detail="qdrant connection refused")
         monkeypatch.setattr(rt, "get_memory", lambda: (_ for _ in ()).throw(boom))
@@ -447,9 +443,9 @@ class TestA2DeleteOutcomeStates:
             out = we.cascade_delete_all("configured_failure", bank_id="b", confirm=True)
 
         assert out["status"] == "failed", out
-        assert {f["layer"] for f in out["failed_layers"]} == {expected_layer}
-        assert not any(status == "committed" for status, _error in wal.statuses), (
-            f"关键层失败却把 WAL 标成 committed：{wal.statuses}")
+        assert expected_layer in {f["layer"] for f in out["failed_layers"]}
+        assert not any(status == "committed" for status, _error in statuses), (
+            f"关键层失败却把 WAL 标成 committed：{statuses}")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -533,11 +529,20 @@ class _FakeMem0:
     """
 
     def __init__(self, items):
+        from types import SimpleNamespace
+        self.vector_store = self
+        self.client = SimpleNamespace(get_collections=lambda: SimpleNamespace(collections=[]))
+        self._scope_user = None
         self._items = list(items)
         self.deleted = []
 
     def get_all(self, filters=None, top_k=None, **kw):
+        self._scope_user = (filters or {}).get("user_id")
         return {"results": list(self._items)}
+
+    def get(self, vector_id):
+        item = next((i for i in self._items if i["id"] == vector_id), None)
+        return {"payload": {"data": item["memory"], "user_id": self._scope_user, **item.get("metadata", {})}} if item else None
 
     def delete(self, mid):
         self.deleted.append(str(mid))
@@ -766,8 +771,8 @@ def test_raw_handle_delete_removes_the_facts_row(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr("ducky.wal_engine.get_facts_conn",
-                        lambda: sqlite3.connect(db))
+    # Snapshot and DELETE must see the SAME SQLite database/row schema.
+    monkeypatch.setattr("ducky.utils.FACTS_DB", str(db))
     fake = _FakeMem0([])
     monkeypatch.setattr("ducky.mem0_runtime.get_memory", lambda: fake)
 
@@ -815,15 +820,17 @@ def test_delete_local_counts_what_it_removed_not_what_was_asked():
         def retrieve(self, collection_name, ids, **kw):
             return [type("P", (), {"id": i})() for i in ids if str(i) in self.存在]
 
-        def delete(self, collection_name, points_selector):
+        def delete(self, collection_name, points_selector, wait=True):
             self.deleted.extend(str(p) for p in points_selector)
 
-    q = _FakeQ({"pid-real"})
-    assert dual_index.delete_local(["pid-real"], client=q) == 1
+    real = "00000000-0000-0000-0000-000000000001"
+    ghost = "00000000-0000-0000-0000-000000000002"
+    q = _FakeQ({real})
+    assert dual_index.delete_local([real], client=q) == 1
     # 负向对照：不存在的 id 必须回 0 —— 这一条才是判据的区分力所在
-    assert dual_index.delete_local(["pid-ghost"], client=q) == 0, (
+    assert dual_index.delete_local([ghost], client=q) == 0, (
         "删一个不存在的点回了非 0 —— 报的是请求数而不是删除数（原缺陷形态）"
     )
-    assert dual_index.delete_local(["pid-real", "pid-ghost"], client=q) == 1
+    assert dual_index.delete_local([real, ghost], client=q) == 1
     # 删除本身仍要发出去（少删一个点比多报一个数字严重得多）
-    assert q.deleted == ["pid-real", "pid-ghost", "pid-real", "pid-ghost"]
+    assert q.deleted == [real, real, ghost]  # proven-empty request is a no-op

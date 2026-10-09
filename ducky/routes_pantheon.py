@@ -50,6 +50,8 @@ def register_pantheon_routes(app: FastAPI) -> None:
     # ── 殿注册表 ──────────────────────────────────────────────
     @app.post("/pantheon/hall")
     def create_hall(user_id: str, display_name: str = "", description: str = "", caller: str = ""):
+        from ducky.scope_auth import sanitize_memory_fields
+        display_name, description = sanitize_memory_fields(display_name, description)
         try:
             if caller:
                 description = f"{description} [by:{caller}]" if description else f"[by:{caller}]"

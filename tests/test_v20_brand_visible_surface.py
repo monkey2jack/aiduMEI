@@ -42,7 +42,7 @@ def _read(rel: str) -> str:
 _VISIBLE = [
     (
         "integrations/aidumem-inject.sh",
-        "['[aiduMEI Recall]']",
+        "'[aiduMEI Recall]'",
         "[aiduMEM Recall]",
         "这一行原样出现在下一轮对话里，用户直接读到",
     ),

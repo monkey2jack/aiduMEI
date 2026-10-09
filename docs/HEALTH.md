@@ -2,6 +2,17 @@
 
 The health endpoint is a diagnostic surface, not a guarantee that memory works. Use `scripts/e2e_smoke.py` for write→recall→trace→cleanup verification.
 
+The ingest probe distinguishes `ingest_liveness_state: observed` (enough
+session-tagged reads and some session-tagged writes), `missing_writes` (enough
+session-tagged reads but no such writes), `unknown` (insufficient session-tagged
+reads), and `error` (probe failure). Only missing writes and probe failures degrade
+the service. Legal standalone MCP/REST calls can omit sessions; sufficient traffic
+without sessions produces a visible warning, not evidence of a broken host.
+`ingest_liveness_ok: true` alone does not prove wiring. Run
+`scripts/check_ingest_wiring.py --require-judgment` after genuine host turns;
+it rejects unknown results and uses the server's `ingest_min_reads` threshold.
+These are aggregate observations over 24 hours, not per-turn delivery guarantees.
+
 ## Probe endpoints by cost tier (v20.4)
 
 | Endpoint | Cost | Auth | Purpose |

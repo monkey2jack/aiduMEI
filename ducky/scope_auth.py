@@ -12,19 +12,24 @@ from functools import wraps
 import inspect
 from typing import get_args
 
+from fastapi import HTTPException
+
 
 def scoped_model_type(annotation):
     """Recognize a scoped model, including Optional/Union body contracts."""
     for kind in (annotation, *get_args(annotation)):
-        if "user_id" in getattr(kind, "model_fields", {}):
+        if {"user_id", "owner"} & getattr(kind, "model_fields", {}).keys():
             return kind
     return None
 
-from fastapi import HTTPException
+
+def model_type(annotation):
+    return next((kind for kind in (annotation, *get_args(annotation))
+                 if hasattr(kind, "model_fields")), None)
 
 
 class ScopeRegistrar:
-    """Attach the common policy to every route declaring a memory user scope.
+    """Attach explicit resource policy to every registered business route.
 
     Existing route guards remain active.  This wrapper closes older secondary
     routes in deployments that configure credential bindings; the unbound
@@ -41,51 +46,54 @@ class ScopeRegistrar:
         def decorate(fn):
             signature = inspect.signature(fn, eval_str=True)
             models = {
-                name: scoped_model_type(param.annotation)
+                name: model_type(param.annotation)
                 for name, param in signature.parameters.items()
-                if scoped_model_type(param.annotation) is not None
+                if model_type(param.annotation) is not None
             }
-            scoped = bool(models) or "user_id" in signature.parameters or "owner" in signature.parameters
-            if not scoped:
-                return getattr(self._app, method)(path, **kwargs)(fn)
+            from ducky.route_policy import POLICIES
+            policy = POLICIES.get((method, path))
+            if policy is None:
+                raise RuntimeError(f"Unclassified HTTP resource: {method} {path}")
             parameters = list(signature.parameters.values())
-            added_caller = "caller_user_id" not in signature.parameters and "caller" not in signature.parameters
-            if added_caller:
-                parameters.append(inspect.Parameter("caller_user_id", inspect.Parameter.KEYWORD_ONLY, default="", annotation=str))
+            caller_key = next((key for key in ("caller_user_id", "caller_agent_id", "caller")
+                               if key in signature.parameters), "caller_user_id")
+            added_caller = caller_key not in signature.parameters
+            if added_caller and policy.resource != "public":
+                parameters.append(inspect.Parameter(caller_key, inspect.Parameter.KEYWORD_ONLY,
+                                                    default="", annotation=str))
             wire_signature = signature.replace(parameters=parameters)
 
             def prepare(args, values):
                 bound = wire_signature.bind(*args, **values)
                 bound.apply_defaults()
                 call = dict(bound.arguments)
-                from ducky.security.auth import _caller_bindings, current_request_token_fingerprint, enforce_caller_binding
-                table = _caller_bindings()
-                fp = current_request_token_fingerprint()
-                if table is not None and fp:
+                from ducky.security.auth import binding_policy_active, resolve_bound_caller
+                if policy.resource != "public" and binding_policy_active():
                     model_key = next(iter(models), None)
                     model = call.get(model_key) if model_key else None
                     if model_key and model is None:
                         model = models[model_key]()
                         call[model_key] = model
-                    target = getattr(model, "user_id", None) if model is not None else call.get("user_id", call.get("owner", ""))
-                    bank = getattr(model, "bank_id", "default") if model is not None else call.get("bank_id", "default")
-                    caller = (getattr(model, "caller_user_id", "") if model is not None else "") or call.get("caller_user_id", call.get("caller", ""))
-                    allowed = table.get(fp, [])
-                    if not caller and isinstance(allowed, list) and len(allowed) == 1:
-                        caller = str(allowed[0])
-                    enforce_caller_binding(caller, f"route:{method}:{path}")
-                    if target:
-                        require_scope_access(target, caller, bank_id=bank or "default", action="read" if method == "get" else "write")
+                    # /facts/inject-context has a historical untyped JSON body.
+                    if path == "/facts/inject-context":
+                        model_key, model = "req", call["req"]
+                    data = model if isinstance(model, dict) else (
+                        model.model_dump() if model is not None else call)
+                    caller = resolve_bound_caller(data.get("caller_user_id", "") or call.get(caller_key, ""),
+                                                  f"route:{method}:{path}")
+                    normalized = authorize_route_resource(policy, data, caller)
+                    updates = {"caller_user_id": caller, **normalized}
+                    if isinstance(model, dict):
+                        call[model_key] = {**model, **updates}
+                    elif model is not None:
+                        call[model_key] = model.model_copy(update={
+                            k: v for k, v in updates.items() if k in type(model).model_fields})
                     else:
-                        authorize_governance_view("", "", "", caller)
-                    if model is not None and "caller_user_id" in type(model).model_fields:
-                        call[model_key] = model.model_copy(update={"caller_user_id": caller})
-                    if "caller_user_id" in signature.parameters:
-                        call["caller_user_id"] = caller
-                    elif "caller" in signature.parameters:
-                        call["caller"] = caller
+                        call.update({k: v for k, v in normalized.items() if k in signature.parameters})
+                    if not added_caller:
+                        call[caller_key] = caller
                 if added_caller:
-                    call.pop("caller_user_id", None)
+                    call.pop(caller_key, None)
                 return call
 
             if inspect.iscoroutinefunction(fn):
@@ -118,6 +126,45 @@ class ScopeRegistrar:
         return self._register("patch", path, kwargs)
 
 
+def authorize_route_resource(policy, data, caller):
+    """Authorize the declared resource; never infer permission from the verb."""
+    from ducky.bank_contract import make_scope
+    from ducky.utils import DEFAULT_USER_ID
+    if policy.resource == "manual":
+        return {}  # handler loads and checks the canonical resource
+    if policy.resource == "admin":
+        require_instance_admin(caller)
+        return {}
+    target = data.get("user_id", data.get("owner", DEFAULT_USER_ID))
+    bank = data.get("bank_id", "default")
+    if policy.resource == "optional_scope" and (not target or not bank):
+        require_instance_admin(caller)
+        return {}
+    if policy.resource == "default_owner":
+        target = DEFAULT_USER_ID
+    scope = make_scope(target, bank)
+    require_scope_access(scope.user_id, caller,
+                         bank_id="*" if policy.resource == "owner" else scope.bank_id,
+                         action=policy.action)
+    # Authorization and SQL must see the same normalized scope. Several legacy
+    # functions interpret empty strings as ALL, so checking only a default scope
+    # without forwarding it would still leave a bypass.
+    return {"user_id" if "user_id" in data or "owner" not in data else "owner": scope.user_id,
+            "bank_id": scope.bank_id}
+
+
+def require_instance_admin(caller):
+    """Owner sessions stay administrative; bearer admins must be bound."""
+    import os
+    from ducky.security.auth import current_request_auth_kind, enforce_caller_binding
+    if current_request_auth_kind() in ("", "session"):
+        return
+    enforce_caller_binding(caller, "instance:admin")
+    admins = {x.strip() for x in os.environ.get("AIDUMEI_FEDERATION_ADMINS", "").split(",") if x.strip()}
+    if caller not in admins:
+        raise HTTPException(403, "instance-wide operation requires admin")
+
+
 def sanitize_memory_or_raise(content: str) -> str:
     """Apply the shared injection policy and turn rejection into HTTP 400.
 
@@ -133,41 +180,45 @@ def sanitize_memory_or_raise(content: str) -> str:
     return sanitized
 
 
+def sanitize_memory_fields(*values: str) -> tuple[str, ...]:
+    """One shared policy for every persisted text field in a memory record."""
+    return tuple(sanitize_memory_or_raise(value) if value else value for value in values)
+
+
+def sanitize_memory_structure(value, depth=0):
+    """Validate metadata text without stringifying away its JSON structure."""
+    if depth > 8:
+        raise HTTPException(400, "memory metadata nesting exceeds limit")
+    if isinstance(value, str):
+        return sanitize_memory_or_raise(value) if value else value
+    if isinstance(value, dict):
+        return {sanitize_memory_structure(k, depth + 1): sanitize_memory_structure(v, depth + 1)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_memory_structure(v, depth + 1) for v in value]
+    return value
+
+
 def authorize_governance_view(
     user_id: str,
     scope_user_id: str,
     bank_id: str,
     caller_user_id: str,
-) -> None:
+) -> tuple[str, str]:
     """Authorize a scoped or full governance-candidate view.
 
     A full-instance view remains an administrative operation.  Direct route
     unit tests and loopback no-auth development retain the historical owner
     semantics; authenticated bearer callers must name an admin explicitly.
     """
-    from ducky.security.auth import current_request_auth_kind
-
     target = (scope_user_id or user_id or "").strip()
     if target:
-        require_scope_access(
-            target,
-            caller_user_id,
-            bank_id=(bank_id or "default"),
-            action="read",
-        )
-        return
-    if current_request_auth_kind() in ("", "session"):
-        return
-    import os
-    admins = {
-        item.strip()
-        for item in os.environ.get("AIDUMEI_FEDERATION_ADMINS", "").split(",")
-        if item.strip()
-    }
-    from ducky.security.auth import enforce_caller_binding
-    enforce_caller_binding(caller_user_id, "governance:all")
-    if caller_user_id not in admins:
-        raise HTTPException(status_code=403, detail="governance 全量候选视图仅 admin 可访问")
+        bank = bank_id or "default"
+        require_scope_access(target, caller_user_id, bank_id=bank, action="read")
+        # user_id is the writer filter; it must never stand in for SQL owner scope.
+        return target, bank
+    require_instance_admin(caller_user_id)
+    return "", bank_id
 
 
 def require_scope_access(

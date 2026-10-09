@@ -8,6 +8,26 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.4.0 (对外 f0.4 · 权限、持久写入、恢复与证据交付 · 2026-10-09)
+    用例总数 3276 → 4156（收集数；通过结果以冻结提交的门禁回执为准）。
+    修复复审确认的作用域、恢复、故障可见性与交付证据缺口。
+    决策检索共享请求预算；可选最终证据集合评估仅观察、默认关闭。
+    生产验收和公开发布分别留证；Clef 分类使用逐标签 noul 评分与 0.7 门槛。
+    1. 统一作用域、凭据绑定和读写授权，覆盖联邦、治理及 MCP 会话。
+    2. 持久记录写入意图，模糊结果保留修复状态，禁止盲目重试。
+    3. 完整保存删除快照，恢复校验现存行并清理遗忘域的日志正文。
+    4. WAL 校验状态、摘要链及回放所有权，坏账明确报 unknown。
+    5. 长记录按查询选择证据窗口，统一失败窗口和最终返回条数。
+    6. 决策共享请求预算，可选集合评估默认关闭且仅观察。
+    7. 生命周期进程锁、健康状态、在线备份及门禁证据完整保留；接线未知与缺写分开呈现。
+    8. 缓存淘汰与磁盘删除同锁，提交后记录无正文的可核对依据。
+    9. 本地点位标识校验、治理并发重读及惰性建表保留外层事务。
+    10. 合法包版本 0.4.0 与安装工具一起验证，对外版本与 Release 为 f0.4。
+    11. 中英 README、观测台与登录页统一采用 ☤ 品牌标识。
+    12. 删除覆盖独立场景、观察库及历史共库表；MCP 事实查询条数传到真实接口。
+    13. Hermes 插件的四类记忆写入显式携带调用者身份，兼容无绑定表与多身份凭据。
+    14. Cloudflare 分类从 TYPE_LABELS 生成逐类 noul 问题，最高有效分达到 0.7 才采用。
+
 v0.3.0+decision.2 (对外 f0.3++ · 三 Issue 收口、作用域与完整性加固 · 2026-10-06)
     用例总数 2937 → 3276。
     1. #16：容量合并默认关闭；长文本全文相同才去重，快照失败保留源。
@@ -447,9 +467,9 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.3.0+decision.2"
-FULL_VERSION = "f0.3++"
-PUBLIC_RELEASE_VERSION = "f0.3++"
+SERVICE_VERSION = "0.4.0"
+FULL_VERSION = "f0.4"
+PUBLIC_RELEASE_VERSION = "f0.4"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
@@ -462,6 +482,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.4.0", "", "f0.4", "Scoped authorization, durable mutation repair, recovery and evidence budgets · 2026-10-09"),
     ("0.3.0+decision.2", "", "f0.3++", "Three issue closeout · caller scope authorization · WAL integrity lock · 2026-10-06"),
     ("0.3.0+decision.1", "", "f0.3+", "Optional automatic decision tasks with scoped fallback · 2026-10-03"),
     ("0.3.0", "", "f0.3", "四份审计合并整改 · 停止误删/判据归真/插件萃取三修/服务端五修/身份闸与容器交付 · 2026-09-30"),
