@@ -1,5 +1,64 @@
 # f0.4 upgrade and operations
 
+## f0.4+ (package 0.4.0.post1, 2026-10-14)
+
+f0.4+ keeps every f0.4 behaviour below and changes three things. Upgrade the
+service, then **redeploy the shell hooks** (they are copies, not links) and
+update the host hook configuration.
+
+**Provider refusals during extraction.** mem0 raises its extraction error
+before any store write; `tests/test_f04p_prewrite_extraction.py` checks that
+order against the installed mem0 source and fails if an upgrade moves a write
+ahead of it. Such an attempt is journalled `not_applied`
+(`provider_rejected_before_write`) instead of `repair_required`, so the scope
+stays writable and the deterministic `infer=False` write stores the raw turn.
+`/add` reports `distillation: skipped_llm_content_rejected` for a refusal
+(HTTP 451 or a provider content-policy code) and does not count it as an LLM
+outage. Other failures keep the f0.4 repair rules. `journal_health()` exposes
+`rejected_before_write_24h`. Rows already held as `repair_required` from
+earlier refusals are not reclassified automatically; resolve them with
+`aidumei-mutation-repair` and evidence as before.
+
+**Essence cadence for Hermes v0.22.** The host fires `on_session_end` after
+every turn. `aidumem-distill.sh` now starts a background job and returns `{}`
+immediately; diagnostics go to `$AIDUMEM_LOG_DIR/aidumem-distill.log`
+(timestamped, rotated at 2 MB). The server distils a later generation only
+when `AIDUMEI_DISTILL_MIN_NEW_SOURCES` (6) unseen sources exist, or the last
+generation is `AIDUMEI_DISTILL_MIN_INTERVAL_SEC` (7200) old with at least one
+unseen source, and it summarises only that new segment. Register the same hook
+for `on_session_finalize` and `on_session_reset` (the reset payload's
+`extra.old_session_id` names the session that ended); those events force a
+generation when anything new exists. Keep every hook timeout at 25 seconds or
+less: the host abandons callbacks after 30 seconds.
+
+Generations written before f0.4+ often repeat each other. List them with
+`POST /session/distill/prune` (dry run by default), review the candidates,
+back up, then call it with `apply=true`. A generation is removed only when a
+newer generation of the same session was built from a superset of its
+sources; partial overlaps and truncated source lists are kept. Deletion uses
+the normal cascade and WAL. An incomplete vector enumeration is refused rather
+than treated as nothing to do.
+
+**Unattended sessions and monitoring.** Hook payloads and plugin initialization
+both identify scheduled (`cron`) and delegated (`subagent`) agents. These no
+longer write memories or distil; reads still work. Set
+`AIDUMEI_SKIP_PLATFORMS=""` to let them write (the host's own `flush` agent is
+always skipped by the plugin). `scripts/e2e_smoke.py` now declares its caller
+on every scoped request. `scripts/health_check.py` prints a timestamp and, when
+`AIDUMEI_ALERT_COMMAND` is set, runs it once whenever health changes between OK
+and degraded, with `AIDUMEI_ALERT_STATUS`, `AIDUMEI_ALERT_PREVIOUS_STATUS` and
+`AIDUMEI_ALERT_SUMMARY` in its environment; the same state repeats only after
+`AIDUMEI_ALERT_SUPPRESS_SEC` (21600). The write hook records failures in
+`aidumem-ingest.log`. `scripts/check_hook_deployment.py` recognises the
+finalize/reset events and no longer attributes another event's command to the
+previous event.
+
+Rollback: restore the previous hook copies and configuration, then deploy the
+f0.4 tree. f0.4+ adds no tables or columns; `not_applied` is an existing f0.4
+journal state, so no data migration is involved in either direction.
+
+## f0.4 baseline
+
 f0.4 is the 2026-10-09 public release, with package version 0.4.0.
 Production acceptance precedes publication. Public documentation changes are
 tracked separately from the accepted runtime; verification and retained failures

@@ -94,6 +94,9 @@ def _empty_env(env_file_path, tmp_path, **extra):
         # 身份相关变量一个都不加 —— 回退路径照旧被测（见下方护栏用例）。
         "AIDUMEM_DATA_DIR": str(tmp_path / "_iso_data"),
         "AIDUMEM_LOG_DIR": str(tmp_path / "_iso_logs"),
+        # 身份解析要在**请求真发出去**的时刻验；后台化之后同步请求没了，
+        # 不显式要前台就变成「没请求所以没打错端点」的假绿。
+        "AIDUMEI_DISTILL_FOREGROUND": "1",
     }
     env.update(extra)
     return env

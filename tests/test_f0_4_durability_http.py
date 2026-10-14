@@ -197,3 +197,42 @@ def test_repair_cli_rejects_empty_evidence_without_replay(tmp_path):
     out = repair(tmp_path, 'resolve', '--mutation-id', mid, '--resolution', 'confirmed_not_applied',
                  '--evidence', 'Verified all backend and SQL side effects absent or compensated')
     assert json.loads(out.stdout) == {'id': mid, 'state': 'not_applied', 'automatic_replay': False}
+
+
+@pytest.mark.parametrize('mode', ['extraction_refused', 'extraction_unavailable', 'extraction_refused_async'])
+def test_pre_write_extraction_failure_takes_the_deterministic_path(tmp_path, mode):
+    """f0.4+ WP1, end to end: real mem0 extraction call, real journal, real /add.
+
+    Production 2026-10-14: one 451 at extraction left repair_required and
+    the scope-wide gate then 409'd every later write. A failure *at* the
+    extraction call writes nothing (pinned by the AST guard in
+    test_f04p_prewrite_extraction), so the journal records not_applied and
+    the v20.2.2 deterministic write runs. 503 is the discriminating control:
+    same journal outcome, but it is provider health and must reach the
+    breaker, while a refusal must not.
+    """
+    out = probe(tmp_path, mode)
+    assert out['http'] == 200, out
+    note = 'skipped_llm_error' if mode == 'extraction_unavailable' else 'skipped_llm_content_rejected'
+    if mode.endswith('_async'):
+        # The hooks' path: accepted first, then the background job must finish
+        # as a stored write, not as a job held for repair.
+        assert out['response']['status'] == 'accepted', out['response']
+        job, = out['jobs']
+        assert job['status'] == 'done' and job['durable'] is True, job
+        assert (job['result'] or {}).get('distillation') == note, job
+    else:
+        assert out['response'].get('distillation') == note, out['response']
+    states = [(row['kind'], row['state']) for row in sdk_rows(out)]
+    assert ('mem0_add', 'not_applied') in states, states
+    refused = next(row for row in sdk_rows(out) if row['state'] == 'not_applied')
+    assert refused['reason'] == 'provider_rejected_before_write'
+    assert not [s for _, s in states if s == 'repair_required'], states
+    assert out['health']['status'] == 'ok', out['health']
+    assert len(out['vectors']) == 2, 'raw turn and the follow-up must both be stored'
+    assert out['follow_http'] == 200, 'the scope must stay writable after the failure'
+    failures = out['llm_gear'].get('consecutive_failures', 0)
+    if mode != 'extraction_unavailable':
+        assert failures == 0, f'a content refusal tripped the LLM breaker: {out["llm_gear"]}'
+    else:
+        assert failures >= 1, f'a provider outage was hidden from the breaker: {out["llm_gear"]}'

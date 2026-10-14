@@ -112,6 +112,7 @@ POST /pantheon/hall
 '''),
     **_routes('scope', 'delete', '''
 POST /delete
+POST /session/distill/prune
 DELETE /delete
 POST /delete_all
 DELETE /api/checkpoint/cleanup

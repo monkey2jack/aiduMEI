@@ -68,12 +68,21 @@ hooks:
   post_llm_call:                                   # 写线：把这一轮写回记忆库
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
-  on_session_end:                                     # 萃取线：把这一程提炼成一条
+  on_session_end:                                  # 萃取线：宿主每轮都触发，钩子后台节流
     - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
-      timeout: 40
+      timeout: 25
+  on_session_finalize:                             # 真正的会话边界：强制出精华
+    - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
+      timeout: 25
+  on_session_reset:                                # 同上（被结束的是 extra.old_session_id）
+    - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
+      timeout: 25
 
 hooks_auto_accept: true
 ```
+
+> Hermes v0.22.0：`on_session_end` 每轮触发；钩子回调上限 30s（本仓一律 ≤25s）；
+> 定时/子代理会话（`platform=cron/subagent`）默认不写也不提炼。详见 INTEGRATION_GUIDE.md。
 
 装完**两个都要自检**，退出码 0 才算接上：
 
