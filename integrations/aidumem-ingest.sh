@@ -122,9 +122,27 @@ headers = {"Content-Type": "application/json"}
 if tok:
     headers["Authorization"] = "Bearer " + tok
 
-def _diag(line):
+def _diag(line, durable=True):
     if not os.environ.get("AIDUMEM_HOOK_QUIET"):
         sys.stderr.write(line)
+    if not durable:
+        return
+    # f0.4+（WP3）：宿主成功路径上不留钩子 stderr —— 2026-10-14 那 13 次 409
+    # 就是这么在「每轮都失败」时一声没吭的。失败一律另写一行持久日志
+    # （只记失败，正常轮次不写；2MB 粗轮转），写日志自己失败也不许拖累宿主。
+    try:
+        import time
+        home = os.environ.get("HOME") or ""
+        log_dir = os.environ.get("AIDUMEM_LOG_DIR") or (
+            os.path.join(home, ".aidumem", "logs") if home else "/tmp")
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, "aidumem-ingest.log")
+        if os.path.exists(path) and os.path.getsize(path) > 2 * 1024 * 1024:
+            os.replace(path, path + ".1")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + line.rstrip("\n") + "\n")
+    except Exception:
+        pass
 
 body = os.environ["_INGEST_BODY_PIPE"].encode("utf-8")
 try:
@@ -151,7 +169,7 @@ except Exception as exc:
 status = receipt.get("status") if isinstance(receipt, dict) else None
 if status == "accepted" or (isinstance(receipt, dict) and receipt.get("durable") is False):
     _diag("[aidumem-ingest] queued job=%s (本轮请求已接收，语义写入尚未确认)\n"
-          % (receipt.get("job_id") or "unknown"))
+          % (receipt.get("job_id") or "unknown"), durable=False)   # 异步接收是常态，不是失败
 elif status != "ok":
     _diag("[aidumem-ingest] write_unconfirmed status=%s "
           "(HTTP 200 但本轮没有写入成功回执；请跑 --selftest)\n" % status)
@@ -275,7 +293,8 @@ PAYLOAD=$(cat)
 # 顶层同名键也认，兼容别的宿主与将来的形状变化。
 INGEST_BODY=$(printf '%s' "$PAYLOAD" | _INGEST_UID_PIPE="$AIDUMEM_USER_ID" \
         _INGEST_BANK_PIPE="$AIDUMEI_BANK_ID" \
-        _INGEST_MIN_PIPE="$AIDUMEI_INGEST_MIN_CHARS" python3 -c '
+        _INGEST_MIN_PIPE="$AIDUMEI_INGEST_MIN_CHARS" \
+        _INGEST_SKIP_PLATFORMS_PIPE="${AIDUMEI_SKIP_PLATFORMS-cron,subagent}" python3 -c '
 import json, os, sys
 
 try:
@@ -318,6 +337,20 @@ if not isinstance(user_msg, str) or not isinstance(reply, str):
 if len(user_msg.strip()) < int(os.environ["_INGEST_MIN_PIPE"]):
     _skip("user_message 只有 %d 字，低于门槛 %s（正常跳过，非故障）"
           % (len(user_msg.strip()), os.environ["_INGEST_MIN_PIPE"]))
+
+# f0.4+（WP3）：定时/批处理与子代理会话默认不进记忆（可配置关掉）。
+# 依据宿主自己的分档：``agent_init`` 里 platform="cron"/"subagent" 走的正是
+# 「不写记忆」那条初始化路径，而钩子 payload 恰好把 platform 带在 extra 里
+# —— 于是同一条语义在这里以钩子形态复现，而不是另发明一套判据。
+# 反过来写（默认写、cron 例外）会让定时任务自发自收的独白混进召回池，
+# 而那种污染在下一次检索时和正常记忆长得一模一样。
+_skip_platforms = {p.strip() for p in
+                   (os.environ.get("_INGEST_SKIP_PLATFORMS_PIPE") or "").split(",") if p.strip()}
+# 只认 platform 本身：下面的 _origin_agent 会退到 model 名，拿它判会误伤。
+_platform = str(_pick("platform") or "").strip()
+if _platform and _platform in _skip_platforms:
+    _skip("会话平台是 %s（定时/子代理），按默认策略不进记忆；"
+          "要写入就显式设 AIDUMEI_SKIP_PLATFORMS=\"\"" % _platform)
 
 # 机器输出占压倒多数的轮次不进语义层。
 # 由来（用户审计 🔵-4）：写线接上后，贴满 terminal 输出与脚本全文的轮次会

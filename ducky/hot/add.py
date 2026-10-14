@@ -201,13 +201,16 @@ def _direct_write(mem, uid, msgs, meta, infer_effective, *, bank_id, note=None):
             if type(_de).__name__ != "LLMError":
                 raise
             require_no_sdk_since(attempts_before, uid, bank_id, _de)
-            from ducky.gear import record_llm_failure
-            record_llm_failure(str(_de))
-            logger.warning(f"直写内层 LLM 失败，就地降为确定性直写: {_de}")
+            from ducky.gear import is_content_rejection, record_llm_failure
+            _rejected = is_content_rejection(_de)
+            if not _rejected:
+                record_llm_failure(str(_de))
+            logger.warning("直写内层 LLM 失败（%s），就地降为确定性直写",
+                           "服务商拒绝本条内容" if _rejected else type(_de).__name__)
             # v20.2.5（用户实测 🟢）：把降级语义说人话 —— 用户看到 skipped_llm_error
             # 不知道自己的内容到底存没存进去。原文已落库、蒸馏待补，
             # 这两件事都得说出来。机器可读的枚举值保留在 code 里。
-            note = note or "skipped_llm_error"
+            note = note or ("skipped_llm_content_rejected" if _rejected else "skipped_llm_error")
             add_result = mem.add(msgs, user_id=uid, metadata=meta,
                                  infer=False)
         # v21.2 M2/M1：复位**之前**先把 origin 捞出来 —— 下面的
@@ -266,6 +269,8 @@ def _direct_write(mem, uid, msgs, meta, infer_effective, *, bank_id, note=None):
         _human = {
             "skipped_llm_error": "LLM 暂不可用：原文与硬事实已落库，"
                                  "语义蒸馏待恢复后补算",
+            "skipped_llm_content_rejected": "模型服务商拒绝处理这段内容：原文与硬事实已落库，"
+                                            "本条不做语义蒸馏",
             "deferred_distillation": "LLM 挡位打开：本次跳过蒸馏，"
                                      "原文已落库，恢复后补算",
             "local_only": "本地档：仅写本地索引，未使用任何云端服务",
@@ -316,9 +321,13 @@ def _run_pipeline(mem, uid, msgs, meta, *, bank_id, infer):
         # LLM 腿；FTS/salience 等非 LLM 崩溃不许污染挡位。
         if type(e).__name__ == "LLMError" and _sdk_attempt_count(uid, bank_id) == attempts_before:
             require_no_sdk_since(attempts_before, uid, bank_id, e)
-            record_llm_failure(str(e))
+            from ducky.gear import is_content_rejection
+            _rejected = is_content_rejection(e)
+            if not _rejected:
+                record_llm_failure(str(e))
             return _direct_write(mem, uid, msgs, meta, False, bank_id=bank_id,
-                                 note="skipped_llm_error")
+                                 note=("skipped_llm_content_rejected" if _rejected
+                                       else "skipped_llm_error"))
         # A later index/gear failure does not prove the SDK wrote nothing.
         # Let the outer request/job journal hold the operation for repair.
         raise

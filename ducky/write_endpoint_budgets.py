@@ -84,6 +84,8 @@ WRITE_ROUTE_MODELS: Dict[str, str] = {
 WRITE_ROUTES_SCALAR = {
     # v21.2.0 会话精华：纯提炼端点，入参只有三个标量 id，无自由文本载荷
     "/session/distill",
+    # f0.4+：旧精华去重，入参只有 id 与布尔开关
+    "/session/distill/prune",
     "/add/coalesce/flush",
     "/api/autodream/trigger",
     "/api/checkpoint/cleanup",

@@ -347,3 +347,58 @@ def test_v20_3_current_facts_are_not_contradicted():
     assert "pip install .[local-embed]" in zh
     assert "fetch_local_embed_model.py" in zh
     assert "historical snapshot" in architecture
+
+
+def test_every_scoped_smoke_request_declares_its_caller(monkeypatch):
+    """f0.4+ WP3: the hourly smoke 403'd for days because /add carried no caller.
+
+    v22.0 requires bearer callers to declare caller_user_id on every scoped
+    route; /search and /search_trace did, /add, flush and cleanup did not. The
+    check runs every request through the real hall authorization with a bearer
+    principal, so an undeclared caller fails exactly as it did in production.
+    """
+    from ducky.pantheon import HallError, authorize_cross_hall
+    from ducky.security import auth
+
+    module = _load_smoke()
+    smoke = module.Smoke("http://test.local", "aidumei-smoke-tenant", 0, True)
+    rejected = []
+
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status_code, self._payload, self.text = status, payload, json.dumps(payload)
+
+        def json(self):
+            return self._payload
+
+    def request(method, url, timeout=None, headers=None, json=None, params=None):
+        path = url.split("test.local", 1)[1]
+        scope = dict(json or params or {})
+        if path not in ("/health", "/config", "/api/config"):
+            auth.set_request_auth_kind("bearer")
+            try:
+                authorize_cross_hall(scope.get("user_id", ""), scope.get("caller_user_id", ""),
+                                     bank_id=scope.get("bank_id"), action="write")
+            except HallError:
+                rejected.append(path)
+                return _Resp(403, {"detail": "caller_rejected"})
+            finally:
+                auth.clear_request_auth_kind()
+        if path == "/add":
+            return _Resp(200, {"status": "ok", "action": "coalesce_buffered"})
+        if path == "/search":
+            return _Resp(200, {"recall_verdict": "found", "results": [{"memory": "x"}]})
+        if path == "/search_trace":
+            return _Resp(200, {"trace": {"stage": 1}})
+        if path == "/delete_all":
+            return _Resp(200, {"status": "committed"})
+        return _Resp(200, {"status": "ok"})
+
+    monkeypatch.setattr(module.requests, "request", request)
+    smoke.add_and_recall()
+    smoke.trace()
+    smoke.cleanup()
+    assert rejected == [], f"smoke requests without a declared caller: {rejected}"
+    steps = {r["step"]: r["status"] for r in smoke.results}
+    assert steps.get("add") == "WARN" and steps.get("flush") == "PASS", steps
+    assert steps.get("recall") == "PASS" and steps.get("cleanup") == "PASS", steps

@@ -64,7 +64,8 @@ def test_repeated_end_and_lost_response_reuse_one_write_key(tmp_path, paraphrase
            "AIDUMEM_URL": f"http://127.0.0.1:{srv.server_port}",
            "AIDUMEM_API_TOKEN": "test-token",
            "AIDUMEM_USER_ID": "alice", "AIDUMEI_BANK_ID": "work",
-           "AIDUMEI_DISTILL_TIMEOUT": "2"}
+           "AIDUMEI_DISTILL_TIMEOUT": "2",
+           "AIDUMEI_DISTILL_FOREGROUND": "1"}
     try:
         runs = [subprocess.run(
             ["bash", str(_HOOK)], input=json.dumps({"session_id": "session-1"}),
@@ -118,7 +119,8 @@ def test_async_acceptance_is_reported_as_queued_not_stored(tmp_path):
            "AIDUMEM_URL": f"http://127.0.0.1:{srv.server_port}",
            "AIDUMEM_API_TOKEN": "test-token",
            "AIDUMEM_USER_ID": "alice", "AIDUMEI_BANK_ID": "work",
-           "AIDUMEI_DISTILL_TIMEOUT": "2"}
+           "AIDUMEI_DISTILL_TIMEOUT": "2",
+           "AIDUMEI_DISTILL_FOREGROUND": "1"}
     try:
         run = subprocess.run(
             ["bash", str(_HOOK)], input=json.dumps({"session_id": "session-2"}),

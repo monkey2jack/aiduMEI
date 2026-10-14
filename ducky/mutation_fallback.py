@@ -13,11 +13,12 @@ from ducky.scope_sql import scope_clause
 
 
 def sdk_attempt_count(user_id, bank_id):
+    """Count SDK attempts that may have written; proven not_applied ones never did."""
     scope = make_scope(user_id, bank_id)
     clause, params = scope_clause(scope)
     with scope_lock(scope.user_id, scope.bank_id), _db() as conn:
         return conn.execute("SELECT COUNT(*) FROM mutations WHERE kind IN ('mem0_add','mem0_update') "
-                            + clause, params).fetchone()[0]
+                            "AND state!='not_applied' " + clause, params).fetchone()[0]
 
 
 def require_no_sdk_since(before, user_id, bank_id, error):

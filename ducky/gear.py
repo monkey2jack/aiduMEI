@@ -394,6 +394,34 @@ def record_llm_failure(reason: str = "", *, now: Optional[float] = None) -> None
     _LLM.record_failure(reason, now=now)
 
 
+# Provider refusals of one specific input (HTTP 451 / moderation codes) say
+# nothing about the provider's health, so they must not open the LLM breaker
+# for every later write (f0.4+ WP1, 2026-10-14 production).
+_CONTENT_REJECTION_CODES = frozenset({
+    "censorship_blocked", "content_filter", "content_policy_violation",
+    "data_inspection_failed",
+})
+
+
+def is_content_rejection(exc: BaseException) -> bool:
+    """True when the exception chain carries a structured content refusal."""
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if getattr(cur, "status_code", None) == 451:
+            return True
+        body = getattr(cur, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error") if isinstance(body.get("error"), dict) else body
+            if err.get("type") in _CONTENT_REJECTION_CODES or err.get("code") in _CONTENT_REJECTION_CODES:
+                return True
+        if getattr(cur, "code", None) in _CONTENT_REJECTION_CODES:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def record_llm_success(*, now: Optional[float] = None) -> None:
     _LLM.record_success(now=now)
 

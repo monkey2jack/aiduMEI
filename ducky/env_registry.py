@@ -68,6 +68,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_DISTILL_MIN_SESSIONS",
     "AIDUMEI_DISTILL_MIN_MEMORIES",
     "AIDUMEI_DISTILL_MAX_SOURCE",
+    "AIDUMEI_DISTILL_MIN_NEW_SOURCES",
+    "AIDUMEI_DISTILL_MIN_INTERVAL_SEC",
     # f0.3（C2）：已结清幂等回执的保留天数（默认 7，1..3650；非法值回退默认并进 config_errors）
     "AIDUMEI_IDEMPOTENCY_TTL_DAYS",
     "AIDUMEI_MMR_ENABLED",
@@ -213,6 +215,20 @@ _F03_CONSOLIDATOR_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_EVAL_CLOUDFLARE_ACCOUNT_ID",
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F03_CONSOLIDATOR_ENV_VARS
+
+# ── f0.4+（WP3）：健康巡检跳变告警 ───────────────────────────────────────────
+# scripts/health_check.py 读前三个；后四个是它**传给**告警命令的上下文
+# （写进子进程环境，命令里按名取用，所以同属对外契约）。
+_F04P_ALERT_ENV_VARS: frozenset[str] = frozenset((
+    "AIDUMEI_ALERT_COMMAND",
+    "AIDUMEI_ALERT_SUPPRESS_SEC",
+    "AIDUMEI_ALERT_STATE_FILE",
+    "AIDUMEI_ALERT_STATUS",
+    "AIDUMEI_ALERT_PREVIOUS_STATUS",
+    "AIDUMEI_ALERT_SUMMARY",
+    "AIDUMEI_ALERT_HOME",
+))
+KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F04P_ALERT_ENV_VARS
 
 
 # ── 前缀学说（v20.4.0-alpha · P1-10，六方外审 Qwen 独见实锤）─────────────────

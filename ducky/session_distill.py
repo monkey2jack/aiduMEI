@@ -41,6 +41,62 @@ from ducky.env_config import int_env as _int_env  # noqa: E402
 
 MIN_MEMORIES = _int_env("AIDUMEI_DISTILL_MIN_MEMORIES", 3, minimum=1)
 MAX_SOURCE = _int_env("AIDUMEI_DISTILL_MAX_SOURCE", 24, minimum=1)
+# f0.4+ (WP2): the host fires its session-end hook on EVERY turn, so a
+# threshold-free distill re-summarised one "这一程" 2–9 times per session in
+# production (79 sessions → 280 summaries). A later generation needs either
+# MIN_NEW_SOURCES sources no earlier generation has seen, or the previous
+# generation to be MIN_INTERVAL_SEC old with at least one unseen source (a
+# long-lived chat still gets a "past two hours" summary). It then summarises
+# only that new segment, so generations no longer repeat each other.
+MIN_NEW_SOURCES = _int_env("AIDUMEI_DISTILL_MIN_NEW_SOURCES", 6, minimum=1)
+MIN_INTERVAL_SEC = _int_env("AIDUMEI_DISTILL_MIN_INTERVAL_SEC", 7200, minimum=0)
+
+
+def _latest_generation(session_id: str, user_id: str, bank_id: str) -> dict[str, Any]:
+    """Newest summary already written for this session: refs + when.
+
+    Read from the ``distill_sources`` ledger, which /add writes for every
+    engine mode. A missing ledger (old deployment) simply means "no prior
+    generation", never "unchanged".
+    """
+    conn = get_facts_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='distill_sources'").fetchone():
+            return {}
+        _, frag, params = _canonical(user_id, bank_id)
+        row = conn.execute(
+            "SELECT summary_hash, MAX(created_at) AS last_at FROM distill_sources "
+            "WHERE session_id=?" + frag + " GROUP BY summary_hash "
+            "ORDER BY last_at DESC LIMIT 1", (session_id[:_REF_MAX_CHARS], *params)).fetchone()
+        if not row:
+            return {}
+        digest, last_at = str(row[0]), str(row[1] or "")
+        # Every generation's sources count as already summarised: new
+        # generations cover the segment none of them has seen yet.
+        refs = {str(r[0]) for r in conn.execute(
+            "SELECT source_ref FROM distill_sources WHERE session_id=?" + frag,
+            (session_id[:_REF_MAX_CHARS], *params)).fetchall()}
+        return {"summary_hash": digest, "created_at": last_at, "refs": refs}
+    except sqlite3.Error as exc:
+        logger.debug("prior distill generation unreadable session=%s: %s", session_id[:32], exc)
+        return {}
+    finally:
+        conn.close()
+
+
+def _generation_age_seconds(created_at: str) -> float:
+    """Age of a ledger timestamp; unparseable/absent reads as 'very old'."""
+    if not created_at:
+        return float("inf")
+    try:
+        from datetime import datetime, timezone
+        stamp = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return float("inf")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamp).total_seconds()
 
 
 def _emotion_hits(text: str) -> int:
@@ -192,8 +248,12 @@ def _fallback_summary(rows: list[dict[str, Any]]) -> str:
 
 
 def distill_session(session_id: str, *, user_id: str = "",
-                    bank_id: str = "") -> dict[str, Any]:
-    """萃取一个会话的精华并落库。返回结构化结果（含未产出的原因）。"""
+                    bank_id: str = "", force: bool = False) -> dict[str, Any]:
+    """萃取一个会话的精华并落库。返回结构化结果（含未产出的原因）。
+
+    ``force`` 用于真实会话边界（宿主 finalize / reset）：只要有前一代没见过的
+    来源就出新一代；每轮触发的调用则受 MIN_NEW_SOURCES / MIN_INTERVAL_SEC 节流。
+    """
     uid = user_id or DEFAULT_USER_ID
     bid = bank_id or DEFAULT_BANK_ID
     rows = collect_session_memories(session_id, user_id=uid, bank_id=bid)
@@ -203,6 +263,28 @@ def distill_session(session_id: str, *, user_id: str = "",
         return {"status": "skipped", "reason": "too_short",
                 "session_id": session_id, "source_count": len(rows),
                 "min_required": MIN_MEMORIES}
+
+    prior = _latest_generation(session_id, uid, bid)
+    if prior:
+        unseen = sum(1 for r in rows if r["ref"] not in prior["refs"])
+        age = _generation_age_seconds(prior.get("created_at", ""))
+        due = unseen >= 1 if force else (
+            unseen >= MIN_NEW_SOURCES or (unseen >= 1 and age >= MIN_INTERVAL_SEC))
+        if not due:
+            # 节流是正常结果，同样要说出原因（与 too_short 同一纪律）。
+            return {"status": "skipped",
+                    "reason": "unchanged" if unseen == 0 else "throttled",
+                    "session_id": session_id, "source_count": len(rows),
+                    "unseen_sources": unseen, "min_new_sources": MIN_NEW_SOURCES,
+                    "previous_age_sec": None if age == float("inf") else round(age),
+                    "forced": bool(force)}
+        # Summarise the new segment, padded with the latest already-covered
+        # turns only as far as MIN_MEMORIES needs (context, not a re-summary).
+        fresh = [r for r in rows if r["ref"] not in prior["refs"]]
+        if len(fresh) < MIN_MEMORIES:
+            covered = [r for r in rows if r["ref"] in prior["refs"]]
+            fresh = covered[-(MIN_MEMORIES - len(fresh)):] + fresh
+        rows = fresh
 
     joined = "\n".join(f"- {r['text']}" for r in rows)
     emo = _emotion_hits(joined)
@@ -633,3 +715,75 @@ def find_derived_summaries(mem: Any, scope, keys: dict,
         "unverified": sorted(split["unverified"]),
         "vector_enumeration": bool(enumerated),
     }
+
+
+# -- f0.4+ (WP2): superseded session summaries ---------------------------------
+#
+# Before throttling, the host's per-turn session-end hook produced a new
+# summary generation almost every turn (production: 79 sessions held 280
+# summaries).  A generation is redundant only when a NEWER generation of the
+# same session was built from a superset of its sources: deleting it loses no
+# coverage.  Partially overlapping generations (a long session whose bounded
+# window slid forward) are kept on purpose.
+
+def superseded_summaries(items: list) -> list[dict[str, Any]]:
+    """Pure selection over a scope's vector items (mem0 get_all shape)."""
+    from ducky.origin_context import is_session_summary
+    by_session: dict[str, list[tuple[str, str, frozenset]]] = {}
+    for item in items or []:
+        md = _item_metadata(item)
+        if not is_session_summary(md) or md.get("distill_source_refs_truncated"):
+            continue
+        refs = frozenset(_normalize_refs(md.get("distill_source_refs")))
+        mid = str(item.get("id") or item.get("memory_id") or "").strip()
+        sid = str(md.get("_origin_session_id") or "")
+        if not refs or not mid or not sid:
+            continue           # cannot prove coverage: keep it
+        created = str(item.get("created_at") or md.get("created_at") or "")
+        by_session.setdefault(sid, []).append((created, mid, refs))
+    doomed: list[dict[str, Any]] = []
+    for sid, gens in by_session.items():
+        gens.sort()
+        for i, (created, mid, refs) in enumerate(gens):
+            newer = [(m, r) for (_, m, r) in gens[i + 1:] if m != mid]
+            keeper = next((m for m, r in newer if refs <= r), None)
+            if keeper:
+                doomed.append({"id": mid, "session_id": sid, "created_at": created,
+                               "source_count": len(refs), "superseded_by": keeper})
+    return doomed
+
+
+def prune_superseded_summaries(user_id: str, bank_id: str, *, apply: bool = False,
+                               mem: Any = None) -> dict[str, Any]:
+    """Dry-run by default; ``apply`` deletes through the normal cascade."""
+    from ducky.bank_contract import make_scope
+    from ducky.wal_engine import _scoped_vector_items, cascade_delete_memory
+    scope = make_scope(user_id or DEFAULT_USER_ID, bank_id or DEFAULT_BANK_ID)
+    if mem is None:
+        from ducky.mem0_runtime import get_memory
+        mem = get_memory()
+    items, complete = _scoped_vector_items(mem, scope)
+    if not complete:
+        # Same rule as delete_all: an incomplete enumeration is never "nothing to do".
+        return {"status": "refused", "reason": "vector_enumeration_incomplete",
+                "user_id": scope.user_id, "bank_id": scope.bank_id}
+    doomed = superseded_summaries(items)
+    out: dict[str, Any] = {
+        "status": "ok" if apply else "dry_run", "user_id": scope.user_id,
+        "bank_id": scope.bank_id, "summaries_scanned": sum(
+            1 for i in items if _item_metadata(i).get("kind") == "session_distill"),
+        "candidates": doomed}
+    if not apply:
+        return out
+    deleted, failed = [], []
+    for entry in doomed:
+        res = cascade_delete_memory(entry["id"], user_id=scope.user_id, bank_id=scope.bank_id)
+        status = (res or {}).get("status")
+        # Same success vocabulary as POST /delete: committed / not_found.
+        (deleted if status in ("committed", "not_found") else failed).append(
+            {"id": entry["id"], "status": status,
+             "failed_layers": (res or {}).get("failed_layers", [])})
+    out.update(deleted=deleted, failed=failed)
+    if failed:
+        out["status"] = "partial"
+    return out

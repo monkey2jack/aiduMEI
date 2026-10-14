@@ -392,6 +392,40 @@ def _uncertain(mid, reason):
             WHERE id=? AND state IN ('queued','started')''', (reason, time.time(), mid))
 
 
+# f0.4+ (WP1): the one failure that is evidence of "nothing was written".
+# mem0 2.2.1 raises LLMError("LLM extraction failed: ...") only from the
+# extraction call in _add_to_vector_store, and that call precedes every
+# vector-store / history write (pinned by tests/test_f04p_prewrite_extraction.py,
+# which reads the installed source). Recording it as repair_required froze
+# the whole scope on a provider content rejection (2026-10-10 and 2026-10-14
+# production) and also disabled the deterministic infer=False fallback.
+PRE_WRITE_FAILURE_REASON = 'provider_rejected_before_write'
+_PRE_WRITE_EXTRACTION_PREFIX = 'LLM extraction failed'
+
+
+def _is_mem0_llm_error(exc) -> bool:
+    try:
+        from mem0.exceptions import LLMError as _Mem0LLMError
+    except ImportError:  # mem0 absent (SDK-free deployments): fall back to the shape
+        return type(exc).__name__ == 'LLMError'
+    return isinstance(exc, _Mem0LLMError)
+
+
+def failed_before_write(kind, exc) -> bool:
+    """True only for an SDK add whose extraction call failed before any write."""
+    return (kind == 'mem0_add' and isinstance(exc, Exception)
+            and _is_mem0_llm_error(exc)
+            and str(exc).startswith(_PRE_WRITE_EXTRACTION_PREFIX))
+
+
+def _not_applied(mid, reason):
+    with _db() as conn:
+        cur = conn.execute('''UPDATE mutations SET state='not_applied', reason=?,updated_at=?
+            WHERE id=? AND state='started' ''', (reason, time.time(), mid))
+        if cur.rowcount != 1:
+            raise MutationUncertain(mid, 'not_applied_conflict')
+
+
 def perform_mutation(kind, user_id, bank_id, payload, callback, *, target_id=''):
     """Commit intent before callback; only return after durable acknowledgement."""
     scope = make_scope(user_id, bank_id)
@@ -411,6 +445,13 @@ def perform_mutation(kind, user_id, bank_id, payload, callback, *, target_id='')
             _ack(mid, result)
             return result
         except BaseException as exc:
+            if failed_before_write(kind, exc):
+                try:
+                    _not_applied(mid, PRE_WRITE_FAILURE_REASON)
+                except Exception:
+                    pass  # unproven: fall through to the conservative path below
+                else:
+                    raise  # the original LLMError: callers may take the infer=False path
             try:
                 _uncertain(mid, 'sdk_or_ack_uncertain')
             except Exception:
@@ -643,11 +684,16 @@ def journal_health(*, deep=False):
             counts = {row[0]: row[1] for row in conn.execute('SELECT state,count(*) FROM mutations GROUP BY state')}
             integrity = 'ok' if deep else 'not_checked'  # _read_connection verified every quick_check row
             failed_jobs = conn.execute("SELECT count(*) FROM mutations WHERE kind='job' AND state='repair_required'").fetchone()[0]
+            # Informational: proven no-write rejections never degrade health,
+            # but a burst means a provider is refusing this content.
+            rejected = conn.execute(
+                "SELECT count(*) FROM mutations WHERE state='not_applied' AND reason=? AND updated_at>?",
+                (PRE_WRITE_FAILURE_REASON, time.time() - 86400)).fetchone()[0]
         unknown = set(counts) - set(_STATES)
         ok = integrity in ('ok', 'not_checked') and not unknown and not counts.get('repair_required')
         return {'status': 'ok' if ok else 'degraded', 'counts': counts,
                 'repair_required': counts.get('repair_required', 0), 'failed_durable_jobs': failed_jobs, 'integrity': integrity,
-                'automatic_replay': False}
+                'rejected_before_write_24h': rejected, 'automatic_replay': False}
     except (sqlite3.Error, OSError, RuntimeError) as exc:
         return {'status': 'degraded', 'error': type(exc).__name__, 'integrity': 'unknown',
                 'reason': getattr(exc, 'reason', 'journal_evidence_unknown'), 'automatic_replay': False}

@@ -249,9 +249,60 @@ total_ms = int((time.time() - start) * 1000)
 # all() 里 None 是 falsy → 自动判否，无需改本行；但要在 verdict 里让 None 可见。
 all_ok = bool(checks) and all(v.get("ok") for v in checks.values())
 
+# ── 跳变告警（f0.4+ WP3）────────────────────────────────────────────
+# 这份巡检每 5 分钟跑一次，输出进 cron 日志 —— 而**没有人守着 cron 日志**。
+# 于是「服务从绿变红」这件事的可见度，等于「恰好有人去翻那一行」。告警接缝
+# 只做一件事：ok ↔ 不 ok **跳变**时敲一次外部命令，并带 6 小时抑制，
+# 让持续降级不刷屏、让恢复也有人知道。不跳变就一声不吭。
+_ALERT_STATE = os.environ.get("AIDUMEI_ALERT_STATE_FILE") or os.path.join(
+    os.path.expanduser(os.environ.get("AIDUMEM_HOME") or "~"), ".aidumem",
+    "health_alert_state.json")
+# 非法值回退默认，不许让告警配置写错就把整份巡检炸掉（env_config 同一家训）。
+from ducky.env_config import int_env as _int_env  # noqa: E402
+_ALERT_SUPPRESS = _int_env("AIDUMEI_ALERT_SUPPRESS_SEC", 21600, minimum=0)
+
+
+def _alert_transition(now_ok: bool, summary: str) -> None:
+    """Call AIDUMEI_ALERT_COMMAND on a state change (suppressed while it lasts)."""
+    command = os.environ.get("AIDUMEI_ALERT_COMMAND", "").strip()
+    if not command:
+        return
+    prev, last_at = None, 0.0
+    try:
+        with open(_ALERT_STATE) as f:
+            saved = json.load(f)
+        prev, last_at = saved.get("status"), float(saved.get("at") or 0)
+    except Exception:
+        prev, last_at = None, 0.0      # 状态文件读不到 = 当作「不知道之前怎样」
+    now_status = "ok" if now_ok else "degraded"
+    if prev == now_status and (time.time() - last_at) < _ALERT_SUPPRESS:
+        return
+    env = dict(os.environ)
+    env.update({
+        "AIDUMEI_ALERT_STATUS": now_status,
+        "AIDUMEI_ALERT_PREVIOUS_STATUS": prev or "unknown",
+        "AIDUMEI_ALERT_SUMMARY": summary[:500],
+        "AIDUMEI_ALERT_HOME": SCRIPT_DIR,
+    })
+    try:
+        import subprocess
+        subprocess.run(command, shell=True, env=env, timeout=20,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:      # 告警自己坏掉不许改判健康结论
+        print(f"  ⚠️ alert command failed: {type(exc).__name__}")
+    try:
+        os.makedirs(os.path.dirname(_ALERT_STATE), exist_ok=True)
+        with open(_ALERT_STATE, "w") as f:
+            json.dump({"status": now_status, "at": time.time(),
+                       "summary": summary[:500]}, f)
+    except Exception:
+        pass
+
+
 # 这一行是运维直接读的输出，属用户可见门面，用当前品牌名。
 # 本文件其余 aiduMEM 都在注释里（不露脸），刻意不动。
-print(f"🧠 aiduMEI 健康检查 ({'🟢' if all_ok else '🔴'})")
+print(f"🧠 aiduMEI 健康检查 ({'🟢' if all_ok else '🔴'}) "
+      f"[{time.strftime('%Y-%m-%d %H:%M:%S%z')}]")
 print(f"llm_model_name={llm_model}")
 print(f"emb_model_name={emb_model}")
 for name, result in checks.items():
@@ -274,5 +325,10 @@ if "hook_deploy" not in checks:
     print(f"  ⬜ hook_deploy: {_hook_note}")
 
 print(f"\n总计: {total_ms}ms | {'🟢 全部正常' if all_ok else '⚠️ 有异常'}")
+
+# 判词带上坏在哪一项，告警命令不必再去翻日志
+_bad = [n for n, v in checks.items() if not v.get("ok")]
+_alert_transition(all_ok, "健康检查 " + ("全绿" if all_ok else "异常：" + ",".join(_bad))
+                  + " | " + time.strftime("%Y-%m-%d %H:%M:%S%z"))
 
 sys.exit(0 if all_ok else 1)

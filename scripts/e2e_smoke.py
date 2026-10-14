@@ -179,6 +179,11 @@ class Smoke:
         body = {
             "messages": [{"role": "user", "content": content}],
             "user_id": self.tenant,
+            # f0.4+（WP3）：v22.0 收紧后，持 token 的调用方**必须**声明自己是
+            # 哪座殿（空 caller 只对主人直连放行）。少这一个字段，本冒烟从
+            # f0.4 起每小时 403 —— 而它失败的样子是「cron 里的一行」，
+            # 80 次都没人看见。/search 一直带，这里当时漏了。
+            "caller_user_id": self.tenant,
             "bank_id": "default",
             "async_mode": False,
             "infer": False,
@@ -200,7 +205,7 @@ class Smoke:
 
         if action in {"coalesce_buffered", "coalesce_flushed"}:
             try:
-                response = self.request("POST", "/add/coalesce/flush", params={"user_id": self.tenant, "bank_id": "default", "force": "true"})
+                response = self.request("POST", "/add/coalesce/flush", params={"user_id": self.tenant, "caller_user_id": self.tenant, "bank_id": "default", "force": "true"})
                 data = self._get_json(response)
                 if response.status_code != 200:
                     self.record("flush", "FAIL", f"flush returned {response.status_code}", data)
@@ -269,6 +274,7 @@ class Smoke:
         try:
             response = self.request("POST", "/delete_all", json={
                 "user_id": self.tenant,
+                "caller_user_id": self.tenant,      # 同上：写/删都要声明自己
                 "bank_id": "default",
                 "confirm": True,
             })

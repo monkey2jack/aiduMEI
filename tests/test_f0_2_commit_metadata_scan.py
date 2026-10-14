@@ -30,6 +30,9 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
+_COMMIT_SEQ = 0
+
+
 def _commit(
     repo: Path, author: tuple[str, str],
     committer: tuple[str, str] | None = None,
@@ -42,7 +45,13 @@ def _commit(
         "GIT_COMMITTER_NAME": committer[0],
         "GIT_COMMITTER_EMAIL": committer[1],
     })
-    _git(repo, "commit", "--allow-empty", "-qm", "fixture", env=env)
+    # A unique message per commit: two empty commits with the same parent,
+    # identity and message made within one second are the *same* object, so
+    # the "new commit" this fixture meant to add silently did not exist and the
+    # case failed whenever the two calls landed in the same second.
+    global _COMMIT_SEQ
+    _COMMIT_SEQ += 1
+    _git(repo, "commit", "--allow-empty", "-qm", f"fixture {_COMMIT_SEQ}", env=env)
     return _git(repo, "rev-parse", "HEAD")
 
 

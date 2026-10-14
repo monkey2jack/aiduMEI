@@ -204,6 +204,33 @@ def main():
                 raise LLMError('synthetic late error after real SDK write')
             raise RuntimeError('synthetic late index error after real SDK write')
         layer1_selfcheck._index_after_add = fail_after
+    if mode in ('extraction_refused', 'extraction_unavailable', 'extraction_refused_async'):
+        # f0.4+ WP1: the provider answers mem0's real extraction call through
+        # the real OpenAI SDK. Only the transport is synthetic (no network):
+        # 451 is a content refusal, 503 is provider health.
+        import httpx
+        from openai import OpenAI
+        status = 503 if mode == 'extraction_unavailable' else 451
+        err = ({'error': {'message': 'synthetic refusal', 'type': 'censorship_blocked'}}
+               if status == 451 else {'error': {'message': 'synthetic outage', 'type': 'server_error'}})
+        transport = httpx.MockTransport(lambda request: httpx.Response(status, json=err))
+        memory.llm.client = OpenAI(api_key='synthetic-offline-test', base_url='https://synthetic.invalid/v1',
+                                   http_client=httpx.Client(transport=transport), max_retries=0)
+        body['infer'] = True
+        if mode.endswith('_async'):
+            # The production hooks write with async_mode; TestClient runs the
+            # background job before returning, so its outcome is observable here.
+            body['async_mode'] = True
+        response = client.post('/add', json=body)
+        follow = client.post('/add', json={**body, 'infer': False, 'async_mode': False, 'idempotency_key': 'route-next-key',
+                                          'messages': [{'role': 'user', 'content': 'synthetic next turn'}]})
+        from ducky import gear
+        jobs = []
+        if mode.endswith('_async') and response.status_code == 200:
+            jobs = [journal.job_record(response.json().get('job_id'))]
+        dump(root, mode, client, memory, response,
+             {'follow_http': follow.status_code, 'llm_gear': gear.llm_gear_status(), 'jobs': jobs})
+        return
     if mode == 'update_ack_fail':
         assert client.post('/add', json=body).status_code == 200
         target = memory.get_all(filters={'user_id': body['user_id']})['results'][0]['id']
