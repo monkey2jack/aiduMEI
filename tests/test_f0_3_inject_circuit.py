@@ -96,6 +96,9 @@ def _env(tmp_path: Path, base: str, **extra: str) -> dict[str, str]:
         "AIDUMEM_USER_ID": "alice", "AIDUMEI_BANK_ID": "work",
         "AIDUMEM_API_TOKEN": "", "AIDUMEM_HOOK_QUIET": "1",
         "AIDUMEM_MIN_HISTORY": "0", "AIDUMEM_TIMEOUT": "2",
+        # 本文件断言的是「同步跑完的那次请求」——生产已改后台作业，
+        # 这里显式要求前台，否则断言的对象根本不存在（不是变绿，是没了）。
+        "AIDUMEI_DISTILL_FOREGROUND": "1",
         "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
         "AIDUMEM_DATA_DIR": str(tmp_path / "data"), "AIDUMEM_LOG_DIR": str(tmp_path / "logs"),
     }
@@ -267,7 +270,8 @@ def _argv_log_after(shell: str, tmp_path: Path, script: Path, stdin: str, base: 
     log = tmp_path / "argv.log"
     fake = _fake_bin(tmp_path, ("curl", "python3"), log)
     extra = {"PATH": f"{fake}:{os.environ.get('PATH', '')}",
-             "AIDUMEM_DATA_DIR": str(tmp_path / "data"), "AIDUMEM_LOG_DIR": str(tmp_path / "logs")}
+             "AIDUMEM_DATA_DIR": str(tmp_path / "data"), "AIDUMEM_LOG_DIR": str(tmp_path / "logs"),
+             "AIDUMEI_DISTILL_FOREGROUND": "1"}
     if token_via_env_file:
         env_file = tmp_path / "hook.env"
         env_file.write_text("AIDUMEM_API_TOKEN=f03-argv-secret\n", encoding="utf-8")

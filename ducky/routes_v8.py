@@ -244,7 +244,8 @@ def register_v8_routes(app: FastAPI) -> None:
 
     @app.post("/session/distill")
     def session_distill(session_id: str,
-                        user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID):
+                        user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
+                        force: bool = False):
         """会话精华萃取：把这一程最值得记住的事提炼成一两句，单独存一条。
 
         独立于 /session/end 暴露，理由有二：
@@ -263,9 +264,26 @@ def register_v8_routes(app: FastAPI) -> None:
         """
         try:
             from ducky.session_distill import distill_session
-            return distill_session(session_id, user_id=user_id, bank_id=bank_id)
+            return distill_session(session_id, user_id=user_id, bank_id=bank_id, force=force)
         except Exception as e:
             return {"status": "error", "detail": str(e)}
+
+    @app.post("/session/distill/prune")
+    def session_distill_prune(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
+                              apply: bool = False, caller_user_id: str = ""):
+        """删掉「来源已被同会话更新一代完全覆盖」的旧精华（默认只列清单）。
+
+        f0.4+：宿主每轮都触发 session-end，旧版因此把同一程反复提炼成多代。
+        只有更新一代的来源是旧代来源的超集时才算冗余 —— 部分重叠（长会话窗口
+        前移）一律保留，删除走与 POST /delete 相同的级联与 WAL。
+        """
+        from ducky.bank_contract import make_scope
+        from ducky.scope_auth import require_scope_access
+        scope = make_scope(user_id, bank_id)
+        require_scope_access(scope.user_id, caller_user_id, bank_id=scope.bank_id,
+                             action="delete" if apply else "read")
+        from ducky.session_distill import prune_superseded_summaries
+        return prune_superseded_summaries(scope.user_id, scope.bank_id, apply=apply)
 
     @app.post("/session/end")
     def session_end(session_id: str,

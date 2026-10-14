@@ -346,6 +346,10 @@ class AiduMemProvider(MemoryProvider):
         bank_id = cfg.get("bank_id") or _resolve_env_key("AIDUMEI_BANK_ID", "default")
         self._client = _Client(url, user_id, bank_id)
         self._session_id = ""
+        # f0.4+: Hermes passes agent_context ("primary" | "subagent" | "cron" |
+        # "flush") to initialize(); its MemoryProvider contract asks providers
+        # to skip writes for non-primary contexts. Reads stay available.
+        self._agent_context = "primary"
         self._tool_failures = OrderedDict()
         self._tool_retry_lock = threading.Lock()
         self._threads: List[threading.Thread] = []
@@ -451,7 +455,7 @@ class AiduMemProvider(MemoryProvider):
                         state, health.get("degraded"))
         return True
 
-    def get_config_schema(self) -> List[Dict[str, Any]]:
+    def get_config_schema(self) -> list[dict[str, Any]]:
         return [
             {
                 "key": "url",
@@ -475,6 +479,7 @@ class AiduMemProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
+        self._agent_context = str(kwargs.get("agent_context") or "primary").strip() or "primary"
         with self._pending_lock:
             resumed = self._prepare_resume_locked(str(session_id))
             self._source_session_id_locked(
@@ -491,6 +496,24 @@ class AiduMemProvider(MemoryProvider):
         res = self._client.try_request("POST", qs, timeout=_CONNECT_TIMEOUT)
         if isinstance(res, dict) and res.get("session_id"):
             self._session_id = str(res["session_id"])
+
+    def _writes_skipped(self) -> bool:
+        """Non-primary agents (scheduler, delegated subagent, flush) do not write.
+
+        Same knob as the shell hooks: AIDUMEI_SKIP_PLATFORMS (default
+        "cron,subagent"; set it to "" to let them write). "flush" is the
+        host's own memory-flush agent and is always skipped, since its writes
+        would duplicate the turns this provider already stored.
+        """
+        ctx = self._agent_context or "primary"
+        if ctx == "primary":
+            return False
+        if ctx == "flush":
+            return True
+        raw = os.environ.get("AIDUMEI_SKIP_PLATFORMS")
+        skip = {"cron", "subagent"} if raw is None else {
+            part.strip() for part in raw.split(",") if part.strip()}
+        return ctx in skip
 
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
         """Follow Hermes /new, /resume and /branch session rebinding.
@@ -707,8 +730,8 @@ class AiduMemProvider(MemoryProvider):
         assistant_content: str,
         *,
         session_id: str = "",
-        messages: Optional[List[Dict[str, Any]]] = None,
-        turn_author: Optional[Dict[str, Any]] = None,
+        messages: Optional[list[dict[str, Any]]] = None,
+        turn_author: Optional[dict[str, Any]] = None,
     ) -> None:
         # turn_author：宿主 2026-09 新增的可选参数（该轮发言者身份）。
         # v22.1：提取 author_id / author_name / is_bot 存入 metadata——
@@ -721,6 +744,8 @@ class AiduMemProvider(MemoryProvider):
             _author_id = str(turn_author.get("id") or "")
             _author_name = str(turn_author.get("name") or "")
             _author_is_bot = bool(turn_author.get("is_bot", False))
+        if self._writes_skipped():
+            return
         if len((user_content or "").strip()) < _MIN_QUERY_LEN:
             return
         combined = f"User: {user_content[:4000]}\nAssistant: {(assistant_content or '')[:4000]}"
@@ -760,8 +785,10 @@ class AiduMemProvider(MemoryProvider):
 
         self._track_write(sid, _write, "aidumem-turn")
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """压缩会丢掉原始轮次 —— 先把它们落进长期记忆再让它被压。"""
+        if self._writes_skipped():
+            return ""
         parts = []
         for msg in (messages or [])[-12:]:
             role = msg.get("role")
@@ -800,10 +827,12 @@ class AiduMemProvider(MemoryProvider):
         action: str,
         target: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """把 Hermes 内置 MEMORY.md / USER.md 的写入镜像成结构化 fact。"""
         if action not in {"add", "replace"} or not content:
+            return
+        if self._writes_skipped():
             return
         category = "user_profile" if target == "user" else "agent_memory"
 
@@ -824,9 +853,9 @@ class AiduMemProvider(MemoryProvider):
 
         self._spawn(_mirror, "aidumem-memwrite")
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         sid = self._session_id
-        if not sid:
+        if not sid or self._writes_skipped():
             return
         with self._pending_lock:
             generation = self._session_generation.get(sid, 0)
@@ -975,10 +1004,10 @@ class AiduMemProvider(MemoryProvider):
 
     # -- 工具 ---------------------------------------------------------------
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [SEARCH_SCHEMA, REMEMBER_SCHEMA, STATUS_SCHEMA]
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         # This standalone plugin is copied without ducky. Keep hints local;
         # the host owns call budgets, and only MCP implements a circuit breaker.
         result = self._handle_tool_call(tool_name, args, **kwargs)
@@ -1043,6 +1072,10 @@ class AiduMemProvider(MemoryProvider):
             content = (args.get("content") or "").strip()
             if not content:
                 return tool_error("content is required")
+            if self._writes_skipped():
+                return json.dumps({"result": "Not stored: this %s agent does not write long-term "
+                                             "memory (AIDUMEI_SKIP_PLATFORMS)." % self._agent_context},
+                                  ensure_ascii=False)
             res = self._client.try_request(
                 "POST",
                 "/add",
@@ -1086,7 +1119,7 @@ class AiduMemProvider(MemoryProvider):
 
     # -- 备份 / 收尾 --------------------------------------------------------
 
-    def backup_paths(self) -> List[str]:
+    def backup_paths(self) -> list[str]:
         """把 aiduMEM 数据目录挂进宿主备份流程。
 
         找不到目录就返回空 —— 但要出声，否则「备份里没有记忆」这件事

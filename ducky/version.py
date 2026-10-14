@@ -8,6 +8,19 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.4.0.post1 (对外 f0.4+ · 精华线归位 / 供应商拒答恢复 / 无人值守会话策略 · 2026-10-14)
+    用例总数 4156 → 4215（收集数；通过结果以精确提交的运行回执为准）。
+    1. 抽取阶段被服务商拒答（451 等）时尚未写入任何一条：日志记 not_applied，
+       作用域不再被整体闸死，确定性 infer=False 写入恢复（mem0 调用顺序有守卫）。
+    2. 内容拒答不计入 LLM 熔断并如实回执；服务故障（503 等）照旧计入。
+    3. Hermes v0.22 每轮触发 on_session_end：精华钩子后台作业立即返回，服务端按
+       新增来源节流、只提炼新段；finalize/reset 强制出新一代。
+    4. 新增 /session/distill/prune：默认只列出被完全覆盖的旧代，apply 走级联与 WAL。
+    5. 定时与子代理会话（钩子 platform、插件 agent_context）默认不写也不提炼。
+    6. 冒烟补齐 caller_user_id；巡检带时间戳并可选跳变告警；写线失败落持久日志。
+    7. 钩子部署自检识别 finalize/reset，且不再把同级其他事件的命令算到上一事件名下。
+    8. 接入文档写明 v0.22 钩子语义与 25 秒超时；包版本取 PEP 440 的 0.4.0.post1。
+
 v0.4.0 (对外 f0.4 · 权限、持久写入、恢复与证据交付 · 2026-10-09)
     用例总数 3276 → 4156（收集数；通过结果以冻结提交的门禁回执为准）。
     修复复审确认的作用域、恢复、故障可见性与交付证据缺口。
@@ -467,9 +480,9 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.4.0"
-FULL_VERSION = "f0.4"
-PUBLIC_RELEASE_VERSION = "f0.4"
+SERVICE_VERSION = "0.4.0.post1"
+FULL_VERSION = "f0.4+"
+PUBLIC_RELEASE_VERSION = "f0.4+"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
@@ -482,6 +495,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.4.0.post1", "", "f0.4+", "Essence cadence for per-turn session-end, provider-refusal recovery, unattended-session policy · 2026-10-14"),
     ("0.4.0", "", "f0.4", "Scoped authorization, durable mutation repair, recovery and evidence budgets · 2026-10-09"),
     ("0.3.0+decision.2", "", "f0.3++", "Three issue closeout · caller scope authorization · WAL integrity lock · 2026-10-06"),
     ("0.3.0+decision.1", "", "f0.3+", "Optional automatic decision tasks with scoped fallback · 2026-10-03"),

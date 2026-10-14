@@ -32,7 +32,9 @@ import re
 import sys
 
 # 宿主 config.yaml 里挂钩子的事件名。新增事件时在这里加。
-HOOK_EVENTS = ("pre_llm_call", "post_llm_call", "on_session_end")
+# f0.4+：Hermes v0.22 的真实会话边界 finalize/reset 也挂萃取线（可选，不算必需）。
+HOOK_EVENTS = ("pre_llm_call", "post_llm_call", "on_session_end",
+               "on_session_finalize", "on_session_reset")
 REQUIRED_EVENTS = ("pre_llm_call", "post_llm_call", "on_session_end")
 
 # 事件 → 仓库里的真源文件。**按事件而不是按文件名认源**是本脚本的关键：
@@ -42,6 +44,8 @@ EVENT_TO_SOURCE = {
     "pre_llm_call": "aidumem-inject.sh",
     "post_llm_call": "aidumem-ingest.sh",
     "on_session_end": "aidumem-distill.sh",
+    "on_session_finalize": "aidumem-distill.sh",
+    "on_session_reset": "aidumem-distill.sh",
 }
 
 # config.yaml 中 `command:` 的值形如 "~/.hermes/agent-hooks/xxx.sh" 或带参数。
@@ -65,6 +69,7 @@ def parse_hook_commands(config_path: str) -> dict[str, list[str]]:
     """
     found: dict[str, list[str]] = {}
     current: str | None = None
+    current_indent = -1
     try:
         with open(config_path, encoding="utf-8") as fh:
             lines = fh.readlines()
@@ -73,13 +78,16 @@ def parse_hook_commands(config_path: str) -> dict[str, list[str]]:
 
     for line in lines:
         ev = _EVENT_RE.match(line)
+        indent = len(line) - len(line.lstrip(" \t"))
         if ev and ev.group(1) in HOOK_EVENTS:
-            current = ev.group(1)
+            current, current_indent = ev.group(1), indent
             found.setdefault(current, [])
             continue
         if ev and ev.group(1) not in HOOK_EVENTS:
-            # 进入了别的段落，退出当前事件作用域
-            if current and not line.startswith((" ", "\t")):
+            # 进入了别的段落，退出当前事件作用域。同级（或更浅）的键都算：
+            # 只认顶格键时，hooks 下一个不认识的同级事件会把它的 command
+            # 记到上一个事件名下（f0.4+ 前 finalize/reset 就是这么被吞的）。
+            if current and indent <= current_indent:
                 current = None
             continue
         if current is None:

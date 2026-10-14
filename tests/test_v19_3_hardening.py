@@ -41,9 +41,14 @@ def test_v19_3_version_alignment():
 
     # 格式必须合法。v20.0 起版本号为两段式，故放宽为「两段或三段」——
     # 并当场用负向对照钉住放宽的边界，防止它被继续放宽成永真式。
-    _VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?")
+    # f0.4+：PEP 440 post 段（0.4.0.post1）也是合法形态 —— 品牌「+」不能进包版本
+    # （Release 附件名会把 + 换成 .），post 段就是为此而来。
+    _VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?(?:\.post\d+)?(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?")
     assert _VERSION_RE.fullmatch("0.3.0+decision.1")
     assert not _VERSION_RE.fullmatch("0.3.0+../secret")
+    assert _VERSION_RE.fullmatch("0.4.0.post1")
+    for _bad_post in ("0.4.0.post", "0.4.0.postx", "0.4.0.dev1", "0.4.0.post1.post2"):
+        assert not _VERSION_RE.fullmatch(_bad_post), f"post 段放宽过头：{_bad_post!r}"
     for _bad in ("20", "20.0.0.0", "v20.0", "20.0-beta"):  # release-scan:allow 版本格式负向夹具
         assert not _VERSION_RE.fullmatch(_bad), (
             f"版本号格式守卫被放宽到能接受 {_bad!r} —— 它已经不再拦任何东西"
@@ -81,7 +86,7 @@ def test_v19_3_version_alignment():
     # CHANGELOG 首条条目必须是当前版本
     with open(os.path.join(repo_root, "CHANGELOG.md"), encoding="utf-8") as f:
         changelog = f.read()
-    first_entry = re.search(r"^## v(\d+\.\d+(?:\.\d+)?(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?)", changelog, re.M)
+    first_entry = re.search(r"^## v(\d+\.\d+(?:\.\d+)?(?:\.post\d+)?(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?)", changelog, re.M)
     assert first_entry, "CHANGELOG 未找到版本条目"
     assert first_entry.group(1) == SERVICE_VERSION, (
         f"CHANGELOG 首条 {first_entry.group(1)} ≠ 当前版本 {SERVICE_VERSION}"

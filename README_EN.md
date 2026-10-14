@@ -9,8 +9,8 @@
 > Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.4** (package `0.4.0`, 2026-10-09). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.4).
-> This release improves decision adapters, evidence delivery, authorization and durable writes, with production API, hooks and real Hermes CLI acceptance. [Upgrade guide](docs/F04_UPGRADE.md) · [Validation scope](docs/F04_VALIDATION.md).
+> The current public release is **f0.4+** (package `0.4.0.post1`, 2026-10-14). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.4%2B).
+> It fixes a whole-scope write lock seen in production and adapts the essence line to Hermes v0.22 per-turn session events; everything in f0.4 is unchanged. [Upgrade guide](docs/F04_UPGRADE.md) · [f0.4 validation scope](docs/F04_VALIDATION.md).
 
 > **Optional decision models.** Customers choose the provider, model, endpoint, key and tasks, or leave it disabled. Configured tasks run automatically for new-memory classification and recall evidence checks. Nace, TypeSafe, Cloudflare Clef/Clef Flash and compatible System One services are supported; Drex is not mandatory. Rerank continues to rank; local mode makes no decision calls. See [configuration and compatibility](docs/DECISION.md).
 >
@@ -24,6 +24,22 @@
 > Checking out a tag ≠ a releasable build; `pyproject.toml` is the source of truth.
 
 ---
+
+## f0.4+: one refusal no longer locks a memory scope, and the essence is no longer rewritten every turn
+
+Real use after f0.4 shipped exposed two problems. This release fixes those two and the monitoring blind spots around them; models and decision settings are unchanged.
+
+| Problem | What happened | What f0.4+ does |
+|---|---|---|
+| **A provider refusal was treated as "may have written"** | One turn was refused by the model provider during extraction (HTTP 451). The write journal marked it for repair, and every later write to the same memory scope was rejected with 409 until an operator stepped in | Extraction fails before any write (pinned by a call-order guard over the installed mem0 source), so the journal records "not applied". The raw turn is stored on the deterministic path and only semantic distillation is skipped. Content refusals no longer trip the model circuit breaker, because they are not an outage |
+| **The essence hook ran with the old event semantics** | Hermes v0.22 fires `on_session_end` on every turn. The hook waited for a distillation each turn, and one conversation was re-summarised 2–9 times (79 production sessions produced 280 summaries) | The hook hands the work to a background job and returns at once. The server distills only after enough new sources (6 by default, or 2 hours with something new) and summarises only the new segment. Real session boundaries, `on_session_finalize` / `on_session_reset`, force a new generation. `/session/distill/prune` lists fully covered old generations (dry run by default) |
+| **Failures were invisible** | The hourly smoke test had returned 403 since f0.4 because it did not declare its caller; the health check wrote to a log nobody read | The smoke test declares its caller; health output carries timestamps, and `AIDUMEI_ALERT_COMMAND` runs when health changes between OK and degraded (repeats suppressed for 6 hours); write-line failures go to a durable log |
+
+Scheduled and delegated agents (`cron`, `subagent`) no longer write memories or distill by default; reads are unaffected, and `AIDUMEI_SKIP_PLATFORMS=""` restores writing. Shell hooks must be redeployed, and the essence hook should also be registered for finalize/reset with a timeout of 25 seconds or less. See the [upgrade guide](docs/F04_UPGRADE.md).
+
+**Tests:** **4215** collected (3585 behavior, 484 script/hook, 146 guard). Each new regression was run against the previous code as a negative control, and the previous code reproduced the production 409. Local and Linux target results, production acceptance and the exact commit are recorded in the release notes.
+
+The f0.4 notes below describe the previous release.
 
 ## f0.4: reliable decision integration and complete memory delivery
 
@@ -39,11 +55,11 @@ This release focuses on using different decision models reliably for classificat
 
 The decision channel remains optional. Users choose providers, models and tasks through the existing Nace, TypeSafe, Cloudflare and compatible System One adapters. Protocol compatibility is not a guarantee of provider availability or model quality. [Configuration and boundaries](docs/DECISION.md).
 
-**Acceptance:** the accepted runtime passed **4156 tests with no failures or skips** in each of the local and server sandbox runs, plus 8 subtests. Production HTTP/hooks passed **91 checks with 24 real dispatches**; real Hermes CLI acceptance reached **23/23**. Six unique Clef Flash classification inputs covered six labels: **6/6** expected labels, calls **+6**, failures **+0**, and a successful retrieval check. Eight CLI cases ran on the final commit; fifteen reuse reviewed original evidence with unchanged runtime files. [Validation details](docs/F04_VALIDATION.md) explain reuse, evaluator repairs and a host punctuation difference. These are integration checks, not a model ranking.
+**f0.4 acceptance (2026-10-09):** the accepted runtime passed **4156 tests with no failures or skips** in each of the local and server sandbox runs, plus 8 subtests. Production HTTP/hooks passed **91 checks with 24 real dispatches**; real Hermes CLI acceptance reached **23/23**. Six unique Clef Flash classification inputs covered six labels: **6/6** expected labels, calls **+6**, failures **+0**, and a successful retrieval check. Eight CLI cases ran on the final commit; fifteen reuse reviewed original evidence with unchanged runtime files. [Validation details](docs/F04_VALIDATION.md) explain reuse, evaluator repairs and a host punctuation difference. These are integration checks, not a model ranking.
 
 The same release closes owner/bank authorization, durable mutation intent, deletion and recovery, backups, cache concurrency and plugin caller identity. Ambiguous writes remain explicitly pending repair, preventing silent success and blind retries. [Full changelog](CHANGELOG.md).
 
-The f0.3+/f0.3++ tables below remain historical measurements, not new f0.4 results.
+The f0.3+/f0.3++ tables below remain historical measurements, not new f0.4 or f0.4+ results.
 
 ## f0.3+: measured benefits and costs
 
@@ -373,14 +389,14 @@ Example section to insert in the configuration file (use your own service settin
 
 | Dimension | Current |
 |------|------|
-| Total cases | **4156** (measured via `pytest --collect-only`, 2026-10-09, f0.4 candidate tree) = **3529 behavior (product code under direct test) + 481 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 4144 passed · **12 skipped** — **f0.4 acceptance target derived from collection and missing axes; full re-measurement pending** (Python 3.12; development and benchmark dependencies plus the local embedding model are ready; only the Hermes source is absent) |
+| Total cases | **4215** (measured via `pytest --collect-only`, 2026-10-14, f0.4+ tree) = **3585 behavior (product code under direct test) + 484 script/hook + 146 guard (docs/consistency/structure)**. Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 4203 passed · **12 skipped** — **f0.4+ acceptance target derived from collection and missing axes; measured results are in the release notes** (Python 3.12; development and benchmark dependencies plus the local embedding model are ready; only the Hermes source is absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
 | Levels | Primarily **module-level unit tests plus source-level guard assertions**, with `TestClient`-driven interface tests as support |
 | Platform | The full suite is maintained for **Linux/macOS (POSIX)**: the `backup_gate` axis needs a POSIX shell; `/health` CPU/RSS metrics go through the `resource` module and honestly report `None` on non-POSIX platforms rather than crashing. Windows is not a full-suite platform |
-| Statement coverage | Historical ~51% (`ducky/` + entry points); not re-measured for f0.4 |
+| Statement coverage | Historical ~51% (`ducky/` + entry points); not re-measured for f0.4 / f0.4+ |
 | Not covered | The local suite includes real mem0, SQLite and local Qdrant crash/recovery behavior. Provider calls, vector-server restore, actual host CLI and production performance require separate evidence. |
 
 ```bash
@@ -390,7 +406,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 4144 and 1821**: the first is the current target with only the 12 Hermes cases skipped, not a measured f0.4 result; the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 4203 and 1821**: the first is the current target with only the 12 Hermes cases skipped, not itself a measured result (measurements are in the release notes); the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
 > **Those 12 skips are not hand-waving — you can verify them yourself**: all fourteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
@@ -399,12 +415,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 4144 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 4156 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4144 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 4203 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 4215 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4203 passed, 12 skipped
 > ```
 >
-> `4156 passed` in the block above requires **all fourteen axes present**; the host is only one of them — don't read "install the host" as "all green". The current candidate still requires re-measurement; `4144 passed · 12 skipped` is its no-host acceptance target.
+> `4215 passed` in the block above requires **all fourteen axes present**; the host is only one of them — don't read "install the host" as "all green". `4203 passed · 12 skipped` is the no-host acceptance target; per-environment measurements are in the release notes.
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

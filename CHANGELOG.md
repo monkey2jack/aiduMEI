@@ -1,5 +1,22 @@
 # aiduMEI 版本演进史
 
+## v0.4.0.post1（对外 f0.4+ · 2026-10-14）
+
+用例总数 4156 → 4215（2026-10-14 `pytest --collect-only`；行为 3585、脚本/钩子 484、守卫 146）；这是收集数，通过结果以精确提交的运行回执为准，记录在 Release 说明。
+
+本版只修 f0.4 上线后真实使用暴露的问题，不更换模型与决策配置。新增回归均退回旧代码做过负向对照。
+
+- 供应商拒答不再锁死记忆域：2026-10-14 生产上一轮对话在抽取阶段被服务商拒绝（HTTP 451），日志记为 `repair_required`，随后同域新写入全部 409，同样的事 10-10 也发生过。mem0 的抽取错误发生在任何写入之前（`tests/test_f04p_prewrite_extraction.py` 用已安装 mem0 源码的调用顺序守卫钉住，并以故意前移写入的副本做负向对照），因此只对 `mem0_add` 上 mem0 自己的抽取 `LLMError` 记 `not_applied`（`provider_rejected_before_write`），作用域保持可写；确定性 `infer=False` 写入恢复工作（f0.4 的日志曾把这次尝试当作 SDK 已动手，导致降级被拒）。真实 mem0 + OpenAI SDK + 路由的端到端回归中，旧代码复现了 409。
+- 内容拒答（451 或服务商内容策略码）不计入 LLM 熔断，回执为 `skipped_llm_content_rejected` 并附人话说明；503 等服务故障照旧计入，作为区分对照。
+- 精华线适配 Hermes v0.22：宿主每轮触发 `on_session_end`，钩子改为后台作业并立即返回 `{}`，同会话 flock 互斥（无 flock 时由服务端幂等键兜底），诊断写入带时间戳的持久日志。服务端按新增来源节流（`AIDUMEI_DISTILL_MIN_NEW_SOURCES` 默认 6，`AIDUMEI_DISTILL_MIN_INTERVAL_SEC` 默认 7200），只提炼尚未覆盖的新段；`force` 用于 `on_session_finalize` / `on_session_reset`（后者以 `extra.old_session_id` 定位被结束的会话）。生产此前 79 个会话产生 280 条精华，同一程最多被重提炼 9 次。
+- 新增 `POST /session/distill/prune`：默认只列出「来源被同会话更新一代完全覆盖」的旧精华；`apply=true` 走与 `/delete` 相同的级联和 WAL，枚举不完整时拒绝执行；按 delete 权限授权，路由普查已登记。
+- 定时与子代理会话（钩子 payload 的 `platform`、插件 `initialize` 的 `agent_context` 为 `cron`/`subagent`）默认不写记忆、不提炼，读取不受影响；`AIDUMEI_SKIP_PLATFORMS` 可改，置空即恢复写入。插件对宿主的 `flush` 上下文始终不写，与 Hermes MemoryProvider 契约一致。
+- 监控：`scripts/e2e_smoke.py` 的 `/add`、flush 与清理补齐 `caller_user_id`（f0.4 起该冒烟每小时 403）；`scripts/health_check.py` 输出带时间戳，可选 `AIDUMEI_ALERT_COMMAND` 在正常与异常之间切换时执行一次（同状态 6 小时抑制，非法配置回退默认），告警命令失败不改变巡检结论；写线失败另记 `aidumem-ingest.log`。
+- `scripts/check_hook_deployment.py` 识别 finalize/reset 事件，并修正解析：hooks 下同级的其他事件不再被算作上一个事件的命令（旧解析会把无关脚本记到萃取线名下）。
+- 文档：接入指南与 `config.yaml.snippet` 写明 v0.22 钩子语义（逐轮 end、finalize/reset 边界、30 秒回调上限、钩子是拷贝）、注册三事件与 25 秒超时；`.env.example` 与环境变量注册表补齐新变量。包版本采用 PEP 440 的 `0.4.0.post1`（品牌版本的 `+` 不进包版本，避免 Release 附件名把 `+` 改成 `.`）。
+
+升级与回退见 [f0.4 运维说明](docs/F04_UPGRADE.md) 的 f0.4+ 一节。
+
 ## v0.4.0（对外 f0.4 · 2026-10-09）
 
 用例总数 3276 → 4156（2026-10-09 `pytest --collect-only`）；这是收集数，通过结果以冻结提交的门禁回执为准。

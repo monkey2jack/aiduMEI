@@ -97,10 +97,11 @@ if [ -z "$_bid" ]; then
 fi
 export AIDUMEI_BANK_ID="$_bid"
 export AIDUMEM_HOOK_QUIET="${AIDUMEM_HOOK_QUIET:-}"
+_diag() { [ -n "${AIDUMEM_HOOK_QUIET:-}" ] || printf '%s\n' "$*" >&2; }
 
 # ── 两步：提炼 → 落库 ────────────────────────────────────────────
 _distill_and_write() {
-    _DISTILL_SESSION="$1" python3 -c '
+    _DISTILL_FORCE="$2" _DISTILL_SESSION="$1" python3 -c '
 import hashlib, json, os, sys, urllib.error, urllib.parse, urllib.request
 
 base = os.environ["AIDUMEM_URL"].rstrip("/")
@@ -129,9 +130,10 @@ def _post(path, payload=None, query=""):
 
 # ① 提炼（只读，可安全重跑）
 try:
-    out = _post("/session/distill",
-                query="?" + urllib.parse.urlencode({
-                    "session_id": sid, "user_id": uid, "bank_id": bid}))
+    _q = {"session_id": sid, "user_id": uid, "bank_id": bid}
+    if os.environ.get("_DISTILL_FORCE") == "--force":
+        _q["force"] = "true"
+    out = _post("/session/distill", query="?" + urllib.parse.urlencode(_q))
 except urllib.error.HTTPError as e:
     if e.code in (401, 403):
         _diag("[aidumem-distill] auth_failed status=%d token=%s（这一程没有精华）\n"
@@ -252,28 +254,102 @@ print("[aidumem-distill] selftest OK url=%s token=%s user_id=%s （端点在场�
     exit $?
 fi
 
+# 后台作业入口：宿主钩子已经返回，这里独占地跑「提炼 → 落库」。
+# 同一会话同时只跑一个（flock 可用时）；重复的强制事件由服务端幂等键兜住。
+if [ "${1:-}" = "--background-run" ]; then
+    _bg_session="${2:-}"; _bg_force="${3:-}"
+    [ -n "$_bg_session" ] || exit 0
+    # 输出已改向持久日志，不会吵到宿主：这里一律开诊断，否则「安静」会把
+    # 唯一的现场记录也关掉。
+    export AIDUMEM_HOOK_QUIET=""
+    _lock="${TMPDIR:-/tmp}/aidumem-distill-$(printf '%s' "$_bg_session" | cksum | cut -d" " -f1).lock"
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$_lock" || exit 0
+        flock -n 9 || { _diag "[aidumem-distill] busy: 同一会话已有提炼在跑"; exit 0; }
+    fi
+    _distill_and_write "$_bg_session" "$_bg_force" 2>&1 | while IFS= read -r _line; do
+        printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$_line"
+    done
+    exit 0
+fi
+
 PAYLOAD=$(cat)
 
-# Hermes on_session_end payload：session_id 在顶层；非顶层键在 extra 下。
-SESSION_ID=$(printf '%s' "$PAYLOAD" | python3 -c '
+# 事件与目标会话：on_session_reset 的 session_id 是**新**会话，被结束的是
+# extra.old_session_id；真实边界还要强制出新一代（服务端的每轮节流会让开）。
+HOOK_EVENT=$(printf '%s' "$PAYLOAD" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+print(str(d.get("hook_event_name") or "on_session_end")[:64])
+')
+TARGET=$(printf '%s' "$PAYLOAD" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
 ex = d.get("extra") or {}
-sid = d.get("session_id") or ex.get("session_id") or ""
+if str(d.get("hook_event_name") or "") == "on_session_reset" and ex.get("old_session_id"):
+    sid = ex.get("old_session_id")
+else:
+    sid = d.get("session_id") or ex.get("session_id") or ""
 print(str(sid)[:256])
 ')
+FORCE=""
+case "$HOOK_EVENT" in
+    on_session_finalize|on_session_reset) FORCE="--force" ;;
+esac
 
-if [ -z "$SESSION_ID" ]; then
-    [ -n "${AIDUMEM_HOOK_QUIET:-}" ] || \
-        printf '[aidumem-distill] skipped: payload 里没有 session_id，无从圈定这一程\n' >&2
+# f0.4+（WP3）：定时/子代理会话不提炼（与写线同一条策略，理由见 ingest 的注释）。
+# 两条线口径必须一致：只挡写不挡提炼，会凭空长出「没有原文来源的精华」。
+_skip_platforms=",${AIDUMEI_SKIP_PLATFORMS-cron,subagent},"
+PLATFORM=$(printf '%s' "$PAYLOAD" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+ex = d.get("extra") or {}
+print(str(ex.get("platform") or d.get("platform") or "")[:64])
+')
+if [ -n "$PLATFORM" ] && [ "${_skip_platforms#*,"${PLATFORM}",}" != "$_skip_platforms" ]; then
+    _diag "[aidumem-distill] skipped: 会话平台是 $PLATFORM（定时/子代理），按默认策略不提炼"
     echo '{}'
     exit 0
 fi
 
-_distill_and_write "$SESSION_ID"
+if [ -z "$TARGET" ]; then
+    _diag "[aidumem-distill] skipped: payload 里没有 session_id，无从圈定这一程"
+    echo '{}'
+    exit 0
+fi
+
+# f0.4+：宿主在**每一轮**都会触发 on_session_end（v0.21.6 起即如此，v0.22.0
+# 只是写明并退役了闲置自动结束会话），所以本钩子不再同步等提炼：那会每轮
+# 拖慢约 6 秒、偶尔撞宿主 30 秒上限。改成后台作业 + 立即返回，诊断落持久
+# 日志（stderr 在宿主成功路径上不会再被记下来，等于失声）。
+if [ -n "${AIDUMEI_DISTILL_FOREGROUND:-}" ]; then
+    _distill_and_write "$TARGET" "$FORCE"
+else
+    _log_dir="${AIDUMEM_LOG_DIR:-${HOME:+${HOME}/.aidumem/logs}}"
+    _log_dir="${_log_dir:-/tmp}"
+    mkdir -p "$_log_dir" 2>/dev/null || _log_dir="/tmp"
+    _log="${_log_dir}/aidumem-distill.log"
+    # 粗粒度轮转：超过 2MB 挪成 .1（只留一份），日志不许无界增长。
+    if [ -f "$_log" ] && [ "$(wc -c <"$_log" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+        mv -f "$_log" "${_log}.1" 2>/dev/null || :
+    fi
+    # 三个标准流全部改向：后台子进程若还攥着宿主给的管道，宿主会一直等到
+    # 它结束才算钩子返回——后台化就白做了。
+    if command -v setsid >/dev/null 2>&1; then
+        setsid nohup bash "${BASH_SOURCE[0]:-$0}" --background-run "$TARGET" "$FORCE" </dev/null >>"$_log" 2>&1 &
+    else
+        nohup bash "${BASH_SOURCE[0]:-$0}" --background-run "$TARGET" "$FORCE" </dev/null >>"$_log" 2>&1 &
+    fi
+fi
 
 echo '{}'
 exit 0

@@ -72,6 +72,19 @@ aiduMEI 默认仅监听回环；设置 API token 或 UI 口令后接口会强制
 宿主 Hermes 不方便装插件时用。**三个脚本，三个挂点，缺一不可**（萃取线的挂点是
 `on_session_end`，不是 `session_end`；`check_hook_deployment.py` 缺任何一条都判不通过）。
 
+### Hermes v0.22.0 的钩子语义（f0.4+ 按实况对齐，读这段能省一次事故）
+
+| 事实 | 后果 / 我们的做法 |
+|---|---|
+| `on_session_end` 自 v0.21.6 起是**每一轮**都触发，不是「一程一次」 | 萃取钩子不许同步等 LLM；本仓自 f0.4+ 起改为**后台作业 + 立即返回 `{}`**，并靠服务端节流决定是否真提炼 |
+| 真正的会话边界是 `on_session_finalize` / `on_session_reset` | 这两个事件注册上，钩子对它们**强制**出新一代（reset 用 `extra.old_session_id`，因为它的 `session_id` 是**新**会话） |
+| 「闲置/每日自动结束会话」在 v0.22.0 已退役 | 别再把「会话没结束」当成没写记忆的原因 |
+| 钩子回调有**30 秒**上限（`_HOOK_CALLBACK_TIMEOUT_SECS`），超时被放弃、连续超时进抑制期 | 本仓三个钩子的 `timeout` 一律 ≤25s，留 5s 余量；长活儿一律后台化 |
+| 钩子是**拷贝**不是软链；宿主按 mtime 校验，改文件要重新批准 | 升级仓库代码之后必须**重新部署**，否则跑的还是旧行为（`scripts/check_hook_deployment.py` 盯这件事） |
+| 定时/子代理会话的 `platform` 是 `cron` / `subagent` | 写线与萃取线**默认都不处理**，可用 `AIDUMEI_SKIP_PLATFORMS` 改（见下表） |
+
+注册四个事件（三脚本 + finalize/reset 两个边界）：
+
 ### ⚠️ 先读这段：装一半等于没装
 
 记忆是一条闭合电路：**读线**把旧记忆喂给模型，**写线**把新对话存回去。
@@ -154,12 +167,21 @@ hooks:
   post_llm_call:                                   # 写线 —— 别漏
     - command: "~/.hermes/agent-hooks/aidumem-ingest.sh"
       timeout: 10
-  on_session_end:                                     # 萃取线 —— 这一程的精华
+  on_session_end:                                  # 萃取线：每轮触发，钩子内部节流
     - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
-      timeout: 40
+      timeout: 25
+  on_session_finalize:                             # 真正的会话边界：强制出精华
+    - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
+      timeout: 25
+  on_session_reset:                                # 同上（用 extra.old_session_id）
+    - command: "~/.hermes/agent-hooks/aidumem-distill.sh"
+      timeout: 25
 
 hooks_auto_accept: true
 ```
+
+> `timeout: 25` 不是随手写的数：宿主的回调上限是 30s，本仓留 5s 余量。
+> 萃取钩子每轮都在 25s 内返回（它把活儿交给后台），所以这个值只在极端情况下才碰到。
 
 `hooks_auto_accept: true` 是必须的，否则 shell hook 在启动时会被静默拒绝注册。
 
@@ -210,6 +232,21 @@ echo '{"hook_event_name":"pre_llm_call","session_id":"s","cwd":"/tmp",
 |---|---|---|
 | `AIDUMEI_INGEST_TIMEOUT` | `6.0` | 写比读慢，超时给足 |
 | `AIDUMEI_INGEST_MIN_CHARS` | `8` | 用户消息短于这个字数不写 |
+
+萃取线（`aidumem-distill.sh`）另有：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AIDUMEI_DISTILL_TIMEOUT` | `35` | 单次 HTTP 超时（后台作业里跑，不受宿主 30s 限制） |
+| `AIDUMEI_SKIP_PLATFORMS` | `cron,subagent` | 这些平台的会话不进记忆也不提炼；置**空串**即关掉该策略 |
+| `AIDUMEI_DISTILL_FOREGROUND` | 未设 | 设成 `1` 退回同步执行（只用于排查/测试，别在生产开） |
+
+服务端一侧（不是钩子变量，配在服务进程环境里）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AIDUMEI_DISTILL_MIN_NEW_SOURCES` | `6` | 自动出新一代所需的**新**来源条数 |
+| `AIDUMEI_DISTILL_MIN_INTERVAL_SEC` | `7200` | 兜底节奏：距上一代这么久且至少一条新来源就出一代 |
 
 改脚本内容后，Hermes 的 mtime 校验会要求重新批准 hook——这是设计如此，不是 bug。
 
