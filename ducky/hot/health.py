@@ -13,19 +13,23 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from ducky.version import SERVICE_VERSION, CODENAME, CODENAME_ZH
+from ducky.version import SERVICE_VERSION, FULL_VERSION, DISPLAY_NAME, CODENAME, CODENAME_ZH
 
 # 版本信息：默认绑定 ducky.version，亦支持由 api_server.py 启动时通过 set_version_info() 注入
 _version_info = {
     "service_version": SERVICE_VERSION,
+    "full_version": FULL_VERSION,
+    "display_name": DISPLAY_NAME,
     "codename": CODENAME,
     "codename_zh": CODENAME_ZH,
 }
 
 
-def set_version_info(version: str, codename: str | None = None, codename_zh: str | None = None):
+def set_version_info(version: str, codename: str | None = None, codename_zh: str | None = None, full_version: str | None = None, display_name: str | None = None):
     """api_server 启动时调用，注入版本信息到 health 端点"""
     _version_info["service_version"] = version
+    _version_info["full_version"] = full_version or FULL_VERSION
+    _version_info["display_name"] = display_name or DISPLAY_NAME
     _version_info["codename"] = codename
     _version_info["codename_zh"] = codename_zh
 
@@ -308,6 +312,8 @@ def _public_view(full: dict) -> dict:
     return {
         "status": full.get("status"),
         "version": full.get("version"),
+        "full_version": full.get("full_version"),
+        "display_name": full.get("display_name"),
         "health_status": full.get("health_status"),
         "degraded": full.get("degraded", []),
         "warming_up": full.get("warming_up", []),
@@ -1393,6 +1399,8 @@ def register_health_routes(app: FastAPI) -> None:
         full = te_ok(
             service=f"aiduMEM-v{_version_info['service_version']}",
             version=f"{_version_info['service_version']}",
+            full_version=f"{_version_info['full_version']}",
+            display_name=f"{_version_info['display_name']}",
             # f0.3（A6）：发布溯源。只在完整载荷里，_public_view 不转发。
             git_sha=_git_sha(),
             codename=_version_info["codename"],

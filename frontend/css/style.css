@@ -118,6 +118,18 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   color: var(--gray-soft);
 }
 
+a.foot-ver-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(255,255,255,0.3);
+  transition: color 0.2s, border-color 0.2s;
+}
+
+a.foot-ver-link:hover {
+  color: var(--accent, #4a9eff);
+  border-bottom-color: var(--accent, #4a9eff);
+}
+
 .foot-update-badge {
   display: none; /* 默认隐藏；有更新时由 main.js 以 CSSOM 置 inline-block（v20.4.0-alpha P2-11：原 inline style 收编于此） */
   padding: 2px 8px;
