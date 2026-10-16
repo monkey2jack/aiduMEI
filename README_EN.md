@@ -9,8 +9,8 @@
 > Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.4+** (package `0.4.0.post1`, 2026-10-14). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.4%2B).
-> Current code: **f0.4++** (package `0.4.0.post2`), an internal candidate not yet publicly released: the Claude Code carrier-adaptation closeout (wiring the extraction line of the cc memory loop, plus journal adoption, watchdog and one-shot self-check tooling); the public Release remains f0.4+. [Upgrade guide](docs/F04_UPGRADE.md) · [f0.4 validation scope](docs/F04_VALIDATION.md).
+> The current public release is **f0.4++** (package `0.4.0.post2`, 2026-10-17). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.4%2B%2B).
+> This is the Claude Code (cc) carrier-adaptation closeout: it wires the extraction line of the cc memory loop (per-session essence) and adds a legacy-journal adoption tool, a watchdog probe and a one-shot self-check script; models, decision config, the mem0 base, the vector-store schema and memory data are all unchanged. [Upgrade guide](docs/F04_UPGRADE.md) · [f0.4 validation scope](docs/F04_VALIDATION.md).
 
 > **Optional decision models.** Customers choose the provider, model, endpoint, key and tasks, or leave it disabled. Configured tasks run automatically for new-memory classification and recall evidence checks. Nace, TypeSafe, Cloudflare Clef/Clef Flash and compatible System One services are supported; Drex is not mandatory. Rerank continues to rank; local mode makes no decision calls. See [configuration and compatibility](docs/DECISION.md).
 >
