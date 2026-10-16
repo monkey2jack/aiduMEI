@@ -2,7 +2,7 @@
 
 ## v0.4.0.post2（对外 f0.4++ · 2026-10-16）
 
-用例总数 4215 → 4227（2026-10-16 `pytest --collect-only`；新增 12 条 cc 适配回归均在 tests/test_f04pp_cc_adaptation.py）；这是收集数，通过结果以精确提交的运行回执为准，记录在 Release 说明。
+用例总数 4215 → 4229（2026-10-16 `pytest --collect-only`；新增 12 条 cc 适配回归在 tests/test_f04pp_cc_adaptation.py，另 2 条 cc 身份兜底回归在 tests/test_v19_4_2_identity_env_fallback.py）；这是收集数，通过结果以精确提交的运行回执为准，记录在 Release 说明。
 
 本版是 cc（Claude Code）载体适配收口版：宿主从 Hermes 迁到 Claude Code 后，第一用户实机自检暴露的记忆回路缺口全部根因级修复，不更换模型与决策配置、不动 mem0 基座与向量库 schema、不做记忆数据迁移。新增回归均退回旧代码做过负向对照。f0.4++ 为未公开候选版本（PUBLIC_RELEASE_VERSION 保持 f0.4+，对齐 f0.3+ 先例），推大仓与发 Release 另行授权。
 

@@ -27,6 +27,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# 凭据单一真源：不自读 .env（那会「有的带兜底、有的没有」，门禁开启后部分
+# 探针莫名 401）。复用 ducky.utils.api_auth_headers —— 环境变量 → .env 兜底，
+# 与仓内所有调用方同一口径（scripts/ 的凭据守卫要求）。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+
 API_URL = os.environ.get("AIDUMEI_URL", "http://127.0.0.1:8767").rstrip("/")
 HOOKS_DIR = Path(os.environ.get("CLAUDE_HOOKS_DIR",
                                   os.path.expanduser("~/.claude/hooks")))
@@ -46,18 +51,8 @@ def _http(url: str, timeout: float = 5.0, headers: dict | None = None):
         return None, b""
 
 
-def _token() -> str:
-    env = _REPO_ROOT / ".env"
-    if env.exists():
-        for line in env.read_text().splitlines():
-            if line.startswith("AIDUMEM_API_TOKEN="):
-                return line.split("=", 1)[1].strip()
-    return ""
-
-
 def check_api(results: list):
-    tok = _token()
-    st, body = _http(f"{API_URL}/health", headers={"Authorization": f"Bearer {tok}"})
+    st, body = _http(f"{API_URL}/health", headers=_auth_headers())
     if st != 200:
         results.append(("❌", "API /health", f"http {st}（服务不通）"))
         return

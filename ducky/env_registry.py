@@ -231,6 +231,19 @@ _F04P_ALERT_ENV_VARS: frozenset[str] = frozenset((
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F04P_ALERT_ENV_VARS
 
 
+# ── f0.4++（cc 载体适配）：一键体检 + 守护探针 ────────────────────────────────
+# scripts/selfcheck_cc.py 与 scripts/aidumei_watchdog.sh 读的部署坐标。
+# AIDUMEI_URL 是本服务地址（与 hooks 用的 AIDUMEM_URL 同义，但脚本侧统一走
+# 新前缀 AIDUMEI_，避免新增旧前缀变量触发 FROZEN_LEGACY_AIDUMEM 冻结守卫）。
+_F04PP_CC_OPS_ENV_VARS: frozenset[str] = frozenset((
+    "AIDUMEI_URL",
+    "AIDUMEI_INSTALL_DIR",
+    "AIDUMEI_QDRANT_URL",
+    "AIDUMEI_QDRANT_CONTAINER",
+))
+KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F04PP_CC_OPS_ENV_VARS
+
+
 # ── 前缀学说（v20.4.0-alpha · P1-10，六方外审 Qwen 独见实锤）─────────────────
 # `AIDUMEM_` = 冻结兼容旧前缀，`AIDUMEI_` = 当前前缀。新变量一律 AIDUMEI_。
 # FROZEN_LEGACY_AIDUMEM 是旧前缀的**冻结快照**：新增旧前缀变量、快照里的名字
