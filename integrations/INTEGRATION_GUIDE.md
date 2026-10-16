@@ -252,6 +252,72 @@ echo '{"hook_event_name":"pre_llm_call","session_id":"s","cwd":"/tmp",
 
 ---
 
+## 接入 Claude Code（cc）
+
+> 位置：`<仓库根>/integrations/claude-code/`。三条线真源与 Hermes 版**共用同一套服务端契约与身份键**，只换宿主的 hook 事件名与 payload 形状。萃取逻辑不重写——cc 萃取线是薄适配层，复用 `integrations/aidumem-distill.sh` 生产真源。
+
+### 三线对照（cc 事件 ↔ Hermes 事件）
+
+| 职责 | cc 真源 | cc hook 事件 | 对应 Hermes 真源 |
+|---|---|---|---|
+| 读线（注入） | `aidumem-cc-inject.sh` | `UserPromptSubmit` | `aidumem-inject.sh` |
+| 写线（沉淀） | `aidumem-cc-ingest.sh` | `Stop` | `aidumem-ingest.sh` |
+| 萃取线（会话精华） | `aidumem-cc-distill.sh` | `SessionEnd` | `aidumem-distill.sh` |
+
+### 安装
+
+```bash
+mkdir -p ~/.claude/hooks
+cp integrations/claude-code/aidumem-cc-{inject,ingest,distill}.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/aidumem-cc-*.sh
+```
+
+> ⚠️ **升级时必须重新部署钩子**——cc 的 hook 同样是**拷贝不是软链**，只更新仓库代码、宿主执行的仍是旧文件且不报错（静默失效）。部署后核对 md5：`md5sum ~/.claude/hooks/aidumem-cc-inject.sh integrations/claude-code/aidumem-cc-inject.sh`。
+
+`~/.claude/settings.json` 的 `hooks` 段追加（改前先备份）：
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/aidumem-cc-inject.sh", "timeout": 8}]}],
+    "Stop":             [{"hooks": [{"type": "command", "command": "~/.claude/hooks/aidumem-cc-ingest.sh", "timeout": 6}]}],
+    "SessionEnd":       [{"hooks": [{"type": "command", "command": "~/.claude/hooks/aidumem-cc-distill.sh", "timeout": 10}]}]
+  }
+}
+```
+
+### 环境变量（与 Hermes 三线完全同一套键）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AIDUMEM_URL` | `http://127.0.0.1:8767` | 服务地址 |
+| `AIDUMEM_USER_ID` / `AIDUMEM_DEFAULT_USER_ID` | `default` | 记忆归属用户（可由 .env 兜底） |
+| `AIDUMEI_BANK_ID` | `default` | 记忆库 |
+| `AIDUMEM_API_TOKEN` | 空 | 服务门禁 token（可由 .env 兜底） |
+| `AIDUMEM_ENV_FILE` | 自动探测 | .env 路径候选之一 |
+| `AIDUMEI_CC_SESSION_PREFIX` | `cc-` | 会话 id 前缀；**写线与萃取线必须同值**，否则萃取圈不到来源 |
+
+身份解析优先级与 Hermes 版逐行同源：环境变量 → `.env` 链（`AIDUMEM_ENV_FILE` / `AIDUMEM_HOME/.env` / `~/.aidumem/.env` / 仓库 `.env`）→ `default`。真源**不硬编码任何租户名或部署路径**，一切私密身份经 `.env` 注入。
+
+### 验收（装完必做）
+
+```bash
+# 1) 三线真源语法与自检
+bash -n ~/.claude/hooks/aidumem-cc-*.sh
+AIDUMEM_USER_ID=<你的uid> bash integrations/aidumem-distill.sh --selftest   # 萃取端点在场+鉴权
+
+# 2) 端到端：真聊几轮后，确认写线带上了 session_id、萃取线出了精华
+python3 scripts/selfcheck_cc.py        # 一键体检：hooks 挂载/语义/守护/journal/版本对齐
+
+# 3) 精华是否产生（会话≥3轮原文后，SessionEnd 触发提炼）
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "$URL/search" \
+  -d '{"query":"<本程关键词>","caller_user_id":"<uid>"}' | grep distill:
+```
+
+> **萃取线接通的命根子**：写线沉淀时 `metadata._origin_session_id` 必须与萃取线圈定用的 `session_id` **逐字一致**（都带 `cc-` 前缀）。差一个字符，`verbatim_turns` 圈不到来源，每轮记忆照常进、探针全绿，精华却永远不产生——这是静默失败，`selfcheck_cc.py` 的「SessionEnd 语义」项专门盯它。
+
+---
+
 ## 🆘 回滚
 
 插件方案：
@@ -269,7 +335,14 @@ rm ~/.hermes/agent-hooks/aidumem-{inject,ingest,distill}.sh
 systemctl restart hermes-gateway     # 若以 gateway 方式运行
 ```
 
-两种方案都不动 aiduMEI 的数据，回滚只是断开接入。
+Claude Code 方案：
+
+```bash
+rm ~/.claude/hooks/aidumem-cc-{inject,ingest,distill}.sh
+# 手动删掉 ~/.claude/settings.json 里 hooks 下的 UserPromptSubmit / Stop / SessionEnd 三段
+```
+
+三种方案都不动 aiduMEI 的数据，回滚只是断开接入。
 
 ---
 

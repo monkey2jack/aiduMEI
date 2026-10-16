@@ -244,6 +244,8 @@ def _degraded_health() -> dict:
         "status": "ok",
         "service": "aiduMEM-v0.3.0",
         "version": "0.3.0",
+        "full_version": "f0.3.0",
+        "display_name": "aiduMEI f0.3.0",
         "codename": "f",
         "codename_zh": "f",
         "modules": {"layer1_selfcheck": True, "recall_funnel": True, "hybrid_recall": True},
