@@ -10,7 +10,7 @@
 > 宿主（Hermes / Claude Code / Cursor / 任何 MCP 客户端）管短期对话，aiduMEI 管长期记忆。
 
 > **当前公开版本 f0.4+。** 包版本 `0.4.0.post1`，2026-10-14。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.4%2B)。
-> 本版修复生产中暴露的整域写入卡死，并让精华线适配 Hermes v0.22 的逐轮会话事件；f0.4 的全部能力保持不变。[升级说明](docs/F04_UPGRADE.md) · [f0.4 验收口径](docs/F04_VALIDATION.md)。
+> 当前代码 **f0.4++**（包版本 `0.4.0.post2`）尚未公开发布：这是 Claude Code 载体适配收口版（内部候选），接通 cc 记忆回路的萃取线并提供 journal 收养、守护与一键体检工具；公开 Release 仍为 f0.4+。[升级说明](docs/F04_UPGRADE.md) · [f0.4 验收口径](docs/F04_VALIDATION.md)。
 
 > **可选决策模型**：客户自行选择供应商、模型、地址、密钥及任务，也可保持关闭。配置一次后自动用于新记忆类型分类与检索证据核验，无需逐次操作。支持 Nace、TypeSafe、Cloudflare Clef/Clef Flash 及同协议服务；不限定 Drex。Reranker 继续负责排序，本地挡不外呼决策模型。[配置与兼容范围](docs/DECISION.md)。
 >
