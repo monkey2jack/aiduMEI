@@ -11,8 +11,9 @@ v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 �
 v0.4.0.post2 (对外 f0.4++ · cc 载体适配：萃取线接通 / journal 收养工具 / 守护与体检 · 2026-10-16)
     用例总数 4215 → 4229（收集数；新增 12 条 cc 适配回归在 tests/test_f04pp_cc_adaptation.py，2 条 cc 身份兜底回归在 tests/test_v19_4_2_identity_env_fallback.py）。
     宿主从 Hermes 迁到 Claude Code（cc）后的第一用户实机自检收口版：不换模型与决策配置、
-    不动 mem0 基座与向量库 schema、不迁记忆数据。f0.4++ 为未公开候选（PUBLIC_RELEASE_VERSION
-    保持 f0.4+，对齐 f0.3+ 先例），推大仓与发 Release 另行授权。新增回归均退回旧代码做过负向对照。
+    不动 mem0 基座与向量库 schema、不迁记忆数据。2026-10-17 经维护者授权推大仓、打公开
+    Tag/Release，f0.4++ 由内部候选翻转为公开正式版（PUBLIC_RELEASE_VERSION 同步升至 f0.4++）。
+    新增回归均退回旧代码做过负向对照。
     1. cc 萃取线接通（根因修复）：写线 integrations/claude-code/aidumem-cc-ingest.sh 沉淀补
        _origin_session_id（cc- 前缀），SessionEnd 适配层 integrations/claude-code/aidumem-cc-distill.sh
        从误调 /session/start 改为复用生产验证的真源
@@ -37,8 +38,8 @@ v0.4.0.post2 (对外 f0.4++ · cc 载体适配：萃取线接通 / journal 收�
     8. cc hook 真源入仓 integrations/claude-code/ 三件（读线/写线/萃取线适配层）：宿主是拷贝部署，
        入仓后仓库即真源，升级重部署可核对（钩子是拷贝不是软链的历史教训）。
     9. 版本三方对齐：SERVICE_VERSION 0.4.0.post2（pyproject.toml / manifest.json 同步），FULL_VERSION
-       f0.4++ 入 LINEAGE，PUBLIC_RELEASE_VERSION 保持 f0.4+；.env 的 AIDUMEI_BUILD_SHA 写本轮精确提交
-       （此前运行的 dff08f3 落后 HEAD 三个 Release，/health 溯源与真实代码脱节）。
+       f0.4++ 入 LINEAGE，PUBLIC_RELEASE_VERSION 升至 f0.4++（公开正式版）；.env 的 AIDUMEI_BUILD_SHA
+       写本轮精确提交（此前运行的 dff08f3 落后 HEAD 三个 Release，/health 溯源与真实代码脱节）。
 
 v0.4.0.post1 (对外 f0.4+ · 精华线归位 / 供应商拒答恢复 / 无人值守会话策略 · 2026-10-14)
     用例总数 4156 → 4215（收集数；通过结果以精确提交的运行回执为准）。
@@ -514,10 +515,10 @@ from __future__ import annotations
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
 SERVICE_VERSION = "0.4.0.post2"
 FULL_VERSION = "f0.4++"
-# f0.4++ 是 cc（Claude Code）载体适配收口版，尚未推大仓、未发公开 Release，
-# 故公开版本仍停在 f0.4+（候选身份，对齐 f0.3+ 未公开先例）。推大仓发 Release
-# 时由维护者拍板是否把 PUBLIC_RELEASE_VERSION 升到 f0.4++。
-PUBLIC_RELEASE_VERSION = "f0.4+"
+# f0.4++ 是 cc（Claude Code）载体适配收口版。2026-10-17 经维护者授权推大仓、
+# 打公开 Tag/Release，版本身份由「内部候选」翻转为「公开正式版」，故
+# PUBLIC_RELEASE_VERSION 同步升到 f0.4++（与 FULL_VERSION 一致）。
+PUBLIC_RELEASE_VERSION = "f0.4++"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
