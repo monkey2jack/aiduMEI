@@ -8,6 +8,38 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.4.0.post2 (对外 f0.4++ · cc 载体适配：萃取线接通 / journal 收养工具 / 守护与体检 · 2026-10-16)
+    用例总数 4215 → 4227（收集数；新增 12 条 cc 适配回归均在 tests/test_f04pp_cc_adaptation.py）。
+    宿主从 Hermes 迁到 Claude Code（cc）后的第一用户实机自检收口版：不换模型与决策配置、
+    不动 mem0 基座与向量库 schema、不迁记忆数据。f0.4++ 为未公开候选（PUBLIC_RELEASE_VERSION
+    保持 f0.4+，对齐 f0.3+ 先例），推大仓与发 Release 另行授权。新增回归均退回旧代码做过负向对照。
+    1. cc 萃取线接通（根因修复）：写线 integrations/claude-code/aidumem-cc-ingest.sh 沉淀补
+       _origin_session_id（cc- 前缀），SessionEnd 适配层 integrations/claude-code/aidumem-cc-distill.sh
+       从误调 /session/start 改为复用生产验证的真源
+       integrations/aidumem-distill.sh（/session/distill 提炼 → /add 落库，继承幂等键/后台化/日志轮转）。
+       此前写线不传 session_id，verbatim_turns 1387 条历史原文 session_id 全空，distill_session
+       永远圈不到来源——cc 会话精华自上线起从未产生。实测端到端精华可召回（session_id=distill:cc-*）。
+    2. Stop 写线注入加固：原 r'''$INPUT''' 拼 heredoc，transcript 含三引号即破语法（静默失败）；
+       改环境变量传递，毒样本（三引号/反斜杠/${}/$()）逐字节完整到达 /add 有回归钉死。
+    3. journal 遗留收养工具 scripts/adopt_mutation_journal.py：宿主迁移后 mutation_journal.sqlite3
+       属遗留库，启动 fail-closed 报 journal_legacy_adoption_required（本侧连续 3 次启动失败实证，
+       曾手工救火不可复现）。工具工程化：活体 API 守卫 + .api-process.lock 互斥 + 只读深度核验 +
+       幂等跳过 + JSON 回执；历史逐字节保留。负向对照：未收养仍拒启动、活体服务拒收养。
+    4. 守护脚本 scripts/aidumei_watchdog.sh：qdrant 容器与 /health 探活（cron 每分钟），拉起后 30s
+       复核、连续 5 跳未愈升级告警、绝不盲杀，处置写 logs/watchdog.log；正常心跳零输出防膨胀。
+    5. 注入读线误熔断修复：integrations/claude-code/aidumem-cc-inject.sh 探活 0.3s→1s（高峰期
+       写向量误超时熔断实证），相关性检索 query 改环境变量传递（原 shell 拼进 -d，prompt 含双引号即破 JSON）。
+    6. 本地嵌入备胎就位：装 fastembed 并部署 BAAI/bge-small-zh-v1.5（512 维，离线加载实测通过），
+       dual_index_local 欠账循环报错消除；scripts/local_embed_model_sha256.json 的 files_metadata.json
+       按 unverified 机制降级（hub 缓存元数据随版本漂移，模型本体 7 项哈希背书、revision 一致）。
+    7. 一键体检 scripts/selfcheck_cc.py：固化本轮全面自检（API/版本对齐/Qdrant/journal/hooks/守护/
+       fastembed/磁盘），--json 机读、红项非 0 退出；改造前红 3 黄 2 如实报出，修复后逐项转绿。
+    8. cc hook 真源入仓 integrations/claude-code/ 三件（读线/写线/萃取线适配层）：宿主是拷贝部署，
+       入仓后仓库即真源，升级重部署可核对（钩子是拷贝不是软链的历史教训）。
+    9. 版本三方对齐：SERVICE_VERSION 0.4.0.post2（pyproject.toml / manifest.json 同步），FULL_VERSION
+       f0.4++ 入 LINEAGE，PUBLIC_RELEASE_VERSION 保持 f0.4+；.env 的 AIDUMEI_BUILD_SHA 写本轮精确提交
+       （此前运行的 dff08f3 落后 HEAD 三个 Release，/health 溯源与真实代码脱节）。
+
 v0.4.0.post1 (对外 f0.4+ · 精华线归位 / 供应商拒答恢复 / 无人值守会话策略 · 2026-10-14)
     用例总数 4156 → 4215（收集数；通过结果以精确提交的运行回执为准）。
     1. 抽取阶段被服务商拒答（451 等）时尚未写入任何一条：日志记 not_applied，
@@ -480,8 +512,11 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.4.0.post1"
-FULL_VERSION = "f0.4+"
+SERVICE_VERSION = "0.4.0.post2"
+FULL_VERSION = "f0.4++"
+# f0.4++ 是 cc（Claude Code）载体适配收口版，尚未推大仓、未发公开 Release，
+# 故公开版本仍停在 f0.4+（候选身份，对齐 f0.3+ 未公开先例）。推大仓发 Release
+# 时由维护者拍板是否把 PUBLIC_RELEASE_VERSION 升到 f0.4++。
 PUBLIC_RELEASE_VERSION = "f0.4+"
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -495,6 +530,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.4.0.post2", "", "f0.4++", "Claude Code carrier adaptation: extraction line wired, journal adoption tool, watchdog · 2026-10-16"),
     ("0.4.0.post1", "", "f0.4+", "Essence cadence for per-turn session-end, provider-refusal recovery, unattended-session policy · 2026-10-14"),
     ("0.4.0", "", "f0.4", "Scoped authorization, durable mutation repair, recovery and evidence budgets · 2026-10-09"),
     ("0.3.0+decision.2", "", "f0.3++", "Three issue closeout · caller scope authorization · WAL integrity lock · 2026-10-06"),

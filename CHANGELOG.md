@@ -1,5 +1,21 @@
 # aiduMEI 版本演进史
 
+## v0.4.0.post2（对外 f0.4++ · 2026-10-16）
+
+用例总数 4215 → 4227（2026-10-16 `pytest --collect-only`；新增 12 条 cc 适配回归均在 tests/test_f04pp_cc_adaptation.py）；这是收集数，通过结果以精确提交的运行回执为准，记录在 Release 说明。
+
+本版是 cc（Claude Code）载体适配收口版：宿主从 Hermes 迁到 Claude Code 后，第一用户实机自检暴露的记忆回路缺口全部根因级修复，不更换模型与决策配置、不动 mem0 基座与向量库 schema、不做记忆数据迁移。新增回归均退回旧代码做过负向对照。f0.4++ 为未公开候选版本（PUBLIC_RELEASE_VERSION 保持 f0.4+，对齐 f0.3+ 先例），推大仓与发 Release 另行授权。
+
+- cc 萃取线接通（根因修复）：写线 integrations/claude-code/aidumem-cc-ingest.sh 沉淀 /add 补 `_origin_session_id`（`cc-` 前缀口径），SessionEnd 适配层 integrations/claude-code/aidumem-cc-distill.sh 从误调 `/session/start`（导致同一会话反复「Session 创建」、提炼从未发生）改为复用久经生产验证的真源 integrations/aidumem-distill.sh（两步走：/session/distill 只提炼 → /add 落库，继承幂等键、后台化与日志轮转）。此前 cc 写线不传 session_id，verbatim_turns 里 1387 条历史原文 session_id 全空，distill_session 永远圈不到来源——cc 会话精华自上线起从未产生（静默失败铁律的活案例）。实测端到端：3 轮原文 → SessionEnd → 提炼 queued job → 精华可召回（metadata `session_id=distill:cc-*`），且写线/萃取线口径由同一条断言钉死逐字一致。
+- Stop 写线注入加固：原实现用 `r'''$INPUT'''` 把 hook payload 拼进 python heredoc，transcript 含三引号即破语法（写线静默失败）。改为环境变量传递；毒样本（三引号/双引号/反斜杠/`${}`/`$()`/大括号）逐字节完整到达 /add 有回归钉死（tests/test_f04pp_cc_adaptation.py）。
+- journal 遗留收养工具 scripts/adopt_mutation_journal.py：宿主间整体迁移 data/ 后 mutation_journal.sqlite3 属「遗留库」，服务启动 fail-closed 报 `journal_legacy_adoption_required`（本侧 2026-10-16 09:39 连续 3 次启动失败实证，当时以一次性手工收养救火——不可复现、无回执、绕过了写入者停止核验）。工具将收养工程化：活体 API 守卫 + `.api-process.lock` 互斥 + 只读深度核验（quick_check/schema/状态集合/防重复收养）+ 幂等跳过 + JSON 回执；历史记录逐字节保留，收养后深度完整性核验 ok。负向对照：未收养遗留库仍拒绝启动、活体服务拒绝收养。
+- 守护脚本 scripts/aidumei_watchdog.sh：qdrant 容器与 API /health 探活（crontab 每分钟一跳），容器不在即 `docker start`、进程不在即拉起（cd 铁律经 start-aidumei.sh），探活超时给足 5s 防预热期误判；拉起后 30s 复核、进程在但连续 5 跳未愈升级显著告警，绝不盲杀；每次处置写 logs/watchdog.log 留痕，正常心跳零输出防日志膨胀。
+- 注入读线误熔断修复：integrations/claude-code/aidumem-cc-inject.sh 探活超时 0.3s → 1s（2026-10-16 19:10 服务高峰期写向量时 0.3s 探活误超时触发熔断实证；1s 仍远小于宿主 hook 8s 上限），相关性检索 query 改环境变量传递（原 shell 字符串拼进 `-d '{"query":"$PROMPT"}'`，prompt 含双引号即破 JSON）。
+- 本地嵌入备胎就位：安装 fastembed（local-embed extra）并部署 BAAI/bge-small-zh-v1.5 模型（512 维 · 91MB · 离线加载与 512 维嵌入实测通过），dual_index_local 欠账重放循环报错消除；scripts/local_embed_model_sha256.json 的 files_metadata.json 条目按清单自带 unverified 机制降级——该文件是 huggingface_hub 自动生成的缓存元数据，随 hub 版本漂移而非模型内容变化（新环境取模期望 6a13b7… 实得 b48cf7…），模型本体 5 blobs + refs/main + trees 共 7 项逐字节 sha256 背书、revision 号一致，钉死元数据哈希会把换了 hub 版本的新部署全部误卡。
+- 一键体检脚本 scripts/selfcheck_cc.py：把本轮全面自检固化（API 健康/版本对齐/Qdrant 各 collection 点数与 restart 策略/journal 证据链/hooks 三线挂载与语义/守护 crontab/fastembed/磁盘与数据规模），`--json` 机读、红项非 0 退出；改造前基线红 3 黄 2 全部如实报出，修复后逐项转绿。
+- cc hook 真源入仓 integrations/claude-code/ 三件（aidumem-cc-inject.sh 读线 / aidumem-cc-ingest.sh 写线 / aidumem-cc-distill.sh 萃取线适配层）：宿主 ~/.claude/hooks/ 是拷贝部署（钩子是拷贝不是软链的历史教训），入仓后「仓库即真源」，升级重部署可用 scripts/check_hook_deployment.py 同款思路核对。
+- 版本三方对齐：SERVICE_VERSION 0.4.0.post2（pyproject.toml / manifest.json 同步），FULL_VERSION f0.4++ 入 LINEAGE 谱系，PUBLIC_RELEASE_VERSION 保持 f0.4+（候选身份）；部署时 .env 的 AIDUMEI_BUILD_SHA 写入本轮精确提交——此前运行的 dff08f3（2026-10-05）落后仓库 HEAD 三个 Release，/health 溯源字段与真实代码脱节。
+
 ## v0.4.0.post1（对外 f0.4+ · 2026-10-14）
 
 用例总数 4156 → 4215（2026-10-14 `pytest --collect-only`；行为 3585、脚本/钩子 484、守卫 146）；这是收集数，通过结果以精确提交的运行回执为准，记录在 Release 说明。
