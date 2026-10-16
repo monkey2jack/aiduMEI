@@ -56,9 +56,19 @@ let currentVersion = '—';
 const ENABLE_UPDATE_CHECK = localStorage.getItem('aidumei.updateCheck') === '1';
 const GITHUB_REPO_API = 'https://api.github.com/repos/monkey2jack/aiduMEI/releases/latest';
 
-function setDeployedVersion(ver) {
-  currentVersion = ver || '—';
-  document.getElementById('foot-ver').textContent = 'v' + currentVersion;
+function setDeployedVersion(ver, fullVer) {
+  currentVersion = fullVer || ver || '—';
+  var display = currentVersion;
+  if (display !== '—' && !display.startsWith('f') && !display.startsWith('v')) {
+    display = 'v' + display;
+  }
+  var el = document.getElementById('foot-ver');
+  if (el) {
+    el.textContent = display;
+    if (fullVer) {
+      el.href = 'https://github.com/monkey2jack/aiduMEI/releases/tag/' + fullVer;
+    }
+  }
 }
 
 // numeric segment compare: -1 / 0 / +1
@@ -331,7 +341,7 @@ async function initDomainSwitcher() {
   API.domainReady = new Promise(function (resolve) { API.resolveDomainReady = resolve; });
   try {
     const h = await API.get('/health');
-    setDeployedVersion(h.version || '');
+    setDeployedVersion(h.version || '', h.full_version || '');
   } catch (e) {
     setDeployedVersion('—');
   }
