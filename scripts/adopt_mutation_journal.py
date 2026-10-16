@@ -55,10 +55,20 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# 凭据单一真源：本服务门禁可能开启，探活也必须带凭据（否则 401 与「服务没起」
+# 无法区分）。复用 ducky.utils.api_auth_headers —— 它自带环境变量 → .env 兜底，
+# 不各自实现凭据读取（scripts/ 的守卫要求）。
+from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
+
 
 def _api_alive(url: str, timeout: float) -> bool:
-    """探活：任何 HTTP 响应都算活着（含 401/503），连接拒绝才算停。"""
-    req = urllib.request.Request(url.rstrip("/") + "/health", method="GET")
+    """探活：任何 HTTP 响应都算活着（含 401/503），连接拒绝才算停。
+
+    带凭据探 /health：门禁开启时不带 token 会得到 401，虽仍属「活着」的证据，
+    但带上凭据能顺带确认服务是真的在服务，而不是只开着端口。
+    """
+    req = urllib.request.Request(url.rstrip("/") + "/health",
+                                 headers=_auth_headers(), method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status < 500 or True  # 有响应=进程在
@@ -86,7 +96,7 @@ def _no_live_api_process(data_dir: Path) -> tuple[bool, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Adopt a validated legacy mutation journal")
-    ap.add_argument("--url", default=os.environ.get("AIDUMEM_URL", "http://127.0.0.1:8767"),
+    ap.add_argument("--url", default=os.environ.get("AIDUMEI_URL", "http://127.0.0.1:8767"),
                     help="API base url for the liveness guard (default: %(default)s)")
     ap.add_argument("--timeout", type=float, default=3.0, help="probe timeout seconds")
     ap.add_argument("--yes", action="store_true",

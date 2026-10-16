@@ -27,6 +27,17 @@ ts() { date '+%F %T'; }
 
 mkdir -p "$INSTALL_DIR/logs"
 
+# ── 凭据（门禁可能开启，探活必须带 token，否则 401 与「服务没起」无法区分）──
+# 与仓内其他调用方同一口径：环境变量优先，安装目录 .env 兜底。
+# token 经 stdin 交给 curl（-H @-），不上命令行 —— ps 对本机所有用户可见。
+_TOKEN="${AIDUMEM_API_TOKEN:-}"
+if [ -z "$_TOKEN" ] && [ -f "$INSTALL_DIR/.env" ]; then
+  _TOKEN=$(grep -E '^AIDUMEM_API_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)
+fi
+AUTH_ARGS=(-H @-)
+_AUTH_HEADER=""
+[ -n "$_TOKEN" ] && _AUTH_HEADER="Authorization: Bearer $_TOKEN"
+
 # ── 1. qdrant 容器守卫 ──────────────────────────────────
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$QDRANT_CONTAINER"; then
   : # 容器活着，不动
@@ -43,7 +54,7 @@ fi
 # ── 2. API 健康守卫 ─────────────────────────────────────
 # 探活给足 5s：服务启动预热期（mem0 单例、qdrant 连接）响应偏慢，
 # 0.3s 探活在高峰期会误判（2026-10-16 19:10 熔断实证）。
-HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$API_URL/health" 2>/dev/null)
+HTTP_CODE=$(printf '%s\n' "$_AUTH_HEADER" | curl -s -o /dev/null -w '%{http_code}' -m 5 "${AUTH_ARGS[@]}" "$API_URL/health" 2>/dev/null)
 
 if [ "$HTTP_CODE" = "200" ]; then
   exit 0  # 健康，安静退场（正常心跳不刷日志，防日志膨胀）
@@ -77,7 +88,7 @@ disown
 # 拉起后复核（最多等 30s，服务冷启动含 mem0 预热）
 for i in $(seq 1 10); do
   sleep 3
-  CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 3 "$API_URL/health" 2>/dev/null)
+  CODE=$(printf '%s\n' "$_AUTH_HEADER" | curl -s -o /dev/null -w '%{http_code}' -m 3 "${AUTH_ARGS[@]}" "$API_URL/health" 2>/dev/null)
   if [ "$CODE" = "200" ]; then
     echo "$(ts) [watchdog] ✅ api_server 已复活（第 $i 次复核，约 $((i*3))s）" >> "$GUARD_LOG"
     exit 0

@@ -79,6 +79,34 @@ if [ -z "$_bid" ]; then
 fi
 _diag() { [ -n "${AIDUMEM_HOOK_QUIET:-}" ] || printf '%s\n' "$*" >&2; }
 
+# ── 自检（--selftest）：验证空环境下凭据+身份都从 .env 兜底读到了 ──────────
+# 必须在读 stdin 之前：下面 RAW_INPUT=$(cat) 会阻塞等 stdin。
+# 写线的身份读错比读线更毒——读错表现为「搜不到」有人会查，写错表现为
+# 「一切正常」记忆安静进了别人的库。故此处用解析出的 _uid 打一次只读 /search，
+# 确认兜底身份非空且凭据在场（/add 写路径由 tests/test_f04pp_cc_adaptation.py 覆盖）。
+if [ "${1:-}" = "--selftest" ]; then
+  AIDUMEI_HOOK_UID="$_uid" AIDUMEI_HOOK_BID="$_bid" \
+  AIDUMEI_HOOK_TOKEN="${AIDUMEM_API_TOKEN:-}" AIDUMEI_HOOK_URL="$AIDUMEM_URL" \
+  python3 -c '
+import json, os, sys, urllib.request
+uid = os.environ["AIDUMEI_HOOK_UID"]; bid = os.environ["AIDUMEI_HOOK_BID"]
+tok = os.environ.get("AIDUMEI_HOOK_TOKEN", ""); url = os.environ["AIDUMEI_HOOK_URL"].rstrip("/")
+body = json.dumps({"query": "aidumem cc ingest selftest", "user_id": uid,
+                   "caller_user_id": uid, "bank_id": bid, "limit": 1}).encode()
+h = {"Content-Type": "application/json"}
+if tok: h["Authorization"] = "Bearer " + tok
+req = urllib.request.Request(url + "/search", data=body, headers=h)
+try:
+    urllib.request.urlopen(req, timeout=10)
+    print("[aidumem-cc-ingest] selftest OK user_id=%s token=%s"
+          % (uid, "present" if tok else "absent"))
+except Exception as e:
+    sys.stderr.write("[aidumem-cc-ingest] selftest FAILED %s\n" % type(e).__name__)
+    sys.exit(3)
+'
+  exit $?
+fi
+
 RAW_INPUT=$(cat)
 
 # ── 摘最后一轮 Q&A + session_id（环境变量传递，零拼接）──────

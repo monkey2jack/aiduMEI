@@ -309,11 +309,14 @@ def _resolve_authz(request: Request) -> tuple[bool, bool]:
 
 def _public_view(full: dict) -> dict:
     rp = (full.get("probes") or {}).get("runtime_paths") or {}
+    # 匿名 /health 是探针，不是侦察报告：顶层键集被
+    # test_first_run_experience.py::test_unauthenticated_health_uses_strict_allowlist
+    # 钉死。品牌版本字段（full_version/display_name）只进鉴权后的 full view，
+    # 不进匿名视图 —— 否则等于悄悄加宽未认证者的侦察面（f0.4++ UI 展示需要
+    # 品牌版本，但那是登录后从 full view 读，不靠匿名面）。
     return {
         "status": full.get("status"),
         "version": full.get("version"),
-        "full_version": full.get("full_version"),
-        "display_name": full.get("display_name"),
         "health_status": full.get("health_status"),
         "degraded": full.get("degraded", []),
         "warming_up": full.get("warming_up", []),

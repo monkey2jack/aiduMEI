@@ -9,7 +9,7 @@ v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 �
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
 v0.4.0.post2 (对外 f0.4++ · cc 载体适配：萃取线接通 / journal 收养工具 / 守护与体检 · 2026-10-16)
-    用例总数 4215 → 4227（收集数；新增 12 条 cc 适配回归均在 tests/test_f04pp_cc_adaptation.py）。
+    用例总数 4215 → 4229（收集数；新增 12 条 cc 适配回归在 tests/test_f04pp_cc_adaptation.py，2 条 cc 身份兜底回归在 tests/test_v19_4_2_identity_env_fallback.py）。
     宿主从 Hermes 迁到 Claude Code（cc）后的第一用户实机自检收口版：不换模型与决策配置、
     不动 mem0 基座与向量库 schema、不迁记忆数据。f0.4++ 为未公开候选（PUBLIC_RELEASE_VERSION
     保持 f0.4+，对齐 f0.3+ 先例），推大仓与发 Release 另行授权。新增回归均退回旧代码做过负向对照。

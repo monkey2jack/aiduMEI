@@ -80,6 +80,33 @@ if [ -z "$_bid" ]; then
     _bid=$(_lookup_env_key AIDUMEI_BANK_ID) || _bid="default"
 fi
 
+# ── 自检（--selftest）：验证空环境下凭据+身份都从 .env 兜底读到了 ──────────
+# 必须在读 stdin 之前：下面 RAW_INPUT=$(cat) 会阻塞等 stdin。
+# 发一个带 user_id 的 /search，让部署方确认「网关/cron 以空环境拉起本 hook 时，
+# 身份不是悄悄退回 default、凭据不是空串」—— v19.4.1 全线 401 的教训。
+if [ "${1:-}" = "--selftest" ]; then
+  AIDUMEI_HOOK_UID="$_uid" AIDUMEI_HOOK_BID="$_bid" \
+  AIDUMEI_HOOK_TOKEN="${AIDUMEM_API_TOKEN:-}" AIDUMEI_HOOK_URL="$AIDUMEM_URL" \
+  python3 -c '
+import json, os, sys, urllib.request
+uid = os.environ["AIDUMEI_HOOK_UID"]; bid = os.environ["AIDUMEI_HOOK_BID"]
+tok = os.environ.get("AIDUMEI_HOOK_TOKEN", ""); url = os.environ["AIDUMEI_HOOK_URL"].rstrip("/")
+body = json.dumps({"query": "aidumem inject selftest", "user_id": uid,
+                   "caller_user_id": uid, "bank_id": bid, "limit": 1}).encode()
+h = {"Content-Type": "application/json"}
+if tok: h["Authorization"] = "Bearer " + tok
+req = urllib.request.Request(url + "/search", data=body, headers=h)
+try:
+    urllib.request.urlopen(req, timeout=10)
+    print("[aidumem-cc-inject] selftest OK user_id=%s token=%s"
+          % (uid, "present" if tok else "absent"))
+except Exception as e:
+    sys.stderr.write("[aidumem-cc-inject] selftest FAILED %s\n" % type(e).__name__)
+    sys.exit(3)
+'
+  exit $?
+fi
+
 # ── 熔断：探活不通直接放行，5s 冷却 ─────────────────────────
 CIRCUIT="${TMPDIR:-/tmp}/.aidumem_cc_circuit"
 NOW=$(date +%s)
@@ -98,11 +125,17 @@ except Exception:
     pass' 2>/dev/null)
 [ -z "$PROMPT" ] && exit 0
 
+# ── 凭据头（token 经 stdin 交给 curl，不上命令行 —— ps 对本机所有用户可见）──
+# 门禁可能开启，探活与读取都带凭据；未配 token 时 header 为空，行为同门禁未开。
+AUTH_ARGS=(-H @-)
+_AUTH_HEADER=""
+[ -n "${AIDUMEM_API_TOKEN:-}" ] && _AUTH_HEADER="Authorization: Bearer ${AIDUMEM_API_TOKEN}"
+
 # 服务探活（1s；仍远小于宿主 hook 超时上限）
-curl -s -m 1 "$AIDUMEM_URL/health" >/dev/null 2>&1 || { touch "$CIRCUIT"; exit 0; }
+printf '%s\n' "$_AUTH_HEADER" | curl -s -m 1 "${AUTH_ARGS[@]}" "$AIDUMEM_URL/health" >/dev/null 2>&1 || { touch "$CIRCUIT"; exit 0; }
 
 # ── 1) CoreMemory 注入 ─────────────────────────────────────
-CORE=$(curl -s -m 2 -G -H "Authorization: Bearer $AIDUMEM_API_TOKEN" \
+CORE=$(printf '%s\n' "$_AUTH_HEADER" | curl -s -m 2 -G "${AUTH_ARGS[@]}" \
   --data-urlencode "user_id=$_uid" --data-urlencode "bank_id=$_bid" \
   "$AIDUMEM_URL/api/core-memory" 2>/dev/null | python3 -c '
 import json, sys
