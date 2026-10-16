@@ -274,9 +274,11 @@ document.addEventListener('keydown', function (e) {
 createHexBackground('#hexBg', 666, BRAND_COLORS, 0.3);
 
 async function initDomainSwitcher() {
-  const sel = document.getElementById('domainSelect');
-  if (!sel) return;
-
+  // f0.4++：域切换下拉已按用户要求从 UI 移除（版本号旁不该有下拉菜单）。
+  // 但本函数**不能删** —— api.js 的数据面请求会 `await API.domainReady`，
+  // 而 domainReady 只在这里 resolve。删了它 = 每个面板请求永久挂起。
+  // 所以保留「拉 /domains 目录 + 激活默认域 + resolve」这条命脉，只去掉
+  // 对已不存在的 <select> DOM 的所有引用。UI 从此固定使用服务端 default_domain。
   try {
     const res = await API.get('/domains');
     const domains = (res && res.domains) || [];
@@ -284,37 +286,20 @@ async function initDomainSwitcher() {
       return d && d.status === 'active' && d.user_id && d.bank_id;
     });
     API.defaultDomain = (res && res.default_domain) || null;
-    sel.innerHTML = '';
-
-    API.domainCatalog.forEach(function (d) {
-      const opt = document.createElement('option');
-      opt.value = API.domainKey(d);
-      let icon = '⚙️';
-      if (d.user_id === 'hermes') icon = '🐎';
-      else if (d.user_id === 'openclaw') icon = '🦞';
-      else if (d.user_id === 'default') icon = '📌';
-      opt.textContent = icon + ' ' + (d.label || API.domainKey(d));
-      sel.appendChild(opt);
-    });
 
     if (!API.domainCatalog.length) {
-      sel.disabled = true;
-      sel.title = '没有可用的活动记忆域 / No active memory domain';
       if (API.resolveDomainReady) API.resolveDomainReady();
       return;
     }
   } catch (e) {
-    // Do not fall back to static demo identities.  A visible disabled state
-    // is safer than showing a selector that points at the wrong tenant.
+    // 域目录加载失败：清空目录（不发带猜测 scope 的请求），但必须 resolve，
+    // 否则数据面请求全卡死。
     API.domainCatalog = [];
-    sel.innerHTML = '<option value="">域目录加载失败 / unavailable</option>';
-    sel.disabled = true;
-    sel.title = '域目录加载失败，未发送域数据请求 / domain catalog unavailable';
     if (API.resolveDomainReady) API.resolveDomainReady();
     return;
   }
 
-  // Restore only a domain that the server still advertises as active.
+  // 选中的域：优先服务端仍标记为 active 的历史选择，否则回落默认域/首个。
   const stored = (function () {
     try { return localStorage.getItem('aidumei_active_domain') || ''; } catch (e) { return ''; }
   })();
@@ -324,15 +309,6 @@ async function initDomainSwitcher() {
   const fallback = serverDefault || API.domainKey(API.domainCatalog[0]);
   const active = API.domainCatalog.some(function (d) { return API.domainKey(d) === stored; }) ? stored : fallback;
   API.setActiveDomain(active);
-  sel.value = active;
-
-  sel.addEventListener('change', function () {
-    API.setActiveDomain(sel.value);
-    // 如果当前有打开的面板，重新渲染当前面板以展示新域数据
-    if (openKey && PANELS[openKey]) {
-      openPanel(openKey);
-    }
-  });
   if (API.resolveDomainReady) API.resolveDomainReady();
 }
 

@@ -269,6 +269,58 @@ def test_distill_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_s
     assert proc.returncode in (0, 6), f"自检异常退出：{proc.returncode} {proc.stderr[:200]}"
 
 
+def test_cc_inject_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
+    """`claude-code/aidumem-cc-inject.sh`（cc UserPromptSubmit）—— **cc 读线**。
+
+    f0.4++ 新增。cc 宿主的 hook 由宿主进程以近乎空的环境拉起，与 Hermes 读线
+    同一缺陷形态：凭据读到了、身份没读到，请求带着合法 token 打到错误租户，
+    HTTP 200、日志干净，没有任何一处报错。--selftest 打 /search 暴露真值。
+    """
+    url, handler = stub_server
+    hook = _INTEGRATIONS / "claude-code" / "aidumem-cc-inject.sh"
+    proc = subprocess.run(
+        ["bash", str(hook), "--selftest"],
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url),
+        capture_output=True, text=True, timeout=40,
+    )
+    assert handler.captured, "cc 读线没有发出任何请求"
+    sent = handler.captured[-1]
+    assert sent["path"].startswith("/search"), f"打错端点：{sent['path']!r}"
+    assert sent["user_id"] == _ENV_USER, (
+        f"cc 读线在空环境下按 {sent['user_id']!r} 检索，而 .env 写的是 {_ENV_USER!r}。"
+        "凭据读到了、身份没读到 —— 请求会带着合法 token 打到错误租户，"
+        "而且 HTTP 200、日志干净，没有任何一处会报错。"
+    )
+    assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
+    assert proc.returncode == 0, f"自检异常退出：{proc.returncode} {proc.stderr[:200]}"
+
+
+def test_cc_ingest_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
+    """`claude-code/aidumem-cc-ingest.sh`（cc Stop）—— **cc 写线**。
+
+    写线读错租户比读线更毒：读错表现为「搜不到」还有人会去查；写错表现为
+    「一切正常」，记忆安静地进了别人的库。--selftest 以解析出的身份打一次
+    只读 /search 验证兜底链（写路径本身由 tests/test_f04pp_cc_adaptation.py
+    的毒样本回归覆盖）。
+    """
+    url, handler = stub_server
+    hook = _INTEGRATIONS / "claude-code" / "aidumem-cc-ingest.sh"
+    proc = subprocess.run(
+        ["bash", str(hook), "--selftest"],
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url),
+        capture_output=True, text=True, timeout=40,
+    )
+    assert handler.captured, "cc 写线没有发出任何请求"
+    sent = handler.captured[-1]
+    assert sent["path"].startswith("/search"), f"打错端点：{sent['path']!r}"
+    assert sent["user_id"] == _ENV_USER, (
+        f"cc 写线在空环境下解析出 {sent['user_id']!r}，而 .env 写的是 {_ENV_USER!r} —— "
+        "真到每轮沉淀时，记忆会安静地写进错误租户。"
+    )
+    assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
+    assert proc.returncode == 0, f"自检异常退出：{proc.returncode} {proc.stderr[:200]}"
+
+
 def test_on_save_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
     """`aidumem-on-save.sh`（编辑器保存钩子）—— 写入侧。
 
@@ -521,6 +573,8 @@ def test_legacy_deployment_behaviour_is_byte_identical(env_file, tmp_path):
 # 已被上面行为用例覆盖的入口（相对 integrations/ 的路径）
 _COVERED = {
     "aidumem-inject.sh",
+    "claude-code/aidumem-cc-inject.sh",   # f0.4++ cc 读线（UserPromptSubmit）
+    "claude-code/aidumem-cc-ingest.sh",   # f0.4++ cc 写线（Stop）
     "aidumem-ingest.sh",                      # v21.2.0 写线（Hermes post_llm_call）
     "cursor-hook/aidumem-on-save.sh",
     "cursor-hook/claude-code-hook.py",

@@ -166,9 +166,10 @@ def _journal_env(data_dir: Path, dead_port: int) -> dict:
     return {
         "AIDUMEM_DATA_DIR": str(data_dir),
         "AIDUMEM_LOG_DIR": str(data_dir.parent / "logs"),
-        # 收养工具读 AIDUMEM_URL（注意：不是 hook 用的 AIDUMEI_URL）——
-        # 指向必然无服务的端口，让活体守卫放行，才能测收养本身。
-        "AIDUMEM_URL": f"http://127.0.0.1:{dead_port}",
+        # 收养工具读 AIDUMEI_URL（f0.4++ 统一新前缀；旧 AIDUMEM_URL 会撞
+        # FROZEN_LEGACY_AIDUMEM 冻结守卫）——指向必然无服务的端口，
+        # 让活体守卫放行，才能测收养本身。
+        "AIDUMEI_URL": f"http://127.0.0.1:{dead_port}",
     }
 
 
@@ -380,10 +381,11 @@ def test_wp4_write_and_distill_session_id_same_literal(tmp_path):
 
 def test_wp7_inject_probe_timeout_not_too_tight():
     """0.3s 探活在服务高峰期写向量时会误超时触发熔断（实机实证）。
-    判据钉「形态」：探活 curl 的 -m 值 ≥ 1。"""
+    判据钉「形态」：探活 /health 的 curl 超时 -m 值 ≥ 1
+    （允许中间夹 AUTH_ARGS 等参数 —— 钉的是超时值，不是整行形状）。"""
     import re
     src = (_CC_HOOKS / "aidumem-cc-inject.sh").read_text(encoding="utf-8")
-    probes = re.findall(r'curl\s+-s\s+-m\s+([\d.]+)\s+"\$AIDUMEM_URL/health"', src)
+    probes = re.findall(r'curl\s+-s\s+-m\s+([\d.]+)[^\n]*?/health', src)
     assert probes, "找不到探活 curl —— 形态变了，守卫失去着力点"
     for p in probes:
         assert float(p) >= 1.0, f"探活超时 {p}s 过紧（历史病灶 0.3s），高峰期会误熔断"
