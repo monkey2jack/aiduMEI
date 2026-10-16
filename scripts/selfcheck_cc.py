@@ -156,11 +156,15 @@ def check_hooks(results: list):
             p = HOOKS_DIR / script
             results.append(("✅" if p.exists() else "❌", f"  脚本存在", str(p)))
     # SessionEnd 萃取语义（WP4 判据）：适配层必须复用 distill 真源，
-    # 且绝不允许回到旧病灶 /session/start（重复建会话、提炼从未发生）
+    # 且绝不允许回到旧病灶 /session/start（重复建会话、提炼从未发生）。
+    # 只看非注释行：头注释记载「曾误调 /session/start」是有意保留的文档，
+    # 判据要防的是代码里实际发起该调用（与 test_wp4 同一口径）。
     se = HOOKS_DIR / "aidumem-cc-distill.sh"
     if se.exists():
         content = se.read_text()
-        if "/session/start" in content:
+        code = "\n".join(ln for ln in content.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        if "session/start" in code:
             results.append(("❌", "SessionEnd 语义", "仍在调 /session/start（重复建会话，WP4 未修）"))
         elif "aidumem-distill.sh" in content:
             results.append(("✅", "SessionEnd 语义", "复用 distill 真源（提炼 → 落库两步走）"))
