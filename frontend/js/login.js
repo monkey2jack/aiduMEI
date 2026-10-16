@@ -21,8 +21,20 @@
 fetch('/api/health', { headers: { Accept: 'application/json' } })
   .then(function (r) { return r.json().catch(function () { return {}; }); })
   .then(function (d) {
-    var ver = d.version || '';
-    if (ver) document.getElementById('foot-ver').textContent = 'v' + ver;
+    var ver = d.full_version || d.version || '';
+    if (ver) {
+      var display = ver;
+      if (!display.startsWith('f') && !display.startsWith('v')) {
+        display = 'v' + display;
+      }
+      var el = document.getElementById('foot-ver');
+      if (el) {
+        el.textContent = display;
+        if (d.full_version) {
+          el.href = 'https://github.com/monkey2jack/aiduMEI/releases/tag/' + d.full_version;
+        }
+      }
+    }
   })
   .catch(function () {});
 
