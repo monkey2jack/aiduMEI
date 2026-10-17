@@ -7,7 +7,7 @@
 # aiduMEI ☤ 爱嘟优忆思——智能体通用智慧引擎
 
 > 让你的 AI Agent **真正记住你**：混合检索 + 认知治理 + 可视化控制台 + 双引擎自动挡，**单机自托管**，MIT。
-> 宿主（Hermes / Claude Code / Cursor / 任何 MCP 客户端）管短期对话，aiduMEI 管长期记忆。
+> 宿主（Hermes / Claude Code / Codex CLI / Cursor / 任何 MCP 客户端）管短期对话，aiduMEI 管长期记忆。
 
 > **当前公开版本 f0.4++。** 包版本 `0.4.0.post2`，2026-10-17。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.4%2B%2B)。
 > 本版是 Claude Code（cc）载体适配收口版：接通 cc 记忆回路的萃取线（会话精华），并提供 journal 遗留收养工具、守护探针与一键体检脚本；不换模型与决策配置、不动基座与向量库 schema、不迁记忆数据。[升级说明](docs/F04_UPGRADE.md) · [f0.4 验收口径](docs/F04_VALIDATION.md)。
@@ -194,6 +194,9 @@ Jev 本轮严格锚点评分净增6题（+10个百分点），检索p50增加345
 > | 写线 | `integrations/aidumem-ingest.sh` | Hermes `post_llm_call` | 每轮**之后**自动把这一轮存回去 |
 > | 写线 | `integrations/cursor-hook/claude-code-stop-hook.py` | Claude Code `Stop` | 同上 |
 > | 萃取线 | `integrations/aidumem-distill.sh` | Hermes `on_session_end` | 会话结束时自动提炼「这一程最值得记住的事」，单独存一条 |
+> | 读线 | `integrations/codex/aidumem-codex-inject.sh` | Codex `UserPromptSubmit` | 同 Hermes 读线（Codex CLI ≥ 0.163 原生 hook，事件模型对齐 cc） |
+> | 写线 | `integrations/codex/aidumem-codex-ingest.sh` | Codex `Stop` | 同上；用户原话走 spool 配对取回，transcript 仅兜底 |
+> | 萃取线 | `integrations/codex/aidumem-codex-distill.sh` | Codex `SessionEnd` | 同上；薄适配层，复用 `aidumem-distill.sh` 真源 |
 >
 > **「自动」是指这三条线接上之后，你不需要再对记忆做任何事**——不用手动保存、
 > 不用提醒模型去记、不用定期整理。三条钩子分别在「说话前」「说话后」「聊完」
@@ -290,6 +293,7 @@ python scripts/e2e_smoke.py --json                                              
 |---|---|
 | Hermes Agent | MemoryProvider 插件：每轮自动记、自动召回（压缩前抢救） |
 | Claude Code | CLI hook / MCP |
+| Codex CLI | 原生 lifecycle hook（≥ 0.163，事件对齐 cc）/ MCP |
 | Cursor | 规则文件（保存时自动入 Raw Drawer） |
 | 任意 MCP 客户端 | MCP Server（41 工具，默认 :8766，stdio/HTTP 双传输） |
 | 其他 | REST API（:8767） |

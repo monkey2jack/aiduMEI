@@ -1,5 +1,17 @@
 # aiduMEI 版本演进史
 
+## [载体接入] Codex CLI 原生 hook 三线接通（2026-10-17）
+
+> **性质：新增 Codex CLI（≥ 0.163）载体接入与文档，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 不动服务端契约 / Qdrant schema / 决策模型 / 记忆数据，改动全部落在 `integrations/codex/`、aiduCAT 宿主配置与文档。Codex CLI 0.163 起原生支持 lifecycle hooks，事件模型与 Claude Code 对齐（`UserPromptSubmit` 读线 / `Stop` 写线 / `SessionEnd` 萃取线），因此三线架构原样复用——无需轮询会话库、无需解析 transcript。
+
+- **三线真源入仓** `integrations/codex/` 三件：`aidumem-codex-inject.sh`（读线，`/api/core-memory` + `/search`）/ `aidumem-codex-ingest.sh`（写线，`/add`）/ `aidumem-codex-distill.sh`（萃取线薄适配层，复用久经生产验证的真源 `integrations/aidumem-distill.sh`，不重写萃取逻辑）。身份解析优先级与 Hermes / cc 版逐行同源，新增环境变量一律走 `AIDUMEI_CODEX_*` 前缀（`AIDUMEI_CODEX_SESSION_PREFIX` / `AIDUMEI_CODEX_SPOOL_DIR`），不碰 `AIDUMEM_*` 冻结集。
+- **写线原话走 spool 配对（不走 transcript）**：Codex 官方明确声明 `transcript_path`「不是稳定接口、格式可能随版本变」，依赖它会重蹈「字段一变形就静默返回空」的覆辙。改为读线暂存 prompt、写线按 `turn_id` 取回（`AIDUMEI_CODEX_SPOOL_DIR`），transcript 仅作 spool 缺失时的尽力兜底，格式完全自控。
+- **SessionEnd 萃取线后台化**：Codex 的 SessionEnd 超时上限 3s 且**始终同步**（`async:true` 无效），萃取真源内部 setsid 后台化、本层 <100ms 返回，提炼在后台完成，不阻塞宿主退出。
+- **hook 信任门槛（最大静默失败源）**：Codex 非 managed hook 必须在 TUI `/hooks` 审阅并 trust 才运行，未信任时**静默不执行**——探针全绿但记忆不进。无头场景（aiduCAT bridge / CI / cron）没有 TUI，须由宿主在 `codex exec` 传 `--dangerously-bypass-hook-trust`；实测该开关写进 `config.toml` **不生效**，只有 CLI flag 有效（0.163.0）。
+- **aiduCAT 宿主侧适配**：`profile-schema.ts` 新增 `codex.bypassHookTrust`，`argv.ts` 据此自动追加 `--dangerously-bypass-hook-trust`，`adapter.ts` / `agent-runtime.ts` 贯通，`codex-argv.test.ts` 补 2 条回归；tsc 干净、单测通过、`pnpm build` 完成。profile 里设 `codex.bypassHookTrust=true` 即可，无需手改 argv。
+- **本机接线与端到端验收**：`/data/home/.codex/hooks.json` 挂载三线，并修复此前损坏的 `[mcp_servers.aidumei]`（改用 venv python + `mcp_server.py` + env token/user）。实测记忆沉淀带 `metadata._origin_session_id=codex-*`，萃取线 distill 日志 `source` 计数命中（session-id 逐字一致），仅因 turn 数未达阈值而跳过——符合预期，非失败。
+- **文档**：新增 `integrations/codex/README.md`（安装 / 与 cc 版差异 / 验收 / 回滚），`integrations/INTEGRATION_GUIDE.md` 补「接入 Codex CLI」段与 Codex 回滚块，`README.md` 接入面表与三线对照表补 Codex CLI 行。
+
 ## v0.4.0.post2（对外 f0.4++ · 2026-10-16）
 
 用例总数 4215 → 4229（2026-10-16 `pytest --collect-only`；新增 12 条 cc 适配回归在 tests/test_f04pp_cc_adaptation.py，另 2 条 cc 身份兜底回归在 tests/test_v19_4_2_identity_env_fallback.py）；这是收集数，通过结果以精确提交的运行回执为准，记录在 Release 说明。
