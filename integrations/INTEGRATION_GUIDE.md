@@ -318,6 +318,67 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST "$URL/search" \
 
 ---
 
+## 接入 Codex CLI
+
+> 位置：`<仓库根>/integrations/codex/`。Codex CLI（≥ 0.163）原生支持 lifecycle hooks，事件模型与 Claude Code 对齐：`UserPromptSubmit`（读线）/ `Stop`（写线）/ `SessionEnd`（萃取线）。因此三线架构可以**原样复用**——无需轮询数据库、无需解析 transcript。详细安装与和 cc 版的逐点差异见 [`integrations/codex/README.md`](codex/README.md)，本节只列接线要点。
+
+### 三线对照（Codex 事件 ↔ 脚本 ↔ 端点）
+
+| 职责 | Codex hook 事件 | 真源脚本 | aiduMEI 端点 |
+|---|---|---|---|
+| 读线（注入） | `UserPromptSubmit` | `aidumem-codex-inject.sh` | `/api/core-memory` + `/search` |
+| 写线（沉淀） | `Stop` | `aidumem-codex-ingest.sh` | `/add` |
+| 萃取线（会话精华） | `SessionEnd` | `aidumem-codex-distill.sh` | `/session/distill` → `/add` |
+
+萃取线是薄适配层，复用 `integrations/aidumem-distill.sh` 生产真源，不重写逻辑。写线的用户原话来源是 **spool 配对**（读线暂存 prompt，写线按 `turn_id` 取回），transcript 仅兜底——因为 Codex 官方声明 `transcript_path` 格式不是稳定接口，依赖它会重蹈「字段一变形就静默返回空」的覆辙。
+
+### 安装（3 步）
+
+```bash
+# 1) MCP Server（41 个记忆工具）：把 config.toml.snippet 的 [mcp_servers.aidumei] 段合并进 ~/.codex/config.toml
+#    必须用 venv 里的 python（系统 python3 缺 httpx/mcp 依赖）
+# 2) 三线钩子：复制 hooks.json.snippet 为 ~/.codex/hooks.json，替换命令里的安装路径
+cp integrations/codex/hooks.json.snippet ~/.codex/hooks.json
+# 3) 信任钩子：交互式 → TUI 里 /hooks 审阅并 trust；无头（如 aiduCAT bridge）→
+#    宿主在 codex exec 传 --dangerously-bypass-hook-trust（aiduCAT 在 profile 设 codex.bypassHookTrust=true 即可）
+```
+
+> ⚠️ **不要**在同一配置层同时放 `hooks.json` 和 inline `[hooks]`——Codex 会合并两者并在启动时告警；一层只用一种表示。
+> ⚠️ `dangerously_bypass_hook_trust` 写在 `config.toml` 里**不生效**，只有 CLI flag 有效（实测 0.163.0）。
+
+### 环境变量（与 Hermes / cc 三线同一套键）
+
+身份解析优先级与 cc 版逐行同源：环境变量 → `.env` 链（`AIDUMEM_ENV_FILE` / `AIDUMEM_HOME/.env` / `~/.aidumem/.env` / 仓库 `.env`）→ `default`，真源不硬编码任何租户名或部署路径。Codex 特有键：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AIDUMEI_CODEX_SESSION_PREFIX` | `codex-` | 会话 id 前缀；**写线与萃取线必须同值**，否则萃取圈不到来源 |
+| `AIDUMEI_CODEX_SPOOL_DIR` | `${TMPDIR:-/tmp}/aidumem-codex-spool` | 读写线 turn 配对目录 |
+| `AIDUMEM_LOG_DIR` | `~/.aidumem/logs` | 写线失败日志目录 |
+
+其余 `AIDUMEM_URL` / `AIDUMEM_USER_ID` / `AIDUMEI_BANK_ID` / `AIDUMEM_API_TOKEN` / `AIDUMEM_ENV_FILE` 与 cc 版完全一致。
+
+### 验收（装完必做）
+
+```bash
+# 1) 三线真源语法与自检
+bash -n integrations/codex/aidumem-codex-*.sh
+AIDUMEM_USER_ID=<你的uid> bash integrations/codex/aidumem-codex-inject.sh --selftest
+AIDUMEM_USER_ID=<你的uid> bash integrations/codex/aidumem-codex-ingest.sh --selftest
+
+# 2) 端到端：真聊几轮后，确认写线带上了 session_id、萃取线出了精华
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "$URL/search" \
+  -d '{"query":"<本程关键词>","caller_user_id":"<uid>"}' | grep -E 'distill:|codex-ingest'
+
+# 3) 健康探针
+curl -s -H "Authorization: Bearer $TOKEN" "$URL/health" | python3 -m json.tool | grep -E 'ingest_liveness_ok|distill_liveness_ok'
+```
+
+> **萃取线接通的命根子**与 cc 版同：写线沉淀时 `metadata._origin_session_id` 必须与萃取线圈定用的 `session_id` **逐字一致**（都带 `codex-` 前缀）。差一个字符，精华永远不产生——静默失败。
+> **Codex 特有的最大坑**：hook 未信任时**静默不运行**，探针全绿但记忆不进。装完务必跑 `--selftest` + 端到端验收。
+
+---
+
 ## 🆘 回滚
 
 插件方案：
@@ -342,7 +403,14 @@ rm ~/.claude/hooks/aidumem-cc-{inject,ingest,distill}.sh
 # 手动删掉 ~/.claude/settings.json 里 hooks 下的 UserPromptSubmit / Stop / SessionEnd 三段
 ```
 
-三种方案都不动 aiduMEI 的数据，回滚只是断开接入。
+Codex CLI 方案：
+
+```bash
+rm ~/.codex/hooks.json
+# 手动删掉 ~/.codex/config.toml 里的 [mcp_servers.aidumei] 段
+```
+
+四种方案都不动 aiduMEI 的数据，回滚只是断开接入。
 
 ---
 
@@ -376,3 +444,6 @@ aiduMEI shell 钩子同时在册时报黄（`double_install`，退出码 2），
 
 **Q: 不接入也能用吗？**
 可以，直接 `curl` 打 `/search`、`/add`，自己拼进 prompt。
+
+**Q: Codex 钩子装完毫无反应、也不报错？**
+八成是没信任。Codex 的非 managed hook 必须在 TUI 里 `/hooks` 审阅并 trust 才会运行；无头场景（如 aiduCAT bridge）要由宿主在 `codex exec` 传 `--dangerously-bypass-hook-trust`，aiduCAT 用户在 profile 里设 `codex.bypassHookTrust=true` 即可自动加上。注意这个开关写进 `config.toml` 不生效，只有 CLI flag 有效（实测 0.163.0）。装完务必跑 `--selftest` + 端到端验收，别被「探针全绿」骗了。
