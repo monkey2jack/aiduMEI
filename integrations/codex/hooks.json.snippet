@@ -1,0 +1,40 @@
+{
+  "_comment": "aiduMEI × Codex CLI 三线钩子。复制到 ~/.codex/hooks.json（用户级）或 <project>/.codex/hooks.json（项目级，需项目已 trust）。命令路径请替换为你的 aiduMEI 安装目录。非 managed hook 首次使用需在 Codex TUI 里 /hooks 审阅并信任；无头自动化（如 aiduCAT bridge）改为在 profile 配置 codex.bypassHookTrust=true。",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /path/to/aiduMEI/integrations/codex/aidumem-codex-inject.sh",
+            "timeout": 6,
+            "statusMessage": "aiduMEI 记忆召回"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /path/to/aiduMEI/integrations/codex/aidumem-codex-ingest.sh",
+            "timeout": 5,
+            "statusMessage": "aiduMEI 本轮沉淀"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /path/to/aiduMEI/integrations/codex/aidumem-codex-distill.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

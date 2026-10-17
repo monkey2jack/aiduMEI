@@ -1,0 +1,38 @@
+# aiduMEI × Codex CLI — config.toml 片段
+# 合并进 ~/.codex/config.toml（或项目级 .codex/config.toml）。
+# 路径与 token 请替换为你自己的；token 建议走 .env / 环境变量，不要硬编码。
+
+# ── MCP Server：41 个记忆工具（mem_search / mem_add / facts_* / session_* …）──
+# 必须用 aiduMEI venv 里的 python（系统 python3 缺 httpx/mcp 依赖）。
+[mcp_servers.aidumei]
+command = "/path/to/aiduMEI/venv/bin/python"
+args = ["/path/to/aiduMEI/mcp_server.py"]
+env = { AIDUMEM_CONFIG_FILE = "/path/to/aiduMEI/mem0_config_local.json", AIDUMEM_API_TOKEN = "<your-token>", AIDUMEM_USER_ID = "<your-user-id>" }
+
+# ── 三线钩子（读线/写线/萃取线）──
+# 推荐用独立的 hooks.json（见 hooks.json.snippet），避免与 inline [hooks]
+# 同层并存触发 Codex 启动告警。若坚持 inline，取消下面注释并替换路径：
+#
+# [[hooks.UserPromptSubmit]]
+# [[hooks.UserPromptSubmit.hooks]]
+# type = "command"
+# command = "bash /path/to/aiduMEI/integrations/codex/aidumem-codex-inject.sh"
+# timeout = 6
+#
+# [[hooks.Stop]]
+# [[hooks.Stop.hooks]]
+# type = "command"
+# command = "bash /path/to/aiduMEI/integrations/codex/aidumem-codex-ingest.sh"
+# timeout = 5
+#
+# [[hooks.SessionEnd]]
+# [[hooks.SessionEnd.hooks]]
+# type = "command"
+# command = "bash /path/to/aiduMEI/integrations/codex/aidumem-codex-distill.sh"
+# timeout = 3
+
+# ── 无头自动化（aiduCAT bridge 等）──
+# Codex 非 managed hook 默认需 TUI /hooks 审阅信任后才运行。
+# 无头场景没有 TUI，须由宿主在 codex exec 传 --dangerously-bypass-hook-trust。
+# aiduCAT 用户：在 profile 配置里设 codex.bypassHookTrust = true 即可，
+# 无需手改 argv（见 aiduCAT src/agent/codex/argv.ts）。
