@@ -154,7 +154,7 @@ def check_hooks(results: list):
         results.append(("✅" if hit else "❌", f"hook {event}", script if hit else f"未挂载（期望 {script}）"))
         if hit:
             p = HOOKS_DIR / script
-            results.append(("✅" if p.exists() else "❌", f"  脚本存在", str(p)))
+            results.append(("✅" if p.exists() else "❌", "  脚本存在", str(p)))
     # SessionEnd 萃取语义（WP4 判据）：适配层必须复用 distill 真源，
     # 且绝不允许回到旧病灶 /session/start（重复建会话、提炼从未发生）。
     # 只看非注释行：头注释记载「曾误调 /session/start」是有意保留的文档，

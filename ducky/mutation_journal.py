@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from functools import wraps
-import fcntl
 import hashlib
 import inspect
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -22,6 +22,12 @@ import threading
 import time
 import uuid
 import weakref
+
+try:  # POSIX cross-process file lock; issue #31: a bare import here used to
+    # make `import ducky` crash on Windows before anything could even run.
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platform
+    fcntl = None
 
 from ducky import utils
 from ducky.bank_contract import make_scope
@@ -31,6 +37,52 @@ _STATES = ('queued', 'started', 'acknowledged', 'repair_required', 'not_applied'
 _registry_lock = threading.Lock()
 _scope_locks = weakref.WeakValueDictionary()
 _held = threading.local()
+
+# f0.5：锁降级等告警经 root logger 带显式前缀输出——**不注册独立
+# 的 aiduMEM 点号名**。生产日志采集按 aiduMEM.* 前缀过滤，而该前缀的
+# logger 注册处数是机器契约（tests/test_v20_brand_policy.py 钉死），
+# 新增名会让告警静默消失在采集管道之外。此文件当前零常驻 logger。
+
+_process_locks: dict = {}
+_process_locks_guard = threading.Lock()
+
+
+def _warn_degraded_lock(reason: str) -> None:
+    """锁降级一次性声明（非 POSIX 平台 import 后首用锁时打）。
+
+    经 root logger 输出（不占 aiduMEM.* 采集名——该前缀的 logger 注册
+    处数是机器契约，钉在 tests/test_v20_brand_policy.py；生产采集按
+    aiduMEM.* 前缀过滤，本模块的降级告警走 root + 显式前缀，运维在
+    journal/stderr 直接可见）。"""
+    logging.warning("[aiduMEI:mutation_journal] %s —— 文件锁退化为进程内锁，"
+                    "跨进程并发写不受保护（README Windows 边界）", reason)
+
+
+def _acquire_process_lock(identity: str, fd: int):
+    """Cross-process exclusion; degrades to a no-op on non-POSIX platforms.
+
+    On Windows (no fcntl) the file descriptor is still opened so callers keep
+    identical filesystem side effects, but mutual exclusion collapses to the
+    per-scope thread RLock above. Multi-process writers on the same data
+    directory are NOT protected there — matches README: POSIX is the full
+    test platform; Windows is import-and-run only.
+    """
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    with _process_locks_guard:
+        if identity in _process_locks:
+            raise RuntimeError('process lock already held for this journal scope')
+        _process_locks[identity] = True
+        _warn_degraded_lock(f'first degraded acquisition for {identity}')
+
+
+def _release_process_lock(identity: str, fd: int):
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    with _process_locks_guard:
+        _process_locks.pop(identity, None)
 
 
 class MutationUncertain(RuntimeError):
@@ -181,11 +233,13 @@ _establishment_lock = threading.RLock()
 def _initialization_guard(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with _establishment_lock:
+        identity = 'init:' + str(path.parent)
         fd = os.open(path.parent / '.mutation-journal-init.lock', os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _acquire_process_lock(identity, fd)
             yield
         finally:
+            _release_process_lock(identity, fd)
             os.close(fd)
 
 
@@ -284,13 +338,13 @@ def scope_lock(user_id: str, bank_id: str):
         path = directory / (hashlib.sha256(identity.encode()).hexdigest() + '.lock')
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _acquire_process_lock(identity, fd)
             held[identity] = fd
             try:
                 yield
             finally:
                 held.pop(identity, None)
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _release_process_lock(identity, fd)
         finally:
             os.close(fd)
 

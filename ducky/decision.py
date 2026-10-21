@@ -15,7 +15,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-MODEL = "drex-v1.5"
+MODEL = "drex-max"  # f0.3++ 实测推荐位（生产 2026-10 运行态配置收编进树，bundle+reset 部署不再冲掉）
 DEFAULTS = {
     "nace": (MODEL, "https://drex.nace.ai/v1"),
     "typesafe": ("jev-1.13.0", "https://api.typesafe.ai/v1"),

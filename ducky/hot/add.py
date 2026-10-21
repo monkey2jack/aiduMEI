@@ -228,12 +228,17 @@ def _direct_write(mem, uid, msgs, meta, infer_effective, *, bank_id, note=None):
         # v22.1（建议一）：is_bot=True 的记忆默认降权——
         # 多 bot 协作或群聊场景，转述内容可能误记为「用户的原始偏好」，
         # 身份认知倒挂。bot 记忆标 fuzzy（而非 reasoned），检索排序靠后。
+        # f0.5（fork 审计 F05）：身份注记的落库点在 layer1._index_after_add
+        # （真实缝位——layer1 吞掉 mem0 results 后路由层拿不到 ref；CLI 实测
+        # 2026-10-21 证明本函数的同名 stamp 是死缝位，生产零日志）。这里只
+        # 保留 is_bot 降权判定（v22.1 语义），author_unknown 注记见 layer1。
         _is_bot = bool((meta or {}).get("_origin_is_bot"))
         _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective or is_session_summary(meta) else "user_provided")
+        _epi_source = str((meta or {}).get("_origin_agent") or "add")
         stamp_memory_refs([r for r in _refs if r],
                           _mode,
                           user_id=uid, bank_id=bank_id,
-                          source=str((meta or {}).get("_origin_agent") or "add"),
+                          source=_epi_source,
                           origin=_origin_snapshot)
         # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。
         # 无 session_id（cron / 后台作业）一律不记 —— 轨迹统计只认
