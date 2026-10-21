@@ -1,5 +1,20 @@
 # aiduMEI 版本演进史
 
+## v0.5.0 (对外 f0.5 · 外部实锤四修 · 2026-10-21)
+
+> **用例总数 4229 → 4245**（本机 `--collect-only` 收集实测；通过结果以精确提交的运行回执为准）。
+
+> **四项全部来自外部实测报告与用户 issue，逐条独立坐实后修复，零假指控。**
+
+- **Windows import 守卫（issue #31 + Z指导复测 6.1）**：`ducky/mutation_journal.py` 顶层裸 `import fcntl` 是全仓唯一漏配点——`import ducky` 在 Windows 上直接 ModuleNotFoundError，连 Fork 审计方都因它跑不了全量测试。改为 try/except ImportError 降级（与 llm_client.py 同款范式），文件锁降级为进程内锁并 WARNING 声明「Windows 不跨进程」。新增 AST 守卫 `test_f05_posix_import_guard.py` 盲扫顶层裸 POSIX import（负向对照 6 形态齐备）。
+- **载体身份线接通（fork 审计 F05）**：插件接了 `turn_author` 但宿主不传时，空串曾冒充「已证实是真人」。现在插件显式申报 `_origin_author_status`（known/unknown/empty）；服务端对 unknown 写入在 sidecar 落 `author_unknown` 注记 + WARNING 可观测——**不擅自降权**（单用户桌面场景宿主一直不传，错降权会误伤全部存量写入；诚实标注 ≠ 猜测惩罚）。
+- **降级表达复位（fork 审计 F06）**：服务端三态裁决（found/not_found/degraded）在 Hermes 插件被吞——`recall_verdict=degraded`（灯坏了）被翻译成 "No relevant memories found."（馆里没这本书）。现在 `_search` 工具响应与 prefetch 上下文都把降级连同组件明细如实透出（负向对照：真 not_found 仍是原文案）。
+- **欠账重放指数退避（Z指导复测 6.2）**：一条坏账曾在 2 秒内被重试 200 次（约 100 次/秒），无退避无熔断。`pending_embeddings` 补 `replay_attempts`/`next_retry_at` 两列（additive，守卫总账已登记），失败 1s→2s→4s…封顶 60s；超 8 次隔离待人工裁决（`next_retry_at=9999-12-31`，复用修复语义不新增状态机）；/health 补 `quarantined` 与 `not_due_backoff` 两个可见面。`AIDUMEI_REPLAY_BACKOFF=0` 可关（演练场景逐轮必试），默认开。
+- **取模脚本重跑核对（复测 6.3）**：本仓 `scripts/fetch_local_embed_model.py` 清单驱动版（v20.4 P1-9）结构与 fork 的 trees 钉死不同源，lab 实跑核对见 Release 回执。
+- **版本对齐**：包版本 `0.5.0`（`pyproject.toml` / `manifest.json` 同步），对外 f0.5 入 `ducky/version.py` LINEAGE；2026-10-21 经维护者授权推大仓，`PUBLIC_RELEASE_VERSION` 同步翻牌升至 f0.5（公开正式版）。本轮涉及实现文件：`ducky/mutation_journal.py` / `ducky/dual_index.py` / `ducky/hot/add.py` / `integrations/hermes-plugin/aidumem/__init__.py`；新增守卫 `tests/test_f05_posix_import_guard.py` 与回归 `tests/test_f05_carrier_and_backoff.py`；既有守卫账面同步：`tests/test_v20_1_1_source_guards.py`（f-string/迁移总账登记退避两列）、`tests/test_v20_2_4_audit_remediation.py`（mkdtemp 基线 62→63）。
+- **版本**：包 `0.5.0`（PEP 440），对外 f0.5；Tag/Release 待停点授权。
+
+
 ## [载体接入] Codex CLI 原生 hook 三线接通（2026-10-17）
 
 > **性质：新增 Codex CLI（≥ 0.163）载体接入与文档，不改 aiduMEI 自身版本号、不打 tag、不发 release。** 不动服务端契约 / Qdrant schema / 决策模型 / 记忆数据，改动全部落在 `integrations/codex/`、aiduCAT 宿主配置与文档。Codex CLI 0.163 起原生支持 lifecycle hooks，事件模型与 Claude Code 对齐（`UserPromptSubmit` 读线 / `Stop` 写线 / `SessionEnd` 萃取线），因此三线架构原样复用——无需轮询会话库、无需解析 transcript。

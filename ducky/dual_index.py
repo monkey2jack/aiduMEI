@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -304,6 +305,21 @@ def ensure_pending_schema() -> None:
                 replayed_at TIMESTAMP
             )
         """)
+        # f0.5（Z指导复测 6.2）：欠账重放退避两列（additive）。
+        # 一条 repair_required 坏账曾在 2 秒内被重试 200 次（约100次/秒）
+        # ——无退避无熔断，后台空转 + degraded 常驻告警疲劳。
+        # replay_attempts：累计失败次数；next_retry_at：早于它的重放轮
+        # 直接跳过该行（指数 1s/2s/4s…封顶 60s）。超阈值（默认 8 次）
+        # 移入隔离（replayed_at 保持 NULL、next_retry_at 置 '9999'，
+        # 等人工裁决——复用既有 repair 语义，不新增状态机）。
+        for col, ddl in (
+            ("replay_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("next_retry_at", "TEXT DEFAULT ''"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE pending_embeddings ADD COLUMN {col} {ddl};")
+            except Exception as e:
+                logger.debug(f"字段 pending_embeddings.{col} 已存在或跳过: {e}")
         conn.commit()
     finally:
         conn.close()
@@ -390,7 +406,9 @@ def pending_verdict(counts: Dict[str, int]) -> Dict[str, Any]:
 
 
 def pending_counts() -> Dict[str, int]:
-    """/health 欠账水位。"""
+    """/health 欠账水位。f0.5 补退避可见性：not_due（在退避等待）与
+    quarantined（超限隔离待人工裁决）单列，让「欠账高但不再空转」
+    在健康面一眼可读——遥测必须真有人读。"""
     try:
         from ducky.utils import get_facts_conn
         ensure_pending_schema()
@@ -403,6 +421,22 @@ def pending_counts() -> Dict[str, int]:
             out = {"cloud": 0, "local": 0}
             for side, n in rows:
                 out[str(side)] = int(n)
+            # f0.5（6.2）：隔离行 + 退避中行（replayed_at IS NULL 但
+            # next_retry_at 未到期）。隔离 stamp 是固定 '9999-' 前缀。
+            try:
+                q = conn.execute(
+                    "SELECT COUNT(*) FROM pending_embeddings "
+                    "WHERE replayed_at IS NULL AND next_retry_at>=? AND replay_attempts>=?",
+                    (_REPLAY_QUARANTINE_STAMP[:4], REPLAY_QUARANTINE_AT)).fetchone()
+                out["quarantined"] = int(q[0]) if q else 0
+                nd = conn.execute(
+                    "SELECT COUNT(*) FROM pending_embeddings "
+                    "WHERE replayed_at IS NULL AND next_retry_at IS NOT NULL "
+                    "AND next_retry_at!='' AND next_retry_at>CURRENT_TIMESTAMP "
+                    "AND (next_retry_at<'9999-12-31')").fetchone()
+                out["not_due_backoff"] = int(nd[0]) if nd else 0
+            except Exception:
+                pass  # 新列未就绪的旧库：水位照报，退避面缺席不过是诚实的
             return out
         finally:
             conn.close()
@@ -499,6 +533,74 @@ def _revoke_replayed_add(mem, added) -> int:
     return revoked
 
 
+# ── f0.5（Z指导复测 6.2）：欠账重放指数退避 ──────────────────────────────
+# 坏账一行曾在 2 秒内重试 200 次（约100次/秒）——无退避无熔断。现在：
+# 失败 N 次后延后 min(2^(N-1), 60) 秒；超过 _REPLAY_QUARANTINE_AT 次置
+# next_retry_at='9999-12-31T00:00:00'（隔离，等人工裁决），日志降为一次性。
+# AIDUMEI_REPLAY_BACKOFF=0 可整体关闭（演练/受控测试场景需要逐轮必试；
+# 生产默认开）。关闭时失败照旧裸放回下轮，即 v20.2 R4 原语义。
+REPLAY_BACKOFF_BASE_SEC = 1.0
+REPLAY_BACKOFF_CAP_SEC = 60.0
+REPLAY_QUARANTINE_AT = 8
+_REPLAY_QUARANTINE_STAMP = "9999-12-31T00:00:00"
+
+
+def _backoff_enabled() -> bool:
+    raw = (os.environ.get("AIDUMEI_REPLAY_BACKOFF") or "").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+def _compute_backoff_seconds(attempts: int) -> float:
+    """attempts=已失败次数（本次失败后记 1 起）；指数 1s/2s/4s…封顶 60s。"""
+    try:
+        n = max(1, int(attempts))
+    except (TypeError, ValueError):
+        n = 1
+    return min(REPLAY_BACKOFF_BASE_SEC * (2 ** (n - 1)), REPLAY_BACKOFF_CAP_SEC)
+
+
+def _record_replay_failure(pid: int, exc: Exception) -> str:
+    """失败后记账：甄别数、算退避、写 next_retry_at；到阈值转隔离。
+
+    返回状态串给日志/健康面：'backoff:<sec>' / 'quarantined' /
+    'disabled'（AIDUMEI_REPLAY_BACKOFF=0，v20.2 R4 原语义）。
+    数据库不可写等记账失败只告警，不掩盖原始异常。
+    """
+    if not _backoff_enabled():
+        return "disabled"
+    from datetime import datetime, timedelta, timezone
+    from ducky.utils import get_facts_conn  # 函数内 import：与文件内其余 DB 触点同纪律
+    quarantine = False
+    backoff = REPLAY_BACKOFF_CAP_SEC
+    try:
+        conn = get_facts_conn()
+        try:
+            row = conn.execute(
+                "SELECT replay_attempts FROM pending_embeddings WHERE pending_id=?",
+                (pid,)).fetchone()
+            attempts = int(row[0] if row and row[0] is not None else 0) + 1
+            quarantine = attempts >= REPLAY_QUARANTINE_AT
+            backoff = _compute_backoff_seconds(attempts)
+            next_at = (_REPLAY_QUARANTINE_STAMP if quarantine else
+                       (datetime.now(timezone.utc) +
+                        timedelta(seconds=backoff)).isoformat(timespec="seconds"))
+            conn.execute(
+                "UPDATE pending_embeddings SET replay_attempts=?, next_retry_at=? "
+                "WHERE pending_id=?", (attempts, next_at, pid))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as book_exc:
+        logger.warning("pending_embeddings 退避记账失败 pending_id=%s: %s", pid, book_exc)
+        return "bookkeeping-failed"
+    if quarantine:
+        logger.warning("欠账 pending_id=%s 连续失败 %d 次，已隔离待人工裁决：%s",
+                       pid, REPLAY_QUARANTINE_AT, exc)
+        return "quarantined"
+    logger.info("欠账 pending_id=%s 重放失败（退避 %.0fs 后再试）: %s", pid, backoff, exc)
+    return f"backoff:{backoff:.0f}"
+
+
 def replay_pending(*, apply: bool = True, limit: int = 200,
                    source: str = "manual") -> Dict[str, Any]:
     """欠账重放（升挡后/启动对账调用）。cloud 侧重放整笔 add（完整蒸馏），
@@ -507,13 +609,18 @@ def replay_pending(*, apply: bool = True, limit: int = 200,
     ensure_pending_schema()
     conn = get_facts_conn()
     try:
+        # f0.5（6.2 退避）：next_retry_at 晚于现在的行本轮跳过。
+        # '9999-12-31' 是隔离标记（超过重试上限待人工裁决），永远 not_due。
         rows = conn.execute(
             "SELECT pending_id, side, ref_id, payload, user_id, bank_id "
             "FROM pending_embeddings WHERE replayed_at IS NULL "
+            "AND (next_retry_at IS NULL OR next_retry_at='' "
+            "     OR next_retry_at<=CURRENT_TIMESTAMP) "
             "ORDER BY pending_id LIMIT ?", (limit,)).fetchall()
     finally:
         conn.close()
     report = {"scanned": len(rows), "replayed": 0, "failed": 0,
+              "quarantined": 0, "not_due": 0,
               "skipped_claimed_or_deleted": 0, "revoked_after_scope_delete": 0,
               "apply": apply}
     if not apply:
@@ -590,8 +697,12 @@ def replay_pending(*, apply: bool = True, limit: int = 200,
             report["replayed"] += 1
         except Exception as exc:
             report["failed"] += 1
-            logger.warning("欠账重放失败 #%s（留账下轮）: %s", pid, exc)
-            try:  # 失败回滚抢占标记，下轮再来
+            # f0.5（6.2）：失败不再裸放回下轮（曾 100 次/秒空转），
+            # 按失败次数指数退避；到阈值隔离待人工裁决。
+            disposition = _record_replay_failure(pid, exc)
+            if disposition == "quarantined":
+                report["quarantined"] += 1
+            try:  # 失败回滚抢占标记，退避到期后再来
                 rconn = get_facts_conn()
                 try:
                     rconn.execute(

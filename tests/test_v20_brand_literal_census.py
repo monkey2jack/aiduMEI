@@ -88,6 +88,8 @@ _BRAND_DISCOURSE_FILES = {
 
 # ── 按（文件, 精确字面量）豁免：一次性值，逐条写清为什么必须留旧名 ──────
 _ALLOWED_LITERALS = {
+    ("tests/test_f05_carrier_and_backoff.py", "AiduMemProvider"):
+        "f0.5：hermes 插件宿主可见类名（机器认的名字），载体身份线测试按类名取模块属性——属机器键不是人读文案",
     ("tests/test_f04_recall_windows.py", "[aiduMEM Recall]"):
         "旧标题负向断言：确认实际宿主注入输出不再含此字面量；不是产品输出",
     ("ducky/federation/schema.py", "aiduMEM local primary agent"):

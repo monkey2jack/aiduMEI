@@ -437,6 +437,52 @@ def test_explicit_env_var_still_outranks_env_file(env_file, tmp_path):
     )
 
 
+def test_codex_inject_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
+    """`codex/aidumem-codex-inject.sh`（Codex CLI UserPromptSubmit）—— **codex 读线**。
+
+    db32044（cc 载体适配收口）引入该载体时没配行为用例也没进 _COVERED，
+    守卫 2026-10-21（f0.5）补账。cc/codex 同构：hook 由宿主以近乎空环境
+    拉起，凭据与身份都必须走同一条 .env 兜底链，--selftest 暴露真值。
+    """
+    url, handler = stub_server
+    hook = _INTEGRATIONS / "codex" / "aidumem-codex-inject.sh"
+    proc = subprocess.run(
+        ["bash", str(hook), "--selftest"],
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url),
+        capture_output=True, text=True, timeout=40,
+    )
+    assert handler.captured, "codex 读线没有发出任何请求"
+    sent = handler.captured[-1]
+    assert sent["path"].startswith("/search"), f"打错端点：{sent['path']!r}"
+    assert sent["user_id"] == _ENV_USER, (
+        f"codex 读线在空环境下按 {sent['user_id']!r} 检索，而 .env 写的是 {_ENV_USER!r}。"
+    )
+    assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
+    assert proc.returncode == 0, f"自检异常退出：{proc.returncode} {proc.stderr[:200]}"
+
+
+def test_codex_ingest_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
+    """`codex/aidumem-codex-ingest.sh`（Codex CLI Stop）—— **codex 写线**。
+
+    写线打错租户比读线更毒（「一切正常」地写进别人的库）。--selftest 以
+    解析出的身份打一次只读 /search 验证兜底链。
+    """
+    url, handler = stub_server
+    hook = _INTEGRATIONS / "codex" / "aidumem-codex-ingest.sh"
+    proc = subprocess.run(
+        ["bash", str(hook), "--selftest"],
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url),
+        capture_output=True, text=True, timeout=40,
+    )
+    assert handler.captured, "codex 写线没有发出任何请求"
+    sent = handler.captured[-1]
+    assert sent["user_id"] == _ENV_USER, (
+        f"codex 写线在空环境下按 {sent['user_id']!r} 检索，而 .env 写的是 {_ENV_USER!r}。"
+    )
+    assert sent["auth"] == "Bearer tok-for-test", "凭据链回归了"
+    assert proc.returncode == 0, f"自检异常退出：{proc.returncode} {proc.stderr[:200]}"
+
+
 def test_env_file_parser_is_not_duplicated_in_repo_code():
     """仓库内只允许有**一个** .env 解析器。
 
@@ -580,6 +626,8 @@ _COVERED = {
     "cursor-hook/claude-code-hook.py",
     "aidumem-distill.sh",                     # v21.2.0 萃取线（Hermes session_end）
     "cursor-hook/claude-code-stop-hook.py",   # v21.2.0 写线（Claude Code Stop）
+    "codex/aidumem-codex-inject.sh",          # f0.5 补登记（db32044 引入时漏账）
+    "codex/aidumem-codex-ingest.sh",          # f0.5 补登记（db32044 引入时漏账）
     "hermes-plugin/aidumem/__init__.py",
 }
 

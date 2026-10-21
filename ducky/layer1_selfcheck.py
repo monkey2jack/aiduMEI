@@ -479,10 +479,23 @@ def _index_after_add(add_result, user_id: str, category: str | None = None, bank
         # contextvar 只兜底。此前这里读 contextvar，等于给整条主链路埋了个
         # 「只要哪条通路没先 set 就静默变空」的隐式前提 —— 而空值不报错。
         _origin = origin_from_metadata(metadata)
+        # f0.5（fork 审计 F05）：身份申报在这里读——layer1 是**真实缝位**
+        # （包装器吞掉 mem0 results，路由层 add.py 的同名 stamp 是死缝位，
+        # CLI 实测 2026-10-21：sidecar source 恒 add:layer1、死缝位零日志）。
+        # 载体没申报 author_status 时落 author_unknown 注记 + WARNING 可观测；
+        # is_bot 显式申报才降权（不猜——单用户宿主恒不传身份，错降权误伤存量）。
+        _meta_d = metadata if isinstance(metadata, dict) else {}
+        _is_bot = bool(_meta_d.get("_origin_is_bot"))
+        _author_status = str(_meta_d.get("_origin_author_status") or "")
+        _epi_source = "add:layer1"
+        if _author_status == "unknown" and not _is_bot:
+            _epi_source = "add:layer1:author_unknown"
+            logger.warning("add: 载体未申报发言者身份（author_unknown），"
+                           "sidecar 已注记；is_bot 未申报不降权（不猜）")
         stamp_memory_refs(
             [r for r in _refs if r],
             "reasoned" if infer or is_session_summary(metadata) else "user_provided",
-            user_id=user_id, bank_id=bank_id, source="add:layer1",
+            user_id=user_id, bank_id=bank_id, source=_epi_source,
             origin=_origin,
         )
         # v21.2 M1：同一批 refs 登记为本 session 当前 episode 的一步。

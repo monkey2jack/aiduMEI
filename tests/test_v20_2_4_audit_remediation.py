@@ -419,7 +419,9 @@ def test_ci_has_the_three_new_acceptance_jobs():
 
 # f0.4: the bank-write fixture now uses pytest's managed tmp_path.
 # Count only tests/test_*.py; register intentional changes here.
-_MKDTEMP_BASELINE = 62
+# f0.5：+1 = tests/test_f05_carrier_and_backoff.py（退避/载体用例的
+# AIDUMEI_DATA_DIR 隔离沙箱，须先于 import 设环境，tmp_path 做不到）
+_MKDTEMP_BASELINE = 63
                                 # 2026-09-10 v20.5.0：+4（test_v20_5_0_lineage_identity / grant_authz /
                                 # backfill / crud_update 四个新模块的模块级测试库——模块顶层覆盖
                                 # utils.FACTS_DB 必须用持久目录，tmp_path 函数级作用域做不到）

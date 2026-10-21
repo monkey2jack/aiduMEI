@@ -174,6 +174,14 @@ try:
     for item in (d.get("results") or [])[:3]:
         m = item.get("memory") if isinstance(item, dict) else str(item)
         print("· " + str(m or item)[:150])
+    # f0.5（fork 审计 F06）：降级照实透出——灯坏了不能冒充「没有记忆」。
+    # 服务端契约：recall_verdict=degraded 时 results 不完整，degraded 列表
+    # 载明哪个组件出了问题。静默失败是本 hook 的纪律，但「静默」只许用于
+    # 连不上（网络层）；服务端明说了召回异常，就必须让宿主知道。
+    if d.get("recall_verdict") == "degraded":
+        parts = d.get("degraded") or []
+        detail = ", ".join(str(p) for p in parts[:3]) if isinstance(parts, list) else str(parts)
+        print("⚠ [aiduMEI·检索降级: " + (detail or "部分组件异常") + "；以下结果不完整，不代表没有相关记忆]")
 except Exception:
     pass' 2>/dev/null)
 

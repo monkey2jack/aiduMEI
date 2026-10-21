@@ -147,6 +147,10 @@ class _FakeMemory:
 def rig(monkeypatch, tmp_path):
     """自动挡演练台：沙箱库 + 双 collection 替身 + 本地嵌入替身 + 真路由。"""
     import ducky.dual_index as di
+    # f0.5：本演练台测的是「持续故障下欠账稳定、恢复后排干」语义，
+    # 轮次走测试时钟；退避（AIDUMEI_REPLAY_BACKOFF）是生产高频重试
+    # 场景的护栏，与本台无关——演练台显式关闭，不构成绕守卫。
+    monkeypatch.setenv("AIDUMEI_REPLAY_BACKOFF", "0")
     import ducky.hot.search as hot_search
     import ducky.local_embed as le
     import ducky.mem0_runtime as runtime
