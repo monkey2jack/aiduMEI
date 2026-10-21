@@ -204,6 +204,8 @@ _F03_CONSOLIDATOR_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_LLM_SLOT_TIMEOUT_SEC",
     # ducky/dual_index.py：欠账重放指数退避开关（f0.5 / 复测 6.2）；=0 关退避
     "AIDUMEI_REPLAY_BACKOFF",
+    # ducky/engine.py：云腿冷启动试探预算秒（f0.5.1）
+    "AIDUMEI_CLOUD_PROBE_BUDGET_SEC",
     # scripts/report.py：24h LLM 降级率告警阈值
     "AIDUMEI_LLM_DEGRADED_WARN_RATIO",
     # ducky/hot/health.py：授权 /health 的 git_sha 来源（部署时写入）
