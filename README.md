@@ -9,7 +9,9 @@
 > 让你的 AI Agent **真正记住你**：混合检索 + 认知治理 + 可视化控制台 + 双引擎自动挡，**单机自托管**，MIT。
 > 宿主（Hermes / Claude Code / Codex CLI / Cursor / 任何 MCP 客户端）管短期对话，aiduMEI 管长期记忆。
 
-> **当前公开版本 f0.5。** 包版本 `0.5.0`，2026-10-21。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.5)。
+> 当前代码 **f0.5.1**（内部候选，尚未公开发布）。包版本 `0.5.1`，2026-10-21。
+>
+> **当前公开版本 f0.5。** [下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.5)。
 > 本版是 Claude Code（cc）载体适配收口版：接通 cc 记忆回路的萃取线（会话精华），并提供 journal 遗留收养工具、守护探针与一键体检脚本；不换模型与决策配置、不动基座与向量库 schema、不迁记忆数据。[升级说明](docs/F04_UPGRADE.md) · [f0.4 验收口径](docs/F04_VALIDATION.md)。
 
 > **可选决策模型**：客户自行选择供应商、模型、地址、密钥及任务，也可保持关闭。配置一次后自动用于新记忆类型分类与检索证据核验，无需逐次操作。支持 Nace、TypeSafe、Cloudflare Clef/Clef Flash 及同协议服务；不限定 Drex。Reranker 继续负责排序，本地挡不外呼决策模型。[配置与兼容范围](docs/DECISION.md)。
@@ -36,7 +38,7 @@ f0.4 上线后的真实使用暴露了两件事。本版只修这两件及其连
 
 定时与子代理会话（宿主标记为 `cron`、`subagent`）默认不写记忆、不提炼精华，读取不受影响；设置 `AIDUMEI_SKIP_PLATFORMS=""` 即恢复写入。Shell 钩子需要重新部署，并为萃取线加挂 finalize / reset 两个事件、超时不超过 25 秒，见[升级说明](docs/F04_UPGRADE.md)。
 
-**测试**：共收集 **4245** 项（行为 3615、脚本/钩子 484、守卫 146；f0.5 树 2026-10-21 实测）；新增回归逐项退回旧代码做过负向对照，旧代码复现了生产上的 409。本地与 Linux 目标机的通过结果、生产验收及精确提交记录在 Release 说明。
+**测试**：共收集 **4250** 项（行为 3620、脚本/钩子 484、守卫 146；f0.5 树 2026-10-21 实测）；新增回归逐项退回旧代码做过负向对照，旧代码复现了生产上的 409。本地与 Linux 目标机的通过结果、生产验收及精确提交记录在 Release 说明。
 
 以下 f0.4 说明保留为上一版本的内容。
 
@@ -383,8 +385,8 @@ Bearer 令牌（`AIDUMEM_API_TOKEN`）+ 控制台口令（PBKDF2）+ 注入防�
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **4245**（`pytest --collect-only` 实测，2026-10-21，f0.5 树）＝ **行为用例 3615（产品代码直测）+ 脚本/钩子行为 484 + 守卫用例 146（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——头条不用混合数 |
-| 独立开发机 | 4233 通过 · **12 跳过** —— **f0.5 按收集数与缺席轴推导的验收目标，实测结果见 Release 说明**（Python 3.12；开发、benchmark 依赖及本地嵌入模型已就绪，仅缺 Hermes 宿主） |
+| 用例总数 | **4250**（`pytest --collect-only` 实测，2026-10-21，f0.5 树）＝ **行为用例 3620（产品代码直测）+ 脚本/钩子行为 484 + 守卫用例 146（文档/口径/结构）**。三桶口径与名单见 `scripts/count_test_kinds.py`，可一键复算——头条不用混合数 |
+| 独立开发机 | 4238 通过 · **12 跳过** —— **f0.5 按收集数与缺席轴推导的验收目标，实测结果见 Release 说明**（Python 3.12；开发、benchmark 依赖及本地嵌入模型已就绪，仅缺 Hermes 宿主） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，Python 3.12） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（本树 `de09794`，独立沙箱 venv：宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed 等）；生产实机部署后 1983 通过 · 10 跳过（同树，宿主轴齐备） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（独立全轴 venv：工具、extras、宿主源码、模型缓存与公开 LoCoMo 数据集齐备；那 1 跳过为本树新增用例的条件轴） |
@@ -401,7 +403,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **为什么要把 4233 和 1967 都写出来**：4233 是本树仅缺 Hermes 宿主 ×12 时的预期通过数，本身不是实测成绩（实测见 Release 说明）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 4238 和 1967 都写出来**：4238 是本树仅缺 Hermes 宿主 ×12 时的预期通过数，本身不是实测成绩（实测见 Release 说明）；1967 是生产机独立沙箱 2026-09-11 实测（`de09794`，宿主在场但沙箱缺多项可选轴）——两者的跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条不是玄学，自己就能验**：十四条跳过轴（宿主、工具、可选依赖、模型文件）全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
@@ -410,12 +412,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：4233 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标：4245 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4233 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：4238 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标：4250 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4238 passed, 12 skipped
 > ```
 >
-> 上面代码块里的 `有宿主：4245 passed` 要**十四条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。`4233 passed · 12 skipped` 是缺宿主时的验收目标，各环境实测见 Release 说明。
+> 上面代码块里的 `有宿主：4250 passed` 要**十四条轴同时齐备**才拿得到，宿主只是其中一条 —— 别把「装上宿主」当成「全绿」。`4238 passed · 12 skipped` 是缺宿主时的验收目标，各环境实测见 Release 说明。
 
 > **跳过轴全量登记**（门控条数与实测逐行对账，改一条这里就红）：
 >

@@ -8,8 +8,20 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.5.1 (对外 f0.5.1 · 冷启动速断 · 2026-10-21)
+    用例总数 4245 → 4250（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
+    1. 冷启动速断：ducky/engine.py 云腿「未证明健康」阶段（ducky/gear.py
+       ever_succeeded）的试探只给短预算（默认 2s，AIDUMEI_CLOUD_PROBE_BUDGET_SEC
+       可调、NaN/负值回退默认出声），超时按失败记账并就地落本地腿；探针执行器
+       进程级共享+超时不 join（迟到的结果经回调记账）。云腿成功一次后走原语义。
+    2. 载体链收尾：cc-codex 两载体的探针替身与测试隔离夹具
+       （tests/test_f051_cold_start_probe.py 自动 flush 探针执行器）。
+    3. 版本三方对齐：SERVICE_VERSION 0.5.1（pyproject.toml / manifest.json 同步），
+       FULL_VERSION f0.5.1 入 LINEAGE；PUBLIC_RELEASE_VERSION 保持 f0.5——
+       大仓公开面不动（沿用 v20.3.4 双轨先例），f0.6 公开时一并翻牌。
+
 v0.5.0 (对外 f0.5 · 外部实锤四修 · 2026-10-21)
-    用例总数 4229 → 4245（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
+    用例总数 4229 → 4250（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
     四项全部来自外部实测报告与用户 issue，逐条独立坐实后修复，零假指控；
     新增回归均退回旧代码做过负向对照。
     1. Windows import 守卫：ducky/mutation_journal.py 顶层裸 import fcntl 改
@@ -541,8 +553,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.5.0"
-FULL_VERSION = "f0.5"
+SERVICE_VERSION = "0.5.1"
+FULL_VERSION = "f0.5.1"
 # f0.5 是「外部实锤四修」版（issue #31 Windows 守卫 / fork 审计 F05 载体
 # 身份线 / F06 降级表达 / Z指导复测 6.2 重放退避）。2026-10-21 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
@@ -561,6 +573,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.5.1", "", "f0.5.1", "冷启动速断：云腿未证明健康阶段的试探预算（2s 默认，env 可调），超时就地落本地腿——重启后前两轮失忆收口 · 2026-10-21"),
     ("0.5.0", "", "f0.5", "外部实锤四修：Windows import 守卫（issue #31）+ 载体身份线 author_unknown（fork F05）+ 降级表达复位（fork F06）+ 欠账重放指数退避（复测 6.2）· 2026-10-21"),
     ("0.4.0.post2", "", "f0.4++", "Claude Code carrier adaptation: extraction line wired, journal adoption tool, watchdog · 2026-10-16"),
     ("0.4.0.post1", "", "f0.4+", "Essence cadence for per-turn session-end, provider-refusal recovery, unattended-session policy · 2026-10-14"),
