@@ -212,6 +212,9 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/skill_crystallizer.py", "_LOW_UTILITY_SUCCESS_RATE"),
     ("ducky/skill_crystallizer.py", "_MIN_USES_FOR_UTILITY"),
     ("ducky/skill_crystallizer.py", "col"), ("ducky/skill_crystallizer.py", "ddl"),
+    # f0.5（6.2 退避两列）：ensure_pending_schema 的 additive ADD COLUMN。
+    # 来源核对：col/ddl 只来自本函数字面量元组，无任何调用方输入。
+    ("ducky/dual_index.py", "col"), ("ducky/dual_index.py", "ddl"),
     ("ducky/text_fts.py", "' OR '.join(clauses)"), ("ducky/text_fts.py", "_MEMORIES_DDL"),
     # f0.4 multirow restoration: placeholders depend only on the schema column count.
     ("ducky/tombstone.py", "','.join(('?' for _ in cols))"),
@@ -293,6 +296,9 @@ _MIGRATION_LEDGER = {
     ("ducky/federation/grants.py", "CREATE", "federation_grants"),
     # v20.5.0 正式版：federation_grants 补 created_by 列（审计主体派生，additive）
     ("ducky/federation/grants.py", "ALTER", "federation_grants"),
+    # f0.5（Z指导复测 6.2）：pending_embeddings 补退避两列
+    # （replay_attempts/next_retry_at，ensure_pending_schema 内 additive ALTER）
+    ("ducky/dual_index.py", "ALTER", "pending_embeddings"),
     ("ducky/memory_lineage.py", "CREATE", "memory_lineage"),
     ("ducky/schema_bootstrap.py", "ALTER", "entities"),
     ("ducky/tree_memory.py", "ALTER", "memory_nodes_v2"),

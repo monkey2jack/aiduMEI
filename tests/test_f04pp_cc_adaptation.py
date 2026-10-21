@@ -30,7 +30,6 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _CC_HOOKS = _REPO / "integrations" / "claude-code"
@@ -430,3 +429,35 @@ def test_wp7_inject_outputs_recall_and_stays_silent_on_dead_service(tmp_path):
                    dead_env, timeout=20)
     assert r2.returncode == 0 and r2.stdout == b"", "死服务必须静默放行"
     assert circuit.exists(), "熔断标记必须落地（防雪崩）"
+
+def test_f06_inject_surfaces_degraded_not_silence(tmp_path):
+    """f0.5（fork 审计 F06）：服务端明确报 recall_verdict=degraded 时，
+    读线必须透出降级注记（灯坏了≠没记忆）；真 not_found 仍安静——
+    两个负向对照钉住边界，不许滑向「什么都喊」或「什么都不说」。"""
+    def degraded_route(path):
+        if path.startswith("/search"):
+            return {"results": [], "recall_verdict": "degraded",
+                    "degraded": ["vector unavailable"]}
+        return {"blocks": {}}
+
+    with _capture_server(degraded_route) as (port, _calls):
+        r = _run_hook(_CC_HOOKS / "aidumem-cc-inject.sh",
+                      {"prompt": "降级演练查询", "session_id": "f06-deg"},
+                      _hook_env(port, tmp_path), timeout=20)
+    assert r.returncode == 0
+    out = r.stdout.decode()
+    assert "检索降级" in out, out
+    assert "vector unavailable" in out, out
+    assert "不代表没有相关记忆" in out, out
+
+    def notfound_route(path):
+        if path.startswith("/search"):
+            return {"results": [], "recall_verdict": "not_found"}
+        return {"blocks": {}}
+
+    with _capture_server(notfound_route) as (port, _calls):
+        r2 = _run_hook(_CC_HOOKS / "aidumem-cc-inject.sh",
+                       {"prompt": "真没货查询", "session_id": "f06-nf"},
+                       _hook_env(port, tmp_path), timeout=20)
+    assert r2.returncode == 0
+    assert "检索降级" not in r2.stdout.decode(), "not_found 不许喊降级"

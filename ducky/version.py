@@ -8,6 +8,34 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.5.0 (对外 f0.5 · 外部实锤四修 · 2026-10-21)
+    用例总数 4229 → 4245（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
+    四项全部来自外部实测报告与用户 issue，逐条独立坐实后修复，零假指控；
+    新增回归均退回旧代码做过负向对照。
+    1. Windows import 守卫：ducky/mutation_journal.py 顶层裸 import fcntl 改
+       try/except 降级（issue #31 / Z指导复测 6.1），文件锁降级进程内锁并
+       WARNING 声明不跨进程；新增 AST 守卫 tests/test_f05_posix_import_guard.py
+       盲扫顶层裸 POSIX import（负向对照 6 形态齐备）。
+    2. 载体身份线：integrations/hermes-plugin/aidumem/__init__.py 申报
+       _origin_author_status 三态（fork 审计 F05）；ducky/hot/add.py 对 unknown
+       在 memory_epistemic.source 落 author_unknown 注记；不擅自降权（单用户
+       桌面场景宿主恒不传，诚实标注≠猜测惩罚）。
+    3. 降级表达复位：插件 _degraded_note 把 recall_verdict=degraded 与
+       not_found 分开表达（工具响应 + prefetch 两路）；灯坏了不再冒充没记忆。
+    4. 欠账重放退避：ducky/dual_index.py 的 pending_embeddings 补
+       replay_attempts/next_retry_at（additive，迁移总账登记），指数 1s→60s
+       封顶、超 8 次隔离待人工裁决；/health 补 quarantined 与 not_due_backoff；
+       AIDUMEI_REPLAY_BACKOFF=0 可关（受控演练逐轮必试），生产默认开。
+    5. 取模脚本核对（Z指导复测 6.3 对应项）：scripts/fetch_local_embed_model.py
+       为 v20.4 P1-9 清单驱动版，与 fork 报告的 trees 钉死结构不同源；lab 重跑
+       核对结论及异常处理行为见 Release 回执（本条为核对项非缺陷修复）。
+    6. 文档口径守卫配套：tests/test_v20_2_4_audit_remediation.py 的
+       _MKDTEMP_BASELINE 62→63（f0.5 回归文件的一处 mkdtemp 登记在明面）；
+       tests/test_v20_1_1_source_guards.py 总账登记 dual_index 退避两列的
+       f-string ALTER 与迁移点（登记=人眼审过来源，不是放行）。
+    7. 版本三方对齐：SERVICE_VERSION 0.5.0（pyproject.toml / manifest.json 同步），
+       FULL_VERSION f0.5 入 LINEAGE；PUBLIC_RELEASE_VERSION 待公开翻牌再升。
+
 v0.4.0.post2 (对外 f0.4++ · cc 载体适配：萃取线接通 / journal 收养工具 / 守护与体检 · 2026-10-16)
     用例总数 4215 → 4229（收集数；新增 12 条 cc 适配回归在 tests/test_f04pp_cc_adaptation.py，2 条 cc 身份兜底回归在 tests/test_v19_4_2_identity_env_fallback.py）。
     宿主从 Hermes 迁到 Claude Code（cc）后的第一用户实机自检收口版：不换模型与决策配置、
@@ -513,12 +541,14 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.4.0.post2"
-FULL_VERSION = "f0.4++"
-# f0.4++ 是 cc（Claude Code）载体适配收口版。2026-10-17 经维护者授权推大仓、
-# 打公开 Tag/Release，版本身份由「内部候选」翻转为「公开正式版」，故
-# PUBLIC_RELEASE_VERSION 同步升到 f0.4++（与 FULL_VERSION 一致）。
-PUBLIC_RELEASE_VERSION = "f0.4++"
+SERVICE_VERSION = "0.5.0"
+FULL_VERSION = "f0.5"
+# f0.5 是「外部实锤四修」版（issue #31 Windows 守卫 / fork 审计 F05 载体
+# 身份线 / F06 降级表达 / Z指导复测 6.2 重放退避）。2026-10-21 经维护者
+# 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
+# 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.5（与 FULL_VERSION 一致）。
+PUBLIC_RELEASE_VERSION = "f0.5"
+
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
 # contracts use the two-part version and DISPLAY_NAME instead.
@@ -531,6 +561,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.5.0", "", "f0.5", "外部实锤四修：Windows import 守卫（issue #31）+ 载体身份线 author_unknown（fork F05）+ 降级表达复位（fork F06）+ 欠账重放指数退避（复测 6.2）· 2026-10-21"),
     ("0.4.0.post2", "", "f0.4++", "Claude Code carrier adaptation: extraction line wired, journal adoption tool, watchdog · 2026-10-16"),
     ("0.4.0.post1", "", "f0.4+", "Essence cadence for per-turn session-end, provider-refusal recovery, unattended-session policy · 2026-10-14"),
     ("0.4.0", "", "f0.4", "Scoped authorization, durable mutation repair, recovery and evidence budgets · 2026-10-09"),

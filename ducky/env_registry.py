@@ -202,6 +202,8 @@ _F03_CONSOLIDATOR_ENV_VARS: frozenset[str] = frozenset((
     # ducky/llm_client.py：进程级 LLM 并发上限与等位超时（call_llm 与 mem0 抽取共用）
     "AIDUMEI_LLM_MAX_CONCURRENCY",
     "AIDUMEI_LLM_SLOT_TIMEOUT_SEC",
+    # ducky/dual_index.py：欠账重放指数退避开关（f0.5 / 复测 6.2）；=0 关退避
+    "AIDUMEI_REPLAY_BACKOFF",
     # scripts/report.py：24h LLM 降级率告警阈值
     "AIDUMEI_LLM_DEGRADED_WARN_RATIO",
     # ducky/hot/health.py：授权 /health 的 git_sha 来源（部署时写入）
