@@ -129,6 +129,7 @@ class _Breaker:
         self._opened_at: Optional[float] = None
         self._last_reason = ""
         self._shift_count = 0
+        self._ever_succeeded = False   # f0.5.1：本进程云腿是否成功过至少一次
 
     # ── 参数（每次读 env：回退语义见 _env_or_default）──
     def trip_threshold(self) -> int:
@@ -171,6 +172,7 @@ class _Breaker:
     def record_success(self, *, now: Optional[float] = None) -> None:
         """成功信号。half-open 连续 M 次 → 升挡；closed 态清失败计数。"""
         with self._lock:
+            self._ever_succeeded = True
             self._consec_failures = 0
             if self._state == "closed":
                 return
@@ -197,6 +199,12 @@ class _Breaker:
         with self._lock:
             self._maybe_half_open(t)
             return self._state in ("closed", "half_open")
+
+    def ever_succeeded(self, *, now: Optional[float] = None) -> bool:
+        """f0.5.1：本进程这条腿是否成功过至少一次（冷启动速断判据）。
+        now 参数与相邻 API 对齐（本判据与时间无关，收下不用的形参）。"""
+        with self._lock:
+            return self._ever_succeeded
 
     def mode(self, *, now: Optional[float] = None) -> str:
         """当前挡位：'full' | 'lite'。open 态冷却到点自动转 half-open
@@ -257,6 +265,7 @@ class _Breaker:
             self._opened_at = None
             self._last_reason = ""
             self._shift_count = 0
+            self._ever_succeeded = False
 
 
 _EMBED = _Breaker("cloud_embed", "云嵌入", "engine_mode",
@@ -305,6 +314,16 @@ def should_try_cloud(*, now: Optional[float] = None) -> bool:
     if not cloud_leg_enabled():
         return False
     return _EMBED.should_try(now=now)
+
+
+def cloud_unproven(*, now: Optional[float] = None) -> bool:
+    """f0.5.1 冷启动速断：本进程**还没有过一次云腿成功**（含继承的
+    half-open 恢复）时为真。这是「首次试探预算」的判据——重启后熔断器
+    从 closed 起步，首查试云要等 mem0/网络的默认超时（可达十几秒）才落
+    本地，宿主 6s 预算早已放弃，用户看到的就是「前两轮失忆」。云腿一旦
+    成功一次，本判据永久为假，行为回到 v20.2 原语义（零额外开销）。
+    线程安全走 _Breaker 自锁（只读状态，不产生_shift_count）。"""
+    return not _EMBED.ever_succeeded(now=now)
 
 
 def current_mode(*, now: Optional[float] = None) -> str:

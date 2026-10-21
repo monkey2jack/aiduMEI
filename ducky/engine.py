@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -41,6 +42,67 @@ def _set_recall_telemetry(**fields) -> None:
         data = {}
         _recall_telemetry.data = data
     data.update(fields)
+
+
+# f0.5.1 冷启动速断：云腿「未证明健康」阶段的试探预算（秒）。
+# 默认 2.0s——本地腿实测 p50 约 0.35s，2s 足够本地腿兜底后仍留在宿主
+# 6s 预算内；云腿常态成功时本预算完全不参与（走 proven 快路）。
+_CLOUD_PROBE_BUDGET_ENV = "AIDUMEI_CLOUD_PROBE_BUDGET_SEC"
+_CLOUD_PROBE_BUDGET_DEFAULT = 2.0
+
+# f0.5.1：进程级共享探针执行器（单线程、daemon 线程）。超时探测后被
+# 垂直丢弃不 join——迟到的探针结果经 add_done_callback 记账；若探针
+# 真在跑（比如慢网络最终响应了），下一个请求受益。lazy 单例、退出随进程。
+_probe_executor = None
+_probe_executor_lock = threading.Lock()
+
+
+def _shared_probe_executor():
+    global _probe_executor
+    with _probe_executor_lock:
+        if _probe_executor is None:
+            import concurrent.futures as _cf
+            _probe_executor = _cf.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="aidumei-cloud-probe")
+        return _probe_executor
+
+
+def _reset_probe_executor_for_tests(close_wait_sec: float = 3.0) -> None:
+    """测试隔离：丢弃共享探针执行器，旧线程限时自然归位（不硬 join）。
+    漫长的假探针（慢云腿替身）占着唯一线程会让后续用例的探针排队超
+    预算——测试残状态必须清账，不然红的是无辜的邻接用例。"""
+    global _probe_executor
+    with _probe_executor_lock:
+        ex, _probe_executor = _probe_executor, None
+    if ex is None:
+        return
+    ex.shutdown(wait=False)
+    deadline = time.time() + close_wait_sec
+    while time.time() < deadline:
+        alive = any("aidumei-cloud-probe" in (t.name or "")
+                    for t in threading.enumerate() if t.is_alive())
+        if not alive:
+            break
+        time.sleep(0.1)
+
+
+def _cloud_probe_budget_sec() -> float:
+    try:
+        raw = os.environ.get(_CLOUD_PROBE_BUDGET_ENV, "").strip()
+        if not raw:
+            return _CLOUD_PROBE_BUDGET_DEFAULT
+        val = float(raw)
+        import math
+        if math.isnan(val) or math.isinf(val) or val <= 0:
+            raise ValueError(raw)
+        return val
+    except (TypeError, ValueError):
+        # 复用模块顶部既有 logger（aiduMEM.engine 只许注册一次——
+        # 生产采集按前缀过滤，注册处数是机器契约，tests/test_v20_brand_policy.py）
+        logger.warning(
+            "⚙️ %s 非法值 %r，已回退默认 %ss",
+            _CLOUD_PROBE_BUDGET_ENV, raw, _CLOUD_PROBE_BUDGET_DEFAULT)
+        return _CLOUD_PROBE_BUDGET_DEFAULT
 
 
 def _parse_time_boundary(val: Optional[str]) -> Optional[str]:
@@ -135,8 +197,42 @@ class RecallEngine:
                 from ducky.bank_contract import vector_scope_filters
                 try:
                     from ducky.search_candidates import search_candidates
-                    raw_res = search_candidates(mem, query, filters=vector_scope_filters(user_id, bank_id), limit=cand_limit)
-                    record_cloud_success()
+
+                    def _cloud_probe():
+                        return search_candidates(
+                            mem, query, filters=vector_scope_filters(user_id, bank_id),
+                            limit=cand_limit)
+
+                    # f0.5.1 冷启动速断：本进程云腿尚未成功过一次时，试探只给
+                    # 短预算（COLD_BUDGET 秒）——预算内没回来按失败记账并就地落
+                    # 本地腿，不再陪 mem0/网络的默认超时（可达十几秒）干等，宿主
+                    # 6s 预算早已放弃，用户看到的就是「重启后前两轮失忆」。
+                    # 预算只作用于「未证明健康」阶段；云腿成功一次后走原路径
+                    # （零包装零开销）。探针跑在**进程级共享**的单线程执行器上：
+                    # 超时后 shutdown(wait=False) 立即返回，迟到的探针结果由
+                    # add_done_callback 记账（成功→record_cloud_success，下一
+                    # 次请求受益；失败→record_failure，与超时账并合无冲突）。
+                    from ducky.gear import cloud_unproven
+                    if cloud_unproven():
+                        import concurrent.futures as _cf
+                        _budget = _cloud_probe_budget_sec()
+                        _ex = _shared_probe_executor()
+                        _fut = _ex.submit(_cloud_probe)
+                        try:
+                            raw_res = _fut.result(timeout=_budget)
+                            record_cloud_success()
+                        except _cf.TimeoutError:
+                            _fut.add_done_callback(
+                                lambda f: (
+                                    record_cloud_success()
+                                    if f.done() and f.exception() is None
+                                    else record_cloud_failure(str(f.exception())[:120])
+                                ) if f.done() else None)
+                            raise TimeoutError(
+                                f"cloud probe exceeded cold-start budget {_budget}s")
+                    else:
+                        raw_res = _cloud_probe()
+                        record_cloud_success()
                 except Exception as _cloud_exc:
                     record_cloud_failure(str(_cloud_exc))
                     logger.warning("云向量腿失败，本请求就地落本地腿: %s", str(_cloud_exc)[:120])
