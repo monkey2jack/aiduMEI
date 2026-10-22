@@ -39,6 +39,7 @@ import json
 import logging
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -64,6 +65,10 @@ CREATE TABLE IF NOT EXISTS tombstones (
     user_id          TEXT NOT NULL,
     bank_id          TEXT NOT NULL DEFAULT 'default',
     content_snapshot TEXT,
+    -- f0.6 W-19（hark P1-1 / cue 恢复语义）：快照过期时刻（epoch 秒，NULL=永不过期）。
+    -- 过期后 erase_expired_snapshots 把 content_snapshot 擦成 NULL、只留哈希链——
+    -- 「可恢复」是有期限的承诺，不是永久明文保存。
+    snapshot_expires_at INTEGER,
     facts_snapshot   TEXT,
     reason           TEXT DEFAULT '',
     actor            TEXT DEFAULT 'system',
@@ -103,6 +108,10 @@ def ensure_tombstone_schema() -> None:
             # way a normal write created it.  Additive; legacy rows stay NULL.
             if "vector_snapshot" not in cols:
                 conn.execute("ALTER TABLE tombstones ADD COLUMN vector_snapshot TEXT")
+            # f0.6 W-19：快照 TTL 列（存量行 NULL=沿用旧「不自动清理」语义，
+            # 只对新建墓碑生效；运维可用 erase_expired_snapshots 全量兜底）
+            if "snapshot_expires_at" not in cols:
+                conn.execute("ALTER TABLE tombstones ADD COLUMN snapshot_expires_at INTEGER")
         except Exception as mexc:
             logger.debug("tombstone bank_id 迁移跳过: %s", mexc)
         for stmt in _TOMBSTONE_INDEXES:
@@ -379,14 +388,19 @@ def snapshot_before_delete(
             return None
 
         content_snapshot = fts_content or (facts_row or {}).get("fact_value", "") or vector_text
+        # f0.6 W-19：快照 TTL——AIDUMEI_TOMBSTONE_TTL_DAYS（默认 30，0=永不过期）。
+        # hark P1-1：永久明文 content_snapshot 让「可删除」承诺打折；到期擦正文留哈希。
+        from ducky.env_config import int_env
+        _ttl_days = int_env("AIDUMEI_TOMBSTONE_TTL_DAYS", 30, minimum=0)
+        _snapshot_expires = int(time.time() + _ttl_days * 86400) if _ttl_days > 0 else None
         vector_meta = {k: v for k, v in vector_payload.items()
                        if k not in _VECTOR_REBUILT_KEYS}
         conn = get_facts_conn()
         cur = conn.execute(
             """INSERT INTO tombstones
                (target_id, target_type, user_id, bank_id, content_snapshot, facts_snapshot,
-                reason, actor, tombstoned_at, vector_snapshot, layer_snapshot)
-               VALUES (?, 'memory', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                reason, actor, tombstoned_at, vector_snapshot, layer_snapshot, snapshot_expires_at)
+               VALUES (?, 'memory', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 memory_id,
                 scope.user_id,
@@ -400,6 +414,7 @@ def snapshot_before_delete(
                 json.dumps({"version": 2, "facts": "complete", "fts": "complete",
                             "vector": "complete", "verbatim": "complete", "verbatim_rows": verbatim_rows, "fts_rows": fts_rows,
                             "vector_content": vector_text, "vector_points": raw_vectors}, ensure_ascii=False),
+                _snapshot_expires,
             ),
         )
         # 📒 事件账本（B5）：与快照同事务留痕
@@ -812,3 +827,30 @@ def list_tombstones(
     except Exception as exc:
         logger.debug("list_tombstones 降级返回空: %s", exc)
         return []
+
+
+def erase_expired_snapshots() -> dict:
+    """f0.6 W-19：擦除过期墓碑快照的正文，只留哈希与元数据。
+
+    定期任务/运维手动调用。到期判定：snapshot_expires_at IS NOT NULL AND
+    < now。存量 NULL 行（旧「不自动清理」语义）不动。返回擦除条数供巡检。
+    """
+    conn = get_facts_conn()
+    try:
+        cur = conn.execute(
+            "UPDATE tombstones SET content_snapshot = NULL "
+            "WHERE content_snapshot IS NOT NULL "
+            "AND snapshot_expires_at IS NOT NULL AND snapshot_expires_at < ?",
+            (int(time.time()),),
+        )
+        conn.commit()
+        n = cur.rowcount or 0
+        if n:
+            logger.info("🪦 已擦除 %d 条过期墓碑快照正文（TTL 到期，哈希与元数据保留）", n)
+        return {"erased": n}
+    except Exception as exc:
+        conn.rollback()
+        logger.warning("过期快照擦除失败: %s", exc)
+        return {"erased": 0, "error": str(exc)}
+    finally:
+        conn.close()

@@ -250,12 +250,35 @@ import uuid
 
 
 class _GuardedFastMCP(FastMCP):
-    """Register every tool through one guard; scope SSE state per connection."""
+    """Register every tool through one guard; scope SSE state per connection.
+
+    f0.6 W-13（hark 审计 P0-3 / muse H-2）：破坏性工具默认不注册。宿主
+    Agent 被提示注入时，一次 `mem_delete_all(confirm=True)` 就能整域清库
+    且连墓碑一起擦（不可恢复）；「confirm 参数由模型自己填」不构成独立
+    确认。现在 mem_update / mem_delete / mem_delete_all / autodream_trigger /
+    crystals_detect / conflict_resolve 需部署侧显式
+    AIDUMEI_MCP_DANGEROUS_TOOLS=1 才注册，默认工具集只含读+追加写。
+    """
+    DANGEROUS_TOOLS_ENV = "AIDUMEI_MCP_DANGEROUS_TOOLS"
+    DANGEROUS_TOOL_NAMES = frozenset({
+        "mem_update", "mem_delete", "mem_delete_all",
+        "autodream_trigger", "crystals_detect", "conflict_resolve",
+    })
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.loop_guard = LoopGuard.from_env(logger=logger)
         self._guard_sessions = weakref.WeakKeyDictionary()
         self._guard_sessions_lock = threading.Lock()
+        self._dangerous_allowed = (
+            os.environ.get(self.DANGEROUS_TOOLS_ENV, "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        if not self._dangerous_allowed:
+            logger.warning(
+                "⚠️ [MCP] 破坏性工具未注册（%s 未开启）：%s。宿主注入一次调用即可清库"
+                "的路径已默认焊死；确需从 MCP 使用请显式开启该环境变量。",
+                self.DANGEROUS_TOOLS_ENV, ", ".join(sorted(self.DANGEROUS_TOOL_NAMES)))
 
     def _guard_scope(self):
         try:
@@ -274,6 +297,11 @@ class _GuardedFastMCP(FastMCP):
         register = super().tool(*args, **kwargs)
 
         def decorator(fn):
+            if not self._dangerous_allowed and fn.__name__ in self.DANGEROUS_TOOL_NAMES:
+                # 不注册：装饰器原样返回函数，FastMCP 工具表里不出现。
+                # 保留函数体便于直连测试与未来按需挂载。
+                logger.info("[MCP] 跳过破坏性工具注册: %s", fn.__name__)
+                return fn
             return register(self.loop_guard.wrap(fn, self._guard_scope, json_fields=json_fields))
         return decorator
 

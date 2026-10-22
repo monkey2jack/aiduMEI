@@ -43,6 +43,9 @@ def register_crud_routes(app: FastAPI) -> None:
     @app.get("/recent")
     def recent(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 10,
                caller_user_id: str = ""):
+        # f0.6 W-25（muse M-1）：query 形态 limit 钳到 500——此前裸 int 直透
+        # SQL，limit=100000000 就是整域导出通道。
+        limit = max(1, min(int(limit or 10), 500))
         try:
             from ducky.scope_auth import require_scope_access
             require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
@@ -289,6 +292,8 @@ def register_crud_routes(app: FastAPI) -> None:
     def tombstones(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID, limit: int = 50,
                    caller_user_id: str = ""):
         """列某租户的遗忘记录（全文与撤回理由可查）"""
+        # f0.6 W-25：同 /recent，钳 500。
+        limit = max(1, min(int(limit or 50), 500))
         try:
             from ducky.tombstone import list_tombstones
             from ducky.scope_auth import require_scope_access
@@ -338,6 +343,8 @@ def register_crud_routes(app: FastAPI) -> None:
                        user_id: str = DEFAULT_USER_ID,
                        bank_id: str = DEFAULT_BANK_ID,
                        caller_user_id: str = ""):
+        # f0.6 W-25：同 /recent，钳 500。
+        limit = max(1, min(int(limit or 100), 500))
         """查某条记忆的完整变更史（谁、何时、做了什么、为什么）
 
         🟡-D（v19.4.1）：target_id 常常是自增整数，可被顺序枚举。
@@ -699,6 +706,10 @@ def register_crud_routes(app: FastAPI) -> None:
     @app.post("/reload")
     def reload_mem0():
         reset_memory_singleton()
+        # f0.6 W-17（cue A09）：认知 LLM 配置缓存与 mem0 单例同代换新，
+        # 治理/蒸馏路径不再打旧 endpoint/key。
+        from ducky.llm_client import invalidate_llm_config_cache
+        invalidate_llm_config_cache()
         try:
             _ = get_memory()
             return {"status": "ok", "message": "mem0 重新加载成功"}

@@ -101,6 +101,22 @@ def _redirect(env) -> tuple[str | None, bool]:
 
 REDIRECTED_DATA_DIR, OWNS_REDIRECTED_DIR = _redirect(os.environ)
 
+# f0.6 W-24（openchamber 审计 P1-3）：proxy 卫生——测试进程强制 scrub 全部
+# 代理环境变量。openchamber 实测：带宿主代理（HTTP_PROXY=127.0.0.1:7899 这类
+# 本机 hysteria/clash 常态）全量 44 条用例红，清掉同一集合 0 红——回环 HTTP
+# 用例的 urllib 落到本地代理上被回 502，安全负向对照（期望 403）变成连接
+# 失败，「红得让人不再读红」。卫生必须在**收集之前**生效（本文件正是为此
+# 放在仓库根），对所有用例生效、不依赖各测试自觉。
+_PROXY_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+)
+for _pv in _PROXY_VARS:
+    os.environ.pop(_pv, None)
+# NO_PROXY 保留无害（没有代理变量时它无消费方），一并清干净口径最简单：
+for _pv in ("NO_PROXY", "no_proxy"):
+    os.environ.pop(_pv, None)
+
 if REDIRECTED_DATA_DIR and OWNS_REDIRECTED_DIR:
     # 只删自己建的那一个：沿用别人（父进程）目录的进程一律不许碰。
     # 删不掉（还有连接没关）也不许让退出码变红——清理失败是清理的问题，

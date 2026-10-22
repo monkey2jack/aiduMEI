@@ -149,15 +149,18 @@ def on_memory_accessed(memory_id: str):
             days_elapsed = (now - old_ts) / 86400
             decayed = old_s * math.exp(-DECAY_RATE * days_elapsed)
             new_s = min(1.0, decayed + ACCESS_BOOST)
+            # f0.6 W-02：访问 boost 后衰减基准同步推进到 now——boost 写入
+            # 的是「此刻新鲜值」，若基准仍停在旧时刻，下次 decay_all 会把
+            # boost 前积累的衰减再算一遍。
             conn.execute(
-                "UPDATE salience SET salience = ?, last_access = ?, access_count = ? WHERE memory_id = ?",
-                (new_s, now, cnt + 1, memory_id)
+                "UPDATE salience SET salience = ?, last_access = ?, access_count = ?, salience_at = ? WHERE memory_id = ?",
+                (new_s, now, cnt + 1, now, memory_id)
             )
         else:
             conn.execute(
-                "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at) "
-                "VALUES (?, ?, ?, 0, ?)",
-                (memory_id, 0.5, now, now)
+                "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at, salience_at) "
+                "VALUES (?, ?, ?, 0, ?, ?)",
+                (memory_id, 0.5, now, now, now)
             )
         conn.commit()
     except sqlite3.Error as exc:
@@ -174,22 +177,33 @@ def decay_all() -> dict:
     f0.3：另附 ``evicted_details``（每个候选的衰减后显著性 / 闲置天数 / 泳道），
     consolidator 的 dry-run 靠它写出「为什么是它」。只是候选 —— 删不删、
     删没删成由 consolidator 按 /delete 的真实状态决定与记账。
+
+    f0.6 W-02（memoh 审计 P0-1）：衰减改为从 ``salience_at`` 基准点起算——
+    旧实现每次都用已衰减过的 salience 再乘同一个 days_elapsed（按 last_access
+    计），衰减强度随 cron 运行次数二次累积（s_n = s0·exp(-λ·n(n+1)/2)），当日
+    访问过的记忆跑 9 次日更也会跌破地板。现在 s(t) = s_base·exp(-λ·(now-base))，
+    base 每次推进到 now，幂等且与调度频率解耦。淘汰候选仍按「衰减后 < 地板
+    且 闲置 > 阈值」双条件，淘汰行不写回（保持衰减前账面，由 consolidator
+    裁决）。
     """
     now = time.time()
     conn = get_salience_conn()
     rows = conn.execute(
-        "SELECT memory_id, salience, last_access, lane FROM salience"
+        "SELECT memory_id, salience, last_access, lane, salience_at FROM salience"
     ).fetchall()
 
     evicted = []
     evicted_details = []
     updated = 0
-    for mid, old_s, last_ts, lane in rows:
-        days_elapsed = (now - last_ts) / 86400
+    for mid, old_s, last_ts, lane, base_ts in rows:
+        # 无基准（旧库迁移竞态/手工插行）：回退到「本次=首次衰减」语义，
+        # 基准取 now——绝不再拿 last_access 当基准把历史重复计入。
+        base = base_ts if base_ts is not None else now
+        elapsed_days = max(0.0, (now - base) / 86400)
         # v8.3.0: Lane 感知乘系数
         multiplier = LANE_DECAY_MULTIPLIER.get(lane or DEFAULT_LANE, 1.0)
         effective_rate = DECAY_RATE * multiplier
-        new_s = old_s * math.exp(-effective_rate * days_elapsed)
+        new_s = old_s * math.exp(-effective_rate * elapsed_days)
         days_idle = (now - last_ts) / 86400
 
         if new_s < SALIENCE_FLOOR and days_idle > IDLE_EVICT_DAYS:
@@ -202,8 +216,8 @@ def decay_all() -> dict:
             })
         else:
             conn.execute(
-                "UPDATE salience SET salience = ? WHERE memory_id = ?",
-                (new_s, mid)
+                "UPDATE salience SET salience = ?, salience_at = ? WHERE memory_id = ?",
+                (new_s, now, mid)
             )
             updated += 1
 

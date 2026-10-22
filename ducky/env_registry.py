@@ -40,6 +40,16 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_TEST_CLIENT_TRUST",
     # v22.0（雷霆审计 A7）：组合逃逸门二次确认（值须逐字等于监听地址）
     "AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH",
+    # f0.6（七路外审整改）：MCP 破坏性工具显式开关（默认不注册）
+    "AIDUMEI_MCP_DANGEROUS_TOOLS",
+    # f0.6 W-19：墓碑快照 TTL 天数（0=永不过期，默认 30）
+    "AIDUMEI_TOMBSTONE_TTL_DAYS",
+    # f0.6 W-32：对外错误附原始异常正文（默认 0=只给类别）
+    "AIDUMEI_EXPOSE_RAW_ERRORS",
+    # f0.6 W-22：遗留恢复脚本知情确认（逐字值见脚本内提示）
+    "AIDUMEI_LEGACY_RESTORE_ACK",
+    # f0.6.1：出处矩阵灰度开关（on 时 Bearer 调用方不采信自报"用户亲述"）
+    "AIDUMEI_ORIGIN_POLICY",
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",

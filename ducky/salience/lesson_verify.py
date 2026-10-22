@@ -58,8 +58,9 @@ def verify_lessons_closed() -> dict:
         if found_recent_error:
             # 报错还在出现！强行把显著性拉升到 1.0 (防止它衰减被踢出)
             sal_conn.execute(
-                "UPDATE salience SET salience = 1.0, last_access = ? WHERE memory_id = ?",
-                (time.time(), mid)
+                # f0.6 W-02：拉升是此刻新鲜值，基准同步推进
+                "UPDATE salience SET salience = 1.0, last_access = ?, salience_at = ? WHERE memory_id = ?",
+                (time.time(), time.time(), mid)
             )
             boosted += 1
             logger.warning(f"⚠️ [教训未闭环] 发现相关错误依旧在报错日志中触发: '{content[:50]}'")

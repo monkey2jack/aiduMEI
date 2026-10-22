@@ -155,18 +155,29 @@ def test_v19_3_lazy_import_thread_safety():
 
 
 def test_v19_3_scoring_sigmoidal_mapping():
-    """验证 sigmoidal 映射在边界值与大分值下的平滑压缩"""
+    """f0.6 W-08（memoh 审计 P1-1/P1-2）改写：score 量纲语义收紧。
+
+    旧实现把 >1.0 的值 sigmoid 压缩到 (0.5,1.0]，导致非余弦量纲下排序
+    静默反转（1.5 分排到 1.0 分后面）。现在 [0,1] 严格单调，超界饱和 1.0
+    并打 WARNING（量纲漂移显性化）。负值/None/nan 语义不变。
+    """
     assert normalize_score(None) == 0.0
     assert normalize_score(0.0) == 0.0
     assert normalize_score(0.85) == 0.85
     assert normalize_score(1.0) == 1.0
 
-    # 大分值映射进入 (0.5, 1.0]
-    score_big = normalize_score(10.0)
-    assert 0.5 < score_big < 1.0
-    # 单调递增性
-    assert normalize_score(20.0) > normalize_score(10.0)
-    assert normalize_score(50.0) > normalize_score(20.0)
+    # [0,1] 定义域内严格单调不减（正/负向对照各一）
+    ramp = [0.0, 0.25, 0.5, 0.75, 1.0]
+    vals = [normalize_score(v) for v in ramp]
+    assert all(a <= b for a, b in zip(vals, vals[1:])), vals
+    # 负向对照：明确反相关截 0，不进正分区间
+    assert normalize_score(-0.5) == 0.0
+    assert normalize_score(float("nan")) == 0.0
+
+    # 超界：饱和 1.0（不再压缩变形），且保持「更大分不更小」的单调
+    assert normalize_score(10.0) == 1.0
+    assert normalize_score(20.0) == 1.0
+    assert normalize_score(50.0) >= normalize_score(10.0)
 
 
 def test_v19_3_unified_scoring_and_funnel_stages():

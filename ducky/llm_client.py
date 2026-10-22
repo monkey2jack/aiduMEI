@@ -215,6 +215,19 @@ _config_lock = threading.Lock()
 COGNITIVE_MAX_TOKENS = 1024
 
 
+def invalidate_llm_config_cache() -> None:
+    """f0.6 W-17（cue 审计 A09）：/reload 统一换代。
+
+    get_llm_config 的进程级缓存此前只有进程重启才清——/reload 只重置
+    mem0 单例，治理/蒸馏等直连认知路径继续用旧 endpoint/key 外呼，
+    「界面已改、实际还在打旧供应商」。reload 统一调用本函数换代。
+    """
+    global _config_cache
+    with _config_lock:
+        _config_cache = None
+    logger.info("🔄 认知 LLM 配置缓存已失效（reload 换代）")
+
+
 def get_llm_config() -> dict:
     """读取 mem0_config 的 llm 段，解析密钥占位符。结果缓存，进程内只读一次。
 
@@ -347,6 +360,10 @@ def _post_completion(endpoint: str, api_key: str, model: str, messages: list,
     """
     r = requests.post(
         endpoint,
+        # f0.6 W-12（muse S-1 链条环节）：禁重定向——端点被改后 3xx 跳转
+        # 会带着 Authorization 头落进攻击者域。decision 段既有此规则，
+        # 本轮推广到全部外呼。
+        allow_redirects=False,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",

@@ -148,6 +148,10 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     # 拼接，不含任何请求数据；列名无法走 ? 参数化。人工核对：ducky/schema_bootstrap.py:172。
     ("ducky/schema_bootstrap.py", "col"),
     ("ducky/schema_bootstrap.py", "ddl"),
+    # f0.6 W-18：mem0 history 按 memory_id 集合分块删——IN 占位符串 "?,?,..."
+    # 只能拼，集合元素全部走 ? 参数化（结构性拼接，无请求数据）。
+    # 人工核对：ducky/wal_engine.py _cascade_all_mem0_history。
+    ("ducky/wal_engine.py", "ph"),
     # v21 preview：scope_clause() 产出的 canonical 片段拼接（结构性常量，无请求数据）
     ("ducky/dossier.py", "frag"),
     ("ducky/routes_knowledge.py", "frag"),

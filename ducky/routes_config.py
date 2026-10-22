@@ -12,7 +12,7 @@ import tempfile
 import threading
 from typing import Optional
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from ducky.speed.config import _CFG_PATH, load_speed_cfg
@@ -41,6 +41,35 @@ _SECTION_FIELD_ALLOWLIST: dict[str, set] = {
 }
 _URL_FIELDS = {"openai_base_url", "host"}
 
+# f0.6 W-12：外呼四段（decision 段走自己的 validate，不在此列）
+_EGRESS_SECTIONS = {"llm", "embedder", "rerank", "vision"}
+
+def _reject_private_endpoint(url: str) -> str | None:
+    """拦截私网/链路本地/元数据地址与明文 http（muse S-1：169.254.169.254
+    与内网端点此前全放行，是把凭据+记忆原文转投内网/云元数据的通道）。"""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return "无法解析主机名"
+        # 元数据/内部地址最先拦——它们以 https 出现也不放行
+        if host == "169.254.169.254" or host.endswith(".internal"):
+            return "云元数据/内部地址禁止作为模型端点"
+        if parsed.scheme == "http" and host not in ("127.0.0.1", "localhost"):
+            return "明文 http 仅允许 loopback（127.0.0.1/localhost）；远程端点必须 https"
+        import ipaddress
+        try:
+            ip = ipaddress.ip_address(host)
+            _loopback_ok = ip.is_loopback and host in ("127.0.0.1",)
+            if not _loopback_ok and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
+                return f"私网/保留地址禁止作为模型端点: {host}"
+        except ValueError:
+            pass  # 域名，非 IP
+        return None
+    except Exception as exc:
+        return f"端点校验失败: {exc}"
+
 
 def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, old_section: dict | None = None) -> str | None:
     """返回错误文案；None = 通过。"""
@@ -59,6 +88,20 @@ def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, o
         v = str(cfg.get(k) or "").strip()
         if v and not (v.startswith("http://") or v.startswith("https://")):
             return f"{section}.{k} 只接受 http(s) URL，收到: {v[:40]}"
+    # f0.6 W-12（muse S-1 修复项）：decision 段的「换端点必须显式给新 key」
+    # 与私网/元数据地址拦截，推广到 llm / embedder / rerank / vision 四段
+    # ——此前只有 decision 有此防护，而 S-1 整包转投链走的正是 llm 段。
+    if section in _EGRESS_SECTIONS:
+        old_cfg = dict((old_section or {}).get("config") or {})
+        ep = str(cfg.get("openai_base_url") or "").strip()
+        if ep and ep != old_cfg.get("openai_base_url"):
+            if old_cfg.get("api_key") and (not isinstance(cfg.get("api_key"), str)
+                                           or not cfg["api_key"].strip()):
+                return (f"changing {section} endpoint requires an explicit API key"
+                        "（换端点必须显式给新 key，空 key 不再默认沿用旧凭据）")
+            _err = _reject_private_endpoint(ep)
+            if _err:
+                return f"{section}.openai_base_url: {_err}"
     path_v = str(cfg.get("path") or "").strip()
     if section == "vector_store" and path_v:
         import os as _os
@@ -102,12 +145,37 @@ def _channel_section(section: str, body: dict, old: dict, cfg: dict) -> dict:
             "config": cfg}
 
 
+def _require_config_admin(caller: str, operation: str = "config:read") -> None:
+    """f0.6 W-11/W-14：配置面统一 admin 判据。
+
+    - UI session（owner 直连）→ 直通（cue A10 的断路在此修通：控制台
+      保存配置/改密不再被旧自报判据挡 403）；
+    - Bearer → caller 绑定校验 + AIDUMEI_FEDERATION_ADMINS 名单，
+      自报字符串不再单独作数；
+    - 无凭据回环（门禁关）→ 沿 require_instance_admin 既有放行语义。
+    权限失败统一 HTTP 403（此前 /config/_speed 返回 200 包 error 的
+    假成功一并纠正）。
+    """
+    from ducky.scope_auth import require_instance_admin
+    try:
+        require_instance_admin(caller)
+    except HTTPException as exc:
+        # 保持与既有 403 细节同构，但带上操作名便于排障
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "config_admin_required", "operation": operation,
+                    "detail": str(getattr(exc, "detail", exc))},
+        )
+
+
 def _mask_key(key: Optional[str]) -> str:
     if not key:
         return "—"
+    # f0.6 W-11（muse S-1 修复项）：掩码从「首3+尾4共7字符」收紧到「尾2」
+    # ——首字符对 sk- 形 key 是固定前缀零信息，尾4配合长度可辅助字典缩小。
     if len(key) <= 8:
-        return key[:1] + "***"
-    return key[:3] + "***" + key[-4:]
+        return "***"
+    return "***" + key[-2:]
 
 
 class ConfigUnreadable(RuntimeError):
@@ -192,6 +260,10 @@ def _build_config_view() -> dict:
         # The console must use the server's configured identity when it calls
         # identity-protected federation endpoints.  Never make the browser
         # guess this from a profile or a hard-coded demo value.
+        #
+        # f0.6 W-11（muse S-1）：agent_id 仍回显（控制台调联邦端点要用，
+        # 注释即其存在理由），但 /config 现已与写面同级鉴权（W-11 改造），
+        # 「无凭据读配置→拿 admin 名冒充」的链路在读取这一步就断了。
         "agent_id": DEFAULT_AGENT_ID,
         "user_id": DEFAULT_USER_ID,
         "llm": {
@@ -314,7 +386,10 @@ def register_config_routes(app: FastAPI) -> None:
             conn.close()
 
     @app.get("/config")
-    def get_config() -> dict:
+    def get_config(caller: str = "") -> dict:
+        # f0.6 W-11（muse S-1 / wabi F-01）：配置读面与写面同级鉴权——此前
+        # 无任何校验即回显 agent_id 与配置绝对路径，攻击者先读后冒充。
+        _require_config_admin(caller)
         return _build_config_view()
 
     @app.put("/config/{section}")
@@ -329,14 +404,10 @@ def register_config_routes(app: FastAPI) -> None:
         都能改模型配置/口令。加 admin 校验：caller 须在 AIDUMEI_FEDERATION_ADMINS
         名单内，否则 403。
         """
-        from ducky.federation.routes import _is_admin_caller
-        from ducky.security.auth import enforce_caller_binding
-        enforce_caller_binding(caller, "config:write")
-        if not _is_admin_caller(caller):
-            return JSONResponse(
-                {"status": "error", "detail": "配置修改须 admin（AIDUMEI_FEDERATION_ADMINS）"},
-                status_code=403,
-            )
+        # f0.6 W-11/W-14：统一 admin 判据——session=owner 直通，Bearer 须
+        # 绑定+名单（require_instance_admin），不再用「自报字符串在名单内」
+        # 单独作数（cue A10：这条旧判据同时把 UI session 挡在门外）。
+        _require_config_admin(caller, operation="config:write")
         if os.environ.get("AIDUMEM_CONFIG_READONLY", "0").lower() in {"1", "true", "yes"}:
             return JSONResponse(
                 {"status": "error", "detail": "当前为只读演示模式：配置不可在线修改"},
@@ -391,11 +462,8 @@ def register_config_routes(app: FastAPI) -> None:
 
         v22.0（雷霆审计 B7）：须 admin。
         """
-        from ducky.federation.routes import _is_admin_caller
-        from ducky.security.auth import enforce_caller_binding
-        enforce_caller_binding(caller, "config:write")
-        if not _is_admin_caller(caller):
-            return {"status": "error", "detail": "配置修改须 admin（AIDUMEI_FEDERATION_ADMINS）"}
+        # f0.6 W-11/W-14：同 PUT /config，统一走 require_instance_admin。
+        _require_config_admin(caller, operation="config:write")
         if os.environ.get("AIDUMEM_CONFIG_READONLY", "0").lower() in {"1", "true", "yes"}:
             return {"status": "error", "detail": "当前为只读演示模式：配置不可在线修改"}
         key = body.get("key")

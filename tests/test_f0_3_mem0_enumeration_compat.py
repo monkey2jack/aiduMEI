@@ -75,7 +75,9 @@ def test_recent_requested_limits_and_scope_beyond_twenty(sdk, bank, client_for):
         assert len(items) == min(limit, 24)
         assert result["sdk_marker"] == "preserved"
         assert all(item["user_id"] == "enum-a" and vector_item_bank(item) == bank for item in items)
-        assert memory.calls[-1] == (vector_scope_filters("enum-a", bank), limit, {})
+        # f0.6 W-25：limit 服务端钳到 500——10000 这类请求按 500 下推。
+        expected_limit = min(limit, 500)
+        assert memory.calls[-1] == (vector_scope_filters("enum-a", bank), expected_limit, {})
 
 
 @pytest.mark.parametrize("sdk", [_Current, _Legacy])

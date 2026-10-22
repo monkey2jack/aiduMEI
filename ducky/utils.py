@@ -306,6 +306,42 @@ def leaked_transaction_count() -> int:
     return _LEAKED_TX["seen"]
 
 
+def rollback_dangling_for_context(ctx: str | None) -> int:
+    """f0.6 W-04（hark 审计 P0-2）：请求收尾时回滚「本请求开启但未提交」的事务。
+
+    只动 txowner 等于本上下文戳的线程本地连接——嵌套借用（owner==本戳）在
+    请求收尾时已无合法在途写（路由函数都返回了），回滚是安全网而非破坏；
+    其他戳（后台任务、脚本）的事务一概不碰。返回回滚的连接数，进 /health
+    可观测。放 utils 是为了 api_server 中间件与测试都能直接调。
+    """
+    if not ctx:
+        return 0
+    rolled = 0
+    for attr in dir(_thread_local):
+        if not attr.startswith("txowner_conn_"):
+            continue
+        if getattr(_thread_local, attr, None) != ctx:
+            continue
+        conn_key = attr[len("txowner_"):]
+        real_conn = getattr(_thread_local, conn_key, None)
+        if real_conn is not None:
+            try:
+                if real_conn.in_transaction:
+                    real_conn.rollback()
+                    rolled += 1
+                    logger.warning(
+                        "⚠️ [W-04] 请求收尾回滚悬挂事务: db=%s ctx=%s（路由返回时仍有未提交写）",
+                        os.path.basename(conn_key[len("conn_"):]), ctx[:8])
+            except Exception as exc:
+                logger.debug("W-04 回滚失败（连接已坏，忽略）: %s", exc)
+        # 戳消费即清：下一请求借出时重新认领
+        try:
+            delattr(_thread_local, attr)
+        except Exception:
+            setattr(_thread_local, attr, None)
+    return rolled
+
+
 def leaked_transaction_last() -> dict:
     """最近一次借出时发现悬挂事务的现场（线程 / 上一位与本次借用者调用点），供 /health 定位。"""
     return dict(_LEAKED_TX.get("last") or {})
