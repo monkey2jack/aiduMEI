@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from ducky.utils import DEFAULT_AGENT_ID, DEFAULT_USER_ID, get_facts_conn
@@ -356,19 +355,26 @@ def search_facts(
             params.append(before_bound)
         # Chronos 双时间轴：失效(valid_to<now)/未生效(valid_from>now)的事实降到最后，
         # 不删除、不过滤——铁律与无有效期字段(NULL)的事实完全不受影响。
-        now_iso = datetime.now(timezone.utc).isoformat()
+        #
+        # f0.6 W-21（memoh 审计 P2-8 实现偏差）：降权判定此前用字符串比较，
+        # 而 valid_to（ISO 带 T）与部分存量行（CURRENT_TIMESTAMP 空格格式）
+        # 两种格式同天比较时 'T'(0x54)>' '(0x20) 恒判「已失效」——有效期到
+        # 今天 23:59 的现役事实从当天 00:00 起就被降到队尾。改 SQLite
+        # julianday() 数值比较，两种格式都能正确解析；解析失败的值（脏数据）
+        # 产生 NULL，CASE 的 NOT NULL AND 条件不再命中，不降权（与既有
+        # 「解析不了不乱判」语义一致）。
         sql += """
             ORDER BY
               CASE
-                WHEN valid_to   IS NOT NULL AND valid_to   < ? THEN 2
-                WHEN valid_from IS NOT NULL AND valid_from > ? THEN 2
+                WHEN valid_to   IS NOT NULL AND julianday(valid_to)   < julianday('now') THEN 2
+                WHEN valid_from IS NOT NULL AND julianday(valid_from) > julianday('now') THEN 2
                 ELSE 0
               END,
               CASE WHEN fact_key=? THEN 0 WHEN category=? THEN 1 ELSE 2 END,
               trust_score DESC, updated_at DESC
             LIMIT ?
         """
-        params.extend([now_iso, now_iso, needle, needle, top_k])
+        params.extend([needle, needle, top_k])
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
         position_ms = round((time.perf_counter() - started) * 1000 - intent_ms, 3)
 

@@ -145,16 +145,27 @@ def finite_or(value: Any, default: float = 0.0) -> float:
 
 
 def normalize_score(score: Any) -> float:
-    """归一化分数到 [0.0, 1.0] 区间。非有限值（nan/inf）按 0 处理，不污染融合分。"""
+    """归一化分数到 [0.0, 1.0] 区间。非有限值（nan/inf）按 0 处理，不污染融合分。
+
+    f0.6 W-08（memoh 审计 P1-2）：本系统的 score 量纲是固定的——本地 POC
+    腿自己算余弦（[-1,1]），mem0/Qdrant 腿按集合配置返回余弦相似度，两者
+    都是「越大越相似、1.0 封顶」的余弦语义。旧实现对 >1.0 的值做 sigmoid
+    压缩到 (0.5,1.0]，一旦某后端返回非余弦量纲（点积/内积），1.5 分反而
+    比 1.0 分排得靠后——排序静默反转。现在超界值不压缩：>1.0 按饱和值
+    1.0 处理并打 WARNING（量纲漂移是配置事故，该显性化而不是静默变形成
+    另一种排序）；<0 按语义截 0（明确反相关 = 无证据）。这样归一化在
+    [0,1] 定义域内严格单调，跨量纲混用会以告警暴露而不是悄悄改排序。
+    """
     if score is None:
         return 0.0
     s = finite_or(score, 0.0)
     if s < 0:
         return 0.0
     if s > 1.0:
-        # 对欧氏距离或未归一化大分值，采用 Sigmoidal 平滑压缩到 (0.5, 1.0]
-        # 温度参数 SIGMOIDAL_TEMPERATURE=10.0 保证 s 在 [0, 50] 内具有良好梯度区分度
-        return round(1.0 / (1.0 + math.exp(-s / SIGMOIDAL_TEMPERATURE)), 4)
+        logger.warning(
+            "score 超出 [0,1] 量纲（=%s），按 1.0 饱和——请检查向量后端 "
+            "metric 配置是否从余弦漂移成了点积/距离", s)
+        return 1.0
     return round(s, 4)
 
 
@@ -878,8 +889,15 @@ def mmr_select(scored: List[dict], limit: int,
     pool = list(scored)
     chosen: List[dict] = []
     if protect_ignited:
+        # f0.6 W-09（memoh 审计 P2-6）：点火豁免加上界。此前全部 _ignited
+        # 无条件占位，近重复模板记忆全量点火时 limit 形同虚设（实测 5 条
+        # 点火 + limit=2 返回 5 条），调用方的 token 预算/分栏失准。上界
+        # = limit + min(点火数, ceil(limit*0.5))：豁免仍在（点火条优先占
+        # 位），但总量有声明上界。
+        _ig_all = [it for it in pool if it.get("_ignited")]
+        _ig_cap = limit + min(len(_ig_all), math.ceil(limit * 0.5))
         for it in list(pool):
-            if it.get("_ignited"):
+            if it.get("_ignited") and len(chosen) < _ig_cap:
                 chosen.append(it)
                 pool.remove(it)
     while pool and len(chosen) < limit:

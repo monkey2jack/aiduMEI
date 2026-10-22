@@ -6,7 +6,6 @@ ducky.routes_obsidian — Obsidian 双链同步 (Phase 3)
 import json
 import logging
 import os
-import secrets
 import re
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -128,8 +127,11 @@ def register_obsidian_routes(app: FastAPI) -> None:
                 mem.add(text, user_id=user_id, metadata=meta)
             else:
                 from ducky.dual_index import upsert_local_verbatim
+                # f0.6 W-01 同款错位（cue 审计 A01 顺藤）：此前把
+                # "obsidian-<hex>" 当 text、真笔记 text 当 client 传入——
+                # 向量里存的是随机句柄，正文从没进过本地索引。
                 upsert_local_verbatim(user_id, req.bank_id or "default",
-                                      f"obsidian-{secrets.token_hex(8)}", text)
+                                      text)
 
             # 4. 把双链词直接作为 Entities 存入 SQLite，喂给 TreeMemory
             if wikilinks:

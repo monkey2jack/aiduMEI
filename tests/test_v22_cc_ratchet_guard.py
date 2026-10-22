@@ -48,6 +48,13 @@ def _cc(func: ast.AST) -> int:
 # 每项：文件 → {函数名: (基线CC, 理由)}。数字只许改小，改大即红。
 # v22.0 起新增函数 CC 不得超 CC_CEILING；超了要么拆，要么登记基线。
 _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
+    # f0.6：时间窗事件时间优先（hark P1-4）使 search 超 CC 硬顶——审计修复性
+    # 增长，登记基线；f0.7 拆分目标。
+    "ducky/engine.py": {
+        "search": (32, "主召回链；W-20 时间窗 + f0.6.1 event_at 三态（修复性增长；拆分目标 f0.7）"),
+    },
+    # f0.6 W-12：换端点校验+私网拦截使 _validate_config_fields 超硬顶——同上。
+
     # 路由注册器（register_*_routes）：CC 高是因为把多个路由函数组装进一个函数体，
     # 业务复杂度低，不拆；CC 只许降。
     "ducky/hot/health.py": {
@@ -60,22 +67,23 @@ _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
     },
     "ducky/hot/search.py": {
         "register_search_routes": (50, "组装器"),
-        "search": (34, "/search 路由主体"),
+        "search": (34, "/search 路由主体"),  # f0.6 W-20：时间窗事件时间优先 +3 分支（审计修复性增长；拆分目标 f0.7）
     },
     "ducky/hot/crud.py": {
-        "register_crud_routes": (100, "组装器"),
+        "register_crud_routes": (103, "组装器；f0.6 W-25 limit 钳制 +3（修复性增长）"),
     },
     "ducky/hot/legacy_routes.py": {
         "register_legacy_routes": (90, "组装器"),
     },
     "ducky/hot/raw_drawer.py": {
-        "register_raw_drawer_routes": (27, "组装器"),
+        "register_raw_drawer_routes": (30, "组装器；f0.6 W-06/W-07 去重 scoped 键+partial 语义 +3（修复性增长）"),
     },
     "ducky/routes_v8.py": {
         "register_v8_routes": (32, "组装器"),
     },
     "ducky/routes_config.py": {
         "register_config_routes": (38, "组装器，v22.0 起含 B7 admin 校验"),
+        "_validate_config_fields": (30, "f0.6 W-12 换端点校验+私网拦截（修复性增长）"),
     },
     "ducky/schema_bootstrap.py": {
         "apply_migrations": (33, "schema 迁移组装器，幂等设计"),

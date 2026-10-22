@@ -208,7 +208,15 @@ def test_registered_tools_match_source_and_have_unchanged_schema(monkeypatch):
         isinstance(d.func.value, ast.Name) and d.func.value.id == "mcp" and d.func.attr == "tool"
         for d in n.decorator_list)}
     tools = asyncio.run(server.mcp.list_tools())
-    assert names and names == {tool.name for tool in tools}
+    registered = {tool.name for tool in tools}
+    assert names
+    # f0.6 W-13：破坏性工具默认不注册——装饰存在但未注册的必须是
+    # _GuardedFastMCP.DANGEROUS_TOOL_NAMES 的子集（防其它工具被静默吞掉）。
+    unregistered = names - registered
+    assert unregistered <= server._GuardedFastMCP.DANGEROUS_TOOL_NAMES, (
+        f"非破坏性工具被吞: {unregistered - server._GuardedFastMCP.DANGEROUS_TOOL_NAMES}")
+    if server.mcp._dangerous_allowed:
+        assert names == registered, "开启模式下装饰与注册必须一致"
     add = next(tool for tool in tools if tool.name == "mem_add")
     assert set(add.inputSchema["properties"]) == {"messages", "user_id", "bank_id"}
     assert add.inputSchema["required"] == ["messages"]

@@ -44,7 +44,11 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 692  # f0.3++: +4 in loop_guard.py, explained below.
+_BASELINE = 700  # f0.3++: +4 in loop_guard.py, explained below.
+# f0.6: +7 —— governance.py（W-16 provisional 兜底，降级失败只能宽捕获才能如实上报）、
+# evolve_mem.py（W-02 旧 schema 容错）、utils.py W-04 清道夫（连接清理失败不许炸请求收尾）、
+# wal_engine.py W-18 history 清理（多后端形态只能宽兜+layer_failed）、api_errors.py（脱敏日志路径）。
+# 全部带注释，收窄留待后续重构。
 # Guard admission/accounting must fail open for arbitrary internal failures (2).
 # Sync/async dispatch must count arbitrary tool failures and re-raise them (2).
 # These catches never claim success or rerun the tool; the new fault-injection

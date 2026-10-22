@@ -31,6 +31,18 @@ except ImportError as exc:  # pragma: no cover - depends on optional deployment 
 
 from ducky.utils import api_auth_headers as _auth_headers  # noqa: E402
 
+
+# ── f0.6 W-22（cue 审计 A08）：遗留 API-replay 恢复默认拒绝执行 ─────────
+# 本脚本取 payload.user_id 却不传 bank_id，具名 bank 内容会被按 API 默认
+# bank 重新写入；按 HTTP 200 计成功、无幂等键。正式恢复走
+# docs/BACKUP_RESTORE.md 的 restore_gate（隔离目录+manifest 校验）。
+if os.environ.get("AIDUMEI_LEGACY_RESTORE_ACK") != "yes-this-script-loses-bank-scope":
+    print("[W-22] 拒绝执行：本遗留 replay 恢复不保留 bank 归属。")
+    print("       正式恢复请走 docs/BACKUP_RESTORE.md 的 restore_gate 流程。")
+    print("       应急执行：AIDUMEI_LEGACY_RESTORE_ACK=yes-this-script-loses-bank-scope")
+    raise SystemExit(2)
+
+
 DEFAULT_API = os.environ.get("AIDUMEM_API_BASE", "http://127.0.0.1:8767").rstrip("/")
 
 

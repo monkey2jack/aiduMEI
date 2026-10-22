@@ -8,6 +8,30 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.6.0 (对外 f0.6 · 七路外审整改一次到位 + 两项半落地 · 2026-10-22)
+    用例总数 4250 → 4266（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
+    1. 正确性：raw_drawer/obsidian 本地向量调用参数错位（cue A01 顺藤+1）、
+       遗忘曲线 cron 二次衰减加 salience_at 基准（memoh P0-1）、探针双记账
+       去重+排队不记失败（openchamber P1-1）、召回去重键全文哈希、归一化
+       单调化、点火豁免上界。
+    2. 安全：config 三面统一 require_instance_admin（cue A10 断路同修）、
+       换端点必须给新 key 推广四段+私网/元数据拦截+全外呼禁重定向、
+       MCP 六个破坏性工具默认不注册、trust 缺省 UNVERIFIED+属性白名单、
+       请求级事务清道夫（hark P0-2）、治理 fail-open 改强制 provisional。
+    3. 删除与时间线：mem0 history.db 入删除矩阵（hark P1-1）、墓碑快照 TTL
+       （forget/erase 语义）、时间窗改事件时间优先、valid_to 数值比较、
+       legacy 恢复脚本默认拒绝执行。
+    4. 两项半落地：黄金集质量基线 benchmarks/goldenset.py + goldenset_v1.json
+       （200 条对抗查询+零 token 判分器）· 事件时刻 event_at 写读线全链路贯通
+       （写线透传，读线三级优先：显式事件时刻 > 记录时刻 > 入库时刻，来源标注三态）
+       · 出身策略灰度开关 AIDUMEI_ORIGIN_POLICY。
+    5. 证据与门禁：README/RESULTS 口径对齐+计数勘误（muse S-2/M-6/M-7）、
+       conftest proxy 卫生（openchamber P1-3）、limit 钳 500、chunked 实体
+       字节硬顶（cue A11）、错误回显默认脱敏。
+    6. 裁决销案：CI 维持关闭（维护者裁决）；商标名保持现状；release_scan 盲区实证为误报销案。
+    7. 版本对齐：包版本 0.6.0（pyproject.toml / manifest.json 同步），对外 f0.6
+       入 LINEAGE；PUBLIC_RELEASE_VERSION 同步升至 f0.6（公开正式版）。
+
 v0.5.1 (对外 f0.5.1 · 冷启动速断 · 2026-10-21)
     用例总数 4245 → 4250（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
     1. 冷启动速断：ducky/engine.py 云腿「未证明健康」阶段（ducky/gear.py
@@ -553,13 +577,12 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.5.1"
-FULL_VERSION = "f0.5.1"
-# f0.5 是「外部实锤四修」版（issue #31 Windows 守卫 / fork 审计 F05 载体
-# 身份线 / F06 降级表达 / Z指导复测 6.2 重放退避）。2026-10-21 经维护者
+SERVICE_VERSION = "0.6.0"
+FULL_VERSION = "f0.6"
+# f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
-# 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.5（与 FULL_VERSION 一致）。
-PUBLIC_RELEASE_VERSION = "f0.5"
+# 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
+PUBLIC_RELEASE_VERSION = "f0.6"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -573,6 +596,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.6.0", "", "f0.6", "七路外审整改一次到位：正确性四真雷（raw_drawer 参数错位/遗忘曲线时间基准/探针双记账/事务清道夫）+ 身份线收口（config admin 凭据化/MCP 破坏性工具默认关）+ 删除语义（mem0 history 入矩阵/墓碑 TTL/时间窗事件时间优先）+ 证据口径对齐 · 2026-10-22"),
     ("0.5.1", "", "f0.5.1", "冷启动速断：云腿未证明健康阶段的试探预算（2s 默认，env 可调），超时就地落本地腿——重启后前两轮失忆收口 · 2026-10-21"),
     ("0.5.0", "", "f0.5", "外部实锤四修：Windows import 守卫（issue #31）+ 载体身份线 author_unknown（fork F05）+ 降级表达复位（fork F06）+ 欠账重放指数退避（复测 6.2）· 2026-10-21"),
     ("0.4.0.post2", "", "f0.4++", "Claude Code carrier adaptation: extraction line wired, journal adoption tool, watchdog · 2026-10-16"),

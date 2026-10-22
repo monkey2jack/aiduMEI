@@ -101,11 +101,25 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
                 logger.warning("失败出口释放幂等键失败（key=%s）: %s", k, _re)
 
         def _finalize_raw(resp: dict) -> dict:
-            if req.idempotency_key and idem_state["action"] != "disabled":
-                resp = {**resp, "request_id": req.idempotency_key}
-                idempotency.finalize(
-                    req.idempotency_key, req.user_id, req.bank_id, resp)
-                _idem_claimed.clear()  # P0-1：已落账，失败释放不再适用
+            # f0.6 W-07（cue 审计 A02）：partial 不再被幂等终态固化——只有
+            # 三层全成（status=ok）才 finalize；partial/failed 释放幂等键，
+            # 让同键重试能重新走全流程补齐缺失层，而不是永远回放旧 partial。
+            if resp.get("status") == "ok":
+                if req.idempotency_key and idem_state["action"] != "disabled":
+                    resp = {**resp, "request_id": req.idempotency_key}
+                    idempotency.finalize(
+                        req.idempotency_key, req.user_id, req.bank_id, resp)
+                    _idem_claimed.clear()  # P0-1：已落账，失败释放不再适用
+            else:
+                _release_failed_claim()
+                if resp.get("status") == "partial":
+                    missing = [n for n, ok in (
+                        ("fts", resp.get("fts_indexed")),
+                        ("vector", resp.get("vector_stored")),
+                        ("facts", resp.get("facts_registered")),
+                    ) if not ok]
+                    resp = {**resp, "retryable": True,
+                            "message": f"{resp.get('message', '')}（缺失层: {','.join(missing)}；重试可补齐）"}
             return resp
 
         try:
@@ -138,22 +152,32 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         if req.dedup:
             try:
                 from ducky.text_fts import get_text_conn
+                from ducky.bank_contract import scoped_storage_key, make_scope
                 conn = get_text_conn()
                 # 🔴v20：这条去重查询原本**不带任何租户/域条件** —— 只要内容哈希
                 # 撞上，就把别人的那条当成「已存在」，直接把**其他租户的
                 # memory_id** 回给调用方，同时静默丢弃本次写入。既是跨租户信息
                 # 泄露，也是一次无声的数据丢失（用户以为存进去了）。
                 # 去重必须发生在域内。
+                #
+                # f0.6 W-06（cue 审计 A03）：具名 bank 的存储 ID 走
+                # scoped_storage_key 前缀（user\x1fbank\x1fraw-…），不以
+                # raw- 开头——旧查询 LIKE 'raw-{hash}%' 在具名 bank 永远
+                # 查空，去重静默失效、同文反复堆行。现在按与写入一致的
+                # scoped 精确前缀查，两种域一个口径。
+                _scope = make_scope(req.user_id, req.bank_id)
+                _storage_prefix = scoped_storage_key(f"raw-{content_hash}", _scope)
                 existing = conn.execute(
                     "SELECT id FROM memories WHERE id LIKE ? AND user_id=? AND bank_id=? LIMIT 1",
-                    (f"raw-{content_hash}%", req.user_id, req.bank_id)
+                    (f"{_storage_prefix}%", req.user_id, req.bank_id)
                 ).fetchone()
                 conn.close()
                 if existing:
+                    from ducky.bank_contract import raw_storage_key as _rsk
                     return _finalize_raw({
                         "status": "ok",
                         "action": "dedup_skipped",
-                        "memory_id": existing[0],
+                        "memory_id": _rsk(existing[0], _scope),
                         "message": "内容已存在（去重跳过）",
                         "timing_ms": round((time.time() - t0) * 1000, 1),
                     })
@@ -200,10 +224,18 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
                 vector_ok = True
             else:
                 from ducky.dual_index import upsert_local_verbatim
-                upsert_local_verbatim(
-                    req.user_id, req.bank_id, memory_id, content
-                )
-                vector_ok = True
+                # f0.6 W-01（cue 审计 A01）：此前这里把 memory_id 当正文、
+                # content 当 client 传入（签名是 user_id, bank_id, text,
+                # client=None），底层把错误句柄文本嵌进向量还报成功。改为
+                # 只传正文、client 走仅关键字默认，并采信布尔返回值——
+                # 备胎没写成就是没写成，不再替它报 vector_stored=true。
+                vector_ok = bool(upsert_local_verbatim(
+                    req.user_id, req.bank_id, content,
+                ))
+                if not vector_ok:
+                    logger.warning(
+                        "Raw 本地向量入库失败（upsert_local_verbatim 返回 False）: user=%s bank=%s",
+                        req.user_id, req.bank_id)
         except Exception as e:
             logger.warning(f"Raw 向量入库失败: {e}")
 
@@ -212,6 +244,10 @@ def register_raw_drawer_routes(app: FastAPI) -> None:
         try:
             from ducky.utils import get_facts_conn
             conn = get_facts_conn()
+            # f0.6 W-07 配套：与 FTS 层同理，写入前确保 schema 在位
+            # （独立调用/测试场景此前 no such table 静默 partial）。
+            from ducky.schema_bootstrap import ensure_core_schema
+            ensure_core_schema()
             # 🔴v20 甲6：补 user_id / bank_id 两列作用域戳。
             #
             # facts 的唯一约束是 (agent_id, user_id, bank_id, category, fact_key)

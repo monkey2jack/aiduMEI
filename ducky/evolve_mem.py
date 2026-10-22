@@ -661,18 +661,31 @@ def _apply_salience_delta(memory_id: str, delta: float, reason: str) -> float:
         # 记忆尚未在 salience 表，插入默认值再调整
         now = time.time()
         sal_conn.execute(
-            "INSERT OR IGNORE INTO salience(memory_id, salience, last_access, access_count, created_at) VALUES(?,?,?,?,?)",
-            (memory_id, 0.5, now, 0, now),
+            # f0.6 W-02：插入即带衰减基准，避免走 NULL 回退分支
+            "INSERT OR IGNORE INTO salience(memory_id, salience, last_access, access_count, created_at, salience_at) VALUES(?,?,?,?,?,?)",
+            (memory_id, 0.5, now, 0, now, now),
         )
         old_sal = 0.5
     else:
         old_sal = row["salience"] if hasattr(row, "__getitem__") else row[0]
 
     new_sal = max(0.05, min(1.0, old_sal + delta))
-    sal_conn.execute(
-        "UPDATE salience SET salience=?, last_access=? WHERE memory_id=?",
-        (new_sal, time.time(), memory_id),
-    )
+    try:
+        sal_conn.execute(
+            # f0.6 W-02：写新值即推进衰减基准（新值语义=此刻新鲜值）
+            "UPDATE salience SET salience=?, last_access=?, salience_at=? WHERE memory_id=?",
+            (new_sal, time.time(), time.time(), memory_id),
+        )
+    except sqlite3.OperationalError as _schema_exc:
+        # 旧库无 salience_at 列（迁移未跑到/测试自建旧 DDL）：降级为不带
+        # 基准的旧写法——decay_all 对 NULL 基准按「本次=首次衰减」处理，
+        # 语义安全。教训沿用 lesson_verify 的 is_legacy_schema_error 模式。
+        if "salience_at" not in str(_schema_exc):
+            raise
+        sal_conn.execute(
+            "UPDATE salience SET salience=?, last_access=? WHERE memory_id=?",
+            (new_sal, time.time(), memory_id),
+        )
     sal_conn.commit()
     sal_conn.close()
 

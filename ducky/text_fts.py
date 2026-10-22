@@ -289,6 +289,11 @@ def _index_memory(memory_id, content, user_id=DEFAULT_USER_ID, category=None,
     scope = make_scope(user_id, bank_id)
     storage_id = scoped_storage_key(memory_id, scope)
     conn = get_text_conn()
+    # f0.6 W-07 配套（cue A02）：写入前确保 schema 在位。此前建表只在
+    # api_server 启动钩子里跑——独立调用（测试/脚本/早于启动钩子的路由）
+    # 直接 no such table，FTS 层静默 partial 而调用方只看到「写入继续」。
+    # _ensure_trigram_fts 全程 IF NOT EXISTS，幂等、毫秒级。
+    _ensure_trigram_fts(conn)
     if category is None or memory_type is None:
         # Unspecified fields preserve the prior row independently.
         prev = conn.execute(

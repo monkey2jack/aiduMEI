@@ -8,6 +8,7 @@ Aletheia Memory 设计哲学：
 - 每步决策可追溯、可调试
 """
 
+import hashlib
 import os
 import time
 from ducky.scoring import score_and_rank_candidates, logging
@@ -92,32 +93,44 @@ def _apply_ignition(query: str, candidates: list, enable_ignition: bool):
 
 
 def _dedup_candidates(ignited: list, remaining: list):
-    """Stage 3: 去重 — 相同 memory 文本去重，ignition 优先。返回 (deduped_ignited, deduped_remaining, stage)。"""
+    """Stage 3: 去重 — 相同 memory 文本去重，ignition 优先。返回 (deduped_ignited, deduped_remaining, stage)。
+
+    f0.6 W-05（memoh 审计 P1-1）：去重键从 text[:100] 改为全文 SHA1——
+    前缀截断会把「同模板开头、结论相反」的两条记忆（巡检记录/周报常态）
+    误合并成一条，被丢的恰好是最需要区分的那批，且静默无观测。现在只去
+    真正的全同文本，丢弃数进 stage 可观测。
+    """
     t0 = time.time()
     seen = set()
     deduped_ignited = []
+    dedup_dropped = 0
     for item in ignited:
         if not isinstance(item, dict):
             continue
         text = item.get("memory", "")
-        key = text[:100]
+        key = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()
         if key not in seen:
             seen.add(key)
             deduped_ignited.append(item)
+        else:
+            dedup_dropped += 1
 
     deduped_remaining = []
     for item in remaining:
         if not isinstance(item, dict):
             continue
         text = item.get("memory", "")
-        key = text[:100]
+        key = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()
         if key not in seen:
             seen.add(key)
             deduped_remaining.append(item)
+        else:
+            dedup_dropped += 1
     stage = {
         "name": "dedup",
         "ignited": len(deduped_ignited),
         "remaining": len(deduped_remaining),
+        "dropped": dedup_dropped,
         "ms": int((time.time()-t0)*1000),
     }
     return deduped_ignited, deduped_remaining, stage

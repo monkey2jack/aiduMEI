@@ -186,6 +186,14 @@ app = FastAPI(
     version=SERVICE_VERSION,
 )
 
+
+# f0.6 W-26 施工实录（cue A11）：chunked 超限最初试过三条信号路径——裸异常、
+# 专用 ClientDisconnect 子类 + app 级异常处理器、HTTPException(413)——全部
+# 被 fastapi 路由层 body 读取的 except Exception 包成假 400，或在
+# BaseHTTPMiddleware 的 wrapped_receive 桥接层变形。终版方案在 middleware
+# 内直接分块消费 stream、就地回 413、限额内把 body 塞 request._body 缓存
+# 交下游（_CachedRequest state-3 分支原样转交）——异常根本不产生。
+
 # ── 前端 UI 托管（aiduMEM 自带面板）──────────────────────
 # UI_DIR 指向 frontend/ 目录；未指定时取本文件同级的 frontend/。
 # 访问 / 与 /ui/ 即可打开控制台，页面通过 /api/* 与本服务通信。
@@ -722,16 +730,17 @@ _MAX_BODY_BYTES = 1024 * 1024
 
 @app.middleware("http")
 async def _payload_too_large_guard(request: Request, call_next):
-    """全局 Content-Length 硬顶（v20.4.0-alpha · P0-1）。
+    """全局请求体硬顶（v20.4.0-alpha · P0-1；f0.6 W-26 补 chunked）。
 
     字段级上限（api_models 的 max_length）挡得住「声明了的字段」，挡不住
     「整个请求体就是垃圾」：extra="allow" 的兼容设计意味着未声明字段也能进
-    JSON 解析 —— 10 MB 的匿名 JSON 照样吃内存。所以在鉴权之前按
-    Content-Length 硬顶 1 MiB。
+    JSON 解析 —— 10 MB 的匿名 JSON 照样吃内存。所以在鉴权之前硬顶 1 MiB。
 
-    无 Content-Length 的 chunked 请求**不拦**：拦它就得先读完整 body 再转发，
-    读爆的内存和没拦一样 —— 那一层的职责属于反向代理（nginx
-    client_max_body_size），取舍写在这里而不是假装已覆盖。
+    f0.6 W-26（cue 审计 A11）：无 Content-Length 的 chunked 请求此前**不拦**
+    （旧注释把职责推给反代）——公开入口匿名可发大体积 chunked 流耗资源。
+    现在用 ASGI receive 包装器**边转发边累计实际字节**，超限立即 413 且
+    不进 JSON 解析；内存占用上限=已收到的字节本身，不先读全再检查。
+    Content-Length 声明超限的分支保持原样（不读 body 直接拒）。
 
     注册位置（源码序）：鉴权 → 本闸 → 安全头 → 计数；运行层次即
     计数（最外）→ 安全头 → 本闸 → 鉴权 → 路由 —— 被挡的 413 照样计数、
@@ -750,6 +759,38 @@ async def _payload_too_large_guard(request: Request, call_next):
                 "code": "payload_too_large",
             },
         )
+
+    # W-26：chunked/无长度声明 → 分块消费 stream 累计实际字节。限额内把
+    # 结果塞 request._body 缓存——BaseHTTPMiddleware 的 _CachedRequest 会
+    # 把它原样转交下游（state-3 分支），fastapi 的 body 读取命中缓存不再
+    # 碰原始 receive；超限立即 413，不再拉取后续块（已读上限=1MiB+一块，
+    # 内存可控），response 先行后连接由服务器层收尾。
+    if not raw:
+        from starlette.requests import ClientDisconnect as _W26Disconnect
+        body_buf = bytearray()
+        try:
+            async for chunk in request.stream():
+                body_buf += chunk
+                if len(body_buf) > _MAX_BODY_BYTES:
+                    logger.warning(
+                        "🛑 [Security] chunked 请求体超限：%d 字节 > %d（累计），路径=%s",
+                        len(body_buf), _MAX_BODY_BYTES, request.url.path)
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": f"Request body too large (streamed, no "
+                                      f"Content-Length): exceeds the "
+                                      f"{_MAX_BODY_BYTES}-byte hard cap.",
+                            "code": "payload_too_large",
+                        },
+                    )
+        except _W26Disconnect:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Client disconnected mid-body", "code": "client_disconnected"},
+            )
+        request._body = bytes(body_buf)  # 交下游（含空 body——GET 等无体请求也走这）
+    return await call_next(request)
     return await call_next(request)
 
 
@@ -815,14 +856,22 @@ async def _record_http_outcome(request: Request, call_next):
     """
     # P1-9（收口后修正）：给本次请求盖借用上下文戳。contextvars 随 anyio 线程池传播到同步路由的
     # 工作线程，utils 据此把「同一请求嵌套借连接」与「上一个请求留下悬挂事务」分开 —— 后者才计数。
-    from ducky.utils import BORROW_CONTEXT as _BORROW_CONTEXT
-    _BORROW_CONTEXT.set(_uuid.uuid4().hex)
+    from ducky.utils import BORROW_CONTEXT as _BORROW_CONTEXT, rollback_dangling_for_context as _tx_janitor
+    _ctx_token = _BORROW_CONTEXT.set(_uuid.uuid4().hex)
     from ducky import http_metrics
     try:
         response = await call_next(request)
     except Exception:
         http_metrics.record(500)
         raise
+    finally:
+        # f0.6 W-04（hark 审计 P0-2）：请求级事务清道夫。此前只检测不回滚——
+        # 请求 X 执行了 INSERT/UPDATE 但 commit 前抛异常，同线程下一个无关
+        # 请求 Y 的任何一次 commit 会把 X 的半截写一起提交（AST 扫描 69 处
+        # 写路径无回滚）。现在请求收尾时按上下文戳回滚「本请求开启但未提交」
+        # 的事务；嵌套借用不受影响（戳相同不回滚）。
+        _tx_janitor(_BORROW_CONTEXT.get())
+        _BORROW_CONTEXT.reset(_ctx_token)
     http_metrics.record(response.status_code)
     return response
 

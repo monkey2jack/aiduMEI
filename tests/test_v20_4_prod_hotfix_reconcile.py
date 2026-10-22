@@ -108,7 +108,7 @@ class TestVisionRequestIdentifiesItself:
                         "usage": {"prompt_tokens": 1, "completion_tokens": 1,
                                   "total_tokens": 2}}
 
-        def _fake_post(url, headers=None, json=None, timeout=None):
+        def _fake_post(url, headers=None, json=None, timeout=None, allow_redirects=False):
             captured["url"] = url
             captured["headers"] = headers or {}
             return _Resp()

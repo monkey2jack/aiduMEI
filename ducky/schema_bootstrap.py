@@ -130,6 +130,7 @@ _INDEXES = (
 
 _lock = threading.Lock()
 _done = False
+_done_paths: set = set()
 
 CURRENT_SCHEMA_VERSION = 9  # v21.2 Memmy 融改：memory_epistemic 补溯源三列（回声抑制 M2 的数据面）；v21.1 众神殿：pantheon_halls 殿注册表 + hall_grants 跨殿借阅；v21.0 收口：memory_epistemic sidecar；v21 preview: epistemic 出身标签 + provenance 三件套 + 两新表
 
@@ -437,14 +438,30 @@ def apply_migrations(conn) -> None:
 
 
 def ensure_core_schema(force: bool = False) -> dict:
-    """幂等建表。返回本次实际新建的表名列表。"""
+    """幂等建表。返回本次实际新建的表名列表。
+
+    f0.6 修正：完成标记从进程级布尔改为**按库路径**记忆——此前测试进程里
+    收集期先在会话级 DATA_DIR 跑过一次 ensure（_done=True），随后 app_rig
+    夹具把 AIDUMEM_DATA_DIR 指到 tmp_path，路由线程新连接打开的是**空库**，
+    但 ensure 被 _done 短路 → no such table → /add/raw partial（lab 全量
+    二分定位实录）。路径变了就该重新 ensure；幂等性由 CREATE IF NOT EXISTS
+    保证，重复调用零成本。
+    """
     global _done
     with _lock:
-        if _done and not force:
-            return {"status": "ok", "skipped": True, "created_tables": []}
-
         created: list[str] = []
         conn = get_facts_conn()
+        # f0.6 修正（二改）：完成标记的 key 取**连接实际打开的库路径**——
+        # ducky.utils.DATA_DIR 在 import 期冻结，monkeypatch.setenv 换目录后
+        # 冻结值不变，拿它当 key 会把新库的 ensure 短路掉（lab 全量实录）。
+        # PRAGMA database_list 给的是这条连接真正打开的文件。
+        try:
+            _row = conn.execute("PRAGMA database_list").fetchone()
+            _done_key = str(_row[2]) if _row else "unknown"
+        except Exception:
+            _done_key = "unknown"
+        if _done and not force and _done_key in _done_paths:
+            return {"status": "ok", "skipped": True, "created_tables": []}
         try:
             for name, ddl in (
                 ("facts", _FACTS_DDL),
@@ -497,6 +514,7 @@ def ensure_core_schema(force: bool = False) -> dict:
 
             conn.commit()
             _done = True
+            _done_paths.add(_done_key)
         except Exception as exc:
             logger.error("核心 schema 建表异常（服务继续启动）: %s", exc)
             return {"status": "error", "detail": str(exc), "created_tables": created}

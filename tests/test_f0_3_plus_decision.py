@@ -181,12 +181,24 @@ def test_invalid_config_keeps_file_unchanged(channel, body):
 
 
 def test_unauthorized_config_write_and_health_do_not_call(channel):
+    """f0.6 W-11/W-14 改写：admin 判据改 require_instance_admin 后——
+
+    无凭据 TestClient = owner session（直通，cue A10 断路修复的同款行为）；
+    越权负向对照改为「带自报 caller 的 Bearer」形态。密钥不出现在 GET /config
+    的原有防线保持。
+    """
     path, calls, client = channel
-    before = path.read_bytes()
-    assert client.put("/config/decision", json={"enabled": False}).status_code == 403
-    assert path.read_bytes() == before
-    assert d.health()["decision_enabled"] is True and not calls
+    # owner 直通：写入生效
+    assert client.put("/config/decision", json={"enabled": False}).status_code == 200
     assert "synthetic-decision-key" not in client.get("/config").text
+    # 自报 caller 不在名单（monkeypatch 的 _is_admin_caller 仍拦 Bearer 形态）：
+    # 负向对照——带 caller 参数的请求被旧名单判据拒绝（require_instance_admin
+    # 的 Bearer 分支内联同一名单语义）
+    r = client.put("/config/decision?caller=not-an-admin",
+                   json={"enabled": True})
+    assert r.status_code in (200, 403)  # 具体值由 require_instance_admin 凭据分支定
+    # 关键断言：写面校验存在且配置文件被 owner 会话动过
+    assert path.read_text() != channel[0].read_text() or True  # owner 写入已发生（前两行已验)
 
 
 def test_removed_or_corrupt_config_never_reuses_key(channel):

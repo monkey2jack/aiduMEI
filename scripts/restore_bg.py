@@ -7,6 +7,19 @@ _REPO = os.environ.get("AIDUMEM_HOME") or os.path.dirname(
 sys.path.insert(0, _REPO)
 os.chdir(_REPO)
 
+
+# ── f0.6 W-22（cue 审计 A08）：遗留恢复工具默认拒绝执行 ─────────────────
+# 本脚本按 user_id 硬编码 default、不保留 bank 归属：具名 bank 的内容会被
+# 写进 default 域（跨域污染），且按 HTTP 200 计成功、无幂等键。正式恢复
+# 入口是 docs/BACKUP_RESTORE.md 的 restore_gate 隔离流程。确要冒险执行
+# （如单主人 default-only 库的应急回灌），必须显式设置环境变量声明知情。
+if os.environ.get("AIDUMEI_LEGACY_RESTORE_ACK") != "yes-this-script-loses-bank-scope":
+    print("[W-22] 拒绝执行：本遗留恢复脚本会把所有内容写进 default 域、丢失 bank 归属。")
+    print("       正式恢复请走 docs/BACKUP_RESTORE.md 的 restore_gate 流程。")
+    print("       单主人 default-only 库应急执行：AIDUMEI_LEGACY_RESTORE_ACK=yes-this-script-loses-bank-scope")
+    sys.exit(2)
+
+
 from ducky.utils import get_facts_conn
 
 # 🔴P0-1（v19.4.1）：凭据从 ducky.utils 统一取（环境变量 → .env 兜底）。

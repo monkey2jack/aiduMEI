@@ -517,8 +517,23 @@ def govern_fact_write(conn, fact_id: int, category: str, fact_key: str,
             result.update(route="llm_eval")
         return result
     except Exception as exc:
-        logger.warning("治理管线降级（写入继续）: %s", exc)
+        # f0.6 W-16（cue 审计 A04）：治理故障不再「写入继续+当通过」。
+        # 此前任何异常都返回 route=skipped，而调用方把 skipped 视为放行——
+        # candidate 表插入失败时新事实保持正常状态，未经审计的内容就此
+        # 洗白。现在降级为强制 provisional（待审降权），隔离而非放行；
+        # 原文不丢（产品目标不变），但不会以正式事实身份被召回。
+        logger.warning("治理管线故障，事实强制转 provisional 待审（原降级放行已废除）: %s", exc)
         result["reason"] = str(exc)[:120]
+        try:
+            _set_provisional(conn, fact_id)
+            result["route"] = "governance_failed_provisional"
+            result["degraded"] = True
+        except Exception as _pexc:
+            # 连降权都失败（事务已坏）：如实上报失败，绝不静默装通过
+            logger.error("治理降级失败且 provisional 也失败（fact_id=%s）: %s", fact_id, _pexc)
+            result["route"] = "governance_failed"
+            result["degraded"] = True
+            result["reason"] = f"{result['reason']}; provisional also failed: {_pexc}"[:200]
         return result
 
 
