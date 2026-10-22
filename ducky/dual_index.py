@@ -110,9 +110,14 @@ def verbatim_local_pid(user_id: str, bank_id: str, text: str) -> str:
 
 
 def upsert_local_verbatim(user_id: str, bank_id: str, text: str,
-                          client=None) -> bool:
+                          *, client=None) -> bool:
     """原文本地向量（lite 挡召回语料）：id 由 (原文哈希, 域) 确定性派生 ——
-    同一句原文重发不堆点（与 verbatim 幂等去重同语义）。"""
+    同一句原文重发不堆点（与 verbatim 幂等去重同语义）。
+
+    f0.6 W-01（cue 审计 A01）：client 改仅关键字参数——此前位置参数
+    形态下，调用方把 memory_id 误当 text、content 误当 client 传入
+    （raw_drawer.py），底层拿错误句柄嵌向量还报成功。仅关键字让同类
+    错位在调用期直接 TypeError，而不是静默写坏。"""
     import hashlib
     from datetime import datetime
     text = (text or "").strip()

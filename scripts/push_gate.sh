@@ -156,26 +156,31 @@ fi
 # 全量本地测试、静态、编译、完整词表扫描及生产实机验收仍是硬闸。
 # 查询失败继续按失败处理，不把未知状态冒充已核对。
 WF_STATE=$("$PY" - <<'EOF'
-import json, os, urllib.request
-try:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    request = urllib.request.Request(
+import json, os, time, urllib.request
+for attempt in range(3):
+    try:
+        headers = {"Accept": "application/vnd.github+json"}
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        request = urllib.request.Request(
         "https://api.github.com/repos/monkey2jack/aiduMEI/actions/workflows", headers=headers
-    )
-    with urllib.request.urlopen(
-        request, timeout=15
-    ) as r:
-        data = json.load(r)
-    for wf in data.get("workflows", []):
-        if wf.get("path") == ".github/workflows/test.yml":
-            print(wf.get("state", "unknown")); break
-    else:
-        print("missing")
-except Exception:
-    print("unreachable")
+        )
+        with urllib.request.urlopen(
+            request, timeout=15
+        ) as r:
+            data = json.load(r)
+        for wf in data.get("workflows", []):
+            if wf.get("path") == ".github/workflows/test.yml":
+                print(wf.get("state", "unknown")); break
+        else:
+            print("missing")
+        break
+    except Exception:
+        if attempt == 2:
+            print("unreachable")  # f0.6：重试 3 次仍不通才判 unreachable
+        else:
+            time.sleep(5)  # GitHub API 间歇抖动不该作废跑满 6 分钟的前四关
 EOF
 )
 echo "$WF_STATE" > "$GATE_TMP/workflow.log"

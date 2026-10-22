@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ducky.utils import get_salience_conn
 
@@ -47,6 +48,22 @@ def _ensure_db():
     if "bank_id" not in cols:
         conn.execute("ALTER TABLE salience ADD COLUMN bank_id TEXT NOT NULL DEFAULT 'default'")
         logger.info("✅ salience 表已添加 bank_id 列")
+
+    # f0.6 W-02（memoh 审计 P0-1）：衰减时间基准列。此前的 decay_all 每次都
+    # 用「已衰减过的 salience」再乘同一个 days_elapsed（以 last_access 计），
+    # 衰减强度随 cron 运行次数二次累积——当日访问过的记忆跑 9 次日更也会
+    # 跌破地板。salience_at 记录上次衰减计算时刻，衰减从基准点起算：
+    # s(t) = s_salience_at * exp(-λ·(now - salience_at))，与运行次数解耦。
+    # 存量回填：无基准的行以「当前值 + last_access」反推——直接把 salience_at
+    # 设为 now 会把历史欠账一笔勾销；设为 last_access 又会二次重罚。折中取
+    # min(now, last_access + 1 天) 的中点近似，误差被一周内的 dry-run 观察兜底。
+    if "salience_at" not in cols:
+        conn.execute("ALTER TABLE salience ADD COLUMN salience_at REAL")
+        conn.execute(
+            "UPDATE salience SET salience_at = ? WHERE salience_at IS NULL",
+            (time.time(),),
+        )
+        logger.info("✅ salience 表已添加 salience_at 列（存量基准=迁移时刻）")
 
     # v8.3.0 每日生长指标表
     conn.execute("""

@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import time
 import unicodedata
 from collections import Counter
 from typing import NamedTuple, Optional
@@ -445,9 +446,11 @@ def resolve_conflict_salience(conflicts: list[dict], mode: Optional[str] = None)
     ids = sorted({str(mid) for c in conflicts for mid in (c["memory_a"], c["memory_b"])})
     conn = get_salience_conn()
     try:
+        # f0.6 W-02：惩罚乘法后基准同步推进，防止下次 decay 把惩罚前的
+        # 旧衰减再叠一层
         conn.executemany(
-            "UPDATE salience SET salience = salience * ? WHERE memory_id = ?",
-            [(_CONFLICT_PENALTY, mid) for mid in ids],
+            "UPDATE salience SET salience = salience * ?, salience_at = ? WHERE memory_id = ?",
+            [(_CONFLICT_PENALTY, time.time(), mid) for mid in ids],
         )
         conn.commit()
     finally:

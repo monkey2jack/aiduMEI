@@ -69,8 +69,16 @@ def _publish(path: Path, value: dict) -> None:
 
 def begin(repo: Path, evidence: Path) -> None:
     source = _snapshot(repo)
+    _proxy_vars = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
+                   "http_proxy", "https_proxy", "all_proxy", "ftp_proxy")
+    _proxy_present = sorted(v for v in _proxy_vars if os.environ.get(v))
     _publish(evidence / "environment.json", {
         "python": sys.version, "executable": str(Path(sys.executable).resolve()),
+        # f0.6 W-24（openchamber P1-3）：「全绿」从此带环境坐标——回环 HTTP
+        # 用例对代理环境敏感（带代理 44 红的教训），回执必须声明 proxy 面。
+        "proxy_env_vars_present": _proxy_present,
+        "proxy_scrubbed": not _proxy_present,
+        "platform": f"{sys.platform}/{os.uname().machine}",
         "packages": {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()},
         "required_steps": REQUIRED_STEPS,
         "trust_boundary": "trusted runner; same-user mutation is not prevented",

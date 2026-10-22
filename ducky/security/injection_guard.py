@@ -349,7 +349,15 @@ def wrap_memory_context_sandbox(
             mid = item.get("id") or item.get("memory_id") or f"idx-{idx}"
             mtype = item.get("memory_type") or item.get("type") or "FACTS"
             mcontent = item.get("memory") or item.get("content") or item.get("fact_value") or ""
-            trust = item.get("trust", "VERIFIED")
+            # f0.6 W-15（muse M-8 / hark P1-3）：trust 缺省从 VERIFIED 改为
+            # UNVERIFIED——此前所有不带 trust 字段的记忆（生产三个调用点
+            # 全部不带）被无差别标成已验证递给 LLM，等于给从不可信来源
+            # 自动抽取的内容盖章，反向放大投毒可信度。fail-closed。
+            trust = item.get("trust") or "UNVERIFIED"
+            # 属性值白名单：id/type/trust 只允许安全字符，防伪造属性
+            # （nonce 防伪造闭合，防不了属性内注入）。
+            _safe = lambda v: re.sub(r"[^A-Za-z0-9_\-:.]", "", str(v))[:64] or "unknown"
+            mid, mtype, trust = _safe(mid), _safe(mtype), _safe(trust)
             lines.append(
                 f"<<<RECORD_START:{nonce} id='{mid}' type='{mtype}' trust='{trust}'>>>\n"
                 f"{neutralize_boundary_markers(mcontent.strip())}\n"

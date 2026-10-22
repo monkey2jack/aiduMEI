@@ -222,14 +222,33 @@ class RecallEngine:
                             raw_res = _fut.result(timeout=_budget)
                             record_cloud_success()
                         except _cf.TimeoutError:
-                            _fut.add_done_callback(
-                                lambda f: (
-                                    record_cloud_success()
-                                    if f.done() and f.exception() is None
-                                    else record_cloud_failure(str(f.exception())[:120])
-                                ) if f.done() else None)
-                            raise TimeoutError(
-                                f"cloud probe exceeded cold-start budget {_budget}s")
+                            # f0.6 W-03（openchamber 审计 P1-1）双修：
+                            # ①记账去重——此前超时分支双路径记账（回调迟到
+                            #   失败一次 + raise 进外层 except 一次），一次
+                            #   超时 consec_failures +2，契约「3 连败熔断」
+                            #   2 个请求就触发。现在超时只由外层 except 记
+                            #   一次账，回调只处理「迟到成功」清零。
+                            # ②排队误判——单线程执行器上，前一个探针还挂着
+                            #   时后续探针只进队列从未启动（fut.running() 为
+                            #   False），它没产生任何关于云腿健康的事实，不
+                            #   记失败、只落本地腿。
+                            if not _fut.running() and not _fut.done():
+                                logger.warning(
+                                    "冷启动探针排队未启动（执行器忙），本请求落本地腿不记云失败")
+                                _set_recall_telemetry(
+                                    vector_leg="local_fallback",
+                                    error="probe queued (executor busy)")
+                                raw_res = None
+                                _skip_local_fallback = False
+                            else:
+                                _fut.add_done_callback(
+                                    lambda f: (
+                                        record_cloud_success()
+                                        if f.done() and f.exception() is None
+                                        else None
+                                    ) if f.done() else None)
+                                raise TimeoutError(
+                                    f"cloud probe exceeded cold-start budget {_budget}s")
                     else:
                         raw_res = _cloud_probe()
                         record_cloud_success()
@@ -277,11 +296,26 @@ class RecallEngine:
             for item in candidates:
                 if not isinstance(item, dict):
                     continue
-                ts_raw = item.get("created_at") or (item.get("metadata") or {}).get("recorded_at") or ""
+                # f0.6 W-20（hark P1-4）：时间窗改按**事件时间**优先。旧实现
+                # created_at（入库时间）优先——导入历史聊天/补录旧事/跑
+                # LoCoMo 时窗口全错，与「事件时间与入库时间分开」的 README
+                # 承诺相反。现在 recorded_at（事件时间，f0.1 verbatim 修复
+                # 引入的仓库约定）优先，缺失回落 created_at，并在条目标
+                # time_basis 供调用方/遥测判读。
+                _md = item.get("metadata") or {}
+                # f0.6.1：event_at（显式事件时刻）最高优先，其次 recorded_at，最后 created_at
+                ts_raw = (_md.get("event_at") or item.get("event_at")
+                          or _md.get("recorded_at") or item.get("recorded_at")
+                          or item.get("created_at") or "")
                 prefix = _date_prefix(str(ts_raw))
                 if not prefix:
                     kept.append(item)
+                    item["time_basis"] = "unparsed"
                     continue
+                _has_event = _md.get("event_at") or item.get("event_at")
+                _has_rec = _md.get("recorded_at") or item.get("recorded_at")
+                item["time_basis"] = ("event_explicit" if _has_event
+                                      else "event" if _has_rec else "ingested_fallback")
                 if b_prefix and prefix > b_prefix:
                     continue
                 if a_prefix and prefix < a_prefix:

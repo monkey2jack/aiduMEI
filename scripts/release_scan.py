@@ -316,6 +316,10 @@ def scan_bytes_with_public_baseline(
     raw: bytes, words: list[str], public_words: frozenset[str], baseline_raw: bytes,
     reviewed_lines: dict[str, int] | None = None,
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
+    # f0.6 注：reviewed_lines 的键来自调用方 policy.reviewed.get(repo_rel)——
+    # repo_rel 是**相对仓库根**的路径。此前 rel（报告显示名）在单文件目标下
+    # 是 basename，曾让人误以为本函数也要 basename——不，键的一致性在调用方
+    # 保证，这里只管按 digest 消费。
     """Classify public words only on byte-identical inherited lines.
 
     A Counter prevents one old line from excusing extra copies in the new tree.

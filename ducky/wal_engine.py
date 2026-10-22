@@ -881,6 +881,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "skill_crystals":   ("exempt", "f0.3（C9）技能结晶表：全局表、无 user_id/bank_id 列，内容由 fact_key/类目统计派生（不存记忆正文）；无归属列故 delete_all 无法按域清理，列入 not_cleared 并附现存行数，让调用方看见残留规模"),
     # ── facts.db 之外的存储 ──
     "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
+    "store:mem0_history": ("clean", "f0.6 W-18（hark P1-1）：mem0 history.db——此前不在矩阵里，而 mem0 2.2.1 的删除动作本身会**新写一行带原文的 DELETE 历史**（add_history(prev_value, None, 'DELETE')），ADD/UPDATE 历史行同样带原文；删除承诺必须覆盖它（§19）"),
     "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),
     "store:salience":   ("clean",  "按本租户已删 memory_id 集合清理（§4，表无租户列）"),
     "store:evolve":     ("clean",  "按本租户已删 memory_id 集合清理（§5，检索质量信号）"),
@@ -1079,6 +1080,9 @@ def cascade_delete_all(
 
         if mem is not None:
             _cascade_all_vectors(mem, scope, res, _layer_failed, _tenant_memory_ids)
+            # 1b. mem0 history.db（f0.6 W-18）：必须在向量删除之后——
+            # mem0 的删除动作自己会补写 DELETE 历史行，晚一步才清得掉它。
+            _cascade_all_mem0_history(scope, res, _layer_failed, _tenant_memory_ids)
 
         # 2. FTS5 / 3. facts.db / 3b. memory_types（各层的「为什么」随实现搬走）
         _cascade_all_fts(scope, res, _layer_failed, _tenant_memory_ids)
@@ -1784,6 +1788,46 @@ def _cascade_all_vectors(
         logger.warning("mem0 作用域清理失败（未调用无作用域 delete_all）: %s", e)
         layer_failed("mem0_vectors", e)
         res["vector_enumeration_complete"] = False
+
+
+def _cascade_all_mem0_history(
+    scope: Any, res: Dict[str, Any], layer_failed: Any, tenant_ids: set
+) -> None:
+    """§19 mem0 history.db 作用域清理（f0.6 W-18）。
+
+    mem0 删除向量后会补写一行 DELETE 历史（含删除前原文），ADD/UPDATE 的
+    历史行同样含正文。必须在向量删除**之后**执行，把本租户全部 memory_id
+    的历史行一并清掉——既覆盖存量 ADD/UPDATE 历史，也覆盖本次删除刚刚补写
+    的 DELETE 行。history.db 无租户列，按 memory_id 精确集合删。
+    """
+    try:
+        if not tenant_ids:
+            res["mem0_history_cleared"] = 0
+            return
+        from ducky.mem0_runtime import get_history_db_path
+        history_path = get_history_db_path()
+        if not history_path or not os.path.exists(history_path):
+            res["mem0_history_cleared"] = 0
+            return
+        import sqlite3 as _sq
+        hconn = _sq.connect(history_path)
+        try:
+            ids = [str(i) for i in tenant_ids if i]
+            removed = 0
+            chunk = 200
+            for i in range(0, len(ids), chunk):
+                ph = ",".join("?" * len(ids[i:i + chunk]))
+                removed += hconn.execute(
+                    f"DELETE FROM history WHERE memory_id IN ({ph})",
+                    ids[i:i + chunk],
+                ).rowcount or 0
+            hconn.commit()
+            res["mem0_history_cleared"] = removed
+        finally:
+            hconn.close()
+    except Exception as e:
+        logger.warning("mem0 history 清理失败: %s", e)
+        layer_failed("mem0_history", e)
 
 
 def _cascade_all_fts(

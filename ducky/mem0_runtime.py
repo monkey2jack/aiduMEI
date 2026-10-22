@@ -191,6 +191,7 @@ def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) ->
     import requests as req
     r = req.post(
         f"{cfg['base_url']}/rerank",
+        allow_redirects=False,  # f0.6 W-12：禁重定向（同 llm/decision 段）
         headers={
             "Authorization": f"Bearer {cfg['api_key']}",
             "Content-Type": "application/json",
@@ -218,6 +219,7 @@ def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dic
     import requests as req
     r = req.post(
         "https://api.jina.ai/v1/rerank",
+        allow_redirects=False,  # f0.6 W-12：禁重定向
         headers={
             "Authorization": f"Bearer {cfg['api_key']}",
             "Content-Type": "application/json",
@@ -245,6 +247,7 @@ def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[d
     import requests as req
     r = req.post(
         "https://api.cohere.com/v1/rerank",
+        allow_redirects=False,  # f0.6 W-12：禁重定向
         headers={
             "Authorization": f"Bearer {cfg['api_key']}",
             "Content-Type": "application/json",
@@ -276,6 +279,7 @@ def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int
     url = f"{base}/rerank" if not base.endswith('/rerank') else base
     r = req.post(
         url,
+        allow_redirects=False,  # f0.6 W-12：禁重定向
         headers={"Authorization": f"Bearer {cfg['api_key']}",
                  "Content-Type": "application/json"},
         json={
@@ -683,6 +687,27 @@ def _mem0_builtin_default_paths() -> tuple[str, str]:
     except (ImportError, AttributeError, TypeError, ValueError):
         pass
     return qdrant_default, history_default
+
+
+def get_history_db_path() -> str:
+    """f0.6 W-18（hark P1-1）：返回 mem0 history.db 的生效路径。
+
+    优先配置文件里的 history_db_path，缺省回落 mem0 内建默认
+    （_mem0_builtin_default_paths 探针实读）。供删除链 §19 按域清历史行。
+    """
+    try:
+        cfg = _read_resolved_mem0_config()
+        hist = (cfg.get("history_db_path") or "").strip()
+        if hist:
+            return os.path.expanduser(hist)
+        llm = cfg.get("llm") or {}
+        hist = str((llm.get("config") or {}).get("history_db_path") or "").strip()
+        if hist:
+            return os.path.expanduser(hist)
+    except Exception:
+        pass
+    _, history_default = _mem0_builtin_default_paths()
+    return history_default
 
 
 def vector_path_consistency() -> dict:

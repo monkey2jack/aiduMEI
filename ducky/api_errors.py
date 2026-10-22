@@ -19,8 +19,47 @@
 
 from __future__ import annotations
 
+import logging
+import os
+
+logger = logging.getLogger("aiduMEM.api_errors")
+
 _MAX_RAW = 160
 
+def _expose_raw_errors() -> bool:
+    """f0.6 W-32（muse L-1 / cue §5）：原始异常正文默认不出网。
+
+    前 160 字符可能含文件路径 / SQL 片段 / 上游端点地址——对运维有价值，
+    对「能调接口的任何人」是内部信息。诊断开关 AIDUMEI_EXPOSE_RAW_ERRORS=1
+    保留旧行为（自托管调试用），默认响应只留类别与指引，原始错误进日志。
+    """
+    return os.environ.get("AIDUMEI_EXPOSE_RAW_ERRORS", "0").strip().lower() in ("1", "true", "yes")
+
+
+_SAFE_ERROR_CLASSES = {
+    # 业务校验类：message 是服务端自己写的诊断语（含 bank_id 等调用方需要
+    # 的字段信息），不含路径/SQL/端点——默认保留原文。
+    "BankScopeError", "BankScopeValidationError", "ValueError", "KeyError",
+}
+
+_INTERNAL_ERROR_MARKERS = (
+    # 库层异常特征：默认脱敏（路径/SQL/连接串风险）
+    "sqlite3", "no such column", "no such table", "sql:", "Traceback",
+    "File \"", "/data/", "/home/", "/root/", ".py", "http://", "https://",
+)
+
+def _raw_is_sensitive(exc: Exception, raw: str) -> bool:
+    """f0.6 W-32 折衷（muse L-1 / cue §5 与既有「错误带病因」用例的交集）：
+    业务校验类错误保留原文（调用方要靠它知道哪个字段错）；库层异常
+    （可能带路径/SQL/端点）默认脱敏，只给类别。AIDUMEI_EXPOSE_RAW_ERRORS=1
+    恢复全量原文（自托管调试）。"""
+    if exc.__class__.__name__ in _SAFE_ERROR_CLASSES:
+        return False
+    # 锁库/busy：诊断关键（运维要知道是锁不是逻辑错）且不含路径——不脱敏
+    low = raw.lower()
+    if ("locked" in low or "busy" in low) and "no such" not in low:
+        return False
+    return any(m in raw for m in _INTERNAL_ERROR_MARKERS) or         exc.__class__.__module__.startswith(("sqlite3", "requests", "httpx", "socket"))
 
 def api_error_detail(exc: Exception, *, hint: str = "") -> str:
     """把服务端异常翻译成对外正文：先说这是什么性质的错，再附原始错误。
@@ -29,7 +68,12 @@ def api_error_detail(exc: Exception, *, hint: str = "") -> str:
     至少告诉了调用方两件事：**不是你的参数写错了**，以及**去哪儿看状态**。
     """
     raw = str(exc).strip() or exc.__class__.__name__
-    tail = f"原始错误：{raw[:_MAX_RAW]}"
+    if _expose_raw_errors() or not _raw_is_sensitive(exc, raw):
+        tail = f"原始错误：{raw[:_MAX_RAW]}"
+    else:
+        logger.warning("对外错误脱敏：原始异常留日志（AIDUMEI_EXPOSE_RAW_ERRORS=1 可恢复旧行为）: %s",
+                       raw[:_MAX_RAW])
+        tail = f"错误类别：{exc.__class__.__name__}（详情见服务端日志）"
     guide = hint.strip() or "可用 GET /health 查看 degraded 与 degraded_details 确认组件状态"
     return f"服务端处理失败（非调用参数问题）。{guide}。{tail}"
 

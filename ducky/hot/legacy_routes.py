@@ -664,6 +664,9 @@ def register_legacy_routes(app):
     @app.get("/scene")
     def list_scenes(category: str = None, limit: int = 20,
                     user_id: str = "", bank_id: str = ""):
+        # f0.6 W-25（muse H-1）：/scene 无作用域即可枚举全租户场景摘要，
+        # limit 再不设上界就是放大器；钳 500。
+        limit = max(1, min(int(limit or 20), 500))
         conn = _get_scenes_conn()
         _ensure_scenes_table(conn)  # 🔴6：保证表存在，避免开箱 500
         # v20 P0-2：作用域过滤 opt-in；不传 = v19 管理员全量视图（存量零改动）

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from functools import partial
 import logging
@@ -677,6 +678,19 @@ def register_add_routes(app: FastAPI) -> None:
             # 合并会把旧记忆的 recorded_at 覆盖成「现在」，破坏 before/
             # after 时间推理。因此只在新增落库时补，合并不受影响。
             md.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
+            # f0.6.1：event_at（事件发生时间）显式透传——调用方补录旧事时用；未传不造
+            # （与 recorded_at 的语义分界：recorded_at=记录时刻兜底，event_at=事实发生时刻）
+            if "event_at" in (req.metadata or {}):
+                md["event_at"] = req.metadata["event_at"]
+            # f0.6.1 出处矩阵灰度开关（hark P1-2 / cue A12 的落点）：
+            # on 时客户端自报的 _origin_is_bot 不再采信为"用户亲述"凭证——
+            # Bearer 调用方一律按 ai_inferred 处理，user_provided 只留给
+            # UI 会话主人（require UI session）。默认 off 保持现行为。
+            if os.environ.get("AIDUMEI_ORIGIN_POLICY", "0").strip().lower() in ("1", "true", "yes"):
+                from ducky.security.auth import current_request_auth_kind
+                if current_request_auth_kind() == "bearer":
+                    md["_origin_is_bot"] = 1
+                    md.pop("_origin_agent", None) or md.setdefault("_origin_agent", "bearer-caller")
 
             # --- 🚀 v18.3 核心：原生多模态支持 (Phase 2) ---
             media_url = md.get("media_url") or md.get("image_url") or (extra.get("media_url") if isinstance(extra, dict) else None)
@@ -684,7 +698,9 @@ def register_add_routes(app: FastAPI) -> None:
             if media_url:
                 # 检查 Vision 模块开关
                 try:
-                    import os
+                    # f0.6.1：os 已在模块顶层导入（本轮补）——此处的函数内
+                    # import os 会遮蔽顶层名，让同函数前段的 os 引用炸
+                    # UnboundLocalError（94 条连坐失败根因），删。
                     from ducky.mem0_runtime import MEM0_CONFIG
                     if os.path.exists(MEM0_CONFIG):
                         with open(MEM0_CONFIG) as f:

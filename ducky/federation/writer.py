@@ -290,7 +290,12 @@ def _insert_fact_branch(conn, *, category, fact_key, fact_value, source, agent_i
         gov = govern_fact_write(conn, fact_id, category, fact_key, fact_value,
                                 user_id=source or DEFAULT_USER_ID)
     except Exception as ge:
-        logger.debug("联邦治理钩子跳过: %s", ge)
+        # f0.6 W-16（cue A04）：治理钩子炸穿（govern_fact_write 自身也抛）
+        # 时不再伪装成 skipped 放行——直接标 governance_failed，让调用方
+        # 与巡检看见「这条事实没过治理」。
+        logger.warning("联邦治理钩子异常（事实未过治理）: %s", ge)
+        gov = {"route": "governance_failed", "degraded": True,
+               "reason": str(ge)[:120]}
     conn.commit()
     return fact_id, upsert_action, gov
 
