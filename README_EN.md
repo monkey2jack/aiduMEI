@@ -9,8 +9,8 @@
 > Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.6** (package `0.6.0`, 2026-10-22). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6).
-> This release closes out the seven-audit remediation and lands the two-and-a-half items: fixes the four hard defects (parameter mismatch / salience timeline / double-counted probe / dangling transaction janitor) + identity containment + durable deletion matrix + goldenset baseline and event_at timeline; models, decision config, the mem0 base, the vector-store schema and memory data are all unchanged.
+> The current public release is **f0.6.1** (package `0.6.1`, 2026-10-23). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6.1).
+> This release closes out the seven-audit remediation and lands the two-and-a-half items: fixes the four hard defects (parameter mismatch / salience timeline / double-counted probe / dangling transaction janitor) + identity containment + durable deletion matrix + goldenset baseline and event_at timeline; f0.6.1 adds the recall-gap fix found in real-host joint testing (the cloud leg now merges local-leg candidates, so distillation-line originals no longer go missing under autoshift). Models, decision config, the mem0 base, the vector-store schema and memory data are all unchanged.
 
 > **Optional decision models.** Customers choose the provider, model, endpoint, key and tasks, or leave it disabled. Configured tasks run automatically for new-memory classification and recall evidence checks. Nace, TypeSafe, Cloudflare Clef/Clef Flash and compatible System One services are supported; Drex is not mandatory. Rerank continues to rank; local mode makes no decision calls. See [configuration and compatibility](docs/DECISION.md).
 >
