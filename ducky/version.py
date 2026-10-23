@@ -17,7 +17,9 @@ v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
        cloud 档（_local_off）零开销。守卫 test_full_gear_does_not_double_
        count_local_index 反转为正向：local-only 点必须可召回+双写不重复。
     2. 版本对齐：SERVICE_VERSION 0.6.1（pyproject.toml / manifest.json 同步），
-       FULL_VERSION f0.6.1 入 LINEAGE；PUBLIC_RELEASE_VERSION 同步升至 f0.6.1。
+       FULL_VERSION f0.6.1 入 LINEAGE；PUBLIC_RELEASE_VERSION 保持 f0.6——
+       维护者裁决大仓 Tag/Release 不动（v20.3.4 双轨先例），main 快进
+       先于 Tag 翻牌，下个公开版本统一升。
 
 v0.6.0 (对外 f0.6 · 七路外审整改一次到位 + 两项半落地 · 2026-10-22)
     用例总数 4250 → 4266（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
@@ -587,9 +589,10 @@ FULL_VERSION = "f0.6.1"
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
 # f0.6.1（2026-10-23）：联调实测缺陷修复——云腿走通后合并本地腿候选，
-# 蒸馏线原文在 auto 挡语义改写查询下不再失联；PUBLIC_RELEASE_VERSION
-# 随公开 Tag/Release 翻牌升至 f0.6.1。
-PUBLIC_RELEASE_VERSION = "f0.6.1"
+# 蒸馏线原文在 auto 挡语义改写查询下不再失联。维护者裁决：大仓 Tag/Release
+# 保持 f0.6 不动，PUBLIC_RELEASE_VERSION 不随内部补丁翻牌（v20.3.4 双轨
+# 先例）；main 快进先于 Tag 翻牌，下个公开版本统一升。
+PUBLIC_RELEASE_VERSION = "f0.6"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
