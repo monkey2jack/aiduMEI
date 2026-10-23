@@ -4,8 +4,8 @@
 
 > **用例总数 4266 → 4266**（收集数持平——改版 1 条守卫用例，不净增；通过结果以精确提交的运行回执为准）。
 
-- **联调实测缺陷修复（嘟嘟宿主真实链路联调挖出）**：`ducky/engine.py` 云腿走通后把本地腿（mem0_local）候选**并入候选池统一打分**。此前 `/add` 蒸馏线原文只落本地层（f0.1 verbatim 双保险设计），auto 挡只查云集合 → 蒸馏线原文在语义改写查询下 not_found（联调实测：锚点「本周五下午三点…复盘」查「复盘会议几点」空手，`/add/raw` 双写路径同型查询 found）。修法不跨比向量：两腿各自同语言（云查云/本地查本地），只在打分出口竞争；同 id 去重防双计（云命中优先）；cloud 档（`_local_off`）零开销。守卫 `test_full_gear_does_not_double_count_local_index` 反转为正向：local-only 点必须可召回 + 双写不重复。
-- **版本对齐**：包版本 `0.6.1`（`pyproject.toml` / `manifest.json` 同步），对外 f0.6.1 入 LINEAGE；`PUBLIC_RELEASE_VERSION` 随公开 Tag/Release 翻牌升至 f0.6.1。
+- **联调实测缺陷修复（真实宿主链路联调挖出）**：`ducky/engine.py` 云腿走通后把本地腿（mem0_local）候选**并入候选池统一打分**。此前 `/add` 蒸馏线原文只落本地层（f0.1 verbatim 双保险设计），auto 挡只查云集合 → 蒸馏线原文在语义改写查询下 not_found（联调实测：锚点「本周五下午三点…复盘」查「复盘会议几点」空手，`/add/raw` 双写路径同型查询 found）。修法不跨比向量：两腿各自同语言（云查云/本地查本地），只在打分出口竞争；同 id 去重防双计（云命中优先）；cloud 档（`_local_off`）零开销。守卫 `test_full_gear_does_not_double_count_local_index` 反转为正向：local-only 点必须可召回 + 双写不重复。
+- **版本对齐**：包版本 `0.6.1`（`pyproject.toml` / `manifest.json` 同步），对外 f0.6.1 入 LINEAGE；**维护者裁决：大仓 Tag/Release 保持 `f0.6` 不动，`PUBLIC_RELEASE_VERSION` 不随内部补丁翻牌**（v20.3.4 双轨先例）——`main` 快进先于 Tag 翻牌，用户从 main 安装即得修复、从 f0.6 Release 安装不受影响，下个公开版本统一升。
 
 ## v0.6.0 (对外 f0.6 · 七路外审整改一次到位 + 两项半落地 · 2026-10-22)
 
