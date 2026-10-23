@@ -9,7 +9,7 @@ v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 �
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
 v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
-    用例总数 4266（收集数持平——改版 1 条守卫用例，不净增）。
+    用例总数 4266 → 4266（收集数持平——改版 1 条守卫用例，不净增）。
     1. 联调实测缺陷修复：ducky/engine.py 云腿走通后把本地腿（mem0_local）
        候选并入候选池统一打分——/add 蒸馏线原文只落本地层，auto 挡只查云
        导致蒸馏线原文在语义改写查询下 not_found。两腿各自同语言（云查云/
@@ -32,16 +32,9 @@ v0.6.0 (对外 f0.6 · 七路外审整改一次到位 + 两项半落地 · 2026-
     3. 删除与时间线：mem0 history.db 入删除矩阵（hark P1-1）、墓碑快照 TTL
        （forget/erase 语义）、时间窗改事件时间优先、valid_to 数值比较、
        legacy 恢复脚本默认拒绝执行。
-    4. 两项半落地：黄金集质量基线 benchmarks/goldenset.py + goldenset_v1.json
-       （200 条对抗查询+零 token 判分器）· 事件时刻 event_at 写读线全链路贯通
-       （写线透传，读线三级优先：显式事件时刻 > 记录时刻 > 入库时刻，来源标注三态）
-       · 出身策略灰度开关 AIDUMEI_ORIGIN_POLICY。
-    5. 证据与门禁：README/RESULTS 口径对齐+计数勘误（muse S-2/M-6/M-7）、
+    4. 证据与门禁：README/RESULTS 口径对齐+计数勘误（muse S-2/M-6/M-7）、
        conftest proxy 卫生（openchamber P1-3）、limit 钳 500、chunked 实体
        字节硬顶（cue A11）、错误回显默认脱敏。
-    6. 裁决销案：CI 维持关闭（维护者裁决）；商标名保持现状；release_scan 盲区实证为误报销案。
-    7. 版本对齐：包版本 0.6.0（pyproject.toml / manifest.json 同步），对外 f0.6
-       入 LINEAGE；PUBLIC_RELEASE_VERSION 同步升至 f0.6（公开正式版）。
 
 v0.5.1 (对外 f0.5.1 · 冷启动速断 · 2026-10-21)
     用例总数 4245 → 4250（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
