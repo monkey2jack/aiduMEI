@@ -9,9 +9,9 @@
 > Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.6** (package `0.6.1`, 2026-10-23). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6).
-> The Current code: **f0.6.1** (internal candidate, not yet public; Tag/Release flips with the next public release).
-> This release closes out the seven-audit remediation and lands the two-and-a-half items: fixes the four hard defects (parameter mismatch / salience timeline / double-counted probe / dangling transaction janitor) + identity containment + durable deletion matrix + goldenset baseline and event_at timeline. The `main` branch already contains the f0.6.1 fix (cloud leg now merges local-leg candidates — closing the recall gap found in real-host joint testing), while the public Tag/Release stays `f0.6` (v20.3.4 dual-track precedent): **installing from main gets you the fix; installing from the f0.6 Release is unaffected**. Models, decision config, the mem0 base, the vector-store schema and memory data are all unchanged.
+> The current public release is **f0.6** (package `0.6.2`, 2026-10-23). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6).
+> The Current code: **f0.6.2** (internal candidate, not yet public; Tag/Release flips with the next public release).
+> This release closes out the seven-audit remediation and lands the two-and-a-half items: fixes the four hard defects (parameter mismatch / salience timeline / double-counted probe / dangling transaction janitor) + identity containment + durable deletion matrix + goldenset baseline and event_at timeline. The `main` branch already contains the f0.6.1 fix (cloud leg now merges local-leg candidates — closing the recall gap found in real-host joint testing) and f0.6.2 (top-level event_at passthrough + outbound-channels disclosure doc + backup plaintext notice), while the public Tag/Release stays `f0.6` (v20.3.4 dual-track precedent): **installing from main gets you the fix; installing from the f0.6 Release is unaffected**. Models, decision config, the mem0 base, the vector-store schema and memory data are all unchanged.
 
 > **Optional decision models.** Customers choose the provider, model, endpoint, key and tasks, or leave it disabled. Configured tasks run automatically for new-memory classification and recall evidence checks. Nace, TypeSafe, Cloudflare Clef/Clef Flash and compatible System One services are supported; Drex is not mandatory. Rerank continues to rank; local mode makes no decision calls. See [configuration and compatibility](docs/DECISION.md).
 >
@@ -38,7 +38,7 @@ Real use after f0.4 shipped exposed two problems. This release fixes those two a
 
 Scheduled and delegated agents (`cron`, `subagent`) no longer write memories or distill by default; reads are unaffected, and `AIDUMEI_SKIP_PLATFORMS=""` restores writing. Shell hooks must be redeployed, and the essence hook should also be registered for finalize/reset with a timeout of 25 seconds or less. See the [upgrade guide](docs/F04_UPGRADE.md).
 
-**Tests:** **4266** collected (3632 behavior, 487 script/hook, 147 guard; f0.6 tree, measured 2026-10-22; f0.5 was 4250). Each new regression was run against the previous code as a negative control, and the previous code reproduced the production 409. Local and Linux target results, production acceptance and the exact commit are recorded in the release notes.
+**Tests:** **4270** collected (3640 behavior, 484 script/hook, 146 guard; f0.6.2 tree, measured 2026-10-23; f0.6 was 4266 = 3632+487+147, f0.5 was 4250). Each new regression was run against the previous code as a negative control, and the previous code reproduced the production 409. Local and Linux target results, production acceptance and the exact commit are recorded in the release notes.
 
 The f0.4 notes below describe the previous release.
 
@@ -390,8 +390,8 @@ Example section to insert in the configuration file (use your own service settin
 
 | Dimension | Current |
 |------|------|
-| Total cases | **4266** (measured via `pytest --collect-only`, 2026-10-22, f0.6 tree) = **3632 behavior + 487 script/hook + 147 guard**. f0.5 was 4250 = 3620+484+146 | Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 4254 passed · **12 skipped** — **f0.6 acceptance target derived from collection and missing axes; measured results are in the release notes** (Python 3.12; development and benchmark dependencies plus the local embedding model are ready; only the Hermes source is absent) |
+| Total cases | **4270** (measured via `pytest --collect-only`, 2026-10-23, f0.6.2 tree) = **3640 behavior + 484 script/hook + 146 guard**. f0.6 was 4266 = 3632+487+147, f0.5 was 4250 = 3620+484+146 | Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 4258 passed · **12 skipped** — **f0.6.2 acceptance target derived from collection and missing axes; measured results are in the release notes** (Python 3.12; development and benchmark dependencies plus the local embedding model are ready; only the Hermes source is absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
@@ -407,7 +407,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 4254 and 1821**: the first is the current target with only the 12 Hermes cases skipped, not itself a measured result (measurements are in the release notes); the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 4258 and 1821**: the first is the current target with only the 12 Hermes cases skipped, not itself a measured result (measurements are in the release notes); the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
 > **Those 12 skips are not hand-waving — you can verify them yourself**: all fourteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
@@ -416,12 +416,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 4254 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 4266 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4254 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 4258 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 4270 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4258 passed, 12 skipped
 > ```
 >
-> `4266 passed` in the block above requires **all fourteen axes present**; the host is only one of them — don't read "install the host" as "all green". `4254 passed · 12 skipped` is the no-host acceptance target (4266 − 12; the Chinese README's 4230 was a typo — fixed in f0.6, muse M-6); per-environment measurements are in the release notes.
+> `4270 passed` in the block above requires **all fourteen axes present**; the host is only one of them — don't read "install the host" as "all green". `4258 passed · 12 skipped` is the no-host acceptance target (4270 − 12 at the f0.6 tree, recomputed per tree; the Chinese README's 4230 was a typo — fixed in f0.6, muse M-6); per-environment measurements are in the release notes.
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

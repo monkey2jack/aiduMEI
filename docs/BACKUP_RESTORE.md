@@ -19,6 +19,18 @@ acquisition window and reconcile concurrent writes. A running Qdrant server
 needs snapshots of each active collection through its own snapshot API; copying
 historical local `storage.sqlite` files does not back up that server.
 
+> **A backup is every memory in plaintext, plus any credentials that live in
+> the data directory.** All memory content is stored unencrypted (facts,
+> observations, verbatim vault, FTS, Qdrant payload) — a backup therefore
+> contains everything the service knows, readable by anyone who can read the
+> files. API keys embedded in `mem0_config_local.json` or key files under the
+> home directory are also plaintext if they sit inside the packed tree
+> (prefer the `AIDUMEI_*_API_KEY` env overrides so keys never touch disk).
+> There is no built-in backup encryption: keys stored next to the backup would
+> defeat it, and for the single-owner self-hosted target, full-disk encryption
+> of the machine holding the backup is the supported layer. Treat the backup
+> directory with the same sensitivity as the live data directory.
+
 ## Isolated restore and historical readback
 
 ```bash

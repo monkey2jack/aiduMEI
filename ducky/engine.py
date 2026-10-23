@@ -273,7 +273,7 @@ class RecallEngine:
                 candidates = raw_res
             else:
                 candidates = []
-            # f0.6.2（联调实测缺陷）：auto 挡云腿成功路径**不合并本地腿候选**——
+            # f0.6.1（联调实测缺陷）：auto 挡云腿成功路径**不合并本地腿候选**——
             # /add 蒸馏线的原文只落 mem0_local（f0.1 verbatim 双保险设计），云集合
             # mem0 只有蒸馏后的事实；云挡只查云 → 蒸馏线原文在语义改写查询下
             # not_found（联调实测：「本周五下午三点…复盘」查「复盘会议几点」空手，
