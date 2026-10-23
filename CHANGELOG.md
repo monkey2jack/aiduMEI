@@ -1,5 +1,15 @@
 # aiduMEI 版本演进史
 
+## v0.6.3 (对外 f0.6 双轨 · ASGI 端口 flaky 根治 / 召回主链拆分 · 2026-10-23)
+
+> **用例总数 4270 → 4270**（收集数持平——拆分与测试基建修，不净增；通过结果以精确提交的运行回执为准）。
+
+- **ASGI 真实端口 flaky 根治 `tests/test_v20_3_2_release_real_asgi.py`**：`_free_port` 的 bind→close→再用有 TOCTOU 窗口——全量并发下端口被其它子进程抢走，uvicorn 在线程内 bind 失败**静默退出**，就绪循环要么撞别人的 socket（断言拿假响应）要么 10s 假红（本日 6 轮全量随机红 3 次、单跑 4/4 绿的元凶）。修法：`_RealServer` 起不来就**换端口重建**（最多 3 次），绝不复用可疑端口。
+- **召回主链拆分 `ducky/engine.py`（行为逐字不变）**：向量腿抽 `_fetch_vector_candidates`（熔断挡位/冷启动探针/超时记账去重/就地落本地备胎/f0.6.1 本地候选合并/bank 复筛，cc 19）；时间窗抽 `_filter_time_window`（三级时间戳+time_basis 三态，cc 18）；`RecallEngine.search` **CC 38→3**。顺带清除死变量 `_skip_local_fallback`（仅赋值零读取）。
+- **/search 快路拆分 `ducky/hot/search.py`（行为逐字不变）**：workspace 命中路径抽 `_try_workspace_route`（回声抑制+三态字段集，cc 6），`search` **34→30**；随迁清除 `workspace_hits` 死导入（F401）。
+- **CC 棘轮基线只降不升**：四新函数全部 ≤25 硬顶，基线登记实测值（f0.6.2 注释里的「拆分目标 f0.7」提前兑现）。
+- **版本对齐**：包版本 `0.6.3`（`pyproject.toml` / `manifest.json` 同步），对外 f0.6.3 入 `ducky/version.py` LINEAGE；**大仓 Tag/Release 保持 `f0.6` 不动**（双轨先例），下个公开版本统一升。
+
 ## v0.6.2 (对外 f0.6 双轨 · 出境知情文档/备份明文声明/event_at 顶层形态/勘误 · 2026-10-23)
 
 > **用例总数 4266 → 4270**（收集数净增 4：event_at 形态守卫 4 条，各带负向对照；通过结果以精确提交的运行回执为准）。

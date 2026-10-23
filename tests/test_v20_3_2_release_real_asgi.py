@@ -40,20 +40,38 @@ def _free_port() -> int:
 
 
 class _RealServer:
-    """起一个真 uvicorn.Server（默认参数，与 main() 同形态），真 socket 打请求。"""
+    """起一个真 uvicorn.Server（默认参数，与 main() 同形态），真 socket 打请求。
+
+    f0.6.3：_free_port 的 bind→close→再用 有 TOCTOU 窗口——全量并发下其它
+    子进程可能抢走同一端口。两个失败形态：①uvicorn 在线程里 bind 失败**静默
+    退出**→10s 假红；②占口者恰好在跑 HTTP 服务→就绪连接连上**别人的**服务
+    →断言拿假响应假绿。6 轮全量随机红 3 次、单跑全绿即此坑（换端口重试治不
+    了形态②——连得上不等于连上的是自己）。
+
+    根治：**预留 socket 直接交给 uvicorn**（Server.serve(sockets=[sock])）。
+    端口 bind 后到 server 关闭全程不离手，TOCTOU 窗口归零；无关别人抢不抢。
+    """
 
     def __init__(self, app, **uvicorn_kwargs):
         import uvicorn
         self.port = _free_port()
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", self.port))
+        self._sock.listen(128)
+        self._sock.setblocking(False)
+        # port= 在 sockets 模式下只用于日志/URL 形态，真实监听来自传入 socket。
         cfg = uvicorn.Config(app, host="127.0.0.1", port=self.port,
                              log_level="error", lifespan="off", **uvicorn_kwargs)
         self.server = uvicorn.Server(cfg)
-        self.thread = threading.Thread(target=self.server.run, daemon=True)
+        self.thread = threading.Thread(
+            target=self.server.run, daemon=True, kwargs={"sockets": [self._sock]})
 
     def __enter__(self):
         self.thread.start()
         # 就绪判据是「端口接受 TCP 连接」，不是 /health 200：/health 在带真后端配置的机器上
         # 一次探针可能远超 0.5s（云端可达性探测），用它轮询会把「服务已起」判成「没起来」。
+        # socket 已被我方 bind+listen，连上的一定是自己——TOCTOU 已消除。
         for _ in range(100):
             try:
                 with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
@@ -65,6 +83,10 @@ class _RealServer:
     def __exit__(self, *_):
         self.server.should_exit = True
         self.thread.join(5)
+        try:
+            self._sock.close()
+        except OSError:
+            pass
 
     def get(self, path, headers=None):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", headers=headers or {})
@@ -189,28 +211,35 @@ def test_401_is_counted_and_carries_security_headers(token_app):
     修复前：`_require_credentials` 注册最晚 = 最外层，它直接 return 的 401
     不经过内层的计数与安全头中间件 —— 计数增量 1 而不是 2，401 无 CSP。
     注释写的是「放在鉴权外面是刻意的」，与事实相反。
+
+    f0.6.3：判据从 before/after 差值改为 **reset → 请求 → snapshot**。
+    snapshot 是时间窗采样，全量运行时窗口里其它请求的样本滑动会造成
+    倒退（424-466 实录）；清零后窗口里只有本请求，判据更干净更硬。
     """
     from ducky import http_metrics
-    before = http_metrics.snapshot().get("total", 0)
+    http_metrics.reset()
     with _RealServer(token_app.app, proxy_headers=_production_proxy_headers()) as s:
         code, headers = s.get("/facts?user_id=probe&bank_id=default")
     assert code == 401, f"夹具前提破了：有凭据实例的无凭据请求应 401，得 {code}"
     after = http_metrics.snapshot().get("total", 0)
-    assert after - before >= 1, "401 没进 http_metrics —— 「凭据链断了满屏 401」这种事故形态从统计里消失"
+    assert after >= 1, "401 没进 http_metrics —— 「凭据链断了满屏 401」这种事故形态从统计里消失"
     lower = {k.lower() for k in headers}
     missing = [h for h in _SECURITY_HEADERS if h not in lower]
     assert not missing, f"401 响应缺安全头 {missing} —— 安全头中间件没盖到拒绝分支"
 
 
 def test_503_no_credential_refusal_carries_security_headers(bare_app):
-    """无凭据拒绝（503）同样要带安全头、进计数。"""
+    """无凭据拒绝（503）同样要带安全头、进计数。
+
+    f0.6.3：同 401 条——reset→请求→snapshot，消除共享计数窗口竞态。
+    """
     from ducky import http_metrics
-    before = http_metrics.snapshot().get("total", 0)
+    http_metrics.reset()
     with _RealServer(bare_app.app, proxy_headers=_production_proxy_headers()) as s:
         code, headers = s.get("/facts?user_id=probe&bank_id=default",
                               headers={"X-Forwarded-For": "203.0.113.7"})
     assert code == 503
-    assert http_metrics.snapshot().get("total", 0) - before >= 1, "503 拒绝没进计数"
+    assert http_metrics.snapshot().get("total", 0) >= 1, "503 拒绝没进计数"
     lower = {k.lower() for k in headers}
     assert all(h in lower for h in _SECURITY_HEADERS), f"503 缺安全头：{sorted(lower)}"
 
