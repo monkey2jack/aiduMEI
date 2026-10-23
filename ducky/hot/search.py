@@ -355,6 +355,75 @@ def _bound_workspace_hits(hits: list, *, before: str, after: str,
     return strength
 
 
+def _try_workspace_route(req, uid: str, bank_id: str, effective_limit: int,
+                         _search_t0: float):
+    """Workspace 快路——f0.6.3 自 /search 主链拆出，行为逐字不变。
+
+    命中且 verdict==found 时返回响应 dict；未命中（含 ImportError、缓存
+    被拒落 Hybrid）返回 None。回声抑制与三态字段集判据不许动。
+    """
+    from ducky.memory_workspace import ws_lookup
+    from ducky.decision import telemetry as decision_telemetry
+    ws_hits = ws_lookup(uid, req.query, bank_id=bank_id)
+    # A changed decision policy cannot use old workspace scores.
+    from ducky.decision import workspace_hits as decision_workspace_hits
+    ws_hits = decision_workspace_hits(ws_hits, uid)
+    # v21.2.0 审计整改轮：workspace 是「最近访问/刚写入」的热缓存
+    # —— 回声最可能出现的**正是**这里，而这条分支提前 return，
+    # 整条绕开了打分出口里的回声抑制。不在这里补一刀，M2 在热路径上
+    # 等于不存在（而且这条路最快、最常命中，用户感知最强）。
+    # 复用同一份判据与同一个 sidecar 查询，session 为空不过滤。
+    _ws_sid = _req_session_id(req)
+    _ws_echo_dropped = 0
+    if ws_hits and _ws_sid:
+        from ducky.scoring import echo_suppress_enabled as _echo_on
+        if _echo_on():
+            from ducky.scoring import _load_echo_refs, _drop_echo
+            _before = len(ws_hits)
+            ws_hits = _drop_echo(
+                ws_hits, _load_echo_refs(ws_hits, _ws_sid, uid, bank_id))
+            _ws_echo_dropped = _before - len(ws_hits)
+    # A rejected cache candidate must fall through to Hybrid.
+    ws_strength = _bound_workspace_hits(
+        ws_hits, before=req.before, after=req.after,
+        limit=effective_limit)
+    if not ws_hits:
+        return None
+    boost_salience_for_results(ws_hits)
+    _annotate_memory_types(ws_hits, user_id=uid, bank_id=bank_id)
+    # v20.1 整改轮（R-06 · 外审 z P2-04）：本分支的三态字段集
+    # 必须与 hybrid 分支一致 —— 上层按「有 confidence 才信」
+    # 决策时，缺字段的 found 会被漏判或误判。
+    ws_verdict, ws_basis = compute_recall_verdict(
+        ws_hits, ws_strength["top_score"], _verdict_threshold(),
+        recall_path="workspace",
+    )
+    if ws_verdict == "found":
+        ws_basis = "workspace_hit"
+    _log_search_result(req, ws_hits, _search_t0)
+    observation = _observe_final_evidence(req.query, ws_hits, uid, bank_id)
+    return {
+        "status": "ok", "results": ws_hits,
+        "_workspace_hit": True,
+        "_recall_path": "workspace",
+        "_rerank": {"status": "not_invoked"},
+        "_decision": decision_telemetry(),
+        "_evidence_assessment": observation,
+        "_recall_strength": ws_strength,
+        "_recall_legs": {"workspace": "hit"},
+        # 如实说明这条快路没走打分出口：MMR 多样性与错误签名
+        # 加权在 workspace 命中时不生效（回声抑制已在上面补过）。
+        "_bypassed": {"scoring": True, "mmr": True, "errsig": True,
+                      "echo_suppress": False,
+                      "echo_dropped": _ws_echo_dropped},
+        # 热缓存命中仍须经过分数下限和判语阈值。
+        "recall_verdict": ws_verdict,
+        "verdict_basis": ws_basis,
+        "engine_mode": __import__("ducky.gear", fromlist=["current_mode"]).current_mode(),
+        "recall_confidence": ws_strength["top_score"],
+    }
+
+
 def register_search_routes(app: FastAPI) -> None:
 
     @app.post("/search", response_model=SearchResponse)
@@ -385,7 +454,8 @@ def register_search_routes(app: FastAPI) -> None:
             # 会被误读成本次的重排序结局。
             from ducky.mem0_runtime import last_rerank_telemetry, reset_rerank_telemetry
             reset_rerank_telemetry()
-            from ducky.decision import workspace_hits, reset_telemetry, telemetry as decision_telemetry
+            # f0.6.3：workspace_hits 随快路拆进 _try_workspace_route，这里只留遥测两件。
+            from ducky.decision import reset_telemetry, telemetry as decision_telemetry
             reset_telemetry()
             # v21.2.0 审计整改轮：闸门/生效遥测同样每请求重置 —— 线程复用时
             # 上一请求的残留会被读成本次的（与 rerank 同一条教训）。
@@ -421,63 +491,12 @@ def register_search_routes(app: FastAPI) -> None:
             effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
 
             try:
-                from ducky.memory_workspace import ws_lookup, ws_feed_from_results
-                ws_hits = ws_lookup(uid, req.query, bank_id=bank_id)
-                # A changed decision policy cannot use old workspace scores.
-                ws_hits = workspace_hits(ws_hits, uid)
-                # v21.2.0 审计整改轮：workspace 是「最近访问/刚写入」的热缓存
-                # —— 回声最可能出现的**正是**这里，而这条分支提前 return，
-                # 整条绕开了打分出口里的回声抑制。不在这里补一刀，M2 在热路径上
-                # 等于不存在（而且这条路最快、最常命中，用户感知最强）。
-                # 复用同一份判据与同一个 sidecar 查询，session 为空不过滤。
-                _ws_sid = _req_session_id(req)
-                _ws_echo_dropped = 0
-                if ws_hits and _ws_sid:
-                    from ducky.scoring import echo_suppress_enabled as _echo_on
-                    if _echo_on():
-                        from ducky.scoring import _load_echo_refs, _drop_echo
-                        _before = len(ws_hits)
-                        ws_hits = _drop_echo(
-                            ws_hits, _load_echo_refs(ws_hits, _ws_sid, uid, bank_id))
-                        _ws_echo_dropped = _before - len(ws_hits)
-                # A rejected cache candidate must fall through to Hybrid.
-                ws_strength = _bound_workspace_hits(
-                    ws_hits, before=req.before, after=req.after,
-                    limit=effective_limit)
-                if ws_hits:
-                    boost_salience_for_results(ws_hits)
-                    _annotate_memory_types(ws_hits, user_id=uid, bank_id=bank_id)
-                    # v20.1 整改轮（R-06 · 外审 z P2-04）：本分支的三态字段集
-                    # 必须与 hybrid 分支一致 —— 上层按「有 confidence 才信」
-                    # 决策时，缺字段的 found 会被漏判或误判。
-                    ws_verdict, ws_basis = compute_recall_verdict(
-                        ws_hits, ws_strength["top_score"], _verdict_threshold(),
-                        recall_path="workspace",
-                    )
-                    if ws_verdict == "found":
-                        ws_basis = "workspace_hit"
-                    _log_search_result(req, ws_hits, _search_t0)
-                    observation = _observe_final_evidence(req.query, ws_hits, uid, bank_id)
-                    return {
-                        "status": "ok", "results": ws_hits,
-                        "_workspace_hit": True,
-                        "_recall_path": "workspace",
-                        "_rerank": {"status": "not_invoked"},
-                        "_decision": decision_telemetry(),
-                        "_evidence_assessment": observation,
-                        "_recall_strength": ws_strength,
-                        "_recall_legs": {"workspace": "hit"},
-                        # 如实说明这条快路没走打分出口：MMR 多样性与错误签名
-                        # 加权在 workspace 命中时不生效（回声抑制已在上面补过）。
-                        "_bypassed": {"scoring": True, "mmr": True, "errsig": True,
-                                      "echo_suppress": False,
-                                      "echo_dropped": _ws_echo_dropped},
-                        # 热缓存命中仍须经过分数下限和判语阈值。
-                        "recall_verdict": ws_verdict,
-                        "verdict_basis": ws_basis,
-                        "engine_mode": __import__("ducky.gear", fromlist=["current_mode"]).current_mode(),
-                        "recall_confidence": ws_strength["top_score"],
-                    }
+                # f0.6.3：workspace 快路拆为模块级函数（行为逐字不变）。命中
+                # 且 found 直接返回其响应；未命中返回 None 落 hybrid 主路。
+                from ducky.memory_workspace import ws_feed_from_results  # noqa: F401  (沿用原导入探针语义)
+                _ws_resp = _try_workspace_route(req, uid, bank_id, effective_limit, _search_t0)
+                if _ws_resp is not None:
+                    return _ws_resp
             except ImportError:
                 pass
 

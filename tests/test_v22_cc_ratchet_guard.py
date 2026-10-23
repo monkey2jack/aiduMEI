@@ -50,8 +50,12 @@ def _cc(func: ast.AST) -> int:
 _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
     # f0.6：时间窗事件时间优先（hark P1-4）使 search 超 CC 硬顶——审计修复性
     # 增长，登记基线；f0.7 拆分目标。
+    # f0.6.3：拆分落地——向量腿与时间窗抽为模块级 _fetch_vector_candidates(cc 19)
+    # /_filter_time_window(cc 18)，search 主链只剩装配（cc 3）。基线同步降到实测值。
     "ducky/engine.py": {
-        "search": (38, "主召回链；W-20 时间窗 + f0.6.1 event_at 三态 + f0.6.1 云腿本地候选合并（修复性增长；拆分目标 f0.7）"),
+        "search": (3, "主召回链装配（f0.6.3 拆分后：别名→向量腿→时间窗→打分）"),
+        "_fetch_vector_candidates": (19, "向量腿：熔断挡位/冷启动探针/备胎/f0.6.1 本地候选合并"),
+        "_filter_time_window": (18, "时间窗过滤：三级时间戳+time_basis 三态+窗口判据"),
     },
     # f0.6 W-12：换端点校验+私网拦截使 _validate_config_fields 超硬顶——同上。
 
@@ -67,7 +71,9 @@ _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
     },
     "ducky/hot/search.py": {
         "register_search_routes": (50, "组装器"),
-        "search": (34, "/search 路由主体"),  # f0.6 W-20：时间窗事件时间优先 +3 分支（审计修复性增长；拆分目标 f0.7）
+        # f0.6.3：workspace 快路抽 _try_workspace_route(cc 6),search 34→30。
+        "search": (30, "/search 路由主体"),  # f0.6 W-20 时间窗 +3 分支已随时间窗拆出迁走
+        "_try_workspace_route": (6, "workspace 快路:f0.6.3 自 search 拆出,行为逐字不变"),
     },
     "ducky/hot/crud.py": {
         "register_crud_routes": (103, "组装器；f0.6 W-25 limit 钳制 +3（修复性增长）"),
