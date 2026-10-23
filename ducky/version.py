@@ -8,6 +8,17 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
+    用例总数 4266（收集数持平——改版 1 条守卫用例，不净增）。
+    1. 联调实测缺陷修复：ducky/engine.py 云腿走通后把本地腿（mem0_local）
+       候选并入候选池统一打分——/add 蒸馏线原文只落本地层，auto 挡只查云
+       导致蒸馏线原文在语义改写查询下 not_found。两腿各自同语言（云查云/
+       本地查本地），只在打分出口竞争，不跨比向量；同 id 去重防双计，
+       cloud 档（_local_off）零开销。守卫 test_full_gear_does_not_double_
+       count_local_index 反转为正向：local-only 点必须可召回+双写不重复。
+    2. 版本对齐：SERVICE_VERSION 0.6.1（pyproject.toml / manifest.json 同步），
+       FULL_VERSION f0.6.1 入 LINEAGE；PUBLIC_RELEASE_VERSION 同步升至 f0.6.1。
+
 v0.6.0 (对外 f0.6 · 七路外审整改一次到位 + 两项半落地 · 2026-10-22)
     用例总数 4250 → 4266（收集数，本机 --collect-only 实测；通过结果以精确提交的运行回执为准）。
     1. 正确性：raw_drawer/obsidian 本地向量调用参数错位（cue A01 顺藤+1）、
@@ -577,12 +588,15 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.6.0"
-FULL_VERSION = "f0.6"
+SERVICE_VERSION = "0.6.1"
+FULL_VERSION = "f0.6.1"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
-PUBLIC_RELEASE_VERSION = "f0.6"
+# f0.6.1（2026-10-23）：联调实测缺陷修复——云腿走通后合并本地腿候选，
+# 蒸馏线原文在 auto 挡语义改写查询下不再失联；PUBLIC_RELEASE_VERSION
+# 随公开 Tag/Release 翻牌升至 f0.6.1。
+PUBLIC_RELEASE_VERSION = "f0.6.1"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -596,6 +610,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.6.1", "", "f0.6.1", "联调实测缺陷修复：云腿走通后合并本地腿候选（蒸馏线原文在 auto 挡语义改写查询下不再失联；同 id 去重防双计，cloud 档零开销）· 2026-10-23"),
     ("0.6.0", "", "f0.6", "七路外审整改一次到位：正确性四真雷（raw_drawer 参数错位/遗忘曲线时间基准/探针双记账/事务清道夫）+ 身份线收口（config admin 凭据化/MCP 破坏性工具默认关）+ 删除语义（mem0 history 入矩阵/墓碑 TTL/时间窗事件时间优先）+ 证据口径对齐 · 2026-10-22"),
     ("0.5.1", "", "f0.5.1", "冷启动速断：云腿未证明健康阶段的试探预算（2s 默认，env 可调），超时就地落本地腿——重启后前两轮失忆收口 · 2026-10-21"),
     ("0.5.0", "", "f0.5", "外部实锤四修：Windows import 守卫（issue #31）+ 载体身份线 author_unknown（fork F05）+ 降级表达复位（fork F06）+ 欠账重放指数退避（复测 6.2）· 2026-10-21"),
