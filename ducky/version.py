@@ -8,6 +8,27 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.6.3 (对外 f0.6 双轨 · ASGI 端口 flaky 根治 / 召回主链拆分 · 2026-10-23)
+    用例总数 4270 → 4270（收集数持平——拆分与测试基建修，不净增；通过结果以
+    精确提交的运行回执为准）。
+    1. ASGI 真实端口 flaky 根治（tests/test_v20_3_2_release_real_asgi.py）：
+       _free_port 的 bind→close→再用有 TOCTOU 窗口，全量并发下端口被抢
+       →uvicorn 线程内静默退出→假红（6 轮全量随机红 3 次、单跑 4/4 绿）。
+       _RealServer 起不来自动换端口重建（最多 3 次），绝不复用可疑端口。
+    2. 召回主链拆分（ducky/engine.py，行为逐字不变）：向量腿抽
+       _fetch_vector_candidates（熔断挡位/冷启动探针/备胎/f0.6.1 本地候选
+       合并，cc 19）、时间窗抽 _filter_time_window（三级时间戳+time_basis
+       三态，cc 18），RecallEngine.search 38→3。顺带清除死变量
+       _skip_local_fallback（仅赋值零读取）。
+    3. /search 快路拆分（ducky/hot/search.py，行为逐字不变）：workspace
+       路径抽 _try_workspace_route（cc 6），search 34→30；随迁清除
+       workspace_hits 死导入。
+    4. CC 棘轮基线只降不升：engine.search 38→3、hot/search 34→30，四新
+       函数全部 ≤25 硬顶（守卫登记实测值）。
+    5. 版本对齐：SERVICE_VERSION 0.6.3（pyproject.toml / manifest.json 同步），
+       FULL_VERSION f0.6.3 入 LINEAGE；PUBLIC_RELEASE_VERSION 保持 f0.6——
+       大仓 Tag/Release 不动（双轨先例），下个公开版本统一升。
+
 v0.6.2 (对外 f0.6 双轨 · 出境知情文档/备份明文声明/event_at 顶层形态/勘误 · 2026-10-23)
     用例总数 4266 → 4270（收集数净增 4：event_at 形态守卫 4 条，各带负向对照；
     通过结果以精确提交的运行回执为准）。
@@ -603,8 +624,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.6.2"
-FULL_VERSION = "f0.6.2"
+SERVICE_VERSION = "0.6.3"
+FULL_VERSION = "f0.6.3"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -626,6 +647,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.6.3", "", "f0.6.3", "ASGI 真实端口 TOCTOU flaky 根治（起不来换端口重建）+ 召回主链拆分（向量腿/时间窗/快路三函数，search CC 38→3）+ CC 基线只降不升 · 2026-10-23"),
     ("0.6.2", "", "f0.6.2", "event_at 顶层形态透传（写读对称）+ 出境通道知情文档 + 备份明文声明 + f0.6.1 标号勘误 · 2026-10-23"),
     ("0.6.1", "", "f0.6.1", "联调实测缺陷修复：云腿走通后合并本地腿候选（蒸馏线原文在 auto 挡语义改写查询下不再失联；同 id 去重防双计，cloud 档零开销）· 2026-10-23"),
     ("0.6.0", "", "f0.6", "七路外审整改一次到位：正确性四真雷（raw_drawer 参数错位/遗忘曲线时间基准/探针双记账/事务清道夫）+ 身份线收口（config admin 凭据化/MCP 破坏性工具默认关）+ 删除语义（mem0 history 入矩阵/墓碑 TTL/时间窗事件时间优先）+ 证据口径对齐 · 2026-10-22"),

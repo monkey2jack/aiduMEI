@@ -703,13 +703,20 @@ def test_workspace_fastpath_applies_echo_suppression_and_declares_bypass():
     """
     import inspect
     from ducky.hot import search as hs
-    src = inspect.getsource(hs.register_search_routes)
+    # f0.6.3：快路抽成模块级 _try_workspace_route（行为逐字不变），逻辑不在
+    # register_search_routes 函数体里了。守卫改为钉住**新落点**的函数体——
+    # 判据仍是行为字面（ws_lookup→回声抑制→_workspace_hit 声明），不许退化
+    # 成扫全模块的永真。
+    src = inspect.getsource(hs._try_workspace_route)
     i = src.find("ws_lookup(")
     j = src.find('"_workspace_hit": True')
     assert i != -1 and j > i, "workspace 分支找不到 —— 守卫失去着力点"
     seg = src[i:j]
     assert "_load_echo_refs" in seg and "_drop_echo" in seg, "快路没做回声抑制"
     assert "_bypassed" in src[j:j + 1200], "旁路了打分出口却不声明，调用方无从得知"
+    # 主链仍须真调用快路（拆分不许拆成死代码）：路由体内保留调用点。
+    reg_src = inspect.getsource(hs.register_search_routes)
+    assert "_try_workspace_route(" in reg_src, "search 主链不再调用 workspace 快路 —— M2 被拆没了"
 
 
 def test_mcp_search_carries_session_id():
