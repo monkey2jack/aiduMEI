@@ -51,7 +51,7 @@ _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
     # f0.6：时间窗事件时间优先（hark P1-4）使 search 超 CC 硬顶——审计修复性
     # 增长，登记基线；f0.7 拆分目标。
     "ducky/engine.py": {
-        "search": (32, "主召回链；W-20 时间窗 + f0.6.1 event_at 三态（修复性增长；拆分目标 f0.7）"),
+        "search": (38, "主召回链；W-20 时间窗 + f0.6.1 event_at 三态 + f0.6.1 云腿本地候选合并（修复性增长；拆分目标 f0.7）"),
     },
     # f0.6 W-12：换端点校验+私网拦截使 _validate_config_fields 超硬顶——同上。
 
