@@ -1,5 +1,15 @@
 # aiduMEI 版本演进史
 
+## v0.6.2 (对外 f0.6 双轨 · 出境知情文档/备份明文声明/event_at 顶层形态/勘误 · 2026-10-23)
+
+> **用例总数 4266 → 4270**（收集数净增 4：event_at 形态守卫 4 条，各带负向对照；通过结果以精确提交的运行回执为准）。
+
+- **event_at 写读形态对称**：`ducky/hot/add.py` 顶层 `event_at` 透传（读线 `engine.search` 两级都认 `metadata.event_at` 与顶层 `event_at`，写线此前只透传 metadata 形态 → 顶层形态被静默丢弃，`before/after` 时间窗退化为 created_at 基准，补录旧事漂移）。metadata 显式值优先；未传不造默认值。新增守卫 `tests/test_f062_event_at_roundtrip.py`——红→绿对照：修复前顶层形态用例真实复现丢弃（1 红），修复后 4 绿（含「不传不造」负向对照）。
+- **出境通道知情文档 `docs/OUTBOUND_CHANNELS.md`**：六个云出口通道（LLM 蒸馏 / 云嵌入 / rerank / vision / decision / 云向量库）各自触发条件、端点形态、**实际外发字段**、守门谓词与降级路径逐通道列明；local 挡硬断开边界与密钥去向一并写清（裁决：不做脱敏层，只做零成本的知情一半）。零代码行为变化。
+- **备份明文声明 `docs/BACKUP_RESTORE.md`**：备份=全部记忆明文+数据目录内凭据，须按活数据同等敏感对待；备份加密不做（密钥同盘=白加密），支持层是持盘机器的全盘加密；推荐 `AIDUMEI_*_API_KEY` env 覆盖让密钥不落盘。
+- **勘误**：f0.6.1 合并修复的注释版本标号 `f0.6.2` → `f0.6.1`（`ducky/engine.py` 注释与 `tests/test_v20_2_autoshift.py` docstring 共三处笔误，误标的是还没发生的版本）。
+- **版本对齐**：包版本 `0.6.2`（`pyproject.toml` / `manifest.json` 同步），对外 f0.6.2 入 `ducky/version.py` LINEAGE；**维护者裁决延续：大仓 Tag/Release 保持 `f0.6` 不动，`PUBLIC_RELEASE_VERSION` 不随内部补丁翻牌**（v20.3.4 双轨先例），下个公开版本统一升。
+
 ## v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
 
 > **用例总数 4266 → 4266**（收集数持平——改版 1 条守卫用例，不净增；通过结果以精确提交的运行回执为准）。

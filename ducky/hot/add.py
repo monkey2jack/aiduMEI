@@ -680,8 +680,15 @@ def register_add_routes(app: FastAPI) -> None:
             md.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
             # f0.6.1：event_at（事件发生时间）显式透传——调用方补录旧事时用；未传不造
             # （与 recorded_at 的语义分界：recorded_at=记录时刻兜底，event_at=事实发生时刻）
-            if "event_at" in (req.metadata or {}):
-                md["event_at"] = req.metadata["event_at"]
+            # f0.6.2：顶层 event_at 同样透传（读线 engine.py 三级优先两级都认
+            # item["event_at"]/item["metadata"]["event_at"]，写线此前只透传
+            # metadata 形态 → 顶层形态被静默丢弃，写读形态不对称）。metadata
+            # 显式传优先；未传不造默认值。
+            _event_at = (req.metadata or {}).get("event_at")
+            if _event_at is None and isinstance(extra, dict):
+                _event_at = extra.get("event_at")
+            if _event_at is not None:
+                md["event_at"] = _event_at
             # f0.6.1 出处矩阵灰度开关（hark P1-2 / cue A12 的落点）：
             # on 时客户端自报的 _origin_is_bot 不再采信为"用户亲述"凭证——
             # Bearer 调用方一律按 ai_inferred 处理，user_provided 只留给

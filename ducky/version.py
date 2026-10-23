@@ -8,6 +8,26 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.6.2 (对外 f0.6 双轨 · 出境知情文档/备份明文声明/event_at 顶层形态/勘误 · 2026-10-23)
+    用例总数 4266 → 4270（收集数净增 4：event_at 形态守卫 4 条，各带负向对照；
+    通过结果以精确提交的运行回执为准）。
+    1. event_at 写读形态对称：ducky/hot/add.py 顶层 event_at 透传（读线
+       engine.search 两级都认 metadata.event_at 与 item.event_at，写线此前
+       只透传 metadata 形态 → 顶层形态静默丢弃，时间窗退化为 created_at
+       基准）。metadata 显式值优先；未传不造默认值。新增守卫
+       tests/test_f062_event_at_roundtrip.py（红→绿对照：修复前顶层形态
+       复现丢弃）。
+    2. 出境通道知情文档 docs/OUTBOUND_CHANNELS.md：六个云出口通道各自
+       发送什么字段、触发条件、守门谓词与降级路径逐通道列明（裁决：
+       不做脱敏层，只做零成本的知情一半）。零代码行为变化。
+    3. 备份明文声明 docs/BACKUP_RESTORE.md：备份=全部记忆明文+数据目录内
+       凭据；备份加密不做（密钥同盘=白加密），支持层是持盘机器的全盘加密。
+    4. 勘误：f0.6.1 合并修复的注释版本标号 f0.6.2 → f0.6.1（ducky/engine.py
+       注释 + tests/test_v20_2_autoshift.py docstring 三处笔误）。
+    5. 版本对齐：SERVICE_VERSION 0.6.2（pyproject.toml / manifest.json 同步），
+       FULL_VERSION f0.6.2 入 LINEAGE；PUBLIC_RELEASE_VERSION 保持 f0.6——
+       大仓 Tag/Release 不动（双轨先例），下个公开版本统一升。
+
 v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
     用例总数 4266 → 4266（收集数持平——改版 1 条守卫用例，不净增）。
     1. 联调实测缺陷修复：ducky/engine.py 云腿走通后把本地腿（mem0_local）
@@ -583,8 +603,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.6.1"
-FULL_VERSION = "f0.6.1"
+SERVICE_VERSION = "0.6.2"
+FULL_VERSION = "f0.6.2"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -606,6 +626,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.6.2", "", "f0.6.2", "event_at 顶层形态透传（写读对称）+ 出境通道知情文档 + 备份明文声明 + f0.6.1 标号勘误 · 2026-10-23"),
     ("0.6.1", "", "f0.6.1", "联调实测缺陷修复：云腿走通后合并本地腿候选（蒸馏线原文在 auto 挡语义改写查询下不再失联；同 id 去重防双计，cloud 档零开销）· 2026-10-23"),
     ("0.6.0", "", "f0.6", "七路外审整改一次到位：正确性四真雷（raw_drawer 参数错位/遗忘曲线时间基准/探针双记账/事务清道夫）+ 身份线收口（config admin 凭据化/MCP 破坏性工具默认关）+ 删除语义（mem0 history 入矩阵/墓碑 TTL/时间窗事件时间优先）+ 证据口径对齐 · 2026-10-22"),
     ("0.5.1", "", "f0.5.1", "冷启动速断：云腿未证明健康阶段的试探预算（2s 默认，env 可调），超时就地落本地腿——重启后前两轮失忆收口 · 2026-10-21"),
