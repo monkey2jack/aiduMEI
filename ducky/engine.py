@@ -273,6 +273,30 @@ class RecallEngine:
                 candidates = raw_res
             else:
                 candidates = []
+            # f0.6.2（联调实测缺陷）：auto 挡云腿成功路径**不合并本地腿候选**——
+            # /add 蒸馏线的原文只落 mem0_local（f0.1 verbatim 双保险设计），云集合
+            # mem0 只有蒸馏后的事实；云挡只查云 → 蒸馏线原文在语义改写查询下
+            # not_found（联调实测：「本周五下午三点…复盘」查「复盘会议几点」空手，
+            # /add/raw 双写路径同型查询 found）。修法：云腿走通后把本地腿候选**并
+            # 入候选池**再统一打分——查询嵌入各自同语言（云查云、本地查本地），
+            # 不跨比向量，只在打分层竞争。本地腿挂了/关了就跳过（云挡部署形态
+            # _local_off() 为真时零开销）。候选去重按 id，云命中优先保留。
+            from ducky.engine_mode import local_leg_enabled
+            if local_leg_enabled():
+                try:
+                    from ducky.dual_index import search_local as _search_local
+                    _seen_ids = {str(c.get("id")) for c in candidates if isinstance(c, dict)}
+                    _local_extra = _search_local(query, user_id, bank_id=bank_id,
+                                                 limit=cand_limit)
+                    for _c in _local_extra:
+                        if isinstance(_c, dict) and str(_c.get("id")) not in _seen_ids:
+                            candidates.append(_c)
+                            _seen_ids.add(str(_c.get("id")))
+                    if _local_extra:
+                        _set_recall_telemetry(local_leg_merged=len(_local_extra))
+                except Exception as _local_merge_exc:
+                    # 本地合并是增量补充，绝不让它反过来炸掉已到手的云候选
+                    logger.debug("本地腿合并跳过: %s", str(_local_merge_exc)[:120])
             from ducky.bank_contract import vector_item_in_bank as _viib
             candidates = [c for c in candidates if _viib(c, bank_id)]
         except Exception as e:

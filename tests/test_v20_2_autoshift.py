@@ -506,8 +506,20 @@ class TestSelfAuditAdditions:
         assert not any("将被删除租户" in str(c.get("messages", ""))
                        for c in fake.add_calls), "已删原文进了蒸馏管线"
 
-    def test_full_gear_does_not_double_count_local_index(self, rig):
-        """验收门槛 3 显式化：full 挡召回绝不掺本地索引的点（不双计）。"""
+    def test_full_gear_merges_local_leg_candidates(self, rig):
+        """f0.6.2 改版（联调实测缺陷修复）：full 挡云腿走通后**合并本地腿候选**
+        入候选池统一打分。历史语义（v20.2 门槛 3）是「绝不掺本地点」——当时的
+        担忧是云查云、本地查本地两套嵌入空间分数不可比，直接混排=跨语言污染。
+
+        f0.6.2 的修法不跨比：两腿候选**各自带自己的分**进入同一个打分出口
+        （score_and_rank_candidates 按混合特征重打分，不是拿向量余弦直接排序），
+        同一文本两条只留一条（按 id 去重，云命中优先）。联调实测的缺陷是：
+        /add 蒸馏线原文只落 mem0_local，full 挡只查云集合 → 蒸馏线原文在语义
+        改写查询下 not_found。本用例反转为正向：local-only 点必须能被召回。
+
+        双计防护仍在：同 id 不重复入池（见 _seen_ids）；同文本不同 id 的两条
+        （云蒸馏事实 vs 本地原文）是**不同的记忆**，本就不该互相顶掉。
+        """
         client, fake, http, di = rig
         gear.reset_gear_for_tests()
         di.upsert_local_verbatim("nodup", "default", "只在本地库存在的句子甲乙丙")
@@ -515,8 +527,15 @@ class TestSelfAuditAdditions:
             "query": "只在本地库存在的句子甲乙丙", "user_id": "nodup"}).json()
         assert body.get("engine_mode") == "full"
         texts = [r.get("memory", "") for r in body.get("results", [])]
-        assert not any("句子甲乙丙" in x for x in texts), \
-            "full 挡吃到了 local-only 点 —— 双计/跨语言污染"
+        assert any("句子甲乙丙" in x for x in texts), \
+            "full 挡云腿走通后仍搜不到 local-only 原文 —— 蒸馏线召回断层回归"
+        # 负向对照：同一文本双写云+本地时，结果里不出现重复条目（按 id 去重）
+        fake.add_calls.append({"messages": [{"role": "user",
+            "content": "只在本地库存在的句子甲乙丙"}]})
+        body2 = http.post("/search", json={
+            "query": "只在本地库存在的句子甲乙丙", "user_id": "nodup"}).json()
+        ids = [str(r.get("id")) for r in body2.get("results", [])]
+        assert len(ids) == len(set(ids)), f"候选池双计: {ids}"
 
     def test_core_audit_covers_local_leg(self, rig, monkeypatch):
         """验收门槛 2 补齐：核心块对账必须看得见本地腿缺失。"""
