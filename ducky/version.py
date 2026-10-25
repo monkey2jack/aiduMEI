@@ -658,7 +658,7 @@ FULL_VERSION = "f0.6.4"
 # 蒸馏线原文在 auto 挡语义改写查询下不再失联。维护者裁决：大仓 Tag/Release
 # 保持 f0.6 不动，PUBLIC_RELEASE_VERSION 不随内部补丁翻牌（v20.3.4 双轨
 # 先例）；main 快进先于 Tag 翻牌，下个公开版本统一升。
-PUBLIC_RELEASE_VERSION = "f0.6"
+PUBLIC_RELEASE_VERSION = "f0.6+"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -672,7 +672,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("0.6.4", "", "f0.6.4", "一期 f0.6+:记忆内核可换层 memory_kernel(行为逐字不变,mem0 实现转调真身+native stub)+AST 守卫拦绕过点(白名单 5 项)+黄金集守卫与 push_gate 第五关(语料回填前为健全性级) · 2026-10-25"),
+    ("0.6.4", "", "f0.6+", "一期 f0.6+（2026-10-25 维护者验收翻牌）：记忆内核可换层 memory_kernel(行为逐字不变,mem0 实现转调真身+native stub)+AST 守卫拦绕过点(白名单 5 项)+黄金集守卫与 push_gate 第五关(语料回填前为健全性级) · 2026-10-25"),
     ("0.6.3", "", "f0.6.3", "ASGI 真实端口 TOCTOU flaky 根治（起不来换端口重建）+ 召回主链拆分（向量腿/时间窗/快路三函数，search CC 38→3）+ CC 基线只降不升 · 2026-10-23"),
     ("0.6.2", "", "f0.6.2", "event_at 顶层形态透传（写读对称）+ 出境通道知情文档 + 备份明文声明 + f0.6.1 标号勘误 · 2026-10-23"),
     ("0.6.1", "", "f0.6.1", "联调实测缺陷修复：云腿走通后合并本地腿候选（蒸馏线原文在 auto 挡语义改写查询下不再失联；同 id 去重防双计，cloud 档零开销）· 2026-10-23"),
