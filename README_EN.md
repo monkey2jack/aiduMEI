@@ -9,7 +9,7 @@
 > Make your AI agent **actually remember you**: hybrid retrieval + cognitive governance + a visual console + a dual-engine autoshift, a **single-machine self-hosted** engine, MIT.
 > Your host (Hermes / Claude Code / Cursor / any MCP client) owns the short-term conversation; aiduMEI owns long-term memory.
 
-> The current public release is **f0.6** (package `0.6.4`, 2026-10-25). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6).
+> The current public release is **f0.6+** (package `0.6.4`, 2026-10-25). [Download release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6%2B).
 > The Current code: **f0.6.4** (internal candidate, not yet public; Tag/Release flips with the next public release).
 > This release closes out the seven-audit remediation and lands the two-and-a-half items: fixes the four hard defects (parameter mismatch / salience timeline / double-counted probe / dangling transaction janitor) + identity containment + durable deletion matrix + goldenset baseline and event_at timeline. The `main` branch already contains the f0.6.1 fix (cloud leg now merges local-leg candidates — closing the recall gap found in real-host joint testing), f0.6.2 (top-level event_at passthrough + outbound-channels disclosure doc + backup plaintext notice) f0.6.3 (real-ASGI port-flake fix + recall pipeline split) and f0.6.4 (memory kernel abstraction layer + goldenset guards as the fifth gate), while the public Tag/Release stays `f0.6` (v20.3.4 dual-track precedent): **installing from main gets you the fix; installing from the f0.6 Release is unaffected**. Models, decision config, the mem0 base, the vector-store schema and memory data are all unchanged.
 
