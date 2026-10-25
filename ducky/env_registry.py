@@ -50,6 +50,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_LEGACY_RESTORE_ACK",
     # f0.6.1：出处矩阵灰度开关（on 时 Bearer 调用方不采信自报"用户亲述"）
     "AIDUMEI_ORIGIN_POLICY",
+    # f0.6.4：记忆内核选择（mem0=现行；native=f0.6++ 计划）；未知值 fail-fast
+    "AIDUMEI_MEMORY_KERNEL",
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",
