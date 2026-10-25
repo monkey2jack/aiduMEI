@@ -693,8 +693,12 @@ def test_service_units_have_memory_limits_and_consistent_runtime_paths():
 def test_dependency_audit_contract():
     import json
     import subprocess
+    import sys
+    # f0.6.4:从裸 "python3" 改为 sys.executable——契约意图是「审计脚本在
+    # 当前解释器口径下可跑」(tomllib 需 3.11+;系统 python3 可能是 3.9,
+    # 那是环境缺件而审计脚本本身没错,与本仓 venv 3.12/3.13 口径一致)。
     result = subprocess.run(
-        ["python3", str(_ROOT / "scripts" / "dependency_audit.py")],
+        [sys.executable, str(_ROOT / "scripts" / "dependency_audit.py")],
         check=False, capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0, result.stdout

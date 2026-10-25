@@ -8,6 +8,31 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.6.4 (对外 f0.6 双轨 · 一期 f0.6+:记忆内核可换层+黄金集守卫 · 2026-10-25)
+    用例总数 4270 → 4277（收集数净增 7：kernel 契约守卫 4 + 黄金集守卫 3，
+    以精确提交的收集回执为准；通过结果以运行回执为准）。
+    1. memory_kernel 可换层（WP1）：ducky/memory_kernel/（契约+注册表+mem0
+       实现+native stub）。**行为逐字不变**——mem0 实现转调现 get_memory 真身
+       （同锁同补丁同 journal 同单例）；AIDUMEI_MEMORY_KERNEL 选实现，未知值
+       fail-fast、planned 如实抛 NotImplementedError 绝不静默回退。AST 守卫
+       盲扫直 import mem0 绕过点（白名单 5 项逐条带理由，只减不增），当场
+       抓出 4 个存量点全部登记。27 文件全量 import 迁移**留在 f0.6++ 与
+       native 同车**（一期只立接口+守卫+样板，防臃肿纪律）。
+    2. 黄金集守卫+push_gate 第五关（WP2）：**如实边界**——v1 语料仍是种子
+       占位（expected_ids 为计划 id），此刻接真打分=假绿灯；第五关钉的是
+       「集合健全（200 条/五类各 40/id 形态/查重）+判分器契约冒烟（照抄
+       答案应满分+缺键必红）」。真实语料回填=f0.6++ WP7（生产 dudu 域金标准）。
+    3. 宿主真实联调（WP3）：钩子真身三钩定位（inject/ingest/萃取线挂
+       /data/home/.claude/settings.json）；真实 cc transcript 形态走通读写
+       闭环（注入昨晚真实话题命中；真落库 id327-330 含 camelCase sessionId
+       与 cc- 前缀双拼坑各一）；联调数据 5 点全部服务端正式 /delete 清零
+       （verbatim/search 双零残留）。hook 黑盒止损点：手喂空 {}=法定降级
+       出口非缺陷，以 selftest 与真 payload 为准。
+    4. 版本对齐：SERVICE_VERSION 0.6.4, FULL_VERSION f0.6.4 入 LINEAGE；
+       PUBLIC_RELEASE_VERSION 保持 f0.6——公开 Tag 翻牌权在维护者：一期
+       验收后大仓翻 f0.6+（维护者 2026-10-25 钦定节奏：一期 f0.6+、二期
+       f0.6++、毕业才议 f0.7）。
+
 v0.6.3 (对外 f0.6 双轨 · ASGI 端口 flaky 根治 / 召回主链拆分 · 2026-10-23)
     用例总数 4270 → 4270（收集数持平——拆分与测试基建修，不净增；通过结果以
     精确提交的运行回执为准）。
@@ -624,8 +649,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.6.3"
-FULL_VERSION = "f0.6.3"
+SERVICE_VERSION = "0.6.4"
+FULL_VERSION = "f0.6.4"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -647,6 +672,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.6.4", "", "f0.6.4", "一期 f0.6+:记忆内核可换层 memory_kernel(行为逐字不变,mem0 实现转调真身+native stub)+AST 守卫拦绕过点(白名单 5 项)+黄金集守卫与 push_gate 第五关(语料回填前为健全性级) · 2026-10-25"),
     ("0.6.3", "", "f0.6.3", "ASGI 真实端口 TOCTOU flaky 根治（起不来换端口重建）+ 召回主链拆分（向量腿/时间窗/快路三函数，search CC 38→3）+ CC 基线只降不升 · 2026-10-23"),
     ("0.6.2", "", "f0.6.2", "event_at 顶层形态透传（写读对称）+ 出境通道知情文档 + 备份明文声明 + f0.6.1 标号勘误 · 2026-10-23"),
     ("0.6.1", "", "f0.6.1", "联调实测缺陷修复：云腿走通后合并本地腿候选（蒸馏线原文在 auto 挡语义改写查询下不再失联；同 id 去重防双计，cloud 档零开销）· 2026-10-23"),

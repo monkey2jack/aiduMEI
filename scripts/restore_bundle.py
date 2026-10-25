@@ -385,6 +385,13 @@ def create(data, backup_root, label):
     dest.mkdir(mode=0o700)  # Never merge or replace another snapshot.
     try:
         _create_payload(source, dest, inventory, sqlite_names, omitted)
+        # f0.6.4CMP(本机 sqlite 3.54 观测):在线 backup 偶发把**源库的
+        # -shm 共享内存映像**带进快照(-wal 数据已由 backup API 正确合并,
+        # 不受影响)。-shm 不是持久数据,是映射缓存——seal 前剔除,数据
+        # 零损失;留它反而让 verify 按铁律拒收(sidecar forbidden)。
+        for _shm in list(dest.glob('*.db-shm')) + list(dest.glob('*.sqlite-shm')) \
+                + list(dest.glob('*.sqlite3-shm')):
+            _shm.unlink()
         _seal(dest, label, omitted)
         verify(dest, require_manifest=True)
         _sync_tree(dest)

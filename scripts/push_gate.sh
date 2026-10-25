@@ -103,6 +103,14 @@ gate_step compile "$PY" -m compileall -q ducky api_server.py mcp_server.py mem0_
   || fail "编译关未过"
 echo "  ✅ 编译关：0 语法错误"
 
+# f0.6+（WP2）：第五关——黄金集完整性守卫（schema/五类各 40/id 形态/判分器契约冒烟）。
+# 秒级、零 token。**如实边界**：v1 语料仍是种子占位（真实语料回填=f0.6++ WP7），
+# 本关此刻钉的是「集合健全+判分器契约活着」；语料回填后本关自动升级为真实打分门。
+gate_step goldenset "$PY" -m pytest tests/test_f06plus_golden_guard.py -q \
+  || fail "黄金集关未过（黄金集结构或判分器契约破缺；私有日志已保留）"
+echo "  ✅ 黄金集关：200 条·五类·判分器契约 OK（语料回填前为健全性级）"
+
+
 # bash 3.2（macOS 自带 /bin/bash）没有 mapfile/readarray 内建 —— 用 while read 装数组，两边都跑得通。
 files=()
 while IFS= read -r _f; do [[ -n "${_f}" ]] && files+=("${_f}"); done < <({ git ls-files; git ls-files --others --exclude-standard; } | sort -u)
