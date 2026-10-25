@@ -28,7 +28,7 @@ v0.6.4 (对外 f0.6 双轨 · 一期 f0.6+:记忆内核可换层+黄金集守卫
        与 cc- 前缀双拼坑各一）；联调数据 5 点全部服务端正式 /delete 清零
        （verbatim/search 双零残留）。hook 黑盒止损点：手喂空 {}=法定降级
        出口非缺陷，以 selftest 与真 payload 为准。
-    4. 版本对齐：SERVICE_VERSION 0.6.4, FULL_VERSION f0.6.4 入 LINEAGE；
+    4. 版本对齐：SERVICE_VERSION 0.6.4, FULL_VERSION f0.6.4（LINEAGE 0.6.4 行 full 列=f0.6+，2026-10-25 维护者验收翻牌）；
        PUBLIC_RELEASE_VERSION 保持 f0.6——公开 Tag 翻牌权在维护者：一期
        验收后大仓翻 f0.6+（维护者 2026-10-25 钦定节奏：一期 f0.6+、二期
        f0.6++、毕业才议 f0.7）。
