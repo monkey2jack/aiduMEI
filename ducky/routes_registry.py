@@ -25,6 +25,7 @@ from ducky.routes_pantheon import register_pantheon_routes
 from ducky.routes_p0 import register_p0_routes
 from ducky.routes_p1 import register_p1_routes
 from ducky.routes_persona import register_persona_routes
+from ducky.routes_graph import register_graph_routes
 from ducky.system_endpoints import GatedRegistrar, assert_all_gated
 
 logger = logging.getLogger("aiduMEM.RoutesRegistry")
@@ -72,6 +73,9 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
 
     # 13. 注册 v19.0 P0 认知层路由（Reflect 反思 / 记忆去重自编辑）
     register_p0_routes(app)
+
+    # 14.1 f0.6++ WP5 记忆图谱只读路由(neighbors/stats;scope read)
+    register_graph_routes(app)
 
     # 14. 注册 v19.0 P1 记忆类型分离路由（四网络查询视图）
     #     f0.3：经 GatedRegistrar 注册 —— 其中的 /skill/grow、/skill/drafts 属系统级

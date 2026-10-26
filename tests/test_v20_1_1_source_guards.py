@@ -54,6 +54,10 @@ _AUDITED_EXPRESSIONS = {
     "rows.map(tombRow)",
     "rows.map(candRow)",
     "facts.map(factRow)",
+# f0.6++ WP6 graph 面板:rows 与 eRows 的行均由 esc(String(id))/esc(e.edge_type)
+    # 逐字段组装(见 frontend/js/panels.js graphNeighborsOut 渲染段,人工审计)。
+    "rows",
+    "eRows",
     "adj.map",                  # 内联函数体内逐字段 esc（L1000 段人工审计）
     "cats.map",                 # 同上
     "Object.entries(modules)",  # 后接 .map，值为内部模块注册表
@@ -287,6 +291,9 @@ _SQL_KEYWORD_TABLES = {"ADD"}
 # 全景账——新迁移点不登记即红。
 _MIGRATION_LEDGER = {
     ("ducky/core_maintenance.py", "CREATE", "core_memory_revisions"),  # additive core history
+    # f0.6++ WP5 graph_memory(CREATE graph_edges):三类真实关系边(additive,
+    #      不动 facts 主表;租户谓词与 facts 同款)
+    ("ducky/graph_memory.py", "CREATE", "graph_edges"),
     # v21.2 Memmy 融改（均 additive）：M2 回声抑制的数据面 + M1 轨迹信用两表
     ("ducky/schema_bootstrap.py", "ALTER", "memory_epistemic"),
     ("ducky/evolve_mem.py", "CREATE", "evolve_episodes"),

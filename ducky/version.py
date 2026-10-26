@@ -8,8 +8,22 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.6.5 (对外 f0.6+ 双轨 · 二期主体:graph_memory+图谱API+前端图谱面板
+    +goldenset_v2 真语料打分门+WP9 安全急修 · 2026-10-26)
+    用例总数 4277 → 4303（本版净增 26,无删除;以精确提交的收集回执为准;通过结果以运行回执为准）。
+    1. graph_memory 数据层:三类真实关系边(update_chain/same_session/co_occurrence),
+       不预建全图,租户同款谓词,depth 1-3 展开;env_registry/route_policy 同步。
+    2. 图谱 API GET /graph/neighbors + /graph/stats:守卫覆盖幂等写入/租户
+       隔离/坏 depth 拒收/update_chain 派生(facts UNIQUE 约束下按 agent_id 分组)。
+    3. 前端 graph 面板:renderMap 后置 graph section;边零显「未派生」不冒充。
+    4. goldenset_v2 真语料:91 条生产宿主域只读取样,expected_ids 绑真实
+       fact_id(prod-<id>);第五关守卫升双级(v1 健全性/v2 打分)。
+    5. WP9 安全急修:injection Layer2 中文正则补齐+confusables 折叠、
+       core autosink(用户级审计暗礁2)、单删链 history 补清、self_edit 升 warning。
+    6. 版本对齐:SERVICE_VERSION 0.6.5, FULL_VERSION f0.6++ 入 LINEAGE。
+
 v0.6.4 (对外 f0.6 双轨 · 一期 f0.6+:记忆内核可换层+黄金集守卫 · 2026-10-25)
-    用例总数 4270 → 4291（f0.6.4 净增 7 + WP9 对抗回归集 11，
+    用例总数 4270 → 4303（f0.6.4 净增 7 + WP9 对抗回归集 11，
     以精确提交的收集回执为准；通过结果以运行回执为准）。
     1. memory_kernel 可换层（WP1）：ducky/memory_kernel/（契约+注册表+mem0
        实现+native stub）。**行为逐字不变**——mem0 实现转调现 get_memory 真身
@@ -21,7 +35,7 @@ v0.6.4 (对外 f0.6 双轨 · 一期 f0.6+:记忆内核可换层+黄金集守卫
     2. 黄金集守卫+push_gate 第五关（WP2）：**如实边界**——v1 语料仍是种子
        占位（expected_ids 为计划 id），此刻接真打分=假绿灯；第五关钉的是
        「集合健全（200 条/五类各 40/id 形态/查重）+判分器契约冒烟（照抄
-       答案应满分+缺键必红）」。真实语料回填=f0.6++ WP7（生产 dudu 域金标准）。
+       答案应满分+缺键必红）」。真实语料回填=f0.6++ WP7（生产宿主域金标准）。
     3. 宿主真实联调（WP3）：钩子真身三钩定位（inject/ingest/萃取线挂
        /data/home/.claude/settings.json）；真实 cc transcript 形态走通读写
        闭环（注入昨晚真实话题命中；真落库 id327-330 含 camelCase sessionId
@@ -73,6 +87,10 @@ v0.6.2 (对外 f0.6 双轨 · 出境知情文档/备份明文声明/event_at 顶
     5. 版本对齐：SERVICE_VERSION 0.6.2（pyproject.toml / manifest.json 同步），
        FULL_VERSION f0.6.2 入 LINEAGE；PUBLIC_RELEASE_VERSION 保持 f0.6——
        大仓 Tag/Release 不动（双轨先例），下个公开版本统一升。
+
+v0.6.5 (对外 f0.6+ 双轨 · 二期主体:graph_memory+图谱api+前端 graph 面板
+    +goldenset_v2 真语料 91 条真打分门+WP9 安全急修 · 2026-10-26)
+    用例总数 4303 → 4303（净增 6,无删除）。详见 §24 任务书 WP5/WP6/WP7/WP9。
 
 v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
     用例总数 4266 → 4266（收集数持平——改版 1 条守卫用例，不净增）。
@@ -649,8 +667,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.6.4"
-FULL_VERSION = "f0.6.4"
+SERVICE_VERSION = "0.6.5"
+FULL_VERSION = "f0.6++"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -672,6 +690,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.6.5", "", "f0.6++", "二期主体:记忆图谱 graph_memory(三类真实关系边)+图谱 API+前端图谱面板+黄金集 v2 真语料(91 条)真打分门初版 · 2026-10-26"),
     ("0.6.4", "", "f0.6+", "一期 f0.6+（2026-10-25 维护者验收翻牌）：记忆内核可换层 memory_kernel(行为逐字不变,mem0 实现转调真身+native stub)+AST 守卫拦绕过点(白名单 5 项)+黄金集守卫与 push_gate 第五关(语料回填前为健全性级) · 2026-10-25"),
     ("0.6.3", "", "f0.6.3", "ASGI 真实端口 TOCTOU flaky 根治（起不来换端口重建）+ 召回主链拆分（向量腿/时间窗/快路三函数，search CC 38→3）+ CC 基线只降不升 · 2026-10-23"),
     ("0.6.2", "", "f0.6.2", "event_at 顶层形态透传（写读对称）+ 出境通道知情文档 + 备份明文声明 + f0.6.1 标号勘误 · 2026-10-23"),
