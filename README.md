@@ -9,8 +9,8 @@
 > 让你的 AI Agent **真正记住你**：混合检索 + 认知治理 + 可视化控制台 + 双引擎自动挡，**单机自托管**，MIT。
 > 宿主（Hermes / Claude Code / Codex CLI / Cursor / 任何 MCP 客户端）管短期对话，aiduMEI 管长期记忆。
 
-> **当前公开版本 f0.6+。** 包版本 `0.6.4`，2026-10-25。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6%2B)。
-> 当前代码 **f0.6++**（内部补丁，尚未公开发布；Tag/Release 翻牌随下个公开版本统一）。
+> **当前公开版本 f0.6++。** 包版本 `0.6.5`，2026-10-26。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.6%2B%2B)。
+> 本版是二期主体：记忆图谱 graph_memory（三类真实关系边）+ 图谱 API 与前端图谱面板 + 黄金集 v2 真语料（91 条，绑定真实 fact_id）+ WP9 安全急修（注入 Layer2 中文补齐与同形字折叠 / core autosink / 单删链 history 补清）。`main` 分支源码即本版；不换模型与决策配置、不动基座与向量库 schema、不迁记忆数据。
 > 本版是七路外审整改与两项半落地版：修齐正确性四真雷（参数错位/遗忘曲线/探针双记账/事务清道夫）+ 身份线收口 + 删除语义闭环 + 黄金集基线与事件时刻写读线。`main` 分支源码已包含 f0.6.1（云腿本地候选合并——真实宿主联调挖出的召回断层修复）、f0.6.2（event_at 顶层形态透传 + 出境通道知情文档 + 备份明文声明）、f0.6.3（ASGI 端口 flaky 根治 + 召回主链拆分，行为逐字不变）与 f0.6.4（记忆内核可换层 memory_kernel + 黄金集守卫与门禁第五关）的全部内容，公开 Tag/Release 已按维护者节奏翻牌至 `f0.6+`（本版）：**用户从 main 安装即得全部修复，从 f0.6 旧 Release 安装不受影响**。不换模型与决策配置、不动基座与向量库 schema、不迁记忆数据。
 
 > **可选决策模型**：客户自行选择供应商、模型、地址、密钥及任务，也可保持关闭。配置一次后自动用于新记忆类型分类与检索证据核验，无需逐次操作。支持 Nace、TypeSafe、Cloudflare Clef/Clef Flash 及同协议服务；不限定 Drex。Reranker 继续负责排序，本地挡不外呼决策模型。[配置与兼容范围](docs/DECISION.md)。
