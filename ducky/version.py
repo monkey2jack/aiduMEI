@@ -8,8 +8,8 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
-v0.6.5 (对外 f0.6+ 双轨 · 二期主体:graph_memory+图谱API+前端图谱面板
-    +goldenset_v2 真语料打分门+WP9 安全急修 · 2026-10-26)
+v0.6.5 (对外 f0.6++ · 2026-10-26 维护者验收翻牌为公开版 · 二期主体:graph_memory
+    +图谱API+前端图谱面板+goldenset_v2 真语料打分门+WP9 安全急修 · 2026-10-26)
     用例总数 4277 → 4303（本版净增 26,无删除;以精确提交的收集回执为准;通过结果以运行回执为准）。
     1. graph_memory 数据层:三类真实关系边(update_chain/same_session/co_occurrence),
        不预建全图,租户同款谓词,depth 1-3 展开;env_registry/route_policy 同步。
@@ -88,9 +88,9 @@ v0.6.2 (对外 f0.6 双轨 · 出境知情文档/备份明文声明/event_at 顶
        FULL_VERSION f0.6.2 入 LINEAGE；PUBLIC_RELEASE_VERSION 保持 f0.6——
        大仓 Tag/Release 不动（双轨先例），下个公开版本统一升。
 
-v0.6.5 (对外 f0.6+ 双轨 · 二期主体:graph_memory+图谱api+前端 graph 面板
-    +goldenset_v2 真语料 91 条真打分门+WP9 安全急修 · 2026-10-26)
-    用例总数 4303 → 4303（净增 6,无删除）。详见 §24 任务书 WP5/WP6/WP7/WP9。
+v0.6.5 (对外 f0.6++ · 2026-10-26 维护者验收翻牌为公开版 · 二期主体:graph_memory
+    +图谱api+前端 graph 面板+goldenset_v2 真语料 91 条真打分门+WP9 安全急修)
+    用例总数 4277 → 4303（净增 26,无删除）。详见 §24 任务书 WP5/WP6/WP7/WP9。
 
 v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
     用例总数 4266 → 4266（收集数持平——改版 1 条守卫用例，不净增）。
@@ -676,7 +676,11 @@ FULL_VERSION = "f0.6++"
 # 蒸馏线原文在 auto 挡语义改写查询下不再失联。维护者裁决：大仓 Tag/Release
 # 保持 f0.6 不动，PUBLIC_RELEASE_VERSION 不随内部补丁翻牌（v20.3.4 双轨
 # 先例）；main 快进先于 Tag 翻牌，下个公开版本统一升。
-PUBLIC_RELEASE_VERSION = "f0.6+"
+# f0.6++（2026-10-26）：二期主体（graph_memory+图谱 API+前端图谱面板+
+# 黄金集 v2 真语料+WP9）三仓推齐，维护者验收钦定翻牌——公开 Tag/Release
+# 升至 f0.6++，PUBLIC_RELEASE_VERSION 同步（先验承诺、跑分 before-public 的
+# 节奏以维护者指令为准）。
+PUBLIC_RELEASE_VERSION = "f0.6++"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -690,7 +694,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("0.6.5", "", "f0.6++", "二期主体:记忆图谱 graph_memory(三类真实关系边)+图谱 API+前端图谱面板+黄金集 v2 真语料(91 条)真打分门初版 · 2026-10-26"),
+    ("0.6.5", "", "f0.6++", "二期主体（2026-10-26 维护者验收翻牌为公开版）:记忆图谱 graph_memory(三类真实关系边)+图谱 API+前端图谱面板+黄金集 v2 真语料(91 条)真打分门初版 + WP9 安全急修 · 2026-10-26"),
     ("0.6.4", "", "f0.6+", "一期 f0.6+（2026-10-25 维护者验收翻牌）：记忆内核可换层 memory_kernel(行为逐字不变,mem0 实现转调真身+native stub)+AST 守卫拦绕过点(白名单 5 项)+黄金集守卫与 push_gate 第五关(语料回填前为健全性级) · 2026-10-25"),
     ("0.6.3", "", "f0.6.3", "ASGI 真实端口 TOCTOU flaky 根治（起不来换端口重建）+ 召回主链拆分（向量腿/时间窗/快路三函数，search CC 38→3）+ CC 基线只降不升 · 2026-10-23"),
     ("0.6.2", "", "f0.6.2", "event_at 顶层形态透传（写读对称）+ 出境通道知情文档 + 备份明文声明 + f0.6.1 标号勘误 · 2026-10-23"),
