@@ -99,11 +99,12 @@ _NORMALIZED_INJECTION_PATTERNS = re.compile(
     r"|(fromnowonyouare|actas|pretendto|youarenow)(unrestricted|jailbroken|dan|danmode|developermode|evil)"
     r"|youmust(ignore|forget|override|bypass)(all)?(rule|instruction|systemprompt)"
     r"|override(all)?(system)?(prompt|instruction)"
-    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部){0,8}(系统)?(指令|指示|提示词)"
-    r"|忘记(所有|一切|你学到的|你的记忆){0,8}(系统)?(指令|提示词)"
-    r"|从现在(起|开始)?(你是|扮演|假装)(无限制|越狱|dan|不受约束)|扮演无限制|无视(道德|系统|安全)?限制"
+    r"|忽略(之前|先前|上述|上面|历史|原有|所有|全部){0,8}(的)?(所有|全部|之前|先前|历史){0,8}(系统)?(指令|指示|提示词)"
+    r"|忘记(所有|一切|你学到的|你的记忆){0,8}(的)?(系统)?(指令|提示词)"
+    r"|从现在(起|开始)?(你是|扮演|假装)(无限制|越狱|dan|不受约束)|扮演无限制|无视(道德|安全|系统)?限制"
+    r"|你现在的真实(系统)?(指令|提示词)是"
     r"|你的真实(系统)?(指令|提示词)是"
-    r"|不要遵守(上述|任何|这些)?(系统)?(指令|提示词)",
+    r"|不要遵守(上述|任何|这些|系统)?(系统)?(指令|提示词)",
     re.IGNORECASE,
 )
 
@@ -132,6 +133,23 @@ def check_prompt_injection(content: str) -> Tuple[bool, str]:
     # 全角折回半角，第二层正则才能命中。
     import unicodedata
     folded = sanitize_control_chars(unicodedata.normalize("NFKC", content))
+    # f0.6++ WP9（hark F-01 实测）：西里尔同形字（о→o/і→i/а→a/с→c/е→e/х→x/
+    # р→p）NFKC 不折叠——`Ignоre all prevіous`（西里尔 о/і）双双漏网。这里
+    # 按 Unicode confusables 的最高频子集做显式折叠（只折拉丁常用位，不追求
+    # 全表——全表见 unicode.org security 数据，按需扩充）。
+    _CONFUSABLES = str.maketrans({
+        "о": "o", "ο": "o", "о": "o",  # cyrillic o / greek omicron
+        "і": "i", "і": "i", "ί": "i", "ι": "i",
+        "а": "a", "α": "a",
+        "с": "c", "ϲ": "c",
+        "е": "e", "е": "e", "ε": "e",
+        "х": "x", "χ": "x",
+        "р": "p", "ρ": "p",
+        "у": "y", "у": "y",
+        "ј": "j", "ѕ": "s", "ӏ": "l",
+        "І": "I", "О": "O", "А": "A", "С": "C", "Е": "E", "Х": "X", "Р": "P",
+    })
+    folded = folded.translate(_CONFUSABLES)
     # Preserve marker syntax before removing punctuation: fullwidth ChatML
     # or a control character inside a system token must still be detected.
     if _RAW_INJECTION_PATTERNS.search(folded):

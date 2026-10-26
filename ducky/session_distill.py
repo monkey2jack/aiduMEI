@@ -343,6 +343,14 @@ def distill_session(session_id: str, *, user_id: str = "",
     }
     if refs_truncated:
         meta["distill_source_refs_truncated"] = True
+    # f0.6++ WP9(用户级审计暗礁2):精华产出后顺手喂核心占位块——只覆写「尚未填写」,
+    # 用户手填/auto-draft 已写一律跳过(护栏见 core_memory.autosink_from_distill)。
+    try:
+        from ducky.core_memory import autosink_from_distill
+        meta["core_autosink"] = autosink_from_distill(summary, user_id=uid,
+                                                      bank_id=bid)
+    except Exception as _sink_exc:  # 核心块沉淀失败绝不连坐精华落库
+        meta["core_autosink"] = {"status": "error", "detail": str(_sink_exc)[:120]}
     return {"status": "ok", "session_id": session_id, "summary": summary,
             "mode": mode, "source_count": len(rows), "emotion_hits": emo,
             "source_fingerprint": source_fingerprint,

@@ -44,7 +44,8 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 701  # f0.3++: +4 in loop_guard.py, explained below.
+_BASELINE = 702  # f0.3++: +4 in loop_guard.py; f0.6++WP9: +1 in session_distill.py (core-memory autosink guard - a placeholder-fill must never kill the distill commit, wide catch is the contract here), explained in place.
+
 # f0.6: +7 —— governance.py（W-16 provisional 兜底，降级失败只能宽捕获才能如实上报）、
 # evolve_mem.py（W-02 旧 schema 容错）、utils.py W-04 清道夫（连接清理失败不许炸请求收尾）、
 # wal_engine.py W-18 history 清理（多后端形态只能宽兜+layer_failed）、api_errors.py（脱敏日志路径）。

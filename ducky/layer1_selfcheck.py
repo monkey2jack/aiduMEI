@@ -327,7 +327,12 @@ def _try_self_edit(memory, messages_json, user_id, metadata, bank_id):
     except Exception as error:
         require_no_sdk_since(before, user_id, bank_id, error)
         feature_failed("self_edit", error)
-        logger.debug("self-edit unavailable before SDK dispatch; deterministic fallback allowed")
+        # f0.6++ WP9(deepseek §5.1 误报的真相层):调用面参数顺序正确,但语义
+        # 判重挂掉时原来只留 debug——不报错不报警全绿,正是「测函数没测连线」
+        # 的隐藏面。升 WARNING 让「判重没跑成」在日志面可见;feature_failed
+        # 仍走原路(计数进 failure_ledger)。
+        logger.warning("self-edit unavailable before SDK dispatch (%s: %.120s); "
+                       "deterministic fallback allowed", type(error).__name__, str(error))
         return None
 
 
