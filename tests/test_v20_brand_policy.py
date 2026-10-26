@@ -126,7 +126,7 @@ def _code_files():
 # 生产侧日志采集按 aiduMEM.* / aiduMEM-v* 过滤。一次「顺手清理品牌残留」的全局替换
 # 会把这些一起改掉：服务照常起、日志照常写，只是再也进不了采集管道。
 # 数字放在这里，少一处就红。
-_LOGGER_SITES = 106  # f0.6.4：+aiduMEM.memory_kernel ×3（可换层包内三处，同名 logger；记入 CHANGELOG）；此前 103=v21.2.0：+aiduMEM.distill；v21 preview：+aiduMEM.Dossier +aiduMEM.RoutesKnowledge；v21.1：+aiduMEM.pantheon +aiduMEM.RoutesPantheon；f0.6：+aiduMEM.api_errors
+_LOGGER_SITES = 108  # f0.6++：+aiduMEM.graph_memory ×2（graph 数据层与路由层各一处，同名 logger）；此前 106=f0.6.4：+aiduMEM.memory_kernel ×3（可换层包内三处，同名 logger）；103=v21.2.0：+aiduMEM.distill；v21 preview：+aiduMEM.Dossier +aiduMEM.RoutesKnowledge；v21.1：+aiduMEM.pantheon +aiduMEM.RoutesPantheon；f0.6：+aiduMEM.api_errors
 # 累积记账（每次变动都要写明来路，否则这个数字迟早变成没人敢动的常数）：
 #   · v20.2 自动挡: +3（gear/local_embed/dual_index）
 #   · v20.2.1 外审 R1: +1（rate_guard）
