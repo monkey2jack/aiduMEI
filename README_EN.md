@@ -38,7 +38,7 @@ Real use after f0.4 shipped exposed two problems. This release fixes those two a
 
 Scheduled and delegated agents (`cron`, `subagent`) no longer write memories or distill by default; reads are unaffected, and `AIDUMEI_SKIP_PLATFORMS=""` restores writing. Shell hooks must be redeployed, and the essence hook should also be registered for finalize/reset with a timeout of 25 seconds or less. See the [upgrade guide](docs/F04_UPGRADE.md).
 
-**Tests:** **4277** collected (3647 behavior, 484 script/hook, 146 guard; f0.6.4 tree, measured 2026-10-25; f0.6.2 was 4270=3640+484+146, f0.6 was 4266=3632+487+147). Each new regression was run against the previous code as a negative control, and the previous code reproduced the production 409. Local and Linux target results, production acceptance and the exact commit are recorded in the release notes.
+**Tests:** **4291** collected (3661 behavior, 484 script/hook, 146 guard; f0.6++WP9 tree, measured 2026-10-26; f0.6.2 was 4270=3640+484+146, f0.6 was 4266=3632+487+147). Each new regression was run against the previous code as a negative control, and the previous code reproduced the production 409. Local and Linux target results, production acceptance and the exact commit are recorded in the release notes.
 
 The f0.4 notes below describe the previous release.
 
@@ -390,8 +390,8 @@ Example section to insert in the configuration file (use your own service settin
 
 | Dimension | Current |
 |------|------|
-| Total cases | **4277** (measured via `pytest --collect-only`, 2026-10-25, f0.6.4 tree) = **3647 behavior + 484 script/hook + 146 guard**. f0.6.2 was 4270=3640+484+146, f0.6 was 4266=3632+487+147 | Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
-| Clean dev machine | 4265 passed · **12 skipped** — **f0.6.4 acceptance target derived from collection and missing axes; measured results are in the release notes** (Python 3.12; development and benchmark dependencies plus the local embedding model are ready; only the Hermes source is absent) |
+| Total cases | **4291** (measured via `pytest --collect-only`, 2026-10-26, f0.6++WP9 tree) = **3661 behavior + 484 script/hook + 146 guard**. f0.6.4 was 4277=3647+484+146, f0.6 was 4266=3632+487+147 | Split methodology and the file lists live in `scripts/count_test_kinds.py` and can be recomputed in one command — no blended number in the headline |
+| Clean dev machine | 4279 passed · **12 skipped** — **f0.6++ acceptance target derived from collection and missing axes; measured results are in the release notes** (Python 3.12; development and benchmark dependencies plus the local embedding model are ready; only the Hermes source is absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only, clean Python 3.12 venv (**measured 2026-09-09 on the production box**) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (this tree de09794, separate sandbox venv on the production box: host source present, no `.env`, optional axes absent); production host post-deploy: 1983 passed · 10 skipped (same tree, host axes present) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (isolated full-axis venv: tools, extras, host source, model cache and the public LoCoMo dataset all present; that single skip is a conditional axis on a newly added case) |
@@ -407,7 +407,7 @@ pytest tests/
 python -m compileall ducky api_server.py mcp_server.py
 ```
 
-> **Why report both 4265 and 1821**: the first is the current target with only the 12 Hermes cases skipped, not itself a measured result (measurements are in the release notes); the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
+> **Why report both 4279 and 1821**: the first is the current target with only the 12 Hermes cases skipped, not itself a measured result (measurements are in the release notes); the second is the 2026-09-09 clean-venv measurement of the basic install path (requirements files only). A number only means anything with its environment and date attached.
 
 > **Those 12 skips are not hand-waving — you can verify them yourself**: all fourteen skip axes (host, tooling, optional dependencies, model files) are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
@@ -416,12 +416,12 @@ python -m compileall ducky api_server.py mcp_server.py
 > pip install -r requirements.txt -r requirements-dev.txt
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed
 > python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 4265 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 4277 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4265 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 4279 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # with host: 4291 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4279 passed, 12 skipped
 > ```
 >
-> `4277 passed` in the block above requires **all fourteen axes present**; the host is only one of them — don't read "install the host" as "all green". `4265 passed · 12 skipped` is the no-host acceptance target (4277 − 12 at the f0.6 tree, recomputed per tree; the Chinese README's 4230 was a typo — fixed in f0.6, muse M-6); per-environment measurements are in the release notes.
+> `4291 passed` in the block above requires **all fourteen axes present**; the host is only one of them — don't read "install the host" as "all green". `4279 passed · 12 skipped` is the no-host acceptance target (4291 − 12 at the f0.6 tree, recomputed per tree; the Chinese README's 4230 was a typo — fixed in f0.6, muse M-6); per-environment measurements are in the release notes.
 >
 > **Full skip-axis census** (gated counts reconciled against live measurement; any drift goes red):
 >

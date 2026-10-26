@@ -2,7 +2,9 @@
 
 ## v0.6.4 (对外 f0.6 双轨 · 一期 f0.6+:记忆内核可换层+黄金集守卫 · 2026-10-25)
 
-> **用例总数 4270 → 4277**（收集数净增 7：kernel 契约守卫 4 + 黄金集守卫 3，以精确提交的收集回执为准；通过结果以运行回执为准）。
+> **用例总数 4270 → 4291**（f0.6.4 收集数净增 7：kernel 契约守卫 4 + 黄金集守卫 3；
+  本版 WP9 再净增 14[11 对抗回归 + 3 autosink]：注入对抗回归集 11[9 参数化+2 边界] + core autosink 3，无删除；
+  合计以精确提交的收集回执为准；通过结果以运行回执为准）。
 
 - **记忆内核可换层 `ducky/memory_kernel/`（WP1，行为逐字不变）**：契约（结构钉住，native 落地时升 ABC）+ 注册表 + mem0 实现 + native stub。**mem0 实现转调现 `get_memory` 真身**——同锁/同补丁/同 journal/同 sys 单例，零语义分叉。`AIDUMEI_MEMORY_KERNEL` 选实现：未知值 **fail-fast**、planned（native）如实抛 KernelNotImplemented **绝不静默回退**。AST 守卫盲扫直 import mem0 绕过点，白名单 5 项逐条带理由只减不增（当场抓出 mem0_patches/mutation_journal/tombstone×2 四个存量点全部登记）。台账同步：env_registry 登 AIDUMEI_MEMORY_KERNEL；logger 契约 103→106（+aiduMEM.memory_kernel×3）。**27 文件全量 import 迁移留在 f0.6++ 与 native 同车**——一期只立接口+守卫+样板，防臃肿纪律。
 - **黄金集守卫 + push_gate 第五关（WP2）**：gate 新增独立 goldenset 步（秒级零 token）。**如实边界**：v1 语料 200 条仍是种子占位（expected_ids 为计划 id），此刻接真打分=假绿灯——第五关钉「集合健全（五类各 40/查询查重/id 形态）+判分器契约冒烟（照抄答案应满分+缺键必红）」，真实语料回填=f0.6++ WP7（生产 dudu 域金标准）。

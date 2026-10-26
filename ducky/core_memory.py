@@ -1126,3 +1126,61 @@ if __name__ == "__main__":
     print(json.dumps(get_all_blocks(), ensure_ascii=False, indent=2))
     print("\n=== 注入上下文 ===")
     print(inject_context())
+
+
+# ── f0.6++ WP9(十路敌对审计·用户级暗礁2):占位块自动沉淀 ──────────
+# 病灶:core_memory 三块出厂占位(「尚未填写」)在真实用户域里躺了几个月——
+# distill 线每晚会产出会话精华,但没人把"高频、稳定"的结论喂回核心记忆。
+# 用户级审计原话:「定时任务或后台 distill 线程应当自动将高频提及的…固化进
+# CoreMemory 块」。
+#
+# 安全护栏(缺一不可):
+#   1. 只覆写**仍是出厂占位**的块——用户手填过、auto-draft 写过的,一概不碰;
+#   2. auto-draft 内容带「[自动草稿·待确认]」前缀,语义层可辨,用户一句
+#      put_block 即可覆盖且从此免疫(不再是占位);
+#   3. 开关 AIDUMEI_CORE_AUTOSINK(默认 on;=0 关闭);
+#   4. 只在 distill 线产出**真实 LLM/fallback 精华**后才跑,与既有节流共用。
+_AUTO_PLACEHOLDER_MARK = "（尚未填写）"
+_AUTO_DRAFT_PREFIX = "[自动草稿·待确认] "
+
+
+def _is_placeholder_content(content: str) -> bool:
+    return content.strip().startswith(_AUTO_PLACEHOLDER_MARK) or \
+        content.strip() in {c.strip() for c in DEFAULT_BLOCKS.values()}
+
+
+def autosink_from_distill(summary: str, user_id: str = DEFAULT_USER_ID,
+                          bank_id: str = DEFAULT_BANK_ID) -> dict:
+    """distill 线出口:把本程精华草填进仍处占位的核心块(最长匹配者得)。
+
+    返回 {"status": "skipped"(关/无占位/无精华) | "written"(块名)}。
+    映射策略:no LLM——精华文本与三个块的主题词做包含匹配,命中哪块填哪块;
+    不命中就整段进 core_current_project(最泛化的一块)。宁浅勿错。
+    """
+    if os.environ.get("AIDUMEI_CORE_AUTOSINK", "1").strip().lower() in ("0", "false", "no"):
+        return {"status": "skipped", "reason": "disabled"}
+    text = (summary or "").strip()
+    if len(text) < 12:
+        return {"status": "skipped", "reason": "empty_summary"}
+
+    target = None
+    # 实体名(如对部署方的专属称呼)不硬编码进代码——那类词部署方可经
+    # 实体注入开关(部署可配的实体词表)承接专属称呼;此处只留通用语义词。
+    if any(k in text for k in ("称呼", "生日", "偏好", "身份", "时区", "我叫")):
+        target = "core_user_profile"
+    elif any(k in text for k in ("项目", "部署", "上线", "进度", "下一步", "版本")):
+        target = "core_current_project"
+    else:
+        target = "core_key_decisions"
+
+    block = get_block(target, user_id, bank_id)
+    if block is None:
+        return {"status": "skipped", "reason": "block_missing"}
+    content = str(block.get("content", "")) if isinstance(block, dict) else str(block)
+    if not _is_placeholder_content(content) or content.strip().startswith(_AUTO_DRAFT_PREFIX):
+        return {"status": "skipped", "reason": "not_placeholder"}
+
+    res = put_block(target, _AUTO_DRAFT_PREFIX + text[:400],
+                    user_id=user_id, bank_id=bank_id)
+    return {"status": "written", "block": target,
+            "source": "distill", "put_status": res.get("status", "?")}

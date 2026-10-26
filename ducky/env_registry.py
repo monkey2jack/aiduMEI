@@ -52,6 +52,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_ORIGIN_POLICY",
     # f0.6.4：记忆内核选择（mem0=现行；native=f0.6++ 计划）；未知值 fail-fast
     "AIDUMEI_MEMORY_KERNEL",
+    # f0.6++ WP9:core_memory 占位自动沉淀开关(默认 on)
+    "AIDUMEI_CORE_AUTOSINK",
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",
