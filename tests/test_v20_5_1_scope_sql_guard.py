@@ -73,6 +73,7 @@ _BASELINE: dict[str, tuple[int, str]] = {
     "ducky/federation/schema.py": (1, "schema 迁移 DDL 内片段；豁免"),
     "ducky/self_edit.py": (1, "自编辑精确匹配；待迁"),
     "ducky/pantheon.py": (8, "v21.1 众神殿：殿主体表——user_id 是殿主键(pantheon_halls)、grantor/grantee_user_id 是借阅主体(hall_grants)，属主体标识而非记忆的二维租户 scope；精确主键匹配，刻意不走 scope_clause（那是记忆表租户过滤的出口）"),
+    "ducky/graph_memory.py": (10, "f0.6++ 图谱层：graph_edges 自表键 WHERE＋facts/verbatim_turns 聚合派生（GROUP BY 维度含 user_id/bank_id 本身，非行级租户过滤）；scope_clause 的 AND 子句形态套不进聚合分组键，维持精确匹配"),
 }
 
 # 正规入口自身，不参与普查（片段本来就是它们的职责）。

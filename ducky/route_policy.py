@@ -44,6 +44,8 @@ POST /broadcast_expand
 POST /jlens
 POST /session/search
 GET /session/report
+GET /graph/neighbors
+GET /graph/stats
 GET /api/core-memory/{block_key}/history
 GET /api/core-memory
 GET /api/core-memory/{block_key}

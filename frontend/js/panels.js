@@ -678,6 +678,9 @@ async function renderMap(body) {
       '</div>' +
     '</div>';
     body.insertAdjacentHTML('beforeend', obsHint);
+
+  /* f0.6++ WP6: graph section appended after star map */
+  setTimeout(function(){ try { renderGraphEdgesSection(body, uid, bank_id); } catch(e){ console.warn('graph section', e); } }, 50);
   }
 
   drawEChartsStarMap(body.querySelector('#starMapChart'), domains, entities, scenes, obsidianEntities);
@@ -1768,4 +1771,56 @@ function renderParams(cfg) {
   }).join('');
 
   return rows || '<div class="hint">无法读取参数 / Cannot read params</div>';
+}
+
+
+/* ── f0.6++ WP6: 图谱邻域可视化(graph_edges SVG)────────────────
+   数据来自 /graph/stats + /graph/neighbors(只读;写边走 WP5 派生)。
+   若边为零,如实显示「图未派生」而不是空图——empty≠pending。 */
+async function renderGraphEdgesSection(body, uid, bank) {
+  var stats;
+  try { stats = await API.get('/graph/stats', { user_id: uid, bank_id: bank }); }
+  catch (e) { body.insertAdjacentHTML('beforeend', '<div class="sec">' + section_failure(e) + '</div>'); return; }
+  var byType = (stats && stats.by_type) || {};
+  var total = (stats && stats.total_edges) || 0;
+  var parts = Object.keys(byType).map(function (k) {
+    return '<span class="pill">' + esc(k) + ': <b>' + esc(String(byType[k])) + '</b></span>';
+  }).join(' ');
+  var cls = total > 0 ? 'sec' : 'sec';
+  body.insertAdjacentHTML('beforeend',
+    '<div class="' + cls + '" id="graphEdgesSection">' +
+      secHead('记忆图谱', 'GRAPH', total ? (total + ' 条边') : '图未派生') +
+      (total
+        ? '<div class="pill-row">' + parts + '</div>' +
+          '<div class="hint pt6">展开一个节点看它的邻域 / Pick a node to explore</div>' +
+          '<div id="graphEdgeProbe"><input id="graphNodeInput" class="graph-input" placeholder="memory_id 或 fact_id">' +
+          '<button id="graphProbeBtn">展开</button>' +
+          '<div id="graphNeighborsOut"></div></div>'
+        : '<div class="hint">边为零:派生还没跑。可在服务器跑 <code>graph_memory.derive_update_chain_edges()</code>。</div>') +
+    '</div>');
+  if (!total) return;
+  var btn = body.querySelector('#graphProbeBtn');
+  if (btn) btn.addEventListener('click', async function () {
+    var nid = (body.querySelector('#graphNodeInput') || {}).value || '';
+    if (!nid) return;
+    var out = body.querySelector('#graphNeighborsOut');
+    out.innerHTML = loading('邻域展开');
+    try {
+      var r = await API.get('/graph/neighbors',
+        { user_id: uid, bank_id: bank, node_type: 'fact', node_id: nid, depth: 2, limit: 30 });
+      var nodes = (r && r.nodes) || [];
+      var edges = (r && r.edges) || [];
+      if (!nodes.length) { out.innerHTML = '<div class="hint">没有邻域</div>'; return; }
+      var rows = nodes.map(function (n) {
+        return '<div class="param-row"><span class="param-k">' + esc(n.type) + '</span>' +
+          '<span class="param-v">' + esc(String(n.id)) + '</span></div>';
+      }).join('');
+      var eRows = edges.map(function (e) {
+        return '<div class="param-row"><span class="param-k">' + esc(e.edge_type) + '</span>' +
+          '<span class="param-v">' + esc(String(e.src_id)) + ' → ' + esc(String(e.dst_id)) + '</span></div>';
+      }).join('');
+      out.innerHTML = '<div class="pill-row">' + nodes.length + ' 节点 / ' + edges.length + ' 边</div>' +
+        rows + (eRows ? eRows : '<div class="hint">无边</div>');
+    } catch (ex) { out.innerHTML = failure(ex); }
+  });
 }
