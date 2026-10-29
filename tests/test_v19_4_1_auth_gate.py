@@ -539,6 +539,8 @@ _INJECTED_ADDRESS_CALLERS = {
     "benchmarks/adapter.py",
     # f0.6+++ WP1 回归集 v3：--url 注入远端测试实例，带 AIDUMEI/AIDUMEM_API_TOKEN。
     "benchmarks/regression.py",
+    # f0.7 资源对比基准：自己拉起被测实例（端口 8791），带每次随机生成的 AIDUMEM_API_TOKEN。
+    "scripts/slim_bench.py",
 }
 
 
