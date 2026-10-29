@@ -17,20 +17,18 @@ from __future__ import annotations
 # 每项：(fact_key, 必须出现的子串, 口径/日期/环境)。
 # 数值若重测变动，改这里并同步 README —— 守卫逼你两边一起改。
 DOC_FACTS: tuple[tuple[str, str, str], ...] = (
-    ("mem_cloud_mb", "约 280 MB",
-     "云端档运行内存（2 核 3.5GB 生产口径实测，2026-08）"),
-    ("mem_local_mb", "约 430 MB",
-     "自动挡/本地档运行内存（同上口径）"),
-    ("mem_delta_mb", "150 MB",
-     "两档实测常驻差 = 430 − 280 = 150（v20.4.0 修正：旧文误写 151）"),
-    ("mem_onnxruntime_mb", "75 MB",
-     "onnxruntime 运行库只 import 不加载模型的构成项实测"),
-    ("mem_model_session_mb", "约 122 MB",
-     "bge-small-zh-v1.5 会话与权重的构成项实测"),
-    ("cold_start_sec", "5.2s",
-     "冷启动实测"),
-    ("search_latency", "0.14~0.23s",
-     "/search 单次实测区间"),
+    # f0.7 起改为 f0.6 ↔ f0.7 同机对比（scripts/slim_bench.py，4 核 8G，桩嵌入 1024 维，
+    # 各两遍取范围，2026-10-29）。旧的 2026-08 单版口径（280/430 MB 等）不再登记。
+    ("venv_mb", "174 MB",
+     "f0.6 Python 环境体积；f0.7 为 98 MB"),
+    ("install_total_mb", "约 450 MB",
+     "f0.6 安装总占用 = 环境 174 + Qdrant 镜像 276；f0.7 约 98 MB"),
+    ("idle_mem_mb", "| 179 MB | 63 MB |",
+     "开箱空载内存：f0.6 服务 + Qdrant 179 MB，f0.7 63 MB"),
+    ("used_mem_mb", "| 207 MB | 112–113 MB |",
+     "写入 2000 条 + 检索 300 次后内存：f0.6 207 MB，f0.7 112–113 MB"),
+    ("search_latency", "30–34 / 38–42 ms",
+     "f0.7 检索 P50 / P95（f0.6 为 17–19 / 24–26 ms，变慢已在文档写明）"),
 )
 
 # 被否定的旧口径：这些子串在 README 双语里**不许出现**。
@@ -39,11 +37,15 @@ RETRACTED_CLAIMS: tuple[tuple[str, str], ...] = (
 )
 
 
+# 英文 README 必须同样出现的裸数（与中文登记口径同源）。
+_EN_NUMBERS: tuple[str, ...] = ("174", "98", "276", "450", "179", "63", "207", "112–113")
+
+
 def find_doc_fact_violations(readme_zh: str, readme_en: str) -> list[str]:
     """比对双语 README 与登记口径，返回违规清单（空 = 全绿）。
 
     readme_en 的数值与中文一致但措辞不同：只查「被否定的旧口径缺席」
-    与关键数值出现（280/430/150/75/122 五个裸数），不钉英文句式。
+    与关键数值出现（_EN_NUMBERS 里的裸数），不钉英文句式。
     """
     violations: list[str] = []
     for key, needle, provenance in DOC_FACTS:
@@ -54,7 +56,7 @@ def find_doc_fact_violations(readme_zh: str, readme_en: str) -> list[str]:
             violations.append(f"README.md 仍含被否定的旧口径 {needle!r}（{reason}）")
         if needle in readme_en:
             violations.append(f"README_EN.md 仍含被否定的旧口径 {needle!r}（{reason}）")
-    for number in ("280", "430", "150", "75", "122"):
+    for number in _EN_NUMBERS:
         if number not in readme_en:
             violations.append(f"README_EN.md 缺关键数值 {number}（与中文登记口径同源）")
     return violations
