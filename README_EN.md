@@ -230,16 +230,37 @@ python -m compileall ducky api_server.py mcp_server.py # compile check
 > | `ruff` installed | 3 | static rules F821/F811/F841 |
 > | `mcp` extra installed | 9 | MCP import surface, auth, SSE transport and search session passthrough |
 
-## Resource usage (historical measurement)
+## Resource usage: f0.7 vs f0.6
 
-Measured 2026-08-27 on a 2-core / 3.5 GB cloud host, with the mem0 kernel and embedded Qdrant; the native kernel has not been re-measured.
+Same 4-core / 8 GB cloud host (2026-10-29); each version installed from scratch and run twice, ranges shown; the auth gate was on for both. Embeddings/LLM come from a local stub (fixed 1024-dim vectors), so only aiduMEI and its vector store are measured, not model inference. f0.6 is measured as it ran in production: mem0 kernel + a Qdrant container (v1.20.0); f0.7 uses the default native kernel.
 
-| Dimension | Cloud tier `cloud` | Auto tier `auto` / local tier `local` |
-|---|---|---|
-| Resident memory | about 280 MB | about 430 MB |
-| Difference | — | 150 MB (onnxruntime runtime 75 MB, bge-small-zh-v1.5 session and weights about 122 MB; they share pages, so they do not add up) |
+**Out of the box (installed, started, idle)**
 
-Common: cold start 5.2s; one `/search` 0.14–0.23s; zero frontend dependencies.
+| Item | f0.6 (mem0 + Qdrant) | f0.7 (native) | Change |
+|---|---|---|---|
+| Direct deps / installed packages | 12 / 55 | 10 / 36 | 19 fewer packages |
+| Python environment | 174 MB | 98 MB | −44% |
+| Qdrant image required | 276 MB | none | −100% |
+| Total install footprint | about 450 MB | about 98 MB | −78% |
+| Resident processes | 2 (service + Qdrant) | 1 | |
+| Idle memory | 179 MB | 63 MB | −65% |
+| Start to ready | 1.8 s | 0.6 s | 3× faster |
+
+**In use (2,000 writes, then 300 searches)**
+
+| Item | f0.6 (mem0 + Qdrant) | f0.7 (native) | Change |
+|---|---|---|---|
+| Memory (service + vector store) | 207 MB | 112–113 MB | −46% |
+| Service process peak | 171–176 MB | 127–128 MB | −27% |
+| Disk (all databases) | 46 MB (SQLite 25 + Qdrant 21) | 40 MB (single DB) | −13% |
+| Write P50 / P95 | 76 / 102–109 ms | 63–64 / 97–99 ms | slightly faster |
+| Search P50 / P95 | 17–19 / 24–26 ms | 30–34 / 38–42 ms | about 13–15 ms slower |
+
+Notes:
+- Slower search is a known trade-off: native does exact vector comparison inside the single database instead of Qdrant's approximate index; at a personal scale of a few thousand memories it stays under 45 ms.
+- Real production memory is higher than this table: a real embedding client, a larger memory store and background jobs all take memory. The table is a like-for-like comparison between versions.
+- The `local` tier (with a local embedding model) has not been re-measured; it adds the model runtime and weights on top.
+- Reproduce: `python scripts/slim_bench.py --code <code dir> --venv <venv> --label f0.7`; for the old version add `--qdrant --kernel mem0` (needs Docker).
 
 ## Docs index
 
