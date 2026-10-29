@@ -181,6 +181,13 @@ def _filter_time_window(candidates: List[dict], before: Optional[str],
     return kept
 
 
+def _cloud_leg_first() -> bool:
+    """native 无本地备胎索引(嵌入挂了内核自己退 FTS-only),lite 挡不存在,永远走内核。"""
+    from ducky.gear import should_try_cloud
+    from ducky.mem0_runtime import native_kernel_active
+    return native_kernel_active() or should_try_cloud()
+
+
 def _fetch_vector_candidates(mem, query: str, user_id: str, bank_id: str,
                              cand_limit: int) -> list:
     """向量初步候选召回——f0.6.3 自 RecallEngine.search 拆出。
@@ -196,8 +203,8 @@ def _fetch_vector_candidates(mem, query: str, user_id: str, bank_id: str,
     # ③ 云腿当场炸掉时**同一次请求内**落到本地腿兜底 —— 换挡不是
     #    下一个用户才享受的事，这一次查询就无感顺滑。
     # 查询嵌入永远与所查索引同语言（云查云、本地查本地），绝不跨比。
-    from ducky.gear import record_cloud_failure, record_cloud_success, should_try_cloud
-    _tried_cloud = should_try_cloud()
+    from ducky.gear import record_cloud_failure, record_cloud_success
+    _tried_cloud = _cloud_leg_first()
     try:
         if not _tried_cloud:
             from ducky.dual_index import search_local

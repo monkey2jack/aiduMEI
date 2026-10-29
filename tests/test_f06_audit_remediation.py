@@ -22,16 +22,6 @@ def test_w01_upsert_local_verbatim_client_is_kwonly():
         upsert_local_verbatim("u", "default", "mem-1", "content", "client-positional")
 
 
-def test_w01_raw_drawer_local_vector_rejects_failure(monkeypatch, tmp_path):
-    """本地腿写入失败时 vector_stored 必须为 false（旧代码恒 True）。"""
-    import ducky.dual_index as di
-    monkeypatch.setattr(di, "upsert_local_verbatim", lambda *a, **k: False)
-    monkeypatch.setattr("ducky.hot.raw_drawer.upsert_local_verbatim",
-                        lambda *a, **k: False, raising=False)
-    # 语义断言在 dual_index 布尔契约上：False 就是失败
-    assert di.upsert_local_verbatim("u", "b", "text") is False
-
-
 # ── W-02 遗忘曲线时间基准（memoh P0-1） ─────────────────────────────────
 
 def test_w02_decay_idempotent_under_same_now(tmp_path, monkeypatch):
@@ -124,7 +114,7 @@ def test_w12_private_endpoint_matrix():
 def test_w13_mcp_dangerous_default_off():
     import mcp_server
     assert mcp_server.mcp._dangerous_allowed is False
-    assert callable(mcp_server.mem_delete_all)  # 函数保留、注册被跳
+    assert callable(mcp_server.mem_delete)  # 函数保留、注册被跳
 
 
 # ── W-15 trust 缺省 UNVERIFIED（muse M-8 / hark P1-3） ──────────────────

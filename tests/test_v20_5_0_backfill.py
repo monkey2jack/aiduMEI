@@ -120,8 +120,18 @@ def test_backfilled_row_evolves_normally_after_migration():
     assert r["status"] == "ok"
     assert r["action"] == "update"
 
-    from ducky.memory_lineage import get_memory_lineage, verify_lineage_integrity
-    chain = get_memory_lineage(f"fact:{r['fact_id']}")
+    from ducky.memory_lineage import verify_lineage_integrity
+    from ducky.utils import get_facts_conn
+    # f0.6+++：get_memory_lineage（仅被已移除路由调用）已删，这里直接读谱系表。
+    _c = get_facts_conn()
+    try:
+        chain = [dict(zip(("version", "action", "content_hash", "previous_version_hash"), row))
+                 for row in _c.execute(
+                     "SELECT version, action, content_hash, previous_version_hash "
+                     "FROM memory_lineage WHERE memory_id=? ORDER BY version ASC",
+                     (f"fact:{r['fact_id']}",)).fetchall()]
+    finally:
+        _c.close()
     assert [c["version"] for c in chain] == [1, 2]
     assert chain[0]["action"] == "BACKFILL"
     assert chain[1]["action"] == "UPDATE"

@@ -4,7 +4,7 @@
    Six panels, all bilingual (EN/CN), all talking to live aiduMEI.
    - PULSE:   health + storage layers + usage + probes
    - VAULT:   search + edit/delete/feedback + categories + recent facts + 遗忘记录(B3)
-   - MAP:     knowledge-tree star map (hand-drawn SVG)
+   - MAP:     memory checkup (duplicates / stale / conflicts); star map on demand
    - RECALL:  search_trace funnel + ignition scores + 变更史(B5)
    - EVOLVE:  quality report + adjustments + trust + crystals + 治理队列(B1) + 信念层(B6)
    - SETTINGS:model config read/edit/test + modules + federation + params
@@ -629,8 +629,138 @@ function factRow(f) {
    MAP — knowledge-tree star map (ECharts force-directed graph)
    =========================================================================== */
 async function renderMap(body) {
-  body.innerHTML = loading('知识树 / Knowledge tree');
+  /* f0.7 P4:心图日常 = 记忆体检(重复 / 过时 / 冲突)。整张星图与图谱邻域点了才加载,
+     不常态渲染上千个点——对人没用、还慢。数据只读,处置仍走删除/更新(删除进墓碑可恢复)。 */
+  body.innerHTML = loading('记忆体检 / Checkup');
+  let ck;
+  try { ck = await API.get('/graph/checkup', { limit: 20 }); }
+  catch (e) { body.innerHTML = failure(e); return; }
+  body.innerHTML = renderCheckup(ck) +
+    '<div class="sec">' + secHead('星图', 'MAPS', '按需加载') +
+      '<div class="hint">整张图默认不画。需要时再展开 / Loaded on demand</div>' +
+      '<button class="ck-btn ck-btn-main" id="ckNebulaBtn">✦ 记忆星云</button>' +
+      '<button class="ck-btn" id="ckStarBtn">知识星图</button>' +
+      '<button class="ck-btn" id="ckGraphBtn">图谱邻域</button>' +
+      '<div id="ckStarHost"></div>' +
+    '</div>';
+  var nb = body.querySelector('#ckNebulaBtn');
+  if (nb) nb.addEventListener('click', function () { nb.disabled = true; renderNebula(body.querySelector('#ckStarHost')); });
+  var sb = body.querySelector('#ckStarBtn');
+  if (sb) sb.addEventListener('click', function () { sb.disabled = true; renderStarMap(body.querySelector('#ckStarHost')); });
+  var gb = body.querySelector('#ckGraphBtn');
+  if (gb) gb.addEventListener('click', function () {
+    gb.disabled = true;
+    try { renderGraphEdgesSection(body.querySelector('#ckStarHost'), undefined, undefined); }
+    catch (e) { console.warn('graph section', e); }
+  });
+}
 
+function renderCheckup(ck) {
+  if (!ck || ck.available === false) {
+    return '<div class="sec">' + secHead('记忆体检', 'CHECKUP', '不可用') +
+      '<div class="hint">体检需要单库内核(memory.db)。当前内核没有它,如实不显示。</div></div>';
+  }
+  var d = ck.duplicates || {}, st = ck.stale || {}, cf = ck.conflicts || {};
+  var staleN = (st.expired_memories || 0) + (st.ended_facts || 0);
+  var head = '<div class="sec">' + secHead('记忆体检', 'CHECKUP', fmtInt(ck.total_memories || 0) + ' 条记忆') +
+    '<div class="ck-head">' + esc(ck.headline || '') + '</div>' +
+    '<div class="pill-row">' +
+      '<span class="pill' + (d.groups ? ' ck-warn' : '') + '">重复 <b>' + fmtInt(d.groups || 0) + '</b> 组</span> ' +
+      '<span class="pill' + (staleN ? ' ck-warn' : '') + '">过时 <b>' + fmtInt(staleN) + '</b> 条</span> ' +
+      '<span class="pill' + (cf.keys ? ' ck-warn' : '') + '">冲突 <b>' + fmtInt(cf.keys || 0) + '</b> 处</span>' +
+    '</div></div>';
+  var dupRows = (d.items || []).map(function (g) {
+    return '<div class="param-row"><span class="param-k">×' + esc(String(g.count)) +
+      (g.machine_noise ? ' <span class="ck-tag">机器话</span>' : '') + '</span>' +
+      '<span class="param-v">' + esc(g.sample) + '</span></div>';
+  }).join('');
+  var dup = '<div class="sec">' + secHead('重复', 'DUPLICATES', d.extra_copies ? ('多存了 ' + d.extra_copies + ' 份') : '') +
+    (dupRows ? '<div class="ck-list">' + dupRows + '</div>' : '<div class="hint">没有重复 / None</div>') +
+    (dupRows ? '<div class="hint pt6">「机器话」= 宿主吐出的系统提示,整组可清;其余留最早一份即可。</div>' : '') + '</div>';
+  var staleRows = (st.items || []).map(function (x) {
+    return '<div class="param-row"><span class="param-k">' + esc(x.kind === 'fact_ended' ? '事实已失效' : '记忆已过期') +
+      '</span><span class="param-v">' + esc(x.sample) + ' <span class="en-label">' + esc(String(x.since || '')) + '</span></span></div>';
+  }).join('');
+  var stale = '<div class="sec">' + secHead('过时', 'STALE', '') +
+    (staleRows ? '<div class="ck-list">' + staleRows + '</div>' : '<div class="hint">没有过时的 / None</div>') + '</div>';
+  var cfRows = (cf.items || []).map(function (x) {
+    return '<div class="param-row"><span class="param-k">' + esc(x.key) + '</span><span class="param-v">' +
+      (x.values || []).map(function (v) { return esc(v.value); }).join(' <b>≠</b> ') + '</span></div>';
+  }).join('');
+  var conf = '<div class="sec">' + secHead('冲突', 'CONFLICTS', '同一件事有几种说法') +
+    (cfRows ? '<div class="ck-list">' + cfRows + '</div>' : '<div class="hint">没有冲突 / None</div>') + '</div>';
+  return head + dup + stale + conf;
+}
+
+/* f0.7 P4:记忆星云 —— 用户的真实记忆图谱(每颗星 = 一条记忆,连线 = 三类真实关系边)。
+   深空背景 + 发光节点 + 力导向,点了才拉数据;节点按度数截断,万点不卡。 */
+var NEBULA_COLORS = {
+  VERBATIM: '#7df9ff', FACTS: '#a78bfa', DECISIONS: '#ffd166', EXPERIENCES: '#ff6ec7',
+  OBSERVATIONS: '#4ade80', REFLECTIONS: '#f97316', PREFERENCES: '#f0abfc', MEMORY_VERSION: '#94a3b8'
+};
+var NEBULA_CN = {
+  VERBATIM: '原话', FACTS: '事实', DECISIONS: '决定', EXPERIENCES: '经历',
+  OBSERVATIONS: '观察', REFLECTIONS: '反思', PREFERENCES: '偏好', MEMORY_VERSION: '旧版本'
+};
+async function renderNebula(host) {
+  host.insertAdjacentHTML('afterbegin', '<div class="sec" id="nebulaSec">' + loading('记忆星云 / Nebula') + '</div>');
+  var sec = host.querySelector('#nebulaSec');
+  var g;
+  try { g = await API.get('/graph/nebula', { limit: 1500 }); }
+  catch (e) { sec.innerHTML = failure(e); return; }
+  var nodes = (g && g.nodes) || [], edges = (g && g.edges) || [];
+  if (!nodes.length) { sec.innerHTML = '<div class="hint">还没有关系边,星云是空的 / No edges yet</div>'; return; }
+  sec.innerHTML = secHead('记忆星云', 'NEBULA', fmtInt(nodes.length) + ' 颗星 · ' + fmtInt(edges.length) + ' 条连线' +
+      (g.truncated ? '(按连接度取前 ' + nodes.length + ')' : '')) +
+    '<div id="nebulaChart" class="nebula-echarts"></div>' +
+    '<div class="hint pt6">每颗星是一条记忆,越亮越大连得越多;连线只来自真实关系(同一次会话、同时提到、前后改写)。滚轮缩放 / 拖拽 / 悬停看原话</div>';
+  var types = [];
+  nodes.forEach(function (n) { if (types.indexOf(n.memory_type) < 0) types.push(n.memory_type); });
+  var cats = types.map(function (t) {
+    var c = NEBULA_COLORS[t] || '#c4b5fd';
+    return { name: NEBULA_CN[t] || t, itemStyle: { color: c, shadowColor: c, shadowBlur: 18 } };
+  });
+  var maxDeg = Math.max.apply(null, nodes.map(function (n) { return n.degree; })) || 1;
+  var data = nodes.map(function (n) {
+    var r = 2.5 + 13 * Math.sqrt(n.degree / maxDeg);
+    return { id: n.id, name: n.text || n.id, value: n.degree, symbolSize: r,
+             category: types.indexOf(n.memory_type),
+             itemStyle: { opacity: 0.55 + 0.45 * (n.degree / maxDeg) } };
+  });
+  var links = edges.map(function (e) {
+    return { source: e.s, target: e.t,
+             lineStyle: { color: e.type === 'update_chain' ? '#ffd166' : (e.type === 'co_occurrence' ? '#ff6ec7' : '#7dd3fc') } };
+  });
+  var el = sec.querySelector('#nebulaChart');
+  var chart = echarts.init(el, null, { renderer: 'canvas' });
+  chart.setOption({
+    backgroundColor: { type: 'radial', x: 0.5, y: 0.5, r: 0.75,
+      colorStops: [{ offset: 0, color: '#1b1446' }, { offset: 0.45, color: '#0b0f2e' }, { offset: 1, color: '#02030a' }] },
+    tooltip: { confine: true, backgroundColor: 'rgba(10,12,40,.92)', borderColor: '#4c4fa8',
+      textStyle: { color: '#e0e7ff', fontSize: 12 },
+      formatter: function (p) {
+        if (p.dataType === 'edge') return '';
+        return '<div class="nebula-tip">' + esc(String(p.name)) + '</div><span class="en-label">连接 ' + p.value + '</span>';
+      } },
+    legend: { data: cats.map(function (c) { return c.name; }), top: 10, left: 12,
+      textStyle: { color: '#c7d2fe' }, icon: 'circle', itemWidth: 9, itemHeight: 9 },
+    animationDurationUpdate: 1500,
+    series: [{
+      type: 'graph', layout: 'force', roam: true, draggable: true,
+      data: data, links: links, categories: cats,
+      label: { show: false },
+      force: { repulsion: 26, gravity: 0.16, edgeLength: [6, 30], friction: 0.12, layoutAnimation: true },
+      lineStyle: { width: 0.6, opacity: 0.16, curveness: 0.25 },
+      emphasis: { focus: 'adjacency', lineStyle: { width: 1.4, opacity: 0.9 },
+        itemStyle: { shadowBlur: 30 } },
+      blur: { itemStyle: { opacity: 0.08 }, lineStyle: { opacity: 0.02 } }
+    }]
+  });
+  window.addEventListener('resize', function () { chart.resize(); });
+}
+
+async function renderStarMap(host) {
+  host.innerHTML = loading('知识树 / Knowledge tree');
   let tree, entities, scenes, obsidianEntities;
   try {
     [tree, entities, scenes, obsidianEntities] = await Promise.all([
@@ -640,19 +770,16 @@ async function renderMap(body) {
       API.get('/facts/entities/list', { entity_type: 'obsidian_node', limit: 30 }).catch(function () { return null; }),
     ]);
   } catch (e) {
-    body.innerHTML = failure(e);
+    host.innerHTML = failure(e);
     return;
   }
-
   const k = readKnowledgeTree(tree);
   const domains = k.nodes;
-
   if (!domains.length) {
-    body.innerHTML = '<div class="hint">知识树为空 / Knowledge tree is empty</div>';
+    host.innerHTML = '<div class="hint">知识树为空 / Knowledge tree is empty</div>';
     return;
   }
-
-  body.innerHTML =
+  host.innerHTML =
     '<div class="sec">' + secHead('知识域星图', 'STAR MAP', k.domains + ' 个域 / ' + fmtInt(k.totalFacts) + ' 条事实') +
       '<div id="starMapChart" class="starmap-echarts"></div>' +
       '<div class="hint pt6">滚轮缩放 / 拖拽节点 / 悬停查看详情<br>' +
@@ -661,30 +788,8 @@ async function renderMap(body) {
     '<div class="sec">' + secHead('域详情', 'DOMAIN DETAILS', '') +
       '<div id="domainList"></div>' +
     '</div>';
-
-  // Obsidian 未配置提示
-  var obsEnts = (obsidianEntities && obsidianEntities.entities) || [];
-  if (!obsEnts.length) {
-    var obsHint = '<div class="sec">' + secHead('Obsidian 双链', 'OBSIDIAN', '未配置 / Not configured') +
-      '<div class="todo">' +
-        '<h4>📚 启用 Obsidian 双链联动</h4>' +
-        '<p>将您的 Obsidian Vault 笔记同步到 aiduMEI，实现双链记忆图谱。</p>' +
-        '<ul>' +
-          '<li>在 Obsidian 中安装 <code>Local REST API</code> 插件</li>' +
-          '<li>配置插件指向 aiduMEI 的 <code>POST /api/obsidian/sync</code> 端点</li>' +
-          '<li>推送笔记后，双链关系将自动构建为知识图谱节点</li>' +
-        '</ul>' +
-        '<p>当前状态：<b>未检测到 Obsidian 数据</b>，配置后此处将显示绿色双链节点。</p>' +
-      '</div>' +
-    '</div>';
-    body.insertAdjacentHTML('beforeend', obsHint);
-
-  /* f0.6++ WP6: graph section appended after star map */
-  setTimeout(function(){ try { renderGraphEdgesSection(body, uid, bank_id); } catch(e){ console.warn('graph section', e); } }, 50);
-  }
-
-  drawEChartsStarMap(body.querySelector('#starMapChart'), domains, entities, scenes, obsidianEntities);
-  drawDomainList(body.querySelector('#domainList'), domains, obsidianEntities);
+  drawEChartsStarMap(host.querySelector('#starMapChart'), domains, entities, scenes, obsidianEntities);
+  drawDomainList(host.querySelector('#domainList'), domains, obsidianEntities);
 }
 
 /* ECharts force-directed graph — interactive, zoomable, draggable */
@@ -1316,6 +1421,7 @@ async function renderSettings(body) {
         '<button class="cfg-btn" id="cfgReload">热重载 Reload</button>' +
         '<button class="cfg-btn" id="cfgTest">测试连接 Test Connection</button>' +
       '</div>' +
+      '<div id="cfgTestResult"></div>' +
     '</div>' +
 
     // ---- reasoning / thinking mode ----
@@ -1498,6 +1604,9 @@ function editModelConfig(body, cfg) {
   var decTasks = decCfg.tasks || {};
 
   var form = '<div class="editor mt10">' +
+    '<div class="vllm-bar"><button class="cfg-btn" id="edVllm" type="button">⚡ 用本地 vLLM</button>' +
+      '<span class="hint">一键把 LLM / Embedding / Reranker 指向 vLLM（默认 http://127.0.0.1:8000/v1，密钥填 EMPTY），模型名按你 vLLM 实际加载的改。' +
+      'vLLM 在另一台机器上：先在服务器 .env 写 AIDUMEI_MODEL_ENDPOINT_ALLOW=那台机器的IP，再把地址里的 127.0.0.1 换掉。</span></div>' +
     '<div class="sec sec-tight"><h4 class="h4-blue">语言模型 LLM</h4></div>' +
     '<div class="mc-row"><span class="mc-k">LLM Model</span><input class="sinput mc-input" id="edLlmModel" value="' + esc((llm.config && llm.config.model) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">LLM Base URL</span><input class="sinput mc-input" id="edLlmUrl" value="' + esc((llm.config && llm.config.openai_base_url) || '') + '"></div>' +
@@ -1512,6 +1621,10 @@ function editModelConfig(body, cfg) {
     '<div class="mc-row"><span class="mc-k">Embed Base URL</span><input class="sinput mc-input" id="edEmbUrl" value="' + esc((emb.config && emb.config.openai_base_url) || '') + '"></div>' +
     '<div class="mc-row"><span class="mc-k">Embed API Key</span><input class="sinput mc-input" id="edEmbKey" type="password" placeholder="留空不修改"></div>' +
     '<div class="sec sec-gap"><h4 class="h4-purple">重排模型 RERANKER</h4></div>' +
+    '<div class="mc-row"><span class="mc-k">Rerank Provider</span><select class="sinput mc-input" id="edRerProvider">' +
+      ['siliconflow', 'vllm', 'jina', 'cohere', 'openai_compatible', 'litellm'].map(function (p) {
+        return '<option value="' + p + '" ' + ((rer.provider || 'openai_compatible') === p ? 'selected' : '') + '>' + p + '</option>';
+      }).join('') + '</select></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Model</span><input class="sinput mc-input" id="edRerModel" value="' + esc((rer.config && rer.config.model) || '') + '" placeholder="可选 optional"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank Base URL</span><input class="sinput mc-input" id="edRerUrl" value="' + esc((rer.config && rer.config.openai_base_url) || '') + '" placeholder="可选 optional"></div>' +
     '<div class="mc-row"><span class="mc-k">Rerank API Key</span><input class="sinput mc-input" id="edRerKey" type="password" placeholder="可选，留空不修改"></div>' +
@@ -1539,6 +1652,16 @@ function editModelConfig(body, cfg) {
   '</div>';
 
   existing.insertAdjacentHTML('afterend', form);
+  body.querySelector('#edVllm').addEventListener('click', function () {
+    var url = 'http://127.0.0.1:8000/v1';
+    [['#edLlmUrl', '#edLlmKey'], ['#edEmbUrl', '#edEmbKey'], ['#edRerUrl', '#edRerKey']].forEach(function (pair) {
+      var u = body.querySelector(pair[0]), k = body.querySelector(pair[1]);
+      if (u && !/^http:\/\//.test(u.value)) u.value = url;
+      if (k) k.value = 'EMPTY';
+    });
+    var rp = body.querySelector('#edRerProvider'); if (rp) rp.value = 'vllm';
+    var re = body.querySelector('#edRerEnabled'); if (re) re.checked = true;
+  });
 
   body.querySelector('#edSave').addEventListener('click', async function () {
     var patch = {};
@@ -1573,8 +1696,9 @@ function editModelConfig(body, cfg) {
     var ru = body.querySelector('#edRerUrl').value.trim();
     var rk = body.querySelector('#edRerKey').value.trim();
     var ren = body.querySelector('#edRerEnabled').checked;
-    if (rm || ru || rk || ren) {
-      patch.rerank = { enabled: ren, config: {} };
+    var rp = body.querySelector('#edRerProvider').value;
+    if (rm || ru || rk || ren || rp !== (rer.provider || 'openai_compatible')) {
+      patch.rerank = { enabled: ren, provider: rp, config: {} };
       if (rm) patch.rerank.config.model = rm;
       if (ru) patch.rerank.config.openai_base_url = ru;
       if (rk) patch.rerank.config.api_key = rk;
@@ -1614,10 +1738,10 @@ function editModelConfig(body, cfg) {
         }
       }
       await API.post('/reload', {});
-      alert('配置已保存并热重载 / Saved and reloaded');
-      // 重新获取最新配置再渲染，确保 UI 显示最新值
+            // 重新获取最新配置再渲染，确保 UI 显示最新值
       var freshCfg = await API.get('/config').catch(function () { return cfg; });
       editModelConfigRefresh(body, freshCfg);
+      testConnection(body);
     } catch (e) {
       alert('保存失败 / Save failed: ' + (e.message || ''));
     }
@@ -1648,14 +1772,30 @@ async function reloadConfig(body) {
   }
 }
 
+/* f0.7：测试连接 = 每个模型各打一次最小真实调用（POST /config/test），
+   不再只看 /health。结果逐行列出：通/不通、耗时、原因。 */
+var CFG_TEST_NAMES = { llm: '语言模型 LLM', vision: '多模态 Vision', embedder: '向量 Embedding',
+                       rerank: '重排 Reranker', decision: '决策模型 Decision' };
+function cfgTestRow(x) {
+  var st = x.ok ? 'ok' : (x.status === 'not_configured' ? 'na' : 'bad');
+  var mark = x.ok ? '✅ 通' : (st === 'na' ? '— 未配' : '❌ 不通');
+  return '<div class="cfg-test-row" data-st="' + st + '"><span class="ct-name">' + esc(CFG_TEST_NAMES[x.section] || x.section) +
+    '</span><b class="ct-mark">' + mark + '</b><span class="ct-ms">' + (x.ms != null ? esc(String(x.ms)) + ' ms' : '') +
+    '</span><span class="ct-detail">' + esc(x.detail || x.status || '') + '</span></div>';
+}
 async function testConnection(body) {
+  var host = body.querySelector('#cfgTestResult');
+  var btn = body.querySelector('#cfgTest');
+  if (host) host.innerHTML = loading('逐个测试模型 / Testing each model');
+  if (btn) btn.disabled = true;
   try {
-    var r = await API.get('/health');
-    alert('连接正常 / Connection OK\n' +
-      '版本 Version: ' + (r.version || '—') + '\n' +
-      '状态 Status: ' + (r.health_status || '—'));
+    var r = await API.post('/config/test', {});
+    var rows = (r && r.results) || [];
+    if (host) host.innerHTML = '<div class="cfg-test">' + rows.map(cfgTestRow).join('') + '</div>';
   } catch (e) {
-    alert('连接失败 / Connection failed: ' + (e.message || ''));
+    if (host) host.innerHTML = failure(e);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -1706,8 +1846,9 @@ function renderModelConfig(cfg) {
 
   const card = function (title, en, m) {
     const provider = m.provider || '—';
-    const model = m.model || m.config && m.config.model || '—';
-    const baseUrl = m.base_url || m.config && m.config.openai_base_url || '—';
+    const dft = m.defaults || {};
+    const model = m.model || m.config && m.config.model || (dft.model ? '默认 ' + dft.model : '—');
+    const baseUrl = m.base_url || m.config && m.config.openai_base_url || (dft.openai_base_url ? '默认 ' + dft.openai_base_url : '—');
     const keyMasked = m.api_key || m.config && m.config.api_key || '—';
     return '<div class="tile mcard">' +
       '<div class="k">' + esc(title) + ' <span class="en-label">' + esc(en) + '</span></div>' +

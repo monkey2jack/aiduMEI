@@ -116,11 +116,3 @@ def test_dossier_endpoint_ok_and_download():
     assert "attachment" in r2.headers.get("content-disposition", "")
     assert "dossier_dudu_default.md" in r2.headers["content-disposition"]
 
-
-def test_scope_hint_returns_server_default_scope():
-    c = _client()
-    r = c.get("/dossier/scope-hint")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["status"] == "ok"
-    assert body["user_id"] and body["bank_id"], "域提示必须给出非空默认域"

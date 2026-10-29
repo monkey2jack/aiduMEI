@@ -35,6 +35,7 @@ from ducky.bank_contract import (
     DEFAULT_BANK_ID,
     legacy_fact_scope_predicate,
     make_scope,
+    raw_storage_key,
     scoped_storage_key,
     vector_item_in_bank,
     vector_scope_filters,
@@ -287,9 +288,10 @@ def _delete_scoped_vectors(mem: Any, scope: Any) -> tuple[int, bool, list[str]]:
         return 0, False, ids
     deleted = 0
     ok = True
+    from ducky.memory_kernel import scope_kwargs
     for mid in ids:
         try:
-            mem.delete(mid)
+            mem.delete(mid, **scope_kwargs(mem, scope.user_id, scope.bank_id))
             deleted += 1
         except Exception as exc:
             ok = False
@@ -767,14 +769,21 @@ def cascade_delete_memory(
                     _content_for_verbatim = previous_snapshot[0] or _content_for_verbatim
                 finally:
                     snapshot_conn.close()
+            # P5 自审 S-1：重放直接用首轮认领的那批原文行；重算会因被删记忆已不在内核而认领错
+            _vb = saved.get("vb") or _verbatim_claim(scope, memory_id, _content_for_verbatim)
+            _narrow_derived_keys(_derived_keys, _vb)
         else:
+            # f0.7 复核（外审 haiku N1/N3）：原文层认领规则先定下来，快照与实际删除用同一批行。
             try:
-                _snapshot_before_cascade_delete(memory_id, user_id, bank_id, res)
+                _vb = _verbatim_claim(scope, memory_id, _content_for_verbatim)
+                _narrow_derived_keys(_derived_keys, _vb)
+                _snapshot_before_cascade_delete(memory_id, user_id, bank_id, res,
+                                                verbatim_text=_vb["text"], verbatim_turn_ids=_vb["ids"])
             except Exception as exc:
                 _layer_failed("snapshot", exc)
                 wal.mark_status(wal_id, "pending", error="snapshot unavailable")
                 return {"status": "failed", "details": res, "failed_layers": _failed_layers}
-            wal.checkpoint(wal_id, delete_snapshot={"tombstone_id": res["tombstone_id"]})
+            wal.checkpoint(wal_id, delete_snapshot={"tombstone_id": res["tombstone_id"], "vb": _vb})
 
         # 1. mem0 向量删除（实现在 _cascade_single_vector）。**获取后端**这道
         #    边界例外地留在编排层：守卫
@@ -798,6 +807,13 @@ def cascade_delete_memory(
             _layer_failed("mem0_vector", e)
             mem = None
 
+        # f0.7 P0-3：删之前从内核取正文（native 档不写 text_fts，0a 可能取不到；3c/3d 靠它定位派生物）
+        _kernel_text = "" if _content_for_verbatim else _kernel_text_before_delete(mem, scope, memory_id)
+        # f0.7 复核（外审 haiku N1/N3）：原文层也用内核正文兜底；同租户还有别的记忆说着同一句时，
+        # 只认领被删记忆所在会话的原文行，共用的原文本地点/欠账不动。
+        _vb_text = _content_for_verbatim or _kernel_text or _vb["text"]
+        _vb_ids, _vb_shared, _vb_others = _vb["ids"], _vb["raw_kept"], _vb["others"]
+
         _scope_items = None
         if mem is not None:
             _scope_items = _cascade_single_vector(mem, scope, memory_id, _raw_hash,
@@ -809,17 +825,26 @@ def cascade_delete_memory(
         # 3. facts.db 清理（🔴P0-1 严格归属校验 + 🔴P0-2 精确匹配，彻底消除 LIKE 误删）
         _cascade_single_facts(scope, memory_id, _raw_hash, res, _layer_failed)
 
+        # 3c. f0.7 P0-3（外审 sesame F-04）：由这条记忆派生的 pattern 事实（facts.db 无来源链接，按正文重算定位）
+        _cascade_single_pattern_facts(mem, scope, memory_id, _content_for_verbatim or _kernel_text,
+                                      res, _layer_failed)
+
+        # 3d. f0.7 P0-3（外审 sesame F-03）：自动挡欠账账本里这条记忆的待补载荷（含原文）
+        _cascade_single_pending(scope, memory_id, _vb_text, res, _layer_failed,
+                                verbatim_shared=_vb_shared, text_shared=_vb_others)
+
         # 4. salience.db / 5. evolve_mem.db：两表无租户列，按 memory_id 精确清理
         #    （两层的「为什么历史上从未执行」随实现搬进对应函数）。
         _cascade_single_salience(memory_id, res, _layer_failed)
         _cascade_single_evolve(memory_id, res, _layer_failed)
 
         # 6. 📼 原文保真层 / 7. Workspace 单条驱逐 / 8+8b. 本地向量与 verbatim 本地点
-        _cascade_single_verbatim(user_id, bank_id, memory_id, _content_for_verbatim,
-                                 res, _layer_failed)
+        _cascade_single_verbatim(user_id, bank_id, memory_id, _vb_text,
+                                 res, _layer_failed, turn_ids=_vb_ids)
         _cascade_single_workspace(user_id, bank_id, memory_id, res, _layer_failed)
         _cascade_single_local_vector(memory_id, res, _layer_failed)
-        _cascade_single_verbatim_local(user_id, bank_id, _content_for_verbatim, res, _layer_failed)
+        if not _vb_shared:
+            _cascade_single_verbatim_local(user_id, bank_id, _vb_text, res, _layer_failed)
 
         # 9. f0.3 (C1): session summaries derived from this item go too
         #    (right to delete covers derived records; tombstoned, restorable).
@@ -889,11 +914,29 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "store:workspace":  ("clean",  "ws_clear 内存+SQLite 双清（§7，v20.1 整改轮补齐 —— 外审 z P1-01：此前已删内容以 found/workspace_hit 复活）"),
     "store:qdrant_local": ("clean", "v20.2 自动挡本地向量库（mem0_local，512 维）：(user_id, bank_id) 谓词删除（§14）；单删按同源 id 精确删"),
     "store:mutation_journal": ("clean", "f0.4：forgetting_guard 下 erase_scope 擦除输入/结果正文并取消待执行任务；保留不含正文的 forgotten 回执；单删使用 erase_target"),
+    "store:native_memory": ("clean", "f0.7 P0：native 内核 memory.db 的 memories/FTS/向量/实体/图边——内核 delete 单事务清（按租户定位，外审 sesame F-01）；原文副本只清 VERBATIM 行（外审 haiku P1-1）"),
+    "store:native_memory_history": ("clean", "f0.7 P0-3（外审 sesame F-03）：单删清掉该 id 的 ADD/UPDATE 历史原文，只留不含正文的 DELETE 标记"),
+    "store:native_tombstones": ("exempt", "f0.7 P0-3：memory.db 墓碑快照是可恢复副本，受 AIDUMEI_TOMBSTONE_TTL_DAYS 约束，consolidator 每日到期擦正文（此前无过期列、永久保留）"),
+    "store:pattern_facts": ("clean", "f0.7 P0-3（外审 sesame F-04）：facts.db 里由这条记忆正文派生的 pattern 事实按正文重算精确撤销（§3c），别的现存记忆仍说着同一句时保留"),
+    "store:evolve_queries": ("exempt", "检索问句（evolve_mem.db evolve_queries）f0.7 复核起只存 sha256 摘要、存量原文启动时换算（外审 sesame §4.2），不再含原文；不挂 memory_id，单删无需定位"),
+    "store:native_meta": ("exempt", "f0.7 复核：native memory.db 的 meta 表只存内核 schema 版本与设置，不含用户内容"),
     "pending_embeddings": ("clean", "v20.2 自动挡欠账账本：载荷含用户原文，(user_id, bank_id) 谓词删除（§15）——欠着的债也是债，删除承诺覆盖它"),
     # ── 显式申报的已知残留（申报不是沉默；沉默才是本矩阵要消灭的东西）──
     "observations":       ("clean",  "R-18(v20.1.1)：user 轴谓词删除（§12）——表无 bank 列，user 轴是它拥有的全部作用域表达力；v7 存量空 user_id 行不属于任何租户，不动"),
     "scenes":             ("clean",  "R-18(v20.1.1)：(user_id, bank_id) 谓词删除（§13）"),
     "store:persona":      ("exempt", "人格库（独立 persona.db，不在 facts.db）无租户列 —— persona_key 是人格轴，与 (user_id, bank_id) 租户模型正交，作用域删除语义不成立；若未来 persona 归属租户，须先补列迁移再纳入（R-18 复核改判 v20.1.1：原裁决『接口未做』经侦察修正为『语义不成立』）"),
+}
+
+
+# f0.7 复核（外审 sesame F-05 第 2 点）：memory.db 的表也要自动枚举裁决 —— 此前元守卫只枚举 facts.db，
+# native 内核以后新增一张存正文的表不会红。守卫 tests/test_f07_reaudit.py 实建内核 schema 后逐表对照本表。
+NATIVE_MEMORY_TABLES: Dict[str, str] = {
+    "memories": "store:native_memory", "memories_fts": "store:native_memory",
+    "memory_vectors": "store:native_memory", "memory_entities": "store:native_memory",
+    "memory_facts": "store:native_memory", "facts": "store:native_memory", "graph_edges": "store:native_memory",
+    "memory_history": "store:native_memory_history",
+    "tombstones": "store:native_tombstones",
+    "meta": "store:native_meta",
 }
 
 
@@ -931,8 +974,7 @@ def _count_facts_table(conn: Any, table: str, scope: Any) -> tuple:
 def _count_persona_store() -> tuple:
     """Rows left in the separate persona.db (opened read-only, never created)."""
     import pathlib
-    from ducky.persona_memory import PERSONA_DB
-    path = pathlib.Path(PERSONA_DB)
+    path = pathlib.Path(DATA_DIR) / "persona.db"   # 人格基座已下线（f0.6+++ WP2），旧库只读计数
     if not path.exists():
         return 0, "absent"
     conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
@@ -1219,6 +1261,7 @@ def _cascade_single_verbatim_handle(
     except Exception as ve:
         logger.warning("原文层按 id 删除失败: %s", ve)
         layer_failed("verbatim", ve)
+    _cascade_single_workspace(user_id, bank_id, memory_id, res, layer_failed)
     if (keys or {}).get("content"):
         _cascade_single_verbatim_local(user_id, bank_id, keys["content"], res, layer_failed)
     if int(res.get("verbatim") or 0) > 0 or saved is not None:
@@ -1243,7 +1286,8 @@ def _cascade_single_verbatim_handle(
 
 
 def _snapshot_before_cascade_delete(
-    memory_id: str, user_id: str, bank_id: str, res: Dict[str, Any]
+    memory_id: str, user_id: str, bank_id: str, res: Dict[str, Any],
+    *, verbatim_text: str = "", verbatim_turn_ids: Optional[list] = None,
 ) -> None:
     """tombstone 快照（v19.4.0 Mímir 借鉴 B3）：物理删除前先把全文+理由留痕，
     误删可一键恢复。读取未知态阻断可恢复删除。
@@ -1260,6 +1304,8 @@ def _snapshot_before_cascade_delete(
             reason=reason,
             actor=actor,
             strict=True,
+            verbatim_text=verbatim_text,
+            verbatim_turn_ids=verbatim_turn_ids,
         )
     except Exception:
         raise
@@ -1293,7 +1339,8 @@ def _cascade_single_vector(
         ]
         scoped_ids = [i for i in scoped_ids if i]
         if enumeration_ok and str(memory_id) in scoped_ids:
-            mem.delete(memory_id)
+            from ducky.memory_kernel import scope_kwargs
+            mem.delete(memory_id, **scope_kwargs(mem, scope.user_id, scope.bank_id))
             res["mem0_vector"] = True
         elif enumeration_ok and raw_hash:
             _cascade_single_vector_by_raw_hash(mem, _items, scope, memory_id,
@@ -1317,7 +1364,28 @@ def _cascade_single_vector(
         logger.warning("mem0.delete 失败: %s", e)
         layer_failed("mem0_vector", e)
         return None
+    # f0.7 P0-3（外审 sesame F-03）：mem0 删除会补写一行带原文的 DELETE 历史，ADD/UPDATE 行同样带原文；
+    # 单删此前只在 delete_all 里清 history.db。向量确认属于本域并已删除时，按这些 id 精确清（native 由内核自清）。
+    if res.get("mem0_vector") and not getattr(mem, "supports_scope", False):
+        _cascade_all_mem0_history(scope, res, layer_failed,
+                                  {str(memory_id), *(res.get("raw_handle_resolved_ids") or [])})
     return _items if enumeration_ok else None
+
+
+def _narrow_derived_keys(keys: Optional[Dict[str, Any]], vb: Optional[Dict[str, Any]]) -> None:
+    """f0.7 P6e：派生精华只认本次真正删掉的原文行。
+
+    source_keys 按正文 hash 找到的同文行可能属于别的会话（宿主催促句各会话一字不差），
+    认领规则会给别的活记忆留行；没被认领的行不删，由它派生的精华也不能连坐。
+    （sessions 只用于「无来源旧精华」的未证实名单，从不据此删除，不必收窄。）
+    """
+    if not keys or not isinstance(vb, dict):
+        return
+    claimed = {int(i) for i in (vb.get("ids") or [])}
+    kept = {r for r in (keys.get("refs") or set())
+            if not (str(r).startswith("verbatim:") and str(r).split(":", 1)[1].isdigit()
+                    and int(str(r).split(":", 1)[1]) not in claimed)}
+    keys["refs"] = kept | {f"verbatim:{i}" for i in claimed}
 
 
 def _derived_source_keys(memory_id: str, user_id: str, bank_id: str,
@@ -1464,8 +1532,9 @@ def _cascade_single_vector_by_raw_hash(
     的 id 都不会交给全局 delete 原语 —— 这条纪律不因为多了一种句柄而放宽。
     """
     _hits = _vector_ids_by_content_hash(items, scope.bank_id, raw_hash)
+    from ducky.memory_kernel import scope_kwargs
     for _vid in _hits:
-        mem.delete(_vid)
+        mem.delete(_vid, **scope_kwargs(mem, scope.user_id, scope.bank_id))
     res["mem0_vector"] = bool(_hits)
     res["raw_handle_resolved_ids"] = _hits
     if not _hits:
@@ -1498,6 +1567,230 @@ def _cascade_single_fts(
     except Exception as e:
         logger.warning("FTS unindex 失败: %s", e)
         layer_failed("fts", e)
+
+
+def _memory_session_before_delete(mem: Any, scope: Any, memory_id: str) -> str:
+    """被删记忆的会话键（内核/向量载荷里的 metadata，与原文写入同一套键名）；取不到返回空串。"""
+    from ducky.verbatim_vault import session_of
+    try:
+        from ducky.memory_kernel import scope_kwargs
+        kw = scope_kwargs(mem, scope.user_id, scope.bank_id) if mem is not None else {}
+        if kw:
+            item = mem.get(memory_id, **kw) or {}
+            sess = session_of(item.get("metadata") or {})
+            if sess:
+                return sess
+        from ducky.tombstone import _capture_vector_payload
+        return session_of(_capture_vector_payload(memory_id, scope) or {})
+    except (sqlite3.Error, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as exc:
+        # 取不到会话 = 按「别的记忆仍在用」从严处理，不阻断删除（SnapshotIncomplete 是 RuntimeError）
+        logger.debug("会话键抓取跳过: %s", exc)
+        return ""
+
+
+def _verbatim_claim(scope: Any, memory_id: str, content: str) -> Dict[str, Any]:
+    """单删/改写时原文层认领哪些行（f0.7 复核·外审 haiku N1/N3；P5 自审 S-1~S-4）。
+
+    - text：定位原文行的正文；native 档 text_fts/facts 没有正文，退到内核正文（N1）。
+    - ids：认领的原文行 turn_id（具体清单，写进快照和 WAL 检查点，重放不重算）。同租户里别的独立活记忆
+      逐字说着同一句时，按 verbatim_vault.allocate_verbatim_claim 给它们各留一行，其余全认领。
+    - others：还有别的独立活记忆说着同一句（云侧 add 欠账不动）；raw_kept：认领后仍有这句原文留着
+      （由 (原文, 域) 派生的原文本地点及其欠账是共用的，不动）。
+    """
+    from ducky.tombstone import capture_verbatim_rows
+    from ducky.verbatim_vault import allocate_verbatim_claim
+    mem, _ = _derived_lookup_memory()       # 后端不可用时 mem=None，下游各层自有失败记账
+    text = (content or "").strip() or _kernel_text_before_delete(mem, scope, memory_id).strip()
+    if not text and not str(memory_id).lower().startswith("verbatim:"):
+        return {"text": "", "ids": [], "others": False, "raw_kept": False}
+    rows = [(r["id"], r.get("session_id") or "") for r in capture_verbatim_rows(memory_id, scope, text)]
+    if str(memory_id).lower().startswith("verbatim:"):
+        others = []                          # 直接删一行原文：就认领这一行
+    else:
+        try:
+            others = _live_same_text_ids(mem, scope, text, memory_id)
+        except (sqlite3.Error, AttributeError) as exc:
+            logger.debug("原文认领：同文活记忆查询失败，从严一行不认领 %s", exc)
+            return {"text": text, "ids": [], "others": True, "raw_kept": bool(rows)}
+    sessions = [_memory_session_before_delete(mem, scope, oid) for oid in others]
+    ids = allocate_verbatim_claim(rows, sessions)
+    if not str(memory_id).lower().startswith("verbatim:"):
+        ids = sorted(set(ids) | set(_verbatim_part_ids(mem, scope, memory_id, text)))
+    return {"text": text, "ids": ids, "others": bool(others), "raw_kept": len(ids) < len(rows)}
+
+
+def _verbatim_part_ids(mem: Any, scope: Any, memory_id: str, text: str) -> List[int]:
+    """多条消息拼成一条记忆时（CC 钩子一轮 = 用户句 + 助手句），原文层是逐条存的，整段正文的 hash
+    对不上任何一行（生产部署验收实测：删了记忆，助手那句原文还在）。认领本会话里正文是这条记忆一部分的行；
+    同租户别的活记忆正文里也有这句（同会话的「好的」之类共用行）就不认领。"""
+    sess = _memory_session_before_delete(mem, scope, memory_id)
+    if not sess or not text:
+        return []
+    from ducky.verbatim_vault import _content_hash
+    from ducky.bank_contract import table_columns
+    conn = get_facts_conn()
+    try:
+        if not table_columns(conn, "verbatim_turns"):
+            return []
+        rows = conn.execute(
+            "SELECT id, content FROM verbatim_turns WHERE user_id=? AND bank_id=? AND session_id=? "
+            "AND content_hash!=? AND length(trim(content))>0 AND instr(?, trim(content))>0",
+            (scope.user_id, scope.bank_id, sess, _content_hash(text), text)).fetchall()
+    finally:
+        conn.close()
+    return [int(r[0]) for r in rows if not _live_query(
+        mem, scope, memory_id, " AND id NOT LIKE '%verbatim:%' AND instr(content, ?) > 0 LIMIT 1",
+        (str(r[1]).strip(),), col="id")]
+
+
+def _kernel_text_before_delete(mem: Any, scope: Any, memory_id: str) -> str:
+    """native 内核里这条记忆的正文（按租户定位）；mem0 或取不到时返回空串。"""
+    from ducky.memory_kernel import scope_kwargs
+    kw = scope_kwargs(mem, scope.user_id, scope.bank_id) if mem is not None else {}
+    if not kw:
+        return ""
+    try:
+        return (mem.get(memory_id, **kw) or {}).get("memory") or ""
+    except (ValueError, sqlite3.Error) as exc:
+        logger.debug("内核正文抓取跳过: %s", exc)
+        return ""
+
+
+def _self_keys(scope: Any, memory_id: str) -> tuple:
+    """被删记忆在各库里的两种 id 形态：裸 id 与具名 bank 的存储键（text_fts 存后者）——排除「自己」两种都要排。"""
+    return str(memory_id), scoped_storage_key(str(memory_id), scope)
+
+
+def _live_query(mem: Any, scope: Any, exclude_id: str, tail_sql: str, tail_args: tuple, col: str = "content") -> list:
+    """同租户里别的活记忆（native 查 memory.db，mem0 查 text_fts）；排除自己的两种 id 形态。"""
+    sql = "SELECT id, content FROM memories WHERE user_id=? AND bank_id=? AND id NOT IN (?, ?)" + tail_sql
+    args = (scope.user_id, scope.bank_id, *_self_keys(scope, exclude_id), *tail_args)
+    k = 0 if col == "id" else 1
+    if mem is not None and getattr(mem, "supports_scope", False) is True:
+        with mem._lock:
+            return [r[k] for r in mem.conn.execute(sql, args).fetchall()]
+    from ducky.text_fts import get_text_conn
+    tconn = get_text_conn()
+    try:
+        return [r[k] for r in tconn.execute(sql, args).fetchall()]
+    finally:
+        tconn.close()
+
+
+def _live_texts_containing(mem: Any, scope: Any, needle: str, exclude_id: str) -> List[str]:
+    """同租户里还活着、正文含 needle 的记忆（至多 50 条）。native 查 memory.db，mem0 查 text_fts。"""
+    if not needle:
+        return []
+    return _live_query(mem, scope, exclude_id, " AND instr(content, ?) > 0 LIMIT 50", (needle,))
+
+
+def _live_same_text_ids(mem: Any, scope: Any, text: str, exclude_id: str) -> List[str]:
+    """同租户里别的**独立**活记忆中逐字说着 text 的（至多 200 条，返回 id）。原文副本（verbatim:N）本身就是
+    原文层，不算独立记忆。mem0 档 text_fts 存具名 bank 的存储键，还原成裸 id 再交给会话查询。"""
+    ids = _live_query(mem, scope, exclude_id,
+                      " AND id NOT LIKE '%verbatim:%' AND trim(content)=? LIMIT 200", (text.strip(),), col="id")
+    return [raw_storage_key(str(i), scope) for i in ids]
+
+
+def _cascade_single_pattern_facts(
+    mem: Any, scope: Any, memory_id: str, text: str, res: Dict[str, Any], layer_failed: Any,
+) -> None:
+    """§3c 派生 pattern 事实撤销（f0.7 P0-3）。别的现存记忆仍说着同一句时保留（事实仍有出处）。"""
+    try:
+        if not text:
+            res["pattern_facts"] = 0
+            return
+        from ducky.pattern_extract import cascade_pattern_facts, retract_items, same_retract_item
+
+        def _still_said(it: Dict[str, Any]) -> bool:
+            for other in _live_texts_containing(mem, scope, str(it["fact_value"])[:200], memory_id):
+                if any(same_retract_item(o, it) for o in retract_items(other)):
+                    return True
+            return False
+
+        out = cascade_pattern_facts(text, user_id=scope.user_id, bank_id=scope.bank_id, still_said=_still_said)
+        res["pattern_facts"] = out["removed"] + out["candidates_removed"]
+    except (sqlite3.Error, ValueError, KeyError, OSError) as e:
+        logger.warning("派生事实撤销失败: %s", e)
+        layer_failed("pattern_facts", e)
+
+
+def _pending_ref_ids(scope: Any, memory_id: str, text: str, verbatim_shared: bool = False) -> List[str]:
+    """一条记忆在欠账账本里能精确认领的 ref_id：本地点 = memory_id；原文本地点 = (原文, 域) 派生 id
+    （同一句原文别的会话还在用时不认领，那个点是共用的）。"""
+    refs = [str(memory_id)] if memory_id else []
+    if text and text.strip() and not verbatim_shared:
+        from ducky.dual_index import verbatim_local_pid
+        refs.append(verbatim_local_pid(scope.user_id, scope.bank_id, text.strip()))
+    return refs
+
+
+def _cloud_add_matches(payload: str, text: str) -> bool:
+    """云侧整笔 add 欠账（payload = 原始请求）：只有某条消息正文与被删记忆**逐字相等**才认领。"""
+    try:
+        req = json.loads(payload or "{}")
+    except (TypeError, ValueError):
+        return False
+    msgs = req.get("messages") if isinstance(req, dict) else None
+    if isinstance(msgs, str):
+        return msgs.strip() == text
+    return any(isinstance(m, dict) and str(m.get("content") or "").strip() == text
+               for m in (msgs or []))
+
+
+def _cloud_add_without(payload: str, text: str) -> Optional[str]:
+    """云侧 add 欠账去掉与 text 逐字相等的消息后的新载荷；一条不剩（或载荷是单个字符串）返回 None。"""
+    req = json.loads(payload or "{}")
+    msgs = req.get("messages")
+    if not isinstance(msgs, list):
+        return None
+    rest = [m for m in msgs if not (isinstance(m, dict) and str(m.get("content") or "").strip() == text)]
+    if not any(isinstance(m, dict) and str(m.get("content") or "").strip() for m in rest):
+        return None
+    return json.dumps({**req, "messages": rest}, ensure_ascii=False)
+
+
+def _drop_pending(scope: Any, memory_id: str, text: str, verbatim_shared: bool = False,
+                  text_shared: Optional[bool] = None) -> int:
+    """按 ref_id 精确撤销欠账；云侧 add 欠账按消息正文逐字相等认领。
+    f0.7 复核（外审 haiku N2）：此前 instr(payload, 正文) 子串匹配，删「好的」会连带
+    删掉同租户其它记忆的待补任务。现在不做任何子串匹配。"""
+    conn = get_facts_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_embeddings'").fetchone():
+            return 0
+        refs = set(_pending_ref_ids(scope, memory_id, text, verbatim_shared))
+        t = (text or "").strip()
+        cloud_ok = bool(t) and not (verbatim_shared if text_shared is None else text_shared)
+        n = 0
+        for pid, side, ref, payload in conn.execute(
+                "SELECT pending_id, side, ref_id, payload FROM pending_embeddings WHERE user_id=? AND bank_id=?",
+                (scope.user_id, scope.bank_id)).fetchall():
+            if side != "cloud":
+                if ref in refs:
+                    n += conn.execute("DELETE FROM pending_embeddings WHERE pending_id=?", (pid,)).rowcount or 0
+            elif cloud_ok and _cloud_add_matches(payload, t):
+                # P5 自审 S-5：只剔掉逐字相等的那条消息；剔空了才撤整笔，同批其它消息照常补蒸馏
+                rest = _cloud_add_without(payload, t)
+                if rest is None:
+                    n += conn.execute("DELETE FROM pending_embeddings WHERE pending_id=?", (pid,)).rowcount or 0
+                else:
+                    conn.execute("UPDATE pending_embeddings SET payload=? WHERE pending_id=?", (rest, pid))
+                    n += 1
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def _cascade_single_pending(scope: Any, memory_id: str, text: str, res: Dict[str, Any], layer_failed: Any,
+                            verbatim_shared: bool = False, text_shared: Optional[bool] = None) -> None:
+    """§3d pending_embeddings：单删按 ref_id 精确撤销（此前只有 delete_all 按作用域清）。"""
+    try:
+        res["pending_embeddings"] = _drop_pending(scope, memory_id, text, verbatim_shared, text_shared)
+    except (sqlite3.Error, ValueError, OSError) as e:
+        logger.warning("欠账载荷撤销失败: %s", e)
+        layer_failed("pending_embeddings", e)
 
 
 def _cascade_single_facts(
@@ -1626,19 +1919,21 @@ def _cascade_single_verbatim(
     content: str,
     res: Dict[str, Any],
     layer_failed: Any,
+    turn_ids: Optional[list] = None,
 ) -> None:
     """§6 📼 原文保真层清理（🔴P0-4 v19.4.1）：删除权必须兑现到逐字原文。
 
-    以 content_hash 精确匹配（延续 v19.2.0 精确匹配铁律，杜绝 LIKE 误伤）。
+    以 content_hash 精确匹配（延续 v19.2.0 精确匹配铁律，杜绝 LIKE 误伤）；
+    f0.7 复核 / P5 自审：turn_ids 给定时只删认领的那批行（_verbatim_claim），快照、删除、校验同一批。
     """
     try:
         if content:
             from ducky.verbatim_vault import delete_verbatim_by_content
             res["verbatim"] = delete_verbatim_by_content(
-                user_id, content, bank_id=bank_id
+                user_id, content, bank_id=bank_id, turn_ids=turn_ids
             )
             from ducky.tombstone import capture_verbatim_rows
-            if capture_verbatim_rows(memory_id, make_scope(user_id, bank_id), content):
+            if capture_verbatim_rows(memory_id, make_scope(user_id, bank_id), content, turn_ids=turn_ids):
                 raise RuntimeError("verbatim delete did not clear its selected rows")
         else:
             logger.debug("原文层清理跳过：未能定位该记忆正文 (%s)", memory_id)
@@ -1696,6 +1991,35 @@ def _cascade_single_verbatim_local(
             res["verbatim_local_vector_deleted"] = _dl([_vpid], user_id=user_id, bank_id=bank_id) > 0
     except Exception as e:
         layer_failed("local_vectors", e)
+
+
+def replace_stale_copies(user_id: str, bank_id: str, old_text, new_text: str,
+                         *, new_is_verbatim: bool = False, memory_id: str = "") -> List[Dict[str, Any]]:
+    """f0.6+++ /update 清场：旧值不许再被召回。旧原文副本 + 其本地点走单条删除
+    同一组层函数；热缓存整域作废（/search 把原文以 verbatim:N 喂进缓存，按记忆
+    id 驱逐够不着）。new_is_verbatim：句柄本身就是原文，落新原文 + 本地点。返回失败层。"""
+    failed: List[Dict[str, Any]] = []
+    rec, res, old_text = _make_layer_failure_recorder(failed), {}, (old_text or "").strip()
+    if old_text and old_text != new_text.strip():
+        # P5 自审 S-4：与单删同一认领规则——别的活记忆还说着旧值时，给它们留原文行，共用的本地点/欠账不动
+        scope = make_scope(user_id, bank_id)
+        vb = _verbatim_claim(scope, memory_id, old_text) if memory_id else {
+            "ids": None, "raw_kept": False, "others": False}
+        _cascade_single_verbatim(user_id, bank_id, "", old_text, res, rec, turn_ids=vb["ids"])
+        if not vb["raw_kept"]:
+            _cascade_single_verbatim_local(user_id, bank_id, old_text, res, rec)
+        # f0.7 复核（外审 sesame F-03 变体）：旧原文本地点的欠账（载荷 = 改写前原文）一并撤销，
+        # 否则「改过再删」的旧值留在欠账账本里，回放还会写回本地向量。
+        _cascade_single_pending(scope, "", old_text, res, rec,
+                                verbatim_shared=vb["raw_kept"], text_shared=vb["others"])
+    if new_is_verbatim:
+        from ducky.dual_index import upsert_local_verbatim
+        from ducky.verbatim_vault import store_verbatim
+        store_verbatim(user_id, new_text, bank_id=bank_id)
+        upsert_local_verbatim(user_id, bank_id, new_text)
+    from ducky.memory_workspace import ws_clear
+    ws_clear(user_id, bank_id=bank_id)
+    return failed
 
 
 def _single_delete_matched(res: Dict[str, Any]) -> bool:

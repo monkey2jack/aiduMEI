@@ -54,7 +54,7 @@ def setup_test_db(monkeypatch):
 
 
 def _chain(memory_id: str):
-    from ducky.memory_lineage import get_memory_lineage
+    from lineage_reader import get_memory_lineage
     return get_memory_lineage(memory_id)
 
 
@@ -105,47 +105,6 @@ def test_interleaved_keys_do_not_cross_chains():
     chain_b = _chain(f"fact:{rb1['fact_id']}")
     assert [c["version"] for c in chain_a] == [1, 2]
     assert [c["version"] for c in chain_b] == [1]  # kB 不多一条别人的版本
-
-    from ducky.memory_lineage import verify_lineage_integrity
-    res = verify_lineage_integrity()
-    assert res["status"] == "ok", res["broken_details"]
-
-
-def test_legacy_facts_add_three_writes_single_chain():
-    """legacy /facts/add 真实端点：同一 key 写三次 → 一条链 1→2→3（不分叉出 fact:<key> 假链）。"""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from ducky.hot.legacy_routes import register_legacy_routes
-
-    app = FastAPI()
-    register_legacy_routes(app)
-    client = TestClient(app)
-
-    for i in range(1, 4):
-        resp = client.post("/facts/add", params={
-            "category": "test", "fact_key": "k1", "fact_value": f"值{i}",
-            "source": "legacy_tester",
-        })
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["status"] == "ok", resp.text
-
-    conn = utils.get_facts_conn()
-    try:
-        rows = conn.execute(
-            "SELECT id, content_hash, version FROM facts WHERE fact_key='k1'").fetchall()
-        assert len(rows) == 1
-        fid, row_hash, row_ver = rows[0]
-        assert row_ver == 3
-    finally:
-        conn.close()
-
-    chain = _chain(f"fact:{fid}")
-    assert [c["version"] for c in chain] == [1, 2, 3]
-    assert [c["action"] for c in chain] == ["CREATE", "UPDATE", "UPDATE"]
-    assert chain[-1]["content_hash"] == row_hash
-
-    # 不得存在 fact:k1 形态的假链
-    assert _chain("fact:k1") == []
 
     from ducky.memory_lineage import verify_lineage_integrity
     res = verify_lineage_integrity()

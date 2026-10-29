@@ -22,7 +22,7 @@ def test_complete_independent_route_inventory():
               for r in app.routes if isinstance(r, APIRoute) for method in r.methods}
     expected = {(x['app'],x['method'],x['path']) for x in INVENTORY}
     assert actual == expected, (actual-expected, expected-actual)
-    assert len(PRIVATE) >= 280
+    assert len(PRIVATE) >= 40   # f0.6+++ WP2：瘦身后的私有资源面
 
 
 def value(schema, document):
@@ -50,8 +50,7 @@ def test_unregistered_token_denied_on_every_resource(api, monkeypatch, entry):
     client, _, _ = api
     monkeypatch.setenv('AIDUMEI_CALLER_BINDINGS', '{}')
     # Enable global features too: a disabled feature's 404 cannot prove auth.
-    for flag in ('AIDUMEM_PERSONA_ENABLED','AIDUMEI_CRYSTALS_ENABLED','AIDUMEI_CODE_GRAPH_ENABLED',
-                 'AIDUMEI_EVOLVE_ADMIN_ENABLED','AIDUMEI_SKILL_DRAFTS_ENABLED'):
+    for flag in ('AIDUMEI_CRYSTALS_ENABLED', 'AIDUMEI_EVOLVE_ADMIN_ENABLED'):
         monkeypatch.setenv(flag,'true')
     app = api_server.app if entry['app']=='root' else api_server._api_alias
     doc = app.openapi()

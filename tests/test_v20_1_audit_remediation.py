@@ -14,9 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import ducky.refine_memory as refine_memory  # noqa: E402
 from ducky.pattern_extract import extract_patterns  # noqa: E402
-from ducky.refine_memory import _extractive_summary  # noqa: E402
 
 
 def _mk(items, category="rem_cat"):
@@ -28,70 +26,10 @@ def _mk(items, category="rem_cat"):
 # R-02 · WP-B 硬切显式化 + 优先级钉死（外审 z P1-03）
 # ══════════════════════════════════════════════════════════════════
 
-class TestR02ExtractiveTruncation:
-    def test_priority_survives_count_truncation(self):
-        """反置优先级变异的必红用例：14 条要点（10 硬实体 + 4 纯文），
-        上限 12 —— 被丢的必须是纯文要点，硬实体一条不许少。"""
-        soft_names = ["甲", "乙", "丙", "丁"]
-        hard_names = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉"]
-        hard = [(f"硬键{n}", f"版本 2.{i}.0 端口 {8000 + i}")
-                for i, n in enumerate(hard_names)]
-        # 软要点：键与值都不含数字（键里一个数字就会被判成硬实体），
-        # 且值互不相同（同值会被包含去重吸收，截断就根本不会发生）。
-        soft = [(f"软键{n}", f"纯文字描述{n}无任何数字实体不重复") for n in soft_names]
-        summary = _extractive_summary(_mk(soft[:2] + hard + soft[2:]))
-        for _, v in hard:
-            assert v in summary, f"硬实体要点 {v!r} 被截断挤掉 —— 优先级承诺失守"
-        assert "另 2 条要点略" in summary
-
-    def test_length_fallback_never_slices_mid_point(self):
-        """480 长度回退按**完整要点**丢弃：正文里绝不出现被拦腰斩断的要点。
-        整改前的硬切会留半截尾巴且不计数（z 的静默丢失现场）。"""
-        pts = [(f"长键{i}", f"编号{i}·" + "内容甲乙丙丁" * 14) for i in range(9)]  # 单条≈60+
-        summary = _extractive_summary(_mk(pts))
-        assert "另" in summary and "条要点略" in summary, "长度回退没有显式标注"
-        for k, v in pts:
-            piece = f"{k}：{v[:80]}"
-            in_full = piece in summary
-            head_leaked = (not in_full) and (f"{k}：" in summary)
-            assert not head_leaked, f"要点 {k} 被拦腰斩断 —— 硬切复活了"
-
-    def test_length_fallback_drops_are_logged(self, caplog):
-        pts = [(f"日志键{i}", f"编号{i}·" + "正文戊己庚辛" * 14) for i in range(9)]
-        with caplog.at_level(logging.INFO, logger="aiduMEM.refine_memory"):
-            _extractive_summary(_mk(pts))
-        assert any("长度回退丢弃" in r.message for r in caplog.records), \
-            "被丢要点没留名 —— 谁被丢必须可查"
-
 
 # ══════════════════════════════════════════════════════════════════
 # R-03 · LLM 降级日志对称化（外审 z P1-04）
 # ══════════════════════════════════════════════════════════════════
-
-def test_r03_llm_failure_logs_warning_not_debug(monkeypatch, caplog, tmp_path):
-    import ducky.llm_client as llm_client
-    import ducky.utils as utils
-    from ducky.schema_bootstrap import ensure_core_schema
-
-    monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
-    monkeypatch.setattr(refine_memory, "_checked", False)
-    ensure_core_schema(force=True)
-    refine_memory.ensure_refine_schema()
-
-    from ducky.federation.writer import write_fact
-    for i in range(3):
-        write_fact("r03_cat", f"r03_键{i}", f"取值{i}·编号{i}",
-                   source="r03_user", user_id="r03_user", dedup=False)
-
-    monkeypatch.setattr(refine_memory, "REFINE_ENABLED", True)
-    monkeypatch.setattr(llm_client, "call_llm",
-                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("LLM 宕机模拟")))
-    with caplog.at_level(logging.WARNING, logger="aiduMEM.refine_memory"):
-        res = refine_memory.refine_group("r03_user", "r03_cat", use_llm=True)
-    assert res["consolidation_basis"] == "extractive"
-    assert any("LLM 精炼失败" in r.message and r.levelno >= logging.WARNING
-               for r in caplog.records), \
-        "LLM 档降级没有 WARNING 出声 —— 与 extractive 档不对称（铁律 8）"
 
 
 # ══════════════════════════════════════════════════════════════════

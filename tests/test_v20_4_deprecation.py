@@ -34,7 +34,6 @@ _LEDGER = _REPO_ROOT / "docs" / "DEPRECATION.md"
 # 防「修台账的方式是把难写的行删掉」。
 _REQUIRED_MODULES = {
     "ducky/add_speed.py",
-    "ducky/routes_core.py",
     "ducky/hot/legacy_routes.py",
     "ducky/memory_salience.py",
     "ducky/extended/",

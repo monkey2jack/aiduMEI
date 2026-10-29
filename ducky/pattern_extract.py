@@ -238,9 +238,11 @@ def _resolve_relative(word: str, recorded_at: str | None) -> str | None:
     if not recorded_at:
         return None
     try:
-        base = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00")).date()
+        dt = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
+    # 带时区的锚点按本机时区取日期（生产实测：UTC 23:49 = 北京次日 07:49，「昨天」差一天）
+    base = (dt.astimezone() if dt.tzinfo else dt).date()
     return (base + timedelta(days=_REL_DAYS[word])).isoformat()
 
 
@@ -431,3 +433,59 @@ def extract_and_store(
     _bump("stored", stored)
     _bump("store_failed", failed)
     return {"status": "ok", "extracted": len(items), "stored": stored, "failed": failed}
+
+
+_DATETIME_CAT = "pattern_datetime"
+_RETRACT_ANCHOR = "2000-01-01T12:00:00"   # 撤销时只为让相对日期句产出；日期键不参与比对
+
+
+def retract_items(text: str) -> list[dict]:
+    """撤销用的派生事实清单。写入时相对日期按当时锚点落键（「昨天」→ 具体日期），撤销时拿不到同一锚点，
+    所以日期类只按「分类 + 原句」比对、忽略键（生产实测：带「昨天」的句子删后 pattern_datetime 残留）。"""
+    return extract_patterns(text, recorded_at=_RETRACT_ANCHOR)
+
+
+def same_retract_item(a: dict, b: dict) -> bool:
+    return (a["category"] == b["category"] and a["fact_value"] == b["fact_value"]
+            and (a["category"] == _DATETIME_CAT or a["fact_key"] == b["fact_key"]))
+
+
+def cascade_pattern_facts(old_text: str, *, user_id: str, bank_id: str, still_said=None) -> dict:
+    """f0.7 P0-3(外审 sesame F-04 / haiku P1-2):一条记忆被删或改写后,撤掉由它派生的 pattern 事实。
+
+    facts.db 的 pattern 事实没有指回来源记忆的链接,所以按「同租户 + 来源 pattern_extract + 同分类同键同值」
+    精确定位;``still_said(item)`` 返回 True 表示还有别的现存记忆说过同一句(同一事实仍有出处),保留。
+    只碰 source=pattern_extract 的行;人工/LLM 来源的同键事实一律不动。治理候选队列里指向被撤事实的行一并撤掉(候选行也带着原文)。
+    """
+    out = {"removed": 0, "kept_still_said": 0, "candidates_removed": 0}
+    if not (old_text or "").strip():
+        return out
+    from ducky.scope_sql import make_scope, scope_clause
+    from ducky.utils import get_facts_conn
+    items = retract_items(old_text)
+    if not items:
+        return out
+    conn = get_facts_conn()
+    try:
+        cand = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_facts'").fetchone()
+        for it in items:
+            if still_said is not None and still_said(it):
+                out["kept_still_said"] += 1
+                continue
+            frag, params = scope_clause(make_scope(user_id, bank_id))       # 精确 user_id+bank_id,不走宽松档
+            key_sql, key_arg = ("", []) if it["category"] == _DATETIME_CAT else (" AND fact_key=?", [it["fact_key"]])
+            fids = [r[0] for r in conn.execute(
+                "SELECT id, source FROM facts WHERE category=? AND fact_value=?" + key_sql + frag,
+                [it["category"], it["fact_value"], *key_arg, *params]).fetchall()
+                if r[1] == PATTERN_EXTRACT_SOURCE]                            # 只碰 pattern 来源
+            if not fids:
+                continue
+            ph = ",".join("?" * len(fids))
+            out["removed"] += conn.execute(f"DELETE FROM facts WHERE id IN ({ph})", fids).rowcount or 0
+            if cand:      # 候选队列按 fact_id 指回被撤的事实(fids 已按租户圈定)
+                out["candidates_removed"] += conn.execute(
+                    f"DELETE FROM candidate_facts WHERE fact_id IN ({ph})", fids).rowcount or 0
+        conn.commit()
+    finally:
+        conn.close()
+    return out

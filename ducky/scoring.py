@@ -109,6 +109,14 @@ SIGMOIDAL_TEMPERATURE = float_env("AIDUMEM_SIGMOIDAL_TEMP", 10.0, exclusive_mini
 RECALL_MIN_HYBRID = float_env("AIDUMEI_RECALL_MIN_HYBRID", 0.0,
                               minimum=0.0, maximum=1.0)
 
+# f0.6+++ rankfix（native 实机）：native 把逐轮原话（迁移来的 verbatim:N、ingest 钩子
+# 直存的 lane=raw）和蒸馏事实放在同一个池里，长原话靠词面覆盖 + rerank 偏爱长文常压过
+# 精炼事实（inject 只取 3 条）。旧 mem0 栈是记忆单独 rerank、原文层接在后面。最小修法：
+# native 下 rerank 融合之后给长原话乘一个权重（短原话、蒸馏事实不动）。1.0 = 关闭。
+RAW_TURN_WEIGHT = float_env("AIDUMEI_RAW_TURN_WEIGHT", 0.6, minimum=0.0, maximum=1.0)
+RAW_TURN_LONG_CHARS = 160      # 原话超过这个长度才降权（蒸馏事实中位数 ~80 字）
+ANY_LONG_CHARS = 400           # 任何来源超长（旧栈把整段助手回复当事实收进来的）也降权
+
 # 证据闸门：向量分与 BM25 分**双零**的候选一律出局。
 # 关掉它需要显式设 `AIDUMEI_RECALL_EVIDENCE_GATE=0` —— 与总分门槛相反，
 # 这一道**默认开**：零证据条目与查询之间不存在任何可解释的关联，
@@ -965,6 +973,37 @@ def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
     return rerank_applied
 
 
+def is_raw_turn(item: dict) -> bool:
+    """逐轮原话：迁移的 verbatim:N / VERBATIM 型，或 native /add 直存（metadata.lane=raw）。"""
+    md = item.get("metadata") or {}
+    return (str(item.get("id") or "").startswith("verbatim:") or md.get("lane") == "raw"
+            or str(md.get("memory_type") or "").upper() == "VERBATIM")
+
+
+def _apply_raw_turn_weight(scored: List[dict]) -> int:
+    """native 下给长原话降权（rerank 融合后、排序前，原地改 _hybrid_score）；返回降权条数。
+
+    只在候选池里同时有精炼记忆（非原话）时才降：全是原话的池子（没蒸馏过的用户、
+    回归集的 /add 灌库）排序逐字不变 —— 降权的目的只是让精炼事实别被长原话挤掉。
+    """
+    if RAW_TURN_WEIGHT >= 1.0:
+        return 0
+    from ducky.mem0_runtime import native_kernel_active
+    if not native_kernel_active():
+        return 0
+    sizes = [len(_candidate_content_text(it)) for it in scored]
+    raw = [is_raw_turn(it) or n >= ANY_LONG_CHARS for it, n in zip(scored, sizes)]
+    if all(raw):
+        return 0
+    hit = 0
+    for it, n, r in zip(scored, sizes, raw):
+        if r and n > RAW_TURN_LONG_CHARS:
+            it["_hybrid_score"] = round((it.get("_hybrid_score", 0) or 0) * RAW_TURN_WEIGHT, 4)
+            it["_raw_turn_weighted"] = True
+            hit += 1
+    return hit
+
+
 def _score_histogram(scored: List[dict]) -> Dict[str, int]:
     """分数直方图：**这是下一版给 RECALL_MIN_HYBRID 定值的原料**。
 
@@ -1136,6 +1175,7 @@ def score_and_rank_candidates(
     # Optional answer support check runs on the full pool before final slots.
     from ducky.decision import filter_evidence
     scored = filter_evidence(query, scored, user_id, bank_id)
+    _set_gate_telemetry(raw_turn_weighted=_apply_raw_turn_weight(scored))
 
     # 4. 排序、总分门槛、截断
     scored.sort(key=lambda x: x.get("_hybrid_score", 0), reverse=True)

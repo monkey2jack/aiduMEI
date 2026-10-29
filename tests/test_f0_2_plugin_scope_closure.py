@@ -13,8 +13,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -73,39 +71,6 @@ def test_memory_mirror_and_all_reads_keep_both_scope_axes(plugin, monkeypatch):
     assert all(body["user_id"] == "alice" and body["bank_id"] == "work" for body in search_bodies)
     assert len({body["session_id"] for body in search_bodies}) == 1
     assert re.fullmatch(r"hermes_seg_[0-9a-f]{32}", search_bodies[0]["session_id"])
-
-
-def test_two_bots_mirror_same_key_into_separate_facts(plugin, monkeypatch, tmp_path):
-    """Exercise the actual /facts/add route and its scope-keyed upsert."""
-    import ducky.utils as utils
-    import ducky.hot.legacy_routes as legacy
-    from ducky.schema_bootstrap import ensure_core_schema
-
-    db = tmp_path / "facts.db"
-    monkeypatch.setattr(utils, "FACTS_DB", str(db))
-    monkeypatch.setattr(legacy, "_get_facts_conn", utils.get_facts_conn)
-    ensure_core_schema(force=True)
-    app = FastAPI()
-    legacy.register_legacy_routes(app)
-    client = TestClient(app)
-
-    def bridge(method, path, **kwargs):
-        result = client.request(method, path)
-        assert result.status_code == 200, result.text
-        return result.json()
-
-    for uid, value in (("alice", "Alice profile"), ("bob", "Bob profile")):
-        p = plugin.AiduMemProvider({"user_id": uid, "bank_id": "work"})
-        p._spawn = lambda fn, name: fn()
-        p._client.try_request = bridge
-        p.on_memory_write("replace", "user", value)
-
-    rows = client.get("/facts", params={"category": "user_profile", "bank_id": "work",
-                                       "user_id": "alice"}).json()["facts"]
-    assert [r["fact_value"] for r in rows if r["fact_key"] == "hermes/user"] == ["Alice profile"]
-    rows = client.get("/facts", params={"category": "user_profile", "bank_id": "work",
-                                       "user_id": "bob"}).json()["facts"]
-    assert [r["fact_value"] for r in rows if r["fact_key"] == "hermes/user"] == ["Bob profile"]
 
 
 def test_session_end_waits_for_durable_turn_before_distill(plugin):

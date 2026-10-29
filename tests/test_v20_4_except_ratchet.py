@@ -44,7 +44,7 @@ def _count_except_exception() -> int:
     return total
 
 
-_BASELINE = 702  # f0.3++: +4 in loop_guard.py; f0.6++WP9: +1 in session_distill.py (core-memory autosink guard - a placeholder-fill must never kill the distill commit, wide catch is the contract here), explained in place.
+_BASELINE = 567  # f0.3++: +4 in loop_guard.py; f0.6++WP9: +1 in session_distill.py (core-memory autosink guard - a placeholder-fill must never kill the distill commit, wide catch is the contract here), explained in place. f0.6+++ WP2: 702 -> 566 after route allow-list + dead code removal. f0.6+++ WP3a: +1 in memory_kernel/impl_native.py ShadowMemory._shadow (shadow-side failure must never reach the primary path; wide catch is the contract, removed with shadow at WP3b).
 
 # f0.6: +7 —— governance.py（W-16 provisional 兜底，降级失败只能宽捕获才能如实上报）、
 # evolve_mem.py（W-02 旧 schema 容错）、utils.py W-04 清道夫（连接清理失败不许炸请求收尾）、

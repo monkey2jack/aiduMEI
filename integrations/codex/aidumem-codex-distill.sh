@@ -29,6 +29,8 @@
 #   AIDUMEI_INSTALL_DIR        aiduMEI 安装目录（找真源用；缺省按本脚本
 #                              位置推导：integrations/codex/ 的上上级）
 set -uo pipefail
+# f0.7 P3：新前缀别名（connect_host 写 AIDUMEI_URL；AIDUMEM_URL 设了仍优先）
+if [ -z "${AIDUMEM_URL:-}" ] && [ -n "${AIDUMEI_URL:-}" ]; then export AIDUMEM_URL="$AIDUMEI_URL"; fi
 
 _hook_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || _hook_dir=""
 INSTALL_DIR="${AIDUMEI_INSTALL_DIR:-$(cd -- "${_hook_dir:+$_hook_dir/../..}" 2>/dev/null && pwd)}"
@@ -59,7 +61,8 @@ prefix = os.environ.get("AIDUMEI_HOOK_PREFIX", "codex-")
 # Codex SessionEnd 是真实会话边界（归档/删除/正常关闭/闲置 30 分钟），
 # 对应 on_session_end；真源对 finalize/reset 会加 --force 出新一代，
 # Codex 暂无该语义区分，统一按 on_session_end 处理。
-print(json.dumps({"session_id": prefix + sid,
+# 幂等加前缀：已带前缀不再叠加（cc-cc- 双前缀，f0.6+++ WP6），与写线同口径
+print(json.dumps({"session_id": sid if sid.startswith(prefix) else prefix + sid,
                   "hook_event_name": "on_session_end"}, ensure_ascii=False))
 ' 2>/dev/null)
 [ -z "$HERMES_PAYLOAD" ] && exit 0

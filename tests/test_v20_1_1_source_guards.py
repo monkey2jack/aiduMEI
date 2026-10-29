@@ -42,7 +42,7 @@ _SAFE_CALL_PREFIXES = (
     "renderModelConfig(", "renderReasoning(", "renderParams(",
 )
 # 已审计的 .map(渲染函数) 白名单：这些行渲染函数内部逐字段 esc。
-_AUDITED_MAP_RENDERERS = {"recordRow", "factRow", "tombRow", "candRow"}
+_AUDITED_MAP_RENDERERS = {"recordRow", "factRow", "tombRow", "candRow", "cfgTestRow"}
 # 已审计的特例表达式（逐条人工核过来源为安全值；表达式原文精确匹配）：
 _AUDITED_EXPRESSIONS = {
     "kTree.domains",            # /api/knowledge-tree 的域计数，数字
@@ -148,6 +148,12 @@ _SQL_PHRASE_RE = re.compile(
 # 新插值出现在这张表之外 → 红。值请用 ? 参数化；表列名等结构性拼接
 # 请人工核对来源后在此登记。
 _EXPECTED_SQL_INTERPOLATIONS = {
+    # f0.6+++ WP3a native 内核:where = _where() 由固定列名 + 正则校验过的 json 键拼出,值全走 ?;
+    # q / IN 占位串 / like 均为 "?,?.." 或 "m.content LIKE ?" 结构性常量。人工核对:impl_native._where/_fts/search。
+    ("ducky/memory_kernel/impl_native.py", "where"), ("ducky/memory_kernel/impl_native.py", "q"),
+    # f0.7 P0-3:ph = "?,?.." 占位串(按已按租户圈定的 fact id 个数生成),结构性常量。
+    ("ducky/pattern_extract.py", "ph"),
+    ("ducky/memory_kernel/impl_native.py", "like"), ("ducky/memory_kernel/impl_native.py", "','.join('?' * len(top))"),
     # v20.4.0(P1-6)：entities 补租户轴，列名从硬编码元组 ("user_id","bank_id")
     # 拼接，不含任何请求数据；列名无法走 ? 参数化。人工核对：ducky/schema_bootstrap.py:172。
     ("ducky/schema_bootstrap.py", "col"),
@@ -158,7 +164,6 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/wal_engine.py", "ph"),
     # v21 preview：scope_clause() 产出的 canonical 片段拼接（结构性常量，无请求数据）
     ("ducky/dossier.py", "frag"),
-    ("ducky/routes_knowledge.py", "frag"),
     # v21.0 收口：scoring sidecar 批量查询的 IN 占位符拼接（结构性，无请求数据）
     ("ducky/scoring.py", "placeholders"),
     # v21.1(WP-10)：_load_epi_map 走 scope_clause() 产出的 canonical 片段（结构性，值走 ? params）
@@ -170,7 +175,6 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/dossier.py", "table"),
     ("ducky/bank_contract.py", "column"), ("ducky/bank_contract.py", "ddl"),
     ("ducky/bank_contract.py", "table"),
-    ("ducky/checkpoint.py", "placeholders"),
     ("ducky/core_memory.py", "_owner_first_order()"), ("ducky/core_memory.py", "column"),
     ("ducky/core_memory.py", "ddl"), ("ducky/core_memory.py", "guard"),
     ("ducky/core_memory.py", "table"), ("ducky/core_memory.py", "where"),
@@ -179,26 +183,18 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/session_distill.py", "_scope"),
     ("ducky/event_ledger.py", "placeholders"), ("ducky/event_ledger.py", "scope_sql"),
     ("ducky/evolve_mem.py", "placeholders"), ("ducky/evolve_mem.py", "table"),
-    ("ducky/extended/routes.py", "clauses"), ("ducky/extended/routes.py", "placeholders"),
     # v20.2.4（外审 F-05/F-07 scope 化）：tenant_clause 返回的**结构性**片段
     # （" AND bank_id=? AND user_id=?" 之类），值一律走 ? 参数化随 params 传。
     # 人工核对：来源是 ducky/facts_recall.tenant_clause，不含任何请求数据。
-    ("ducky/extended/routes.py", "fclause"),
     ("ducky/hot/legacy_routes.py", "fclause"),
     ("ducky/facts_recall.py", "placeholders"),
-    ("ducky/federation/broadcast.py", "peer_frag"), ("ducky/federation/broadcast.py", "shared_frag"),
     ("ducky/federation/dedup.py", "agent_frag"),
-    ("ducky/federation/recall.py", "' AND '.join(where)"), ("ducky/federation/recall.py", "scope_frag"),
     ("ducky/federation/schema.py", "FACTS_UNIQUE_COLUMNS"), ("ducky/federation/schema.py", "column"),
     ("ducky/federation/schema.py", "ddl"), ("ducky/federation/schema.py", "table"),
     ("ducky/governance.py", "column"), ("ducky/governance.py", "ddl"),
-    ("ducky/hot/legacy_helpers.py", "_SCENES_DDL_V20"), ("ducky/hot/legacy_helpers.py", "col"),
-    ("ducky/hot/legacy_routes.py", "','.join('?' * len(all_ids))"),
-    ("ducky/hot/legacy_routes.py", "','.join('?' * len(ids))"),
-    ("ducky/hot/legacy_routes.py", "placeholders"), ("ducky/hot/legacy_routes.py", "scope_sql"),
-    ("ducky/hot/legacy_routes.py", "t_clause"), ("ducky/hot/legacy_routes.py", "where"),
+    ("ducky/hot/legacy_helpers.py", "_SCENES_DDL_V20"),
+    ("ducky/hot/legacy_routes.py", "where"),
     # v21.1(WP-4)：prune 读侧补 tenant_clause 产出的 w_clause（结构性，值走 ? w_params）
-    ("ducky/hot/legacy_routes.py", "w_clause"),
     ("ducky/memory_types.py", "DEFAULT_BANK_ID"), ("ducky/memory_types.py", "LEGACY_PLACEHOLDER_USER_ID"),
     ("ducky/memory_types.py", "column"), ("ducky/memory_types.py", "ddl"),
     # v20.3.2-beta（外审 P1-A）：_table_columns() 的 PRAGMA table_info({table})。
@@ -212,13 +208,9 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     # 来源核对：`_bank_clause()` 只返回两种字面量 —— "" 或 " AND bank_id=?"，
     # bank 值本身走 ? 参数（_bparams），**没有任何调用方输入进入 SQL 文本**。
     # 这正是本登记制要的那种「结构性拼接、值仍参数化」。
-    ("ducky/refine_memory.py", "_bclause"),
-    ("ducky/routes_p1.py", "f_owner_sql"), ("ducky/routes_p1.py", "mt_owner_sql"),
     ("ducky/salience/core.py", "placeholders"),
     ("ducky/schema_bootstrap.py", "DEFAULT_AGENT_ID"), ("ducky/schema_bootstrap.py", "DEFAULT_USER_ID"),
     ("ducky/skill_crystallizer.py", "','.join('?' * len(_EXCLUDED_CATEGORIES))"),
-    ("ducky/skill_crystallizer.py", "_LOW_UTILITY_SUCCESS_RATE"),
-    ("ducky/skill_crystallizer.py", "_MIN_USES_FOR_UTILITY"),
     ("ducky/skill_crystallizer.py", "col"), ("ducky/skill_crystallizer.py", "ddl"),
     # f0.5（6.2 退避两列）：ensure_pending_schema 的 additive ADD COLUMN。
     # 来源核对：col/ddl 只来自本函数字面量元组，无任何调用方输入。
@@ -228,6 +220,9 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/tombstone.py", "','.join(('?' for _ in cols))"),
     ("ducky/tombstone.py", "','.join(cols)"),
     ("ducky/vector_backend.py", "marks"),
+    # f0.7 复核：结构性拼接——常量谓词 / 固定白名单列名（_SNAPSHOT_TEXT_COLUMNS）
+    ("ducky/memory_kernel/impl_native.py", "_FRESH_VEC"),
+    ("ducky/tombstone.py", "sets"), ("ducky/tombstone.py", "any_left"),
     ("ducky/verbatim_vault.py", "' OR '.join(clauses)"), ("ducky/verbatim_vault.py", "col"),
     ("ducky/verbatim_vault.py", "ddl"), ("ducky/verbatim_vault.py", "placeholders"),
     ("ducky/wal_engine.py", "ref_ph"),
@@ -294,6 +289,16 @@ _MIGRATION_LEDGER = {
     # f0.6++ WP5 graph_memory(CREATE graph_edges):三类真实关系边(additive,
     #      不动 facts 主表;租户谓词与 facts 同款)
     ("ducky/graph_memory.py", "CREATE", "graph_edges"),
+    # f0.6+++ WP3a native 单库 memory.db(新库,全部 CREATE IF NOT EXISTS,additive,影子期默认不建)
+    ("ducky/memory_kernel/impl_native.py", "CREATE", "meta"), ("ducky/memory_kernel/impl_native.py", "CREATE", "memories"),
+    ("ducky/memory_kernel/impl_native.py", "CREATE", "memory_vectors"),
+    ("ducky/memory_kernel/impl_native.py", "CREATE", "memory_entities"),
+    ("ducky/memory_kernel/impl_native.py", "CREATE", "memory_history"),
+    ("ducky/memory_kernel/impl_native.py", "CREATE", "memory_facts"),
+    # memory.db 内 facts 由 schema_bootstrap._FACTS_DDL 建,租户两列与生产 facts 迁移同形补列(additive)
+    ("ducky/memory_kernel/impl_native.py", "ALTER", "facts"),
+    # f0.7 P0-3:memory.db 墓碑补 snapshot_expires_at(与 facts.db 墓碑同一 TTL 列,additive)
+    ("ducky/memory_kernel/impl_native.py", "ALTER", "tombstones"),
     # v21.2 Memmy 融改（均 additive）：M2 回声抑制的数据面 + M1 轨迹信用两表
     ("ducky/schema_bootstrap.py", "ALTER", "memory_epistemic"),
     ("ducky/evolve_mem.py", "CREATE", "evolve_episodes"),
@@ -302,7 +307,6 @@ _MIGRATION_LEDGER = {
     # 用于区分「真有人在对话」与「e2e_smoke 每小时一次的巡检心跳」
     ("ducky/evolve_mem.py", "ALTER", "evolve_queries"),
     # v20.4.0 P1 租户轴/去重：以下均 additive（ADD COLUMN / CREATE IF NOT EXISTS / 表重建）。
-    ("ducky/checkpoint.py", "ALTER", "checkpoints"),
     ("ducky/federation/schema.py", "CREATE", "facts_dedup_quarantine"),
     ("ducky/federation/grants.py", "CREATE", "federation_grants"),
     # v20.5.0 正式版：federation_grants 补 created_by 列（审计主体派生，additive）
@@ -312,12 +316,9 @@ _MIGRATION_LEDGER = {
     ("ducky/dual_index.py", "ALTER", "pending_embeddings"),
     ("ducky/memory_lineage.py", "CREATE", "memory_lineage"),
     ("ducky/schema_bootstrap.py", "ALTER", "entities"),
-    ("ducky/tree_memory.py", "ALTER", "memory_nodes_v2"),
-    ("ducky/tree_memory.py", "CREATE", "memory_nodes_v2"),
     ("ducky/autodream.py", "CREATE", "autodream_log"),
     ("ducky/bank_contract.py", "ALTER", "<dynamic>"),
     ("ducky/bank_contract.py", "CREATE", "memory_banks"),
-    ("ducky/checkpoint.py", "CREATE", "checkpoints"),
     ("ducky/core_memory.py", "ALTER", "core_memory"),
     ("ducky/core_memory.py", "ALTER", "core_memory__scoped"),
     ("ducky/core_memory.py", "CREATE", "<dynamic>"),
@@ -333,23 +334,18 @@ _MIGRATION_LEDGER = {
     ("ducky/federation/schema.py", "CREATE", "federation_broadcast"),
     ("ducky/governance.py", "ALTER", "candidate_facts"),
     ("ducky/governance.py", "CREATE", "candidate_facts"),
-    ("ducky/hot/legacy_helpers.py", "ALTER", "observations"),    ("ducky/idempotency.py", "CREATE", "idempotency_keys"),
+    ('ducky/idempotency.py', 'CREATE', 'idempotency_keys'),
 
     ("ducky/hot/legacy_helpers.py", "ALTER", "scenes"),
-    ("ducky/hot/legacy_helpers.py", "CREATE", "observations"),
     ("ducky/hot/legacy_helpers.py", "CREATE", "scenes"),
     ("ducky/memory_types.py", "ALTER", "memory_types"),
     ("ducky/memory_types.py", "CREATE", "memory_types"),
     ("ducky/opinion.py", "ALTER", "opinions"),
     ("ducky/opinion.py", "CREATE", "opinions"),
-    ("ducky/persona_memory.py", "CREATE", "persona_banks"),
-    ("ducky/persona_memory.py", "CREATE", "persona_memories"),
     ("ducky/pipeline/memory_workspace.py", "ALTER", "workspace"),
     ("ducky/pipeline/memory_workspace.py", "ALTER", "workspace_v20"),
     ("ducky/pipeline/memory_workspace.py", "CREATE", "workspace"),
     ("ducky/pipeline/memory_workspace.py", "CREATE", "workspace_v20"),
-    ("ducky/refine_memory.py", "ALTER", "refined_memories"),
-    ("ducky/refine_memory.py", "CREATE", "refined_memories"),
     ("ducky/reflect.py", "ALTER", "reflections"),
     ("ducky/reflect.py", "CREATE", "reflections"),
     ("ducky/salience/db.py", "ALTER", "salience"),
@@ -381,7 +377,6 @@ _MIGRATION_LEDGER = {
     ("ducky/text_fts.py", "CREATE", "memories_v20"),
     ("ducky/tombstone.py", "ALTER", "tombstones"),
     ("ducky/tombstone.py", "CREATE", "tombstones"),
-    ("ducky/tree_memory.py", "CREATE", "memory_nodes"),
     ("ducky/utils.py", "CREATE", "knowledge_evolution"),
     ("ducky/utils.py", "CREATE", "memory_states"),
     ("ducky/vector_backend.py", "CREATE", "vectors"),

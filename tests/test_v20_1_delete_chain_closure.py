@@ -25,7 +25,6 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ducky.core_memory as cm  # noqa: E402
-import ducky.refine_memory as refine_memory  # noqa: E402
 from ducky.wal_engine import DELETE_CHAIN_MATRIX, cascade_delete_all, cascade_delete_memory  # noqa: E402
 
 
@@ -54,6 +53,25 @@ class _FakeMemory:
         return {"results": []}
 
 
+_LEGACY_DDL = """
+CREATE TABLE IF NOT EXISTS refined_memories (
+    refine_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL DEFAULT 'default',
+    bank_id TEXT NOT NULL DEFAULT 'default', category TEXT NOT NULL DEFAULT 'general',
+    source_ids TEXT NOT NULL, summary TEXT NOT NULL, reason TEXT DEFAULT '',
+    confidence REAL DEFAULT 0.5, state TEXT DEFAULT 'proposed',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, consolidation_basis TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, block_key TEXT NOT NULL,
+    content TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'default',
+    bank_id TEXT NOT NULL DEFAULT 'default', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+"""
+
+
+def utils_facts_db() -> str:
+    import ducky.utils as utils
+    return utils.FACTS_DB
+
+
 @pytest.fixture()
 def sandbox(monkeypatch, tmp_path):
     """facts 库钉到用例专属临时文件 + mem0 换录音替身 + 全 schema 就绪。"""
@@ -65,7 +83,6 @@ def sandbox(monkeypatch, tmp_path):
 
     db_path = str(tmp_path / "facts.db")
     monkeypatch.setattr(utils, "FACTS_DB", db_path)
-    monkeypatch.setattr(refine_memory, "_checked", False)
     monkeypatch.setattr(cm, "_initialized", False)
     cm._initialized_scopes.clear()
 
@@ -74,7 +91,11 @@ def sandbox(monkeypatch, tmp_path):
 
     from ducky.schema_bootstrap import ensure_core_schema
     ensure_core_schema(force=True)
-    refine_memory.ensure_refine_schema()
+    # f0.6+++ WP2：refine / checkpoint 模块随端点下线，存量库里的两张表仍在
+    # 删除链上 —— 这里按旧 schema 直接建表，继续守住清理覆盖。
+    _legacy_conn = sqlite3.connect(db_path)
+    _legacy_conn.executescript(_LEGACY_DDL)
+    _legacy_conn.close()
     from ducky.governance import ensure_governance_schema
     ensure_governance_schema()
     from ducky.tombstone import ensure_tombstone_schema
@@ -83,9 +104,6 @@ def sandbox(monkeypatch, tmp_path):
     ensure_ledger_schema()
     from ducky.utils import ensure_evolution_tables
     ensure_evolution_tables()
-    import ducky.checkpoint as checkpoint
-    monkeypatch.setattr(checkpoint, "_table_checked", False)
-    checkpoint._ensure_table()
     cm._ensure_table()  # core_memory 表由本模块自管，schema_bootstrap 不建它
 
     def query(sql: str, params=()):
@@ -110,8 +128,11 @@ def _seed_tenant(user: str, fake):
     for i in range(4):
         write_fact("dc_cat", f"{user}_键{i}", f"{user}_取值{i}·编号{100 + i}",
                    source=user, user_id=user, dedup=False)
-    res = refine_memory.refine_group(user, "dc_cat", use_llm=False)
-    assert res["status"] == "ok", res
+    seed = sqlite3.connect(utils_facts_db())
+    seed.execute("INSERT INTO refined_memories (user_id, category, source_ids, summary) "
+                 "VALUES (?, 'dc_cat', '[1,2]', ?)", (user, f"{user} 的整合摘要"))
+    seed.commit()
+    seed.close()
     ws_push(user_id=user, memory_id=f"{user}_m1",
             text=f"{user} 的工作区缓存正文", score=0.9)
     conn = get_facts_conn()

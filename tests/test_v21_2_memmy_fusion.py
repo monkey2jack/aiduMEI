@@ -261,39 +261,6 @@ def test_m6_bonus_is_bounded():
 
 # ══════════════════ M1 轨迹级奖励 ══════════════════
 
-def test_m1_credit_weights_sum_to_one_and_increase():
-    """权重公式：和恒为 1；越靠近结果的步骤权重越大。"""
-    from ducky.evolve_mem import credit_weights
-    assert credit_weights(0) == []
-    assert credit_weights(1) == [1.0]
-    w = credit_weights(5)
-    assert abs(sum(w) - 1.0) < 1e-6
-    assert w == sorted(w), "γ 位置衰减方向反了：越靠后应越重"
-
-
-def test_m1_episode_settle_propagates_by_position(tmp_path, monkeypatch):
-    """3 步 episode 负反馈 → 每步 credit 按位置递减（越靠后担责越重）。"""
-    import ducky.evolve_mem as em
-    monkeypatch.setattr(em, "EVOLVE_DB_PATH", str(tmp_path / "evolve.db"))
-    em.ensure_evolve_schema()
-    sid = "sess-ep-1"
-    for ref in ("s1", "s2", "s3"):
-        assert em.record_episode_step([ref], session_id=sid, user_id="dudu", bank_id="default") == 1
-    res = em.record_episode_feedback(sid, -1.0)
-    assert res["ok"] and res["steps"] == 3
-    cm = em.get_credit_map(["s1", "s2", "s3"])
-    assert abs(cm["s1"]) < abs(cm["s2"]) < abs(cm["s3"])
-
-
-def test_m1_no_session_no_episode(tmp_path, monkeypatch):
-    """无 session 的写入（cron 类）不产生 episode —— 不污染轨迹统计。"""
-    import ducky.evolve_mem as em
-    monkeypatch.setattr(em, "EVOLVE_DB_PATH", str(tmp_path / "evolve.db"))
-    em.ensure_evolve_schema()
-    assert em.record_episode_step(["x"], session_id="") == 0
-    assert em.record_episode_feedback("", 1.0)["ok"] is False
-
-
 def test_m1_credit_weight_defaults_to_zero():
     """credit 维度默认权重 0 = 排序行为零变化（灰度铁律）。"""
     from ducky.scoring import credit_dimension_weight, _load_credit_map
@@ -370,17 +337,6 @@ def test_m8_grant_writes_event_ledger():
     g = grant_hall_access("dudu", "xiaohou", actions="read", created_by="dudu")
     hist = get_history(g["grant_id"])
     assert any(h.get("action") == "hall_grant" for h in hist)
-
-
-def test_m8_revoke_only_logs_when_actually_revoked():
-    """撤销未撤到的 grant 不许记账 —— 账本里不写没发生过的事。"""
-    from ducky.pantheon import revoke_hall_grant
-    from ducky.event_ledger import ensure_ledger_schema, get_history
-    ensure_ledger_schema()
-    res = revoke_hall_grant("hg_does_not_exist")
-    assert res["revoked"] is False
-    assert not [h for h in get_history("hg_does_not_exist")
-                if h.get("action") == "hall_grant_revoke"]
 
 
 def test_m8_dossier_has_grants_section():

@@ -231,47 +231,6 @@ def test_auto_graduate_threads_scope_end_to_end(monkeypatch):
 
 
 # ═══════════════ ⑥ /graduate 路由递进 ═══════════════
-def test_graduate_route_threads_bank_scope(monkeypatch):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    import ducky.routes_v8 as routes_v8
-
-    mem = _FakeMem(_seed_items())
-    monkeypatch.setattr(routes_v8, "get_memory", lambda: mem)
-
-    app = FastAPI()
-    routes_v8.register_v8_routes(app)
-    client = TestClient(app)
-
-    # 命名域 dry_run：filters 下推 + 候选只有本域
-    resp = client.post("/graduate", params={
-        "user_id": "user_x", "bank_id": "bank_a", "dry_run": "true",
-    })
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "ok" and body["total_groups"] == 1
-    assert body["groups"][0]["count"] == 3
-    assert mem.get_all_filters[-1] == {"user_id": "user_x", "bank_id": "bank_a"}
-
-    # 不传 bank_id = default 域：v19 filters 形状 + 只见存量
-    resp = client.post("/graduate", params={
-        "user_id": "user_x", "dry_run": "true",
-    })
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total_groups"] == 1 and body["groups"][0]["count"] == 3
-    assert all(sid.startswith("legacy_") for sid in body["groups"][0]["sample_ids"])
-    assert mem.get_all_filters[-1] == {"user_id": "user_x"}
-
-    # 非法 bank_id：包成 error dict，不抛 500，且没发出任何取数/写删
-    n_calls = len(mem.get_all_filters)
-    resp = client.post("/graduate", params={
-        "user_id": "user_x", "bank_id": "../etc", "dry_run": "true",
-    })
-    assert resp.status_code == 200, "非法作用域必须包成 error dict 不抛 500"
-    assert resp.json()["status"] == "error"
-    assert len(mem.get_all_filters) == n_calls and mem.deleted == []
 
 
 # ═══════════════ ⑦ Persona 统计面 opt-in 作用域 ═══════════════
@@ -285,37 +244,3 @@ def _insert_fact(key, value, user, bank, category="项目"):
     conn.commit()
     conn.close()
 
-
-def test_persona_count_scoped_optin():
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from ducky.hot.legacy_routes import register_legacy_routes
-
-    _insert_fact("a1", "甲库项目事实1", "u1", "bank_a")
-    _insert_fact("a2", "甲库项目事实2", "u1", "bank_a")
-    _insert_fact("b1", "乙库项目事实1", "u1", "bank_b")
-    _insert_fact("d1", "存量项目事实1", "default", "default")
-
-    app = FastAPI()
-    register_legacy_routes(app)
-    client = TestClient(app)
-
-    # 不传作用域 = v19 管理员全量视图（存量零改动）
-    r_all = client.get("/persona")
-    assert r_all.status_code == 200
-    assert r_all.json()["facts_count"] == 4
-
-    # 传作用域：只数本域——乙库/存量不许灌进甲库的画像计数
-    r_a = client.get("/persona", params={"user_id": "u1", "bank_id": "bank_a"})
-    assert r_a.json()["facts_count"] == 2, \
-        "甲库画像计数不等于 2——统计面跨库泄漏没堵住"
-    r_b = client.get("/persona", params={"user_id": "u1", "bank_id": "bank_b"})
-    assert r_b.json()["facts_count"] == 1
-
-    # POST /persona/refresh（Form 参数）同样递进作用域
-    r_ref = client.post("/persona/refresh",
-                        data={"name": "user", "user_id": "u1", "bank_id": "bank_a"})
-    assert r_ref.status_code == 200
-    assert r_ref.json()["facts_count"] == 2, \
-        "/persona/refresh 没把 Form 作用域递进 _refresh_persona_inline"

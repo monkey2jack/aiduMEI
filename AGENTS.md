@@ -8,7 +8,7 @@ aiduMEI is a self-hosted long-term memory and wisdom engine for AI agents. It st
 |---|---|---|---|
 | Lowest footprint | `AIDUMEI_ENGINE_MODE=cloud` | Cloud LLM + embedding keys | No local model; during an outage recall is honestly `degraded` |
 | Default resilience | `AIDUMEI_ENGINE_MODE=auto` | Cloud keys + `pip install .[local-embed]` + model fetch | Cloud-first, automatic local fallback and recovery |
-| Fully local | `AIDUMEI_ENGINE_MODE=local` | Local embed dependencies and model; no API keys | Zero cloud tokens and zero outbound model calls |
+| Fully local | `AIDUMEI_ENGINE_MODE=local` | Local embed dependencies and model; no API keys | Zero cloud tokens and zero outbound model calls; uses the native single-SQLite kernel unless `AIDUMEI_MEMORY_KERNEL` says otherwise (raw text + full-text recall, distillation needs an LLM) |
 
 ## One-Line Prompt (canonical)
 

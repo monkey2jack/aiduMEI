@@ -83,7 +83,7 @@ from ducky.hot.legacy import (
 )
 from ducky.mem0_runtime import get_memory
 from ducky.reflect import reflect_background_loop
-from ducky.routes_registry import register_all_routes
+from ducky.routes_registry import UI_ROUTES, register_all_routes
 from ducky.schema_bootstrap import ensure_core_schema
 from ducky.text_fts import _init_text_fts
 from ducky.utils import LOG_DIR
@@ -221,12 +221,11 @@ __all__ = [
 # 注册所有路由（统一入口）
 register_all_routes(app, get_memory, _get_db, _extract_entities)
 
-# ── /api 前缀别名层 ──────────────────────────────────────
-# aiduMEI 控制台前端以 /api/* 为调用根（API.base = '/api'）。
-# 这里挂一个子应用，复用同一套路由，让 /api/stats、/api/config 等
-# 直接命中扁平路由，无需改前端。
-_api_alias = FastAPI(title="aiduMEI /api alias")
-register_all_routes(_api_alias, get_memory, _get_db, _extract_entities)
+# ── /api 子应用（控制台 UI）──────────────────────────────
+# 前端以 /api/* 为调用根（API.base = '/api'）。f0.6+++ WP2：子应用只注册
+# UI 实际调用的端点（UI_ROUTES），不再整表镜像扁平路由。
+_api_alias = FastAPI(title="aiduMEI /api (console)")
+register_all_routes(_api_alias, get_memory, _get_db, _extract_entities, only=UI_ROUTES)
 app.mount("/api", _api_alias)
 
 # ── 统一鉴权门禁（🔴P0-1 v19.4.1 鉴权贯通）──────────────────────────────
@@ -279,12 +278,9 @@ _DOC_PATHS = frozenset({
 # 一律留在门禁后，不进本集合。
 _ALWAYS_PUBLIC_PATHS = frozenset({
     "/", "/ui",
-    "/login", "/api/login",
-    "/login/hint", "/api/login/hint",
-    "/logout", "/api/logout",
+    "/api/login", "/api/login/hint",
     "/health", "/api/health",
-    "/livez", "/api/livez",
-    "/readyz", "/api/readyz",
+    "/livez", "/readyz",
 })
 
 
@@ -349,8 +345,6 @@ def _request_authorized(request: Request) -> bool:
             set_request_auth_kind("bearer")
             return True
     return False
-
-
 
 
 def _is_test_client(host: str) -> bool:
@@ -480,8 +474,6 @@ def _trust_proxy_enabled() -> bool:
     return os.environ.get("AIDUMEI_TRUST_PROXY", "").strip().lower() in {
         "1", "true", "yes", "on",
     }
-
-
 
 
 def _enforce_single_process_policy() -> None:
@@ -647,8 +639,6 @@ def _enforce_public_binding_policy() -> None:
     raise RuntimeError(
         f"Fatal Security Policy: binding to '{host}' without any credential is prohibited."
     )
-
-
 
 
 @app.middleware("http")
@@ -1016,16 +1006,6 @@ def _register_login(route_app: FastAPI) -> None:
         logger.info("🚪 UI 登录成功（已签发会话，有效期 %d 秒）", ttl)
         return resp
 
-    @route_app.post("/logout", include_in_schema=False)
-    async def ui_logout(request: Request):
-        """登出：撤销服务端会话并清 cookie（会话可撤销是 cookie 方案的要点）。"""
-        from ducky.security.auth import SESSION_COOKIE_NAME, revoke_session
-
-        token = request.cookies.get(SESSION_COOKIE_NAME, "")
-        revoked = revoke_session(token) if token else False
-        resp = JSONResponse({"success": True, "revoked": revoked})
-        resp.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
-        return resp
 
     @route_app.get("/login/hint", include_in_schema=False)
     async def ui_login_hint():
@@ -1034,8 +1014,7 @@ def _register_login(route_app: FastAPI) -> None:
         return {"hint": None}
 
 
-_register_login(app)
-_register_login(_api_alias)
+_register_login(_api_alias)   # UI 登录只走 /api/login
 
 # 注入版本信息到 health 端点（唯一真相源）
 set_version_info(SERVICE_VERSION, CODENAME, CODENAME_ZH)
@@ -1069,7 +1048,7 @@ def _start_background() -> None:
 
     try:
         get_memory()
-        logger.info("🧠 mem0 单例预热完成")
+        logger.info("🧠 记忆内核预热完成")
     except Exception as exc:
         logger.warning(f"⚠️ mem0 预热失败（主服务仍会启动）: {exc}")
 
@@ -1146,7 +1125,14 @@ def main():
     # or 链保留原语义（新键优先、空串落到旧键），但错误要点名到**真正
     # 提供了这个值的那个 env**，不许张冠李戴。
     from ducky.env_config import int_env as _int_env
-    _port_name, _port_raw = "AIDUMEM_API_PORT", os.environ.get("AIDUMEM_API_PORT")
+    # f0.6+++ WP6：`python api_server.py --port N` 此前被静默忽略（只认 env）。
+    # 命令行优先，缺省再走 env 链。
+    import argparse
+    _cli = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    _cli.add_argument("--port")
+    _port_name, _port_raw = "--port", _cli.parse_known_args(sys.argv[1:])[0].port
+    if not _port_raw:
+        _port_name, _port_raw = "AIDUMEM_API_PORT", os.environ.get("AIDUMEM_API_PORT")
     if not _port_raw:
         _port_name, _port_raw = "MEM0_API_PORT", os.environ.get("MEM0_API_PORT")
     if not _port_raw:

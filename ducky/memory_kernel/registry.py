@@ -46,8 +46,9 @@ def _register_defaults() -> None:
         return
     from ducky.memory_kernel.impl_mem0 import create_mem0_kernel
     register("mem0", create_mem0_kernel, complete=True)
-    from ducky.memory_kernel.base import kernel_not_implemented
-    register("native", kernel_not_implemented("native"), complete=False)
+    from ducky.memory_kernel.impl_native import create_native_kernel, create_shadow_kernel
+    register("native", create_native_kernel, complete=True)
+    register("shadow", create_shadow_kernel, complete=True)
 
 
 _register_defaults()

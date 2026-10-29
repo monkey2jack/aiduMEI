@@ -192,7 +192,7 @@ except Exception as e:
 # ═══════════ 5. aiduMEM Stats ═══════════
 t0 = time.time()
 try:
-    r = requests.get(f"{API_BASE}/stats", params=_probe_scope, timeout=10, headers=_auth_headers())
+    r = requests.get(f"{API_BASE}/api/stats", params=_probe_scope, timeout=10, headers=_auth_headers())
     if r.status_code == 200:
         data = r.json()
         checks["aidumem_stats"] = {"ok": True, "total_memories": data.get("total", 0), "ms": int((time.time()-t0)*1000)}

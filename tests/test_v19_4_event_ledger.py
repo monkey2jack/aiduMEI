@@ -161,9 +161,8 @@ def test_content_hash_stable_and_empty():
 # ─────────────────────────────────────────────────────────────
 
 def test_ledger_hooks_present_in_write_paths():
-    """防误删钩子：三处写入路径必须调用 record_event"""
+    """防误删钩子：写入路径必须调用 record_event（f0.6+++：/facts/add 已移除）"""
     for rel in (
-        os.path.join("ducky", "hot", "legacy_routes.py"),  # /facts/add
         os.path.join("ducky", "wal_engine.py"),            # cascade_delete
         os.path.join("ducky", "tombstone.py"),             # tombstone/restore
     ):

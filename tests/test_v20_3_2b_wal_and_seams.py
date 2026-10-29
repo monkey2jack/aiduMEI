@@ -151,55 +151,6 @@ def test_unresolvable_entries_stay_visible_for_durable_owner(wal_env):
 # P1-5 · MCP×REST 绑定来源
 # ══════════════════════════════════════════════════════════
 
-def test_mcp_session_end_reaches_the_endpoint(tmp_path, monkeypatch):
-    """**P1-5 靶心**：MCP 的 session_end 不许恒 422。"""
-    monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path / "d"))
-    monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "l"))
-    # 全量跑时前序用例可能留下凭据（本轮 P0-1 的负向对照就设了 token）——
-    # 门禁一开，这里拿到的是 401 而不是 422/200，判据就此失真。**先确认世界形态。**
-    for _k in ("AIDUMEM_API_TOKEN", "AIDUMEM_UI_PASSWORD"):
-        monkeypatch.delenv(_k, raising=False)
-    from fastapi.testclient import TestClient
-    from api_server import app
-    c = TestClient(app, raise_server_exceptions=False)
-    body = c.post("/session/end", json={"session_id": "probe"})
-    query = c.post("/session/end", params={"session_id": "probe"})
-    assert query.status_code == 200, "夹具前提破了：query 形态本该通"
-    assert body.status_code == 422, (
-        "端点签名变了（现在能收 body）—— 若确已改成模型入参，请同步改本守卫判据"
-    )
-    # Exercise the actual tool -> HTTP binding -> route -> session store. A
-    # route-only query test missed the MCP tool's omitted owner/bank arguments.
-    import importlib.util
-    import json
-    from pathlib import Path
-    from types import SimpleNamespace
-    import ducky.routes_v8 as routes
-    import ducky.pipeline.memory_persistence as persistence
-    spec = importlib.util.spec_from_file_location(
-        "_scoped_mcp_session", Path(__file__).resolve().parents[1] / "mcp_server.py")
-    tool = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tool)
-    monkeypatch.setattr(tool, "httpx", SimpleNamespace(get=c.get, post=c.post))
-    monkeypatch.setattr(tool, "API_BASE", "http://testserver")
-    monkeypatch.setattr(tool, "_mcp_principal", lambda: "scope-owner")
-    reflected = []
-    monkeypatch.setattr(routes, "_trigger_session_end_reflect",
-                        lambda user, **kw: reflected.append((user, kw["bank_id"])))
-    monkeypatch.setattr(persistence, "_sessions", {})
-    scope = {"user_id": "scope-owner", "bank_id": "scope-bank"}
-    sid = "mcp-scope-lifecycle"
-    assert json.loads(tool.session_start(**scope, session_id=sid))["status"] == "ok"
-    for wrong in ({**scope, "user_id": "other-owner"}, {**scope, "bank_id": "other-bank"}):
-        assert json.loads(tool.session_report(sid, **wrong)).get("status") != "ok"
-        assert json.loads(tool.session_end(sid, **wrong)).get("status") != "ok"
-        assert json.loads(tool.session_report(sid, **scope))["status"] == "ok"
-    assert reflected == []
-    assert json.loads(tool.session_end(sid, **scope))["status"] == "ok"
-    assert reflected == [("scope-owner", "scope-bank")]
-    assert json.loads(tool.session_report(sid, **scope)).get("status") != "ok"
-
-
 def test_no_mcp_tool_sends_query_params_in_the_body():
     """**元守卫**：按 FastAPI 真实依赖图判绑定来源，不比对键名。
 

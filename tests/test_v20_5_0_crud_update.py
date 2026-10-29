@@ -98,7 +98,7 @@ def test_update_endpoint_drives_facts_leg_by_id():
     finally:
         conn.close()
 
-    from ducky.memory_lineage import get_memory_lineage
+    from lineage_reader import get_memory_lineage
     chain = get_memory_lineage(f"fact:{fid}")
     assert [c["version"] for c in chain] == [1, 2]
     assert chain[1]["action"] == "UPDATE"

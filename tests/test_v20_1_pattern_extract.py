@@ -443,3 +443,44 @@ def _set_health_token(monkeypatch):
     token = "test-health-token"
     monkeypatch.setenv("AIDUMEM_API_TOKEN", token)
     return token
+
+
+class TestRetractRelativeDate:
+    """生产实测（2026-10-29，f0.7 P6 部署验收）：带「昨天」的句子写入时按当时锚点落成具体日期键，
+    删除时重算拿不到同一锚点 → pattern_datetime 事实残留原文。撤销改为日期类按「分类 + 原句」比对。"""
+
+    TEXT = "我昨天新买的公路自行车起名叫 RETRACT青鸟"
+
+    def test_relative_date_fact_is_retracted_on_delete(self, facts_db):
+        from ducky.pattern_extract import cascade_pattern_facts
+        res = extract_and_store(self.TEXT, user_id="wpa_rel", bank_id="default",
+                                recorded_at="2026-10-28T23:49:00+00:00")
+        assert res["stored"] >= 1
+        assert facts_db("SELECT 1 FROM facts WHERE fact_value LIKE ? AND user_id=?",
+                        ("%RETRACT青鸟%", "wpa_rel"))
+        out = cascade_pattern_facts(self.TEXT, user_id="wpa_rel", bank_id="default")
+        assert out["removed"] >= 1
+        assert facts_db("SELECT 1 FROM facts WHERE fact_value LIKE ? AND user_id=?",
+                        ("%RETRACT青鸟%", "wpa_rel")) == []
+
+    def test_still_said_keeps_relative_date_fact(self, facts_db):
+        from ducky.pattern_extract import cascade_pattern_facts
+        extract_and_store(self.TEXT, user_id="wpa_rel2", bank_id="default",
+                          recorded_at="2026-10-28T23:49:00+00:00")
+        out = cascade_pattern_facts(self.TEXT, user_id="wpa_rel2", bank_id="default",
+                                    still_said=lambda it: True)
+        assert out["removed"] == 0
+        assert facts_db("SELECT 1 FROM facts WHERE fact_value LIKE ? AND user_id=?",
+                        ("%RETRACT青鸟%", "wpa_rel2"))
+
+    def test_aware_anchor_uses_local_date(self, monkeypatch):
+        import time
+        monkeypatch.setenv("TZ", "Asia/Shanghai")
+        time.tzset()
+        try:
+            items = _by_kind(extract_patterns("昨天交了报告", recorded_at="2026-10-28T23:49:00+00:00"),
+                             "datetime")
+            assert any(it["fact_key"] == "2026-10-28" for it in items)   # 北京 10-29 07:49 的「昨天」
+        finally:
+            monkeypatch.delenv("TZ")
+            time.tzset()

@@ -52,10 +52,8 @@ def app_rig(tmp_path, monkeypatch):
     monkeypatch.setattr(em, "cloud_leg_enabled", lambda *a, **kw: False)
 
     from ducky.hot.add import register_add_routes
-    from ducky.hot.raw_drawer import register_raw_drawer_routes
     app = FastAPI()
     register_add_routes(app)
-    register_raw_drawer_routes(app)
     return TestClient(app), _MemStub
 
 
@@ -92,22 +90,6 @@ def test_add_injection_400_then_clean_retry_is_not_409(app_rig):
     )
     assert r2.status_code == 200, r2.text[:300]
     assert _null_rows(key) == 0, "拒绝路径在 idempotency_keys 留下了 NULL 死键"
-
-
-def test_raw_injection_400_then_clean_retry_is_not_409(app_rig):
-    client, _ = app_rig
-    key = "rel-inj-raw-1"
-    r1 = client.post("/add/raw", json={
-        "content": INJECTION, "user_id": "rel-u2", "idempotency_key": key,
-    })
-    assert r1.status_code == 400
-    r2 = client.post("/add/raw", json={
-        "content": "clean raw retry content 001",
-        "user_id": "rel-u2", "idempotency_key": key,
-    })
-    assert r2.status_code != 409, f"/add/raw 拒绝路径锁键: {r2.text[:200]}"
-    assert r2.status_code == 200, r2.text[:300]
-    assert _null_rows(key) == 0
 
 
 def test_add_503_then_retry_is_not_409(app_rig, monkeypatch):

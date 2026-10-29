@@ -161,19 +161,6 @@ def refresh_project_blocks() -> dict:
     return counts
 
 
-def revision_history(block_key: str, user_id: str, bank_id: str) -> list:
-    scope = make_scope(user_id, bank_id)
-    conn = get_facts_conn()
-    ensure_revision_schema(conn)
-    clause, params = scope_clause(scope)
-    rows = conn.execute(
-        "SELECT id,old_content,new_content,evidence_json,created_at FROM core_memory_revisions "
-        "WHERE block_key=? " + clause + " ORDER BY id DESC LIMIT 50",
-        (block_key, *params),
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def delete_revisions(conn, scope) -> int:
     """Full-text history follows the owner's delete_all contract, atomically."""
     exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "

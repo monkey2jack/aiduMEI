@@ -55,45 +55,23 @@ SCOPE = {"user_id": "first_run", "bank_id": "default"}
 GENERIC = {**SCOPE, "query": "网关端口是多少", "content": "网关端口是 22012",
            "messages": "网关端口是 22012", "memory_id": "probe-id",
            "confirm": True, "dry_run": True}
-SKIP_PREFIXES = ("/docs", "/openapi", "/redoc", "/ui", "/static", "/favicon")
+SKIP_PREFIXES = ("/docs", "/openapi", "/redoc", "/ui", "/static", "/favicon",
+                 "/api/docs", "/api/openapi", "/api/redoc")
 
 # Rev.2：路由表枚举不等于业务逻辑被执行。高风险面必须给**合法请求形状**，
 # 其它路由若被 Pydantic 422 拒绝，单独记 validation_rejected，不准计入 exercised。
 # request spec 的键是 (method, route-template)，值只使用 TestClient.request 接受的参数。
 SPECS = {
     ("POST", "/add"): {"json": {**SCOPE, "messages": "网关端口是 22012", "infer": False}},
-    ("POST", "/add/raw"): {"json": {**SCOPE, "content": "网关端口是 22012", "metadata": {}}},
     ("POST", "/search"): {"json": {**SCOPE, "query": "网关端口是多少", "limit": 3}},
-    ("POST", "/search_trace"): {"json": {**SCOPE, "query": "网关端口是多少", "limit": 3}},
     ("POST", "/delete"): {"json": {**SCOPE, "memory_id": "probe-id"}},
-    ("DELETE", "/delete"): {"params": {**SCOPE, "memory_id": "probe-id"}},
-    ("POST", "/delete_all"): {"json": {**SCOPE, "confirm": True}},
-    ("POST", "/graduate"): {"params": {**SCOPE, "dry_run": True}},
-    ("POST", "/reload"): {},
-    ("POST", "/persona/build"): {"json": {"persona_card": "测试人格", "persona_name": "probe", "persona_key": "probe", "use_llm": False}},
-    ("GET", "/persona/banks"): {"params": {"persona_key": "probe"}},
-    ("GET", "/persona/detail"): {"params": {"bank_id": 1}},
-    ("POST", "/persona/retrieve"): {"json": {"situation": "测试情境", "persona_key": "probe", "bank_id": 1, "k": 1}},
-    ("POST", "/persona/rollback"): {"json": {"persona_key": "probe", "to_version": 1}},
-    ("GET", "/persona/context"): {"params": {"persona_key": "probe", "situation": "测试", "k": 1}},
-    ("GET", "/persona/ai-self"): {"params": SCOPE},
-    ("POST", "/persona/ai-self/add"): {"params": {"category": "general", "key": "probe", "value": "probe", "bank_id": "default"}},
-    ("GET", "/facts"): {"params": SCOPE},
-    ("POST", "/facts/add"): {"params": {**SCOPE, "category": "general", "fact_key": "probe", "fact_value": "probe"}},
-    ("GET", "/facts/search"): {"params": {**SCOPE, "query": "probe", "top_k": 3}},
-    ("GET", "/facts/entities"): {"params": {**SCOPE, "entity": "probe"}},
-    ("GET", "/facts/related"): {"params": {**SCOPE, "entity": "probe"}},
-    ("GET", "/facts/reason"): {"params": {**SCOPE, "entities": "probe_a,probe_b"}},
-    ("GET", "/facts/entities/list"): {"params": {**SCOPE, "limit": 3}},
-    ("POST", "/facts/feedback"): {"params": {**SCOPE, "fact_id": 1, "helpful": True}},
-    ("POST", "/facts/tags/generate"): {"params": {"fact_id": 1}},
-    ("POST", "/facts/preference"): {"params": {**SCOPE, "fact_id": 1, "score": 0.5}},
-    ("POST", "/facts/expire"): {"params": {**SCOPE, "fact_id": 1, "expires_in_hours": 24}},
-    ("GET", "/facts/delta"): {"params": {**SCOPE, "since": "2026-01-01T00:00:00Z"}},
-    ("POST", "/facts/compress"): {"data": {"text": "probe\nerror probe"}},
-    ("POST", "/facts/inject-context"): {"json": {**SCOPE, "query": "probe", "k": 1}},
-    ("GET", "/code/graph"): {"params": {}},
-    ("POST", "/code/impact"): {"json": {"changed_files": ["ducky/mem0_runtime.py"]}},
+    ("POST", "/update"): {"json": {**SCOPE, "memory_id": "probe-id", "content": "网关端口是 22013"}},
+    # f0.6+++ WP2：控制台路由只挂在 /api 下（扫描已下钻 /api 挂载）
+    ("POST", "/api/search_trace"): {"json": {**SCOPE, "query": "网关端口是多少", "limit": 3}},
+    ("POST", "/api/delete"): {"json": {**SCOPE, "memory_id": "probe-id"}},
+    ("POST", "/api/reload"): {},
+    ("GET", "/api/facts"): {"params": SCOPE},
+    ("GET", "/api/facts/entities/list"): {"params": {**SCOPE, "limit": 3}},
 }
 HIGH_RISK = set(SPECS)
 
@@ -105,8 +83,15 @@ def materialize(path):
 rows = []
 seen = set()
 counts = {"exercised": 0, "validation_rejected": 0, "skipped": 0}
-for r in getattr(app, "routes", []):
-    path = getattr(r, "path", "")
+def _walk(routes, prefix=""):
+    # f0.6+++ WP2：控制台路由只在 /api 挂载里 —— 下钻 Mount，否则射程只剩 15 条。
+    for r in routes:
+        sub = getattr(getattr(r, "app", None), "routes", None)
+        if sub is not None and not hasattr(r, "methods"):
+            yield from _walk(sub, prefix + getattr(r, "path", ""))
+            continue
+        yield prefix + getattr(r, "path", ""), r
+for path, r in _walk(getattr(app, "routes", [])):
     for method in sorted(getattr(r, "methods", []) or []):
         key = (method, path)
         if method in ("HEAD", "OPTIONS") or key in seen:
@@ -227,8 +212,8 @@ def test_bare_environment_is_really_bare(sweep_result):
     routes = sweep_result["routes"]
     hits = sweep_result["hits"]
     world = sweep_result["world"]
-    assert routes > 100, f"路由数异常少（{routes}），扫描没生效"
-    assert hits > 60, f"实际分类 {hits} 条，太少，判据没有射程"
+    assert routes > 40, f"路由数异常少（{routes}），扫描没生效"
+    assert hits > 30, f"实际分类 {hits} 条，太少，判据没有射程"
     counts = sweep_result["counts"]
     assert sum(counts.values()) == hits, f"分类计数没有覆盖全部请求：{counts} / {hits}"
     assert counts["validation_rejected"] > 0, "没有单列 422；扫描可能又把验证拒绝算成已执行"
@@ -258,7 +243,7 @@ def test_no_route_returns_500_when_backend_is_not_configured(sweep_result):
 def test_503_details_stay_actionable(sweep_result):
     """503 不许退化成裸异常。
 
-    本仓的 503 正文带四要素：缺什么 / 去哪配 / 怎么查 / 零凭据替代路径。
+    本仓的 503 正文带三要素：缺什么 / 去哪配 / 怎么查（f0.6+++ 起 /add/raw 已移除）。
     这是它比同类项目做得好的地方，也是**必须守住**的地方 —— 一旦有人把
     `str(e)` 直接塞进 detail，这条会红。
     """
@@ -269,20 +254,16 @@ def test_503_details_stay_actionable(sweep_result):
         assert "mem0_config_local" in txt or "未就绪" in txt, (
             f"{m} {u} 的 503 没告诉调用方缺什么：{txt[:120]}")
         assert "/health" in txt, f"{m} {u} 的 503 没告诉调用方怎么查：{txt[:160]}"
-        assert "/add/raw" in txt, f"{m} {u} 的 503 没给零凭据替代路径：{txt[:160]}"
         assert "Traceback" not in txt, f"{m} {u} 把堆栈甩给了调用方"
-def test_single_and_bulk_delete_agree_when_unconfigured(sweep_result):
-    """两条删除链共用同一套三态契约，同一个环境必须给同一个判决。
+def test_single_delete_is_committed_when_unconfigured(sweep_result):
+    """P0-1 靶心（f0.6+++ 收窄）：零凭据下单条删除不许回 500 failed。
 
-    这是 P0-1 的靶心：修复前 `/delete` 回 500 failed、`/delete_all` 回 200 committed。
-    同一条判据在同一个文件的两个函数里长出了两种行为 —— 相隔 426 行。
+    批量删除（/delete_all、DELETE /delete）已随路由收敛移除，只剩 POST /delete。
     """
     rows = sweep_result["rows"]
-    single = [r for r in rows if r[1] == "/delete" and r[0] == "DELETE"]
-    bulk = [r for r in rows if r[1] == "/delete_all"]
-    assert single and bulk, "没扫到删除路由，夹具变了"
+    single = [r for r in rows if r[1] == "/delete" and r[0] == "POST"]
+    assert single, "没扫到删除路由，夹具变了"
     assert single[0][2] == 200, f"零凭据下单条删除回 {single[0][2]}：{single[0][3][:120]}"
-    assert bulk[0][2] == 200, f"零凭据下全量删除回 {bulk[0][2]}：{bulk[0][3][:120]}"
 
 
 def test_high_risk_routes_reach_business_logic(sweep_result):

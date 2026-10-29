@@ -3,7 +3,7 @@
 四道判据,全部带负向对照(守卫判据纪律):
   1. 默认内核=mem0(契约现状);
   2. 未知内核名 fail-fast(绝不静默回退——换引擎是部署事故必须响);
-  3. planned 内核(native)请求时如实抛 KernelNotImplemented(不回退);
+  3. 未完工内核请求时如实抛 KernelNotImplemented(不回退);native/shadow 已就绪(WP3a);
   4. ducky/ 内禁止绕过 memory_kernel 直 import mem0(白名单:mem0_runtime
      本体+impl_mem0 实现;AST 盲扫,不字符串 grep)。
 """
@@ -31,13 +31,15 @@ _WHITELIST = {
 }
 
 
-def test_default_kernel_is_mem0(monkeypatch):
+def test_default_kernel_is_native(monkeypatch):
+    """f0.7 WP3b:默认内核改 native(全新部署、无 mem0 旧数据)。"""
     monkeypatch.delenv("AIDUMEI_MEMORY_KERNEL", raising=False)
     from ducky import memory_kernel
-    assert memory_kernel.configured_kernel() == "mem0"
-    # 负向对照:设了非默认值时确实生效(证明上一条不是写死的永真)
-    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "native")
+    monkeypatch.setattr(memory_kernel, "_legacy_mem0_unmigrated", lambda: False)
     assert memory_kernel.configured_kernel() == "native"
+    # 负向对照:设了非默认值时确实生效(证明上一条不是写死的永真)
+    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")
+    assert memory_kernel.configured_kernel() == "mem0"
 
 
 def test_unknown_kernel_fails_fast(monkeypatch):
@@ -50,15 +52,19 @@ def test_unknown_kernel_fails_fast(monkeypatch):
     memory_kernel.configured_kernel()  # 不 raise 即可
 
 
-def test_planned_kernel_raises_not_implemented(monkeypatch):
-    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "native")
+def test_registry_lists_native_and_shadow_ready():
+    """f0.6+++ WP3a:native/shadow 已实现;KernelNotImplemented 仍是未完工实现的出口。"""
     from ducky import memory_kernel
+    from ducky.memory_kernel import registry
     from ducky.memory_kernel.base import KernelNotImplemented
-    with pytest.raises(KernelNotImplemented):
-        memory_kernel.get_memory()
-    # 注册表面如实:native 必须显示 planned 而非 ready
     table = memory_kernel.available_kernels()
-    assert table.get("mem0") == "ready" and table.get("native") == "planned"
+    assert table.get("mem0") == table.get("native") == table.get("shadow") == "ready"
+    registry.register("probe-planned", lambda: None, complete=False)
+    try:
+        with pytest.raises(KernelNotImplemented):
+            registry.get_kernel_implementation("probe-planned")
+    finally:
+        registry._IMPLS.pop("probe-planned", None)
 
 
 def test_no_mem0_import_bypass_outside_whitelist():
@@ -76,7 +82,7 @@ def test_no_mem0_import_bypass_outside_whitelist():
     ducky_dir = _ROOT / "ducky"
     for py in sorted(ducky_dir.rglob("*.py")):
         rel = py.relative_to(ducky_dir).as_posix()
-        if rel in _WHITELIST or rel.startswith("memory_kernel"):
+        if rel in _WHITELIST:          # f0.7 P2-2(外审 muse P2-03):不再整目录跳过 memory_kernel/
             continue
         tree = ast.parse(py.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

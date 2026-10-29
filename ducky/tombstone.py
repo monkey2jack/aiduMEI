@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -172,8 +173,8 @@ def _capture_fts_rows(memory_id, user_id, bank_id=DEFAULT_BANK_ID):
         conn.close()
 
 
-def capture_verbatim_rows(memory_id, scope, content=""):
-    """Exact same id/hash predicate as the verbatim delete entry points."""
+def capture_verbatim_rows(memory_id, scope, content="", turn_ids=None):
+    """Exact same id/hash predicate as the verbatim delete entry points; turn_ids narrows to the claimed rows."""
     from ducky.verbatim_vault import _content_hash
     conn = get_facts_conn()
     try:
@@ -184,13 +185,22 @@ def capture_verbatim_rows(memory_id, scope, content=""):
             if not raw.isdigit():
                 return []
             predicate, params = "id=?", (int(raw),)
+        elif turn_ids is not None:       # 认领清单是具体行号（含多条消息拼成的记忆的逐条原文），按行号取
+            claim = sorted({int(i) for i in turn_ids})
+            if not claim:
+                return []
+            predicate, params = f"id IN ({','.join('?' * len(claim))})", tuple(claim)
         elif content.strip():
             predicate, params = "content_hash=?", (_content_hash(content.strip()),)
         else:
             return []
-        return [dict(row) for row in conn.execute(
+        rows = [dict(row) for row in conn.execute(
             "SELECT * FROM verbatim_turns WHERE user_id=? AND bank_id=? AND " + predicate,
             (scope.user_id, scope.bank_id, *params)).fetchall()]
+        if turn_ids is not None:
+            claim = {int(i) for i in turn_ids}
+            rows = [r for r in rows if int(r["id"]) in claim]
+        return rows
     finally:
         conn.close()
 
@@ -306,7 +316,9 @@ def _capture_vector_payload(memory_id: str, scope) -> dict:
         return {}
     try:
         from ducky.mem0_runtime import get_memory
-        point = get_memory().vector_store.get(vector_id=str(memory_id))
+        _vs = get_memory().vector_store
+        _skw = {"user_id": scope.user_id, "bank_id": scope.bank_id} if getattr(_vs, "is_native", False) else {}
+        point = _vs.get(vector_id=str(memory_id), **_skw)
     except Exception as exc:
         from ducky.mem0_runtime import Mem0NotConfiguredError
         if isinstance(exc, Mem0NotConfiguredError):
@@ -339,7 +351,9 @@ def _capture_raw_vectors(memory_id, scope):
         raise SnapshotIncomplete("raw vector enumeration unavailable")
     out = {}
     for mid in _vector_ids_by_content_hash(items, scope.bank_id, raw_hash):
-        point = mem.vector_store.get(vector_id=mid)
+        _skw = ({"user_id": scope.user_id, "bank_id": scope.bank_id}
+                if getattr(mem.vector_store, "is_native", False) else {})
+        point = mem.vector_store.get(vector_id=mid, **_skw)
         payload = _point_payload(point)
         if not payload or not _payload_in_scope(payload, scope):
             raise SnapshotIncomplete("raw vector payload/ownership unavailable")
@@ -356,8 +370,13 @@ def snapshot_before_delete(
     actor: str = "system",
     bank_id: str = DEFAULT_BANK_ID,
     *, strict: bool = False,
+    verbatim_text: str = "",
+    verbatim_turn_ids: list | None = None,
 ) -> int | None:
     """删除前把一条记忆的全文 + 结构化行 + 理由快照进 tombstones 表。
+
+    verbatim_text / verbatim_turn_ids：单删原文层的认领结果（wal_engine._verbatim_claim），
+    快照与实际删除认领同一批原文行。
 
     返回 tombstone_id；任何层读取失败返回 None，strict=True 时抛 SnapshotIncomplete。
     由 cascade_delete_memory 在物理删除前调用。
@@ -374,12 +393,17 @@ def snapshot_before_delete(
         fts_content = (fts_rows[0].get("content", "") if fts_rows else "") or _capture_verbatim_content(
             memory_id, scope.user_id, scope.bank_id
         )
-        verbatim_rows = capture_verbatim_rows(memory_id, scope, fts_content or (facts_row or {}).get("fact_value", ""))
         raw_vectors = _capture_raw_vectors(memory_id, scope)
         vector_payload = _capture_vector_payload(memory_id, scope)
         if raw_vectors:
             vector_payload = next(iter(raw_vectors.values()))
         vector_text = str(vector_payload.get("data") or "").strip()
+        # f0.7 复核（外审 haiku N1）：native 档不写 text_fts/facts 正文，原文行定位要退到内核正文；
+        # 认领规则（haiku N3）由调用方传入，快照与实际删除认领的是同一批原文行。
+        verbatim_rows = capture_verbatim_rows(
+            memory_id, scope,
+            fts_content or (facts_row or {}).get("fact_value", "") or verbatim_text or vector_text,
+            turn_ids=verbatim_turn_ids)
 
         # 至少抓到一样东西才值得留快照；三者皆空说明这条记忆本就不在结构化仓里
         # （f0.3：向量点本身也算——FTS 索引缺腿的记忆照样留得住快照）
@@ -539,16 +563,21 @@ def _restore_cloud_point(mem, target_id: str, content: str, payload: dict, scope
     """Upsert the point with its ORIGINAL id through the service's own
     embedder + vector store (the same insert mem0 and core-memory use).
     Raises on backend failure; the caller turns that into a retryable status."""
-    existing = mem.vector_store.get(vector_id=target_id)
+    _native = getattr(mem.vector_store, "is_native", False)
+    _skw = {"user_id": scope.user_id, "bank_id": scope.bank_id} if _native else {}   # f0.7 P0-2
+    existing = mem.vector_store.get(vector_id=target_id, **_skw)
     if existing is not None:
         # Idempotent: a previous (partial) restore or a live point.  Never
         # overwrite a point that belongs to another scope.
         if not _payload_in_scope(_point_payload(existing), scope):
             return "failed:id_owned_by_another_scope"
         return "already_present"
-    vector = mem.embedding_model.embed(content, "add")
+    if getattr(mem.vector_store, "is_native", False):
+        vector = mem._embed(content, "add")   # native:嵌入失败照样落正文(FTS 可召回),与 /add 同口径
+    else:
+        vector = mem.embedding_model.embed(content, "add")
     mem.vector_store.insert(vectors=[vector], payloads=[payload], ids=[target_id])
-    if mem.vector_store.get(vector_id=target_id) is None:
+    if mem.vector_store.get(vector_id=target_id, **_skw) is None:
         return "failed:not_readable_after_insert"
     return "restored"
 
@@ -573,6 +602,11 @@ def _restore_aux_layers(mem, target_id: str, content: str, scope) -> dict:
     except (ImportError, sqlite3.Error, ValueError, TypeError, RuntimeError,
             AttributeError) as exc:
         out["memory_type"] = f"failed:{type(exc).__name__}"
+    if hasattr(mem, "restore_copies"):          # f0.7 P5 自查:native 连带清掉的原文副本一并放回
+        try:
+            out["native_copies"] = mem.restore_copies(target_id, user_id=scope.user_id, bank_id=scope.bank_id)
+        except (sqlite3.Error, ValueError) as exc:
+            out["native_copies"] = f"failed:{type(exc).__name__}"
     from ducky.mem0_runtime import register_salience_for_add
     register_salience_for_add({"results": [{"id": target_id, "memory": content}]},
                               user_id=scope.user_id, bank_id=scope.bank_id)
@@ -626,7 +660,10 @@ def _restore_vector_layers(row, content: str, scope) -> dict:
     from ducky.engine_mode import cloud_leg_enabled, local_leg_enabled
     payload = _restore_payload(row, content, scope, _load_vector_snapshot(row), _now_iso())
     mem = None
-    if cloud_leg_enabled():
+    from ducky.mem0_runtime import native_kernel_active
+    # f0.7 WP3b（实验机无 mem0 从零实测）：native 内核的 memory.db 是记忆真源，本地档也必须恢复进去；
+    # 之前只看云腿，本地档恢复只回了 FTS/原文，记忆本体没回来（native 嵌入失败照样落正文，FTS 可召回）。
+    if cloud_leg_enabled() or native_kernel_active():
         out["required"] = True
         try:
             from ducky.mem0_runtime import get_memory
@@ -640,7 +677,7 @@ def _restore_vector_layers(row, content: str, scope) -> dict:
         out["point_verified"] = out["ok"]
     else:
         out["layers"]["vector"] = "skipped:engine_mode_local"
-    if local_leg_enabled():
+    if local_leg_enabled() and not native_kernel_active():   # native 无本地备胎索引
         out["required"] = True
         status = _restore_local_point(target_id, content, payload)
         out["layers"]["local_vector"] = status
@@ -772,6 +809,13 @@ def restore_tombstone(
             logger.warning("🪦 tombstone #%s 恢复不完整（%s），保留可重试状态", tombstone_id, result["detail"])
             return result
 
+        if not restored_cols:
+            # P5 自审 S-7：快照已过期擦除（或本就无内容）——不盖 restored_at，列表里不许显示成「已恢复」
+            conn.commit()
+            result.update(restored=False, status="expired", target_id=target_id,
+                          detail="快照已过期擦除，无可恢复内容")
+            return result
+
         # 4. 标记已恢复（只有全部必需组件成功才走到这里）
         conn.execute(
             "UPDATE tombstones SET restored_at=? WHERE tombstone_id=?",
@@ -829,25 +873,53 @@ def list_tombstones(
         return []
 
 
+# f0.7 复核（外审 sesame N-1）：到期要擦的不只 content_snapshot —— facts/vector/layer 快照里
+# 同样有原文（verbatim_rows / fts_rows / vector_content）。到期后只留哈希与元数据。
+_SNAPSHOT_TEXT_COLUMNS = ("content_snapshot", "facts_snapshot", "vector_snapshot", "layer_snapshot")
+
+
+def _erase_expired_in(conn) -> int:
+    cols = [c for c in _SNAPSHOT_TEXT_COLUMNS
+            if c in {r[1] for r in conn.execute("PRAGMA table_info(tombstones)")}]
+    if not cols or "snapshot_expires_at" not in {r[1] for r in conn.execute("PRAGMA table_info(tombstones)")}:
+        return 0
+    sets = ", ".join(f"{c} = NULL" for c in cols)
+    any_left = " OR ".join(f"{c} IS NOT NULL" for c in cols)
+    return conn.execute(f"UPDATE tombstones SET {sets} WHERE ({any_left})"
+                        " AND snapshot_expires_at IS NOT NULL AND snapshot_expires_at < ?",
+                        (int(time.time()),)).rowcount or 0
+
+
+def _erase_expired_native_snapshots() -> int:
+    """f0.7 P0-3：native 内核 memory.db 里的墓碑同受 TTL 约束（此前没有过期列，永久留原文）。"""
+    import sqlite3 as _sq
+    from ducky.memory_kernel.impl_native import default_db_path
+    path = default_db_path()
+    if not os.path.exists(path):
+        return 0
+    c = _sq.connect(path, timeout=15)
+    try:
+        n = _erase_expired_in(c)
+        c.commit()
+        return n
+    finally:
+        c.close()
+
+
 def erase_expired_snapshots() -> dict:
-    """f0.6 W-19：擦除过期墓碑快照的正文，只留哈希与元数据。
+    """f0.6 W-19：擦除过期墓碑快照的正文（content/facts/vector/layer 四列），只留哈希与元数据。
 
     定期任务/运维手动调用。到期判定：snapshot_expires_at IS NOT NULL AND
     < now。存量 NULL 行（旧「不自动清理」语义）不动。返回擦除条数供巡检。
     """
     conn = get_facts_conn()
     try:
-        cur = conn.execute(
-            "UPDATE tombstones SET content_snapshot = NULL "
-            "WHERE content_snapshot IS NOT NULL "
-            "AND snapshot_expires_at IS NOT NULL AND snapshot_expires_at < ?",
-            (int(time.time()),),
-        )
+        n = _erase_expired_in(conn)
         conn.commit()
-        n = cur.rowcount or 0
-        if n:
-            logger.info("🪦 已擦除 %d 条过期墓碑快照正文（TTL 到期，哈希与元数据保留）", n)
-        return {"erased": n}
+        n_native = _erase_expired_native_snapshots()
+        if n or n_native:
+            logger.info("🪦 已擦除 %d 条过期墓碑快照正文（TTL 到期，哈希与元数据保留）", n + n_native)
+        return {"erased": n, "erased_native": n_native}
     except Exception as exc:
         conn.rollback()
         logger.warning("过期快照擦除失败: %s", exc)

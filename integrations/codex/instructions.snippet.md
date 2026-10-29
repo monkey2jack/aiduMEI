@@ -3,7 +3,7 @@
 
 ## 长期记忆（aiduMEI）
 
-你接入了 aiduMEI 长期记忆系统（MCP server `aidumei`，41 个工具）。请遵守：
+你接入了 aiduMEI 长期记忆系统（MCP server `aidumei`，6 个工具）。请遵守：
 
 ### 何时检索（mem_search / mem_search_deep）
 - 用户提到人名、昵称、项目代号、历史决策、个人偏好时，**先查记忆再回答**。

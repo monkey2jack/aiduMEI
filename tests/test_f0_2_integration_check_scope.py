@@ -22,9 +22,12 @@ def _load():
     return module
 
 
-@pytest.mark.parametrize("broken", ["", "core_wrong_scope", "session_wrong_scope",
-                                    "end_error", "add_accepted"])
+@pytest.mark.parametrize("broken", ["", "core_wrong_scope", "delete_error",
+                                    "add_accepted", "search_missing"])
 def test_lifecycle_check_proves_query_scope_and_business_status(monkeypatch, capsys, broken):
+    """f0.6+++ WP2: the lifecycle is /health → /add → /search → GET
+    /api/core-memory → /delete (per hit); /gate, /add/raw, CoreMemory inject,
+    /session/start|end and /delete_all are gone."""
     script = _load()
     monkeypatch.setattr(sys, "argv", ["agent_integration_check.py", "--tenant", "agent-integration-scope-probe"])
     called = []
@@ -39,28 +42,23 @@ def test_lifecycle_check_proves_query_scope_and_business_status(monkeypatch, cap
             if broken == "add_accepted":
                 return 200, {"status": "accepted", "durable": False}
             return 200, {"status": "ok"}
-        if endpoint == "/gate":
-            return 200, {"needs_memory": True, "reason": "memory_needed"}
         if endpoint == "/search":
             if not isinstance(body, dict) or body.get("caller_user_id") != body.get("user_id"):
                 return 403, {"detail": "bearer caller required"}
-            return 200, {"status": "ok", "recall_verdict": "found", "results": []}
-        if endpoint == "/add/raw":
-            return 200, {"status": "ok"}
-        if endpoint == "/api/core-memory/inject":
-            owner = "default" if broken == "core_wrong_scope" else query.get("user_id", "default")
+            if broken == "search_missing":
+                return 200, {"status": "ok", "recall_verdict": "not_found", "results": []}
+            return 200, {"status": "ok", "recall_verdict": "found",
+                         "results": [{"id": "m-1", "memory": f"{body['query']} is the integration handshake."}]}
+        if endpoint == "/api/core-memory":
+            assert method == "GET"
+            owner = "default" if broken == "core_wrong_scope" else body.get("user_id", "default")
             return 200, {"status": "ok", "user_id": owner,
-                         "bank_id": query.get("bank_id", "default"), "context": ""}
-        if endpoint == "/session/start":
-            owner = "default" if broken == "session_wrong_scope" else query.get("user_id", "default")
-            return 200, {"status": "ok", "session_id": "session-1", "user_id": owner,
-                         "bank_id": query.get("bank_id", "default")}
-        if endpoint == "/session/end":
-            status = "error" if broken == "end_error" else "ok"
-            return 200, {"status": status, "session_id": "session-1",
-                         "user_id": query.get("user_id", "default"),
-                         "bank_id": query.get("bank_id", "default")}
-        if endpoint == "/delete_all":
+                         "bank_id": body.get("bank_id", "default"), "blocks": {}}
+        if endpoint == "/delete":
+            if body.get("caller_user_id") != body.get("user_id"):
+                return 403, {"detail": "bearer caller required"}
+            if broken == "delete_error":
+                return 500, {"status": "failed"}
             return 200, {"status": "committed"}
         raise AssertionError(endpoint)
 
@@ -75,7 +73,8 @@ def test_lifecycle_check_proves_query_scope_and_business_status(monkeypatch, cap
         assert add_body["metadata"]["force_sync"] is True
         search_body = next(body for ep, _, body in called if ep == "/search")
         assert search_body["caller_user_id"] == search_body["user_id"] == "agent-integration-scope-probe"
-        for endpoint in ("/api/core-memory/inject", "/session/start", "/session/end"):
-            q = next(q for ep, q, _ in called if ep == endpoint)
-            assert q["user_id"] == "agent-integration-scope-probe"
-            assert q["bank_id"] == "default"
+        core = next(body for ep, _, body in called if ep == "/api/core-memory")
+        assert core["user_id"] == core["caller_user_id"] == "agent-integration-scope-probe"
+        assert core["bank_id"] == "default"
+        deleted = [body["memory_id"] for ep, _, body in called if ep == "/delete"]
+        assert deleted == ["m-1"]

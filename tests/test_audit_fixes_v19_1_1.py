@@ -41,27 +41,6 @@ def test_update_request_keeps_legacy_data():
     assert content == "新的记忆内容"
 
 
-# ── P0-3: delete_all consumes a body model ────────────────────────────
-def test_delete_all_uses_body_model():
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from ducky.api_models import DeleteAllRequest
-
-    app = FastAPI()
-    seen = {}
-
-    @app.post("/delete_all")
-    def delete_all(req: DeleteAllRequest):
-        seen["user_id"] = req.user_id
-        return {"status": "ok"}
-
-    client = TestClient(app)
-    r = client.post("/delete_all", json={"user_id": "agentA"})
-    assert r.status_code == 200
-    assert seen["user_id"] == "agentA", "body 里的 user_id 必须被读到"
-
-
 # ── P2-1: SearchRequest top_k is explicit and search uses it ──────────
 def test_search_request_accepts_top_k():
     from ducky.api_models import SearchRequest

@@ -135,59 +135,6 @@ def _endpoint(path: str) -> str:
 # H-2: distill does not depend on /session/end
 # ---------------------------------------------------------------------------
 
-def test_session_evicted_by_the_real_server_table_is_still_distilled(plugin, monkeypatch):
-    """Reproduce the eviction with ducky's own session table, then finish."""
-    from ducky.pipeline import memory_persistence as mp
-
-    monkeypatch.setattr(mp, "_sessions", {})
-    order = []
-    stored = []
-
-    def request(method, path, **kwargs):
-        endpoint, params = _endpoint(path), _qs(path)
-        order.append(endpoint)
-        if endpoint == "/session/start":
-            return {"status": "ok", **mp.session_start(
-                params["user_id"], bank_id=params["bank_id"],
-                session_id=params["session_id"])}
-        if endpoint == "/session/end":
-            return mp.session_end(params["session_id"], user_id=params["user_id"],
-                                  bank_id=params["bank_id"])
-        if endpoint == "/session/distill":
-            assert params["session_id"].startswith("hermes_seg_")
-            return {"status": "ok", "summary": "The long session decided the rollout.",
-                    "user_id": "alice", "bank_id": "work", "metadata": {"source": "distill"}}
-        if endpoint == "/add":
-            if kwargs["body"]["messages"].startswith("The long session"):
-                stored.append(kwargs["body"])
-            return {"status": "ok", "durable": True}
-        raise AssertionError(path)
-
-    p = plugin.AiduMemProvider({"user_id": "alice", "bank_id": "work"})
-    p._spawn = lambda fn, name: fn()
-    p._client.try_request = request
-    p.initialize("long-hermes-session")
-    assert "long-hermes-session" in mp._sessions
-    for turn in range(3):
-        p.sync_turn(f"substantive turn number {turn}", "reply", session_id="long-hermes-session")
-
-    # 31 minutes without a /session/search, then any other client starts a
-    # session: the server evicts ours (the plugin never refreshes last_active).
-    mp._sessions["long-hermes-session"]["last_active"] -= mp.SESSION_TTL + 60
-    mp.session_start("bob", bank_id="default", session_id="another-bot")
-    assert "long-hermes-session" not in mp._sessions
-
-    p.on_session_end([])
-    assert order[-3:] == ["/session/end", "/session/distill", "/add"]
-    assert len(stored) == 1
-    assert stored[0]["metadata"]["force_sync"] is True
-    assert stored[0]["metadata"]["session_id"].startswith("distill:hermes_seg_")
-    assert "long-hermes-session" in p._completed_sessions
-    # Generation dedupe still holds after a failed end.
-    p.on_session_end([])
-    assert order.count("/session/distill") == 1
-
-
 @pytest.mark.parametrize("end_answer", [
     {"status": "ok"},                                   # control: the path that always worked
     {"status": "error", "detail": "Session not found"},

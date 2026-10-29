@@ -78,36 +78,6 @@ def _fresh_db():
     yield
 
 
-def test_memory_types_same_ref_isolated_by_user_and_bank():
-    from ducky.memory_types import (
-        classify_and_record,
-        get_batch_memory_types,
-        get_memory_type,
-        list_types,
-        reset_all_types,
-    )
-
-    classify_and_record("same-id", "用户偏好 Python", user_id="alice", bank_id="work")
-    classify_and_record("same-id", "用户决定迁移", user_id="alice", bank_id="home")
-    classify_and_record("same-id", "观察到端口暴露", user_id="bob", bank_id="work")
-
-    assert get_memory_type("same-id", user_id="alice", bank_id="work") == "PREFERENCES"
-    assert get_memory_type("same-id", user_id="alice", bank_id="home") == "DECISIONS"
-    assert get_memory_type("same-id", user_id="bob", bank_id="work") == "OBSERVATIONS"
-    # An omitted/default scope must not see a named-bank record.
-    assert get_memory_type("same-id") == "FACTS"
-
-    batch = get_batch_memory_types(["same-id"], user_id="alice", bank_id="home")
-    assert batch == {"same-id": "DECISIONS"}
-    assert {r["memory_type"]: r["count"] for r in list_types("alice", "work")} == {
-        "PREFERENCES": 1
-    }
-
-    assert reset_all_types("alice", "work") == 1
-    assert get_memory_type("same-id", user_id="alice", bank_id="home") == "DECISIONS"
-    assert get_memory_type("same-id", user_id="bob", bank_id="work") == "OBSERVATIONS"
-
-
 def test_core_memory_same_block_isolated_by_scope():
     from ducky.core_memory import get_all_blocks, get_block, inject_context, init_core_memory, put_block
 
@@ -124,55 +94,6 @@ def test_core_memory_same_block_isolated_by_scope():
     assert "工作域" not in inject_context("alice", "home")
     assert len(get_all_blocks("alice", "work")) == 3
     assert len(get_all_blocks("alice", "home")) == 3
-
-
-def test_conflict_resolution_does_not_cross_bank_or_user():
-    import ducky.conflict_resolver as cr
-
-    conn = sqlite3.connect(_DB)
-    conn.executemany(
-        "INSERT INTO facts (category, fact_key, fact_value, source, agent_id, archived) "
-        "VALUES (?, ?, ?, ?, ?, 0)",
-        [
-            ("profile", "status", "old-work", "alice", "alice"),
-            ("profile", "status", "old-home", "alice", "alice"),
-            ("profile", "status", "old-bob", "bob", "bob"),
-        ],
-    )
-    conn.commit()
-    # Add canonical columns and assign explicit scopes before resolving.
-    from ducky.bank_contract import ensure_memory_banks_schema
-
-    ensure_memory_banks_schema(conn)
-    conn.execute(
-        "UPDATE facts SET user_id='alice', bank_id='work' WHERE fact_value='old-work'"
-    )
-    conn.execute(
-        "UPDATE facts SET user_id='alice', bank_id='home' WHERE fact_value='old-home'"
-    )
-    conn.execute(
-        "UPDATE facts SET user_id='bob', bank_id='work' WHERE fact_value='old-bob'"
-    )
-    conn.commit()
-    conn.close()
-
-    result = cr.resolve_fact_conflict(
-        "profile", "status", "new-work", user_id="alice", bank_id="work"
-    )
-    assert result["invalidated"] == 1
-
-    conn = sqlite3.connect(_DB)
-    rows = conn.execute(
-        "SELECT fact_value, valid_to FROM facts ORDER BY id"
-    ).fetchall()
-    assert rows[0][1] is not None
-    assert rows[1][1] is None
-    assert rows[2][1] is None
-    event = conn.execute(
-        "SELECT user_id, bank_id FROM fact_events WHERE event_type='conflict.resolved'"
-    ).fetchone()
-    assert event == ("alice", "work")
-    conn.close()
 
 
 def test_legacy_schema_migration_is_additive_and_idempotent():

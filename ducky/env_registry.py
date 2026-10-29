@@ -57,6 +57,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CORE_STALENESS_DAYS",
     "AIDUMEI_CORE_VECTOR_INDEX",
     "AIDUMEI_ENGINE_MODE",
+    # f0.7：自家内网/tailnet 模型机(vLLM 等)端点放行名单,逗号分隔主机名/IP
+    "AIDUMEI_MODEL_ENDPOINT_ALLOW",
     "AIDUMEI_GATE_EVIDENCE_DIR",
     "AIDUMEI_RERANK_RESCUE_THRESHOLD",
     "AIDUMEI_RERANK_MIN_RELEVANCE",
@@ -121,6 +123,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     # v20.4.0 P1：限流兜底全局桶（未配 user_id 时按全局桶挡 user_id 轮换）
     "AIDUMEI_RATE_ADD_GLOBAL_PER_MIN",
     "AIDUMEI_RATE_DELETE_ALL_GLOBAL_PER_MIN",
+    # f0.6+++ rankfix：native 下长原话降权（1.0 关闭）
+    "AIDUMEI_RAW_TURN_WEIGHT",
     "AIDUMEI_RECALL_EVIDENCE_GATE",
     "AIDUMEI_RECALL_MIN_HYBRID",
     "AIDUMEI_RECALL_VERDICT_THRESHOLD",
@@ -338,6 +342,16 @@ FROZEN_LEGACY_AIDUMEM: frozenset[str] = frozenset((
 DYNAMIC_ENV_PREFIXES: frozenset[str] = frozenset((
     "AIDUMEI_CORE_STALENESS_DAYS_",
 ))
+
+
+# f0.7 P1：宿主钩子（integrations/claude-code/*.sh）从服务 .env 里读的名字。
+# 服务进程本身不读，但合法地写在 .env.example 里（钩子从那份 .env 取值），
+# 故并入 KNOWN_ENV_VARS 让文档守卫与启动期未知名告警都认。是否真被钩子读，见
+# tests/test_f07_p1_security.py::test_hook_env_names_are_read_by_hooks。
+HOOK_ENV_VARS: frozenset[str] = frozenset((
+    "AIDUMEI_CC_DROP_TERMS",
+))
+KNOWN_ENV_VARS = KNOWN_ENV_VARS | HOOK_ENV_VARS
 
 
 def is_known_env_name(name: str) -> bool:

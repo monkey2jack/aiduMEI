@@ -78,7 +78,7 @@ def test_watermark_warning_tells_the_truth_about_refine_memory():
 
 
 def test_injection_rejection_tells_the_caller_what_to_do():
-    for rel in ("ducky/hot/add.py", "ducky/hot/raw_drawer.py"):
+    for rel in ("ducky/hot/add.py",):   # raw_drawer.py 随 /add/raw 于 f0.6+++ WP2 移除
         src = (_ROOT / rel).read_text(encoding="utf-8")
         assert "AIDUMEM_INJECTION_GUARD_MODE=log_only" in src, f"{rel} 的拒绝文案没给出路"
         assert "bypass" not in src.split("Memory content rejected")[1][:400], (

@@ -8,14 +8,9 @@
 #   pip install -r requirements.txt
 # ============================================================================
 
-# --- 核心: mem0 记忆引擎 ----------------------------------------------------
-# mem0ai: 记忆存储 + 检索主库（v2 系列的稳定版，与现有 venv 内的 0.x 不冲突）
-# v20.0.1-pre 起锁到 2.0.19：先通过隔离兼容测试，再同步私有验证线
-mem0ai==2.2.1
-
-# --- 向量库客户端: Qdrant ----------------------------------------------------
-# qdrant-client: mem0ai 后端用的向量数据库客户端（与生产环境对齐 1.18.0）
-qdrant-client==1.18.0
+# --- 记忆内核 ---------------------------------------------------------------
+# f0.7 起默认 native 内核（单库 memory.db，标准库 sqlite3 + numpy），不再需要 mem0ai / qdrant-client。
+# 仍要用旧 mem0 内核（或从 mem0 迁移、回滚到 mem0）时，另装：pip install -r requirements-mem0.txt
 
 # --- Web 框架: FastAPI + Uvicorn --------------------------------------------
 # fastapi: api_server.py 用的 Web 框架（0.136 是 2025-Q4 的稳定小版本）
@@ -35,22 +30,11 @@ pydantic_core==2.46.4
 # --- HTTP 客户端 ------------------------------------------------------------
 # httpx: 异步 HTTP 客户端（mem0ai 内部用 + 测试脚本备用）；f0.3 起锁生产实跑版本
 httpx==0.28.1
+numpy==2.5.4   # f0.7（外审 ds A-13）：native 内核向量腿直接用，此前只是 mem0/qdrant 的隐式传递依赖
 # MCP server uses the official SDK's mcp.server.fastmcp, not the fastmcp package.
 mcp==1.30.0
 # requests: 同步 HTTP 客户端（tests/test_smoke_api.py 用，零依赖）；f0.3 起锁生产实跑版本
 requests==2.34.2
-
-# --- 表单解析 ---------------------------------------------------------------
-# python-multipart: FastAPI 的 Form(...) 依赖。**它在路由注册期（import 期）
-# 就被要求**——ducky/hot/legacy_routes.py 与 ducky/extended/routes.py 各有
-# 一处 Form(...)，缺它则 `import api_server` 直接 RuntimeError，服务根本起不来。
-# v20.2.3 补：pyproject 一直声明着它，本清单却漏了。CI 与 Dockerfile 都在
-# requirements 之后跑 `pip install .`（按 pyproject 拉齐），于是**只有
-# README「30 秒上手」那条纯 requirements.txt 路径裸奔**——新用户的第一印象
-# 恰好踩在唯一没人走的路上。与 v19.4.2 的 inotify_simple 是同一类事故，
-# 教训这次焊成守卫：tests/test_v20_runtime_deps_declaration.py。
-# f0.3 起锁生产实跑版本。
-python-multipart==0.0.32
 
 # --- 同步守护进程 -----------------------------------------------------------
 # inotify_simple: mem0_sync.py --daemon 监听 MEMORY.md 变化。

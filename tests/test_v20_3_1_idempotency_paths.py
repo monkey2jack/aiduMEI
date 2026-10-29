@@ -52,10 +52,8 @@ def app_rig(tmp_path, monkeypatch):
     monkeypatch.setattr(add_mod, "patch_llm_for_speed", lambda mem: None, raising=False)
 
     from ducky.hot.add import register_add_routes
-    from ducky.hot.raw_drawer import register_raw_drawer_routes
     app = FastAPI()
     register_add_routes(app)
-    register_raw_drawer_routes(app)
     return TestClient(app), tmp_path
 
 
@@ -90,37 +88,6 @@ def test_local_only_path_replays_on_retry(app_rig, monkeypatch):
         f"local 档重试没有 replay（action={second.get('action')}）—— "
         "幂等保护在最可能首跑的档位失效（九份审计 P0-5 原文）"
     )
-
-
-def test_raw_drawer_has_idempotency_now(app_rig):
-    """P0-5 + 用户审计 🟡-3：/add/raw 幂等键。同键重发回放首次响应。"""
-    client, tmp_path = app_rig
-    body = {"content": "raw-replay-probe unique content 001",
-            "user_id": "replay-raw-u1", "bank_id": "default",
-            "idempotency_key": "key-raw-1"}
-    r1 = client.post("/add/raw", json=body)
-    assert r1.status_code == 200, r1.text[:300]
-    first = r1.json()
-    assert first.get("request_id") == "key-raw-1"
-    r2 = client.post("/add/raw", json=body)
-    second = r2.json()
-    assert second.get("idempotency_replayed") is True, (
-        f"/add/raw 重试没有 replay: {second.get('action')}"
-    )
-    # 首次与回放的 memory_id 必须一致（同一条记忆，不是第二条）
-    assert second.get("memory_id") == first.get("memory_id")
-
-
-def test_raw_drawer_conflict_on_different_payload(app_rig):
-    """同键不同负载 → 409（幂等键绑定校验，防滥用一个键写不同内容）。"""
-    client, tmp_path = app_rig
-    client.post("/add/raw", json={"content": "raw-conflict-a",
-                                  "user_id": "replay-raw-u2", "bank_id": "default",
-                                  "idempotency_key": "key-conflict-1"})
-    r2 = client.post("/add/raw", json={"content": "raw-conflict-B-different",
-                                       "user_id": "replay-raw-u2", "bank_id": "default",
-                                       "idempotency_key": "key-conflict-1"})
-    assert r2.status_code == 409, f"同键不同负载必须 409, got {r2.status_code}"
 
 
 def test_async_queued_path_finalizes(app_rig, monkeypatch):

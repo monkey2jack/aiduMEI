@@ -113,3 +113,4 @@ docs/README_draft.md
 # 下一个 `git add -A` 就会把它们推上公开仓 —— 一行的事，别等出事。
 local_embed_cache/
 *.mp3
+benchmarks/.scan_words

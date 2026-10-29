@@ -69,14 +69,6 @@ def heartbeat(agent_id: str) -> dict[str, Any]:
     return {"status": "ok", "agent_id": agent_id, "heartbeat": _now().isoformat()}
 
 
-def deactivate_agent(agent_id: str) -> dict[str, Any]:
-    """把 Agent 标记为休眠（不删记录、不删记忆）。"""
-    conn = get_facts_conn()
-    conn.execute("UPDATE agents SET active=0 WHERE agent_id=?", (agent_id,))
-    conn.commit()
-    return {"status": "ok", "agent_id": agent_id, "active": False}
-
-
 def list_agents(profile: str | None = None, include_inactive: bool = True) -> list[dict[str, Any]]:
     """列出 Agent，附带各自的事实条数与是否休眠。"""
     conn = get_facts_conn()
@@ -122,17 +114,3 @@ def _is_stale(last_seen: str | None, stale_before: datetime) -> bool:
         return True
 
 
-def active_agent_ids(exclude: str | None = None) -> list[str]:
-    """可参与联邦广播的 Agent 列表（在线 + 心跳新鲜）。"""
-    return [
-        a["agent_id"]
-        for a in list_agents(include_inactive=False)
-        if a["available"] and a["agent_id"] != exclude
-    ]
-
-
-def resolve_profile(agent_id: str) -> str:
-    """查 Agent 归属的 profile，查不到回落 default。"""
-    conn = get_facts_conn()
-    row = conn.execute("SELECT profile FROM agents WHERE agent_id=?", (agent_id,)).fetchone()
-    return (row["profile"] if row and row["profile"] else DEFAULT_PROFILE)

@@ -256,7 +256,8 @@ def test_concurrent_claims_never_both_get_new(idem_env):
 
 
 def test_pending_is_refused_by_the_write_routes(tmp_path, monkeypatch):
-    """**P1-10 靶心②**：第二个请求拿到 pending 时，/add 与 /add/raw 必须拒绝（409），不许继续写。"""
+    """**P1-10 靶心②**：第二个请求拿到 pending 时，/add 必须拒绝（409），不许继续写。
+    （/add/raw 已于 f0.6+++ WP2 下线。）"""
     monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path / "d"))
     monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "l"))
     from fastapi.testclient import TestClient
@@ -266,10 +267,6 @@ def test_pending_is_refused_by_the_write_routes(tmp_path, monkeypatch):
     monkeypatch.setattr(I, "claim", lambda *a, **k: {"action": "pending", "key": "k1"})
     c = TestClient(A.app, raise_server_exceptions=False,
                    headers={"Authorization": "Bearer probe-token-not-a-real-secret"})
-    r = c.post("/add/raw", json={"content": "x", "user_id": "u", "bank_id": "default",
-                                  "caller_user_id": "u"},
-               headers={"Idempotency-Key": "k1"})
-    assert r.status_code == 409, f"pending 状态下 /add/raw 回 {r.status_code}，应 409 且不写"
     r2 = c.post("/add", json={"messages": "x", "user_id": "u", "bank_id": "default",
                                "caller_user_id": "u", "infer": False},
                 headers={"Idempotency-Key": "k1"})
@@ -403,7 +400,7 @@ def test_credentialed_instance_does_not_host_check(tmp_path, monkeypatch):
     import api_server as A  # noqa: F401
     monkeypatch.setenv("AIDUMEM_API_TOKEN", "probe-token-not-a-real-secret")
     with _RealServer(A.app) as s:
-        code = s.req("GET", "/facts?user_id=p&bank_id=default&caller_user_id=p",
+        code = s.req("GET", "/api/facts?user_id=p&bank_id=default&caller_user_id=p",
                      headers={"Host": "memory.example.com", "Authorization": "Bearer probe-token-not-a-real-secret"})
     assert code == 200, f"有凭据 + 反代域名 Host 被误拒（{code}）"
 

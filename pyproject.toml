@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aidumei"
-version = "0.6.5"
+version = "0.7.0"
 description = "aiduMEI: self-hosted multi-tier AI wisdom engine — active Reflect, memory self-editing & recursive refinement, auto skill growth, persona memory layer, native MemoryProvider bridge, FTS5 & Qdrant recall, multimodal vision & Obsidian bi-directional links"
 readme = "README.md"
 authors = [
@@ -14,7 +14,7 @@ license = { text = "MIT" }
 # P2-1：README 声明支持 3.10-3.12，此前未声明 requires-python，
 # pip 不会拦住 3.9 用户（代码里大量 `X | None` 语法在 3.9 上直接 SyntaxError）。
 requires-python = ">=3.10"
-keywords = ["memory", "mem0", "hermes", "hermes-agent", "aiduMEI", "ai", "rag", "qdrant", "fts5", "memory-provider", "obsidian", "multimodal"]
+keywords = ["memory", "hermes", "hermes-agent", "aiduMEI", "ai", "rag", "qdrant", "fts5", "memory-provider", "obsidian", "multimodal"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -29,16 +29,14 @@ classifiers = [
 # 依赖树上 —— 前者可能装到 2023 年的 fastapi，行为与我们测过的完全不同。
 # 现在下限对齐实锁的主版本，上限拦住已知不兼容的下一个大版本。
 dependencies = [
-    "mem0ai==2.2.1",
     "fastapi>=0.136.3,<1.0",
-    # f0.3：uvicorn / python-multipart / httpx / requests / inotify_simple 的下限
+    # f0.3：uvicorn / httpx / requests / inotify_simple 的下限
     # 抬到 requirements.txt 的精确锁（= 生产实跑版本），同上面「下限对齐实锁」的
     # 约定；tests/test_f0_3_dependency_pins.py 盯着两份清单不许互相矛盾。
     "uvicorn[standard]>=0.52.3,<1.0",
     "pydantic>=2.13.4,<3.0",
-    "qdrant-client>=1.18.0,<2.0",
-    "python-multipart>=0.0.32",
     "httpx>=0.28.1",
+    "numpy>=2.5.4,<3",
     "requests>=2.34.2",
     "pydantic-settings==2.14.2",
     "pydantic_core==2.46.4",
@@ -46,7 +44,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# f0.7 WP3b：mem0 旧内核改为可选（默认 native 内核不需要）。迁移/回滚脚本也要它。
+mem0 = ["mem0ai==2.2.1", "qdrant-client>=1.18.0,<2.0"]
 local-embed = ["fastembed>=0.8"]
+# f0.7：native 内核可选 C 实现的向量距离;不装时回落 numpy,结果一致
+vec = ["sqlite-vec>=0.1"]
 # v20.2.4（外审 F-21）：钉 <2 —— 上限缺失时 pip 解析到 mcp 2.x，
 # 而 mcp_server.py 导入的 `mcp.server.fastmcp` 在 2.x 里不存在，
 # 于是 `pip install 'aidumei[mcp]'` 装得上、工具起不来。

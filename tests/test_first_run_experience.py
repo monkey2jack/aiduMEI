@@ -31,13 +31,11 @@ def test_dependency_not_ready_message_is_actionable(raw, expect_cause):
 
     msg = _mem0_unavailable_detail(Exception(raw))
     assert expect_cause in msg, f"没说清病因（期望提到「{expect_cause}」）：{msg[:120]}"
-    # 三件事缺一不可：去哪配 / 怎么查 / 不配怎么办
+    # 两件事缺一不可：去哪配 / 怎么查（「不配怎么办」的 /add/raw 指引随该
+    # 端点于 f0.6+++ WP2 下线一并撤掉 —— 指向不存在的路比不指路更糟）
     assert "mem0_config_local.json" in msg, "没说去哪配"
     assert "/health" in msg, "没说怎么查还缺什么"
-    assert "/add/raw" in msg, (
-        "没告诉他「不配 key 也有一条路能走」—— 那是这个项目零凭据下"
-        "唯一还能用的入口，第一印象全靠它"
-    )
+    assert "/add/raw" not in msg, "503 文案仍指向已下线的 /add/raw"
     assert raw[:20] in msg, "原始错误必须保留（运维要靠它定位），只是不该是唯一内容"
 
 
@@ -187,63 +185,7 @@ def test_unprobed_vector_backend_is_warming_up_not_degraded():
         assert "vector_backend" in data["warming_up"]
 
 # ══════════════════════════════════════════════════════════════════
-# v20.3 外审 C-01：persona AI self must follow the two-dimensional scope
-# ══════════════════════════════════════════════════════════════════
-
-def _persona_scope_db(tmp_path):
-    """Use the production facts DDL and production bank migration, not a hand-written schema."""
-    import sqlite3
-    from ducky.schema_bootstrap import _FACTS_DDL
-    from ducky.bank_contract import ensure_memory_banks_schema
-    path = tmp_path / "facts.db"
-    conn = sqlite3.connect(path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.executescript(_FACTS_DDL)
-    ensure_memory_banks_schema(conn)
-    conn.executemany(
-        "INSERT INTO facts (category,fact_key,fact_value,peer,user_id,bank_id) "
-        "VALUES ('self',?,?, 'ai', ?, ?)",
-        [
-            ("alice-key", "alice-value", "alice", "bank_a"),
-            ("bob-key", "bob-value", "bob", "bank_a"),
-        ],
-    )
-    conn.commit()
-    return path, conn
-
-def test_persona_ai_self_read_is_scope_filtered(tmp_path, monkeypatch):
-    import ducky.extended.routes as routes
-    path, _ = _persona_scope_db(tmp_path)
-    import sqlite3
-    # Route closes the connection it receives; provide a fresh connection per request.
-    connections = []
-    def _conn():
-        c = sqlite3.connect(path, check_same_thread=False)
-        c.row_factory = sqlite3.Row
-        connections.append(c)
-        return c
-    monkeypatch.setattr(routes, "_gfc", _conn, raising=False)
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    app = FastAPI()
-    routes.register_extended_routes(
-        app,
-        _get_memory_fn=lambda: None,
-        _get_db_fn=_conn,   # v20.3.2-beta 外审 F-2：原写 `lambda: conn`，conn 未定义（F821）
-        _extract_entities_fn=lambda text: [],
-    )
-    client = TestClient(app)
-    got = client.get("/persona/ai-self", params={"user_id": "alice", "bank_id": "bank_a"}).json()
-    assert got["total_facts"] == 1
-    assert got["traits"]["self"][0]["key"] == "alice-key"
-    other = client.get("/persona/ai-self", params={"user_id": "bob", "bank_id": "bank_a"}).json()
-    assert other["total_facts"] == 1
-    assert other["traits"]["self"][0]["key"] == "bob-key"
-    for c in connections:
-        c.close()
-
-# ══════════════════════════════════════════════════════════════════
-# v20.3 外审 C-02/C-03：MCP SSE 与 code graph 安全边界
+# v20.3 外审 C-02：MCP SSE 安全边界
 # ══════════════════════════════════════════════════════════════════
 
 def test_mcp_sse_nonloopback_without_credentials_refuses_to_run(monkeypatch):
@@ -263,17 +205,6 @@ def test_mcp_sse_nonloopback_with_credentials_is_allowed(monkeypatch):
     })
     assert mcp_server._sse_authorization_allowed() is True
 
-def test_code_graph_rejects_outside_workspace(monkeypatch):
-    import ducky.code_graph as cg
-    monkeypatch.setattr(cg, "BASE_DIR", "/tmp/aidumei-workspace", raising=False)
-    with pytest.raises(Exception):
-        cg._workspace_root("/etc")
-
-def test_code_graph_max_files_has_upper_bound():
-    import ducky.code_graph as cg
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError):
-        cg.ImpactRequest(changed_files=["x"], max_files=2001)
 
 def test_cron_entry_quotes_all_variable_paths():
     import subprocess
@@ -709,8 +640,11 @@ def test_agent_integration_check_exists():
     path = _ROOT / "scripts" / "agent_integration_check.py"
     assert path.is_file() and path.stat().st_mode & 0o111
     text = path.read_text(encoding="utf-8")
-    for endpoint in ("/gate", "/add", "/add/raw", "/search", "/api/core-memory/inject", "/session/start", "/session/end"):
+    # f0.6+++ WP2：检查面收到保留路由
+    for endpoint in ("/health", "/add", "/search", "/api/core-memory", "/delete"):
         assert endpoint in text
+    for gone in ("/gate", "/add/raw", "/api/core-memory/inject", "/session/start", "/delete_all"):
+        assert f'"{gone}"' not in text, f"脚本仍调用已下线的 {gone}"
 
 # ══════════════════════════════════════════════════════════════════
 # v20.3 Opus 4.8 audit: local mode must not leak outbound calls
@@ -745,7 +679,3 @@ def test_all_mem_add_call_sites_have_engine_mode_gate():
         f"These mem.add() call sites lack cloud_egress_allowed() check: {offenders}"
     )
 
-def test_raw_drawer_and_obsidian_have_egress_check():
-    for name in ("ducky/hot/raw_drawer.py", "ducky/routes_obsidian.py"):
-        src = (_ROOT / name).read_text(encoding="utf-8")
-        assert "cloud_egress_allowed" in src, f"{name} lacks cloud_egress_allowed"

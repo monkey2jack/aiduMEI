@@ -29,16 +29,15 @@ PRODUCTION = {
     "uvicorn": "0.52.3",
     "httpx": "0.28.1",
     "requests": "2.34.2",
-    "python-multipart": "0.0.32",
     "inotify-simple": "2.0.1",
 }
 
-# The faaa9af spellings of the same five lines (negative control).
+# The faaa9af spellings of the same lines (negative control).
+# (python-multipart dropped in f0.6+++ WP2: no Form(...) left in production.)
 OLD_LINES = [
     "uvicorn>=0.30,<1.0",
     "httpx>=0.27",
     "requests>=2.31",
-    "python-multipart>=0.0.9",
     'inotify_simple>=1.3.5; sys_platform == "linux"',
 ]
 

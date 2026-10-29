@@ -377,8 +377,30 @@ def _qdrant_live_health() -> dict[str, Any]:
         }
 
 
+def _native_health() -> dict[str, Any]:
+    """native:向量在 memory.db 里,不依赖 Qdrant。只读计数,不建单例。"""
+    from ducky.memory_kernel.impl_native import default_db_path
+    path = default_db_path()
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            points = conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        if not os.path.exists(path):      # 首次写入前库还没建:不是故障
+            return {"backend": "native", "ok": True, "probed": True, "degraded": [], "points": 0}
+        DegradationTracker.record_degradation("vector_backend", f"native probe failed: {exc}")
+        return {"backend": "native", "ok": False, "probed": True, "degraded": ["vector_backend"],
+                "error": str(exc)[:200]}
+    return {"backend": "native", "ok": True, "probed": True, "degraded": [], "points": int(points)}
+
+
 def backend_health() -> dict[str, Any]:
     """Report configured backend without opening/mutating the production store."""
+    from ducky.mem0_runtime import native_kernel_active
+    if native_kernel_active():
+        return _native_health()
     configured = os.environ.get("AIDUMEM_VECTOR_BACKEND", "qdrant").strip().lower() or "qdrant"
     if configured not in {"qdrant", "sqlite-vec", "sqlite_vec"}:
         reason = f"unsupported vector backend: {configured}"

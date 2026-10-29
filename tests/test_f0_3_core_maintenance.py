@@ -26,6 +26,23 @@ def db(tmp_path, monkeypatch):
     yield conn
 
 
+def _history(block_key, user_id, bank_id):
+    """Read core_memory_revisions for one exact scope (the public reader and its
+    /history route were removed in f0.6+++ WP2; revisions are still written)."""
+    from ducky.bank_contract import make_scope
+    from ducky.scope_sql import scope_clause
+    scope = make_scope(user_id, bank_id)
+    conn = utils.get_facts_conn()
+    maintenance.ensure_revision_schema(conn)
+    clause, params = scope_clause(scope)
+    rows = conn.execute(
+        "SELECT id,old_content,new_content,evidence_json,created_at FROM core_memory_revisions "
+        "WHERE block_key=? " + clause + " ORDER BY id DESC LIMIT 50",
+        (block_key, *params),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def fact(db, *, user="alice", bank="work", mode="user_provided", value="Project Atlas release is deployed and verified.", category="core_memory", **extra):
     cols = dict(category=category, fact_key="core_current_project", fact_value=value,
                 user_id=user, bank_id=bank, agent_id=user, source="user_confirmation",
@@ -40,11 +57,11 @@ def test_confirmed_project_refresh_archives_old_value_and_evidence(db):
     out = maintenance.project_refresh("alice", "work")
     assert out["status"] == "updated" and out["fact_id"] == fid
     assert "deployed" in core.get_block("core_current_project", "alice", "work")["content"]
-    history = maintenance.revision_history("core_current_project", "alice", "work")
+    history = _history("core_current_project", "alice", "work")
     assert "preparing" in history[0]["old_content"]
     assert '"fact_id": ' + str(fid) in history[0]["evidence_json"]
     assert maintenance.project_refresh("alice", "work")["status"] == "not_newer"
-    assert maintenance.revision_history("core_current_project", "bob", "work") == []
+    assert _history("core_current_project", "bob", "work") == []
 
 
 @pytest.mark.parametrize("mode", ["reasoned", "fuzzy", "referenced"])
@@ -125,45 +142,13 @@ def test_timestamp_comparison_uses_instant_not_lexical_order(db):
 
 
 def test_failed_core_write_rolls_back_history_together(db):
-    before = maintenance.revision_history("core_current_project", "alice", "work")
+    before = _history("core_current_project", "alice", "work")
     db.execute("CREATE TRIGGER fail_core BEFORE UPDATE ON core_memory WHEN NEW.content <> OLD.content BEGIN SELECT RAISE(ABORT,'test rollback'); END")
     db.commit()
     with pytest.raises(Exception, match="test rollback"):
         core.put_block("core_current_project", "Project Atlas release is deployed and verified.", "alice", "work")
-    assert maintenance.revision_history("core_current_project", "alice", "work") == before
+    assert _history("core_current_project", "alice", "work") == before
     assert not db.in_transaction
-
-
-def test_refresh_and_history_routes_enforce_read_and_write_grants(monkeypatch):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    import ducky.routes_clotho as routes
-    import ducky.pantheon as pantheon
-    import ducky.security.auth as auth
-    monkeypatch.setattr(auth, "current_request_auth_kind", lambda: "bearer")
-    calls = []
-    grants = set()
-    monkeypatch.setattr(pantheon, "check_hall_access", lambda target, caller, action="read", bank_id=None:
-                        (target, caller, action, bank_id) in grants)
-    monkeypatch.setattr(maintenance, "project_refresh", lambda user_id, bank_id:
-                        calls.append((user_id, bank_id)) or {"status": "updated"})
-    monkeypatch.setattr(maintenance, "revision_history", lambda block_key, user_id, bank_id:
-                        [{"scope": [user_id, bank_id]}])
-    app = FastAPI()
-    routes.register_clotho_routes(app)
-    client = TestClient(app)
-    params = {"user_id": "alice", "bank_id": "work", "caller_user_id": "bob"}
-    history = "/api/core-memory/core_current_project/history"
-    refresh = "/api/core-memory/core_current_project/refresh"
-    assert client.get(history, params=params).status_code == 403
-    assert client.post(refresh, params=params).status_code == 403
-    grants.add(("alice", "bob", "read", "work"))
-    assert client.get(history, params=params).json()["revisions"] == [{"scope": ["alice", "work"]}]
-    assert client.post(refresh, params=params).status_code == 403
-    assert calls == []
-    params["caller_user_id"] = "alice"
-    assert client.post(refresh, params=params).json()["status"] == "updated"
-    assert calls == [("alice", "work")]
 
 
 def test_delete_all_erases_core_history_in_exact_scope(db):
@@ -171,11 +156,11 @@ def test_delete_all_erases_core_history_in_exact_scope(db):
     from ducky.wal_engine import _cascade_all_core_memory
     core.put_block("core_current_project", "Project Boreal remains confidential.", "bob", "work")
     core.put_block("core_current_project", "Project Atlas home record remains private.", "alice", "home")
-    before_bob = maintenance.revision_history("core_current_project", "bob", "work")
-    before_home = maintenance.revision_history("core_current_project", "alice", "home")
+    before_bob = _history("core_current_project", "bob", "work")
+    before_home = _history("core_current_project", "alice", "home")
     result, failures = {}, []
     _cascade_all_core_memory(make_scope("alice", "work"), result, lambda *args: failures.append(args))
     assert not failures and result["core_memory_revisions_deleted"] >= 1
-    assert maintenance.revision_history("core_current_project", "alice", "work") == []
-    assert maintenance.revision_history("core_current_project", "bob", "work") == before_bob
-    assert maintenance.revision_history("core_current_project", "alice", "home") == before_home
+    assert _history("core_current_project", "alice", "work") == []
+    assert _history("core_current_project", "bob", "work") == before_bob
+    assert _history("core_current_project", "alice", "home") == before_home

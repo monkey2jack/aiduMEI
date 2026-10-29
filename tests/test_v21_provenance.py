@@ -129,35 +129,3 @@ def _seed_evolution():
     conn.commit()
     conn.close()
 
-
-def test_evolution_endpoint_returns_chain_with_provenance():
-    _seed_evolution()
-    r = _client().get("/knowledge/fact:1/evolution?user_id=dudu&bank_id=default")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["count"] == 1
-    row = body["chain"][0]
-    assert row["relation_type"] == "replaces"
-    assert row["origin_agent"] == "hermes"
-    assert row["origin_session_id"] == "sess-1"
-    assert row["origin_turn"] == 3
-
-
-def test_evolution_endpoint_requires_explicit_scope():
-    _seed_evolution()
-    c = _client()
-    assert c.get("/knowledge/fact:1/evolution").status_code == 400
-    assert c.get("/knowledge/fact:1/evolution?user_id=dudu").status_code == 400
-
-
-def test_evolution_endpoint_cross_domain_is_404():
-    _seed_evolution()
-    c = _client()
-    # fact: 数字 id 可枚举 → 保留域校验，跨域 404（不暴露存在性）
-    assert c.get("/knowledge/fact:1/evolution?user_id=alice&bank_id=work").status_code == 404
-    # UUID 不可枚举且载荷零正文 → 链上存在即可见（v21.0 收口改判据，
-    # 生产用户 🟡-2：旧预检误杀 69% 真实查询）
-    assert c.get("/knowledge/uuid-x/evolution?user_id=dudu&bank_id=default").status_code == 200
-    assert c.get("/knowledge/uuid-x/evolution?user_id=alice&bank_id=work").status_code == 200
-    # 链上不存在的 UUID → 404
-    assert c.get("/knowledge/uuid-非存在/evolution?user_id=dudu&bank_id=default").status_code == 404

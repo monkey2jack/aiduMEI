@@ -8,7 +8,7 @@ v19.4.1 带着**全绿的测试套件**发布了这些缺陷：
 
   · Hermes hook 每一次调用都 401 —— 记忆注入完全失效，且静默；
   · MEMORY.md 同步守护 401 + 崩溃循环 —— 静默停摆 8 天、重启 6000+ 次；
-  · seed_demo / seed_facts —— 开源用户第一条命令就 401；
+  · seed_demo / seed_facts —— 开源用户第一条命令就 401（f0.6+++ 已随 /facts 系列移除）；
   · mcp_server —— 自带一份凭据读取，无 .env 兜底。
 
 测试为什么没拦住？因为 v19.4.1 的鉴权守卫**只扫 `scripts/` 目录**，
@@ -88,6 +88,12 @@ _CARRIES_AUTH = re.compile(r"api_auth_headers|_auth_headers|AUTH_ARGS|Authorizat
 # 每条理由都是**逐个文件读过调用点核对**的，不是照着「文件里有 Authorization」推的：
 # 那样写出来的理由和代码就是两半（甲9 的病），而这张表本身就是为了防这个。
 _OUTBOUND_THIRD_PARTY = {
+    "ducky/config_probe.py":
+        "设置页「测试连接」只打用户在模型配置里填的 LLM/Embedding/Rerank 端点(经 PUT /config 私网校验),"
+        "从不打本服务自身。",
+    "ducky/memory_kernel/impl_native.py":
+        "native 内核 HttpEmbedder 出站打部署方配置的 embedding 供应商 /embeddings(与 mem0 同一份 embedder "
+        "配置与密钥),Bearer 是供应商密钥不是本服务 token;发请求前过 cloud_egress_allowed。",
     "ducky/decision.py":
         "出站调用部署方配置的决策供应商 /systemone，使用供应商独立凭据。"
         "本服务没有此模型端点；经过 cloud_egress_allowed 与作用域筛选，"
@@ -296,7 +302,7 @@ def test_guard_actually_sees_the_known_entry_points():
     covered = {p.name for p in guard._iter_credential_consumers()}
     covered |= {p.name for p in guard._iter_credential_consumer_shells()}
 
-    for name in ("mem0_sync.py", "seed_demo.py", "seed_facts.py",
+    for name in ("mem0_sync.py",
                  "mcp_server.py", "aidumem-inject.sh",
                  "claude-code-hook.py", "aidumem-on-save.sh",
                  # v19.4.2 补丁轮新增的三类锚点：控制台反代 + tests/ 下的运维件。

@@ -15,7 +15,6 @@ from ducky.mem0_compat import get_all_memories
 from ducky.shutdown import sleep as _shutdown_sleep
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
 
 from ducky.utils import (
     DEFAULT_USER_ID,
@@ -73,63 +72,11 @@ def _get_scenes_conn(): return _get_db(SCENES_DB)
 # §6  共享 helper（_extract_entities, _extract_key_facts 等）
 #     这些也被 §11-§13 的活跃端点使用，导出供 api_server 引用
 # ═══════════════════════════════════════════════
-_RE_QUOTED      = re.compile(r'["\\\']([^"\\\']+)["\\\']')
-_RE_AKA         = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
-_RE_USER        = re.compile(r'\b(User|用户)\b')
-_RE_AI          = re.compile(r'\b(AI|Assistant|助手)\b')
-# 品牌名跨了三代（duMem → aiduMEM → aiduMEI），而这条正则是拿去匹配**存量记忆文本**的。
-# IGNORECASE 帮不上忙：aiduMEM 与 aiduMEI 差在最后一个字母。只留新名 = 老记忆里的项目实体
-# 全部认不出来；只留旧名 = 改名之后写进来的新记忆全部认不出来。匹配器必须同时覆盖两代。
-_RE_PROJECT     = re.compile(r'\b(aiduMEI|aiduMEM|duMem|mem0|Hermes|Qdrant|FastAPI|SQLite)\b', re.IGNORECASE)
-_RE_TECH        = re.compile(r'\b(Hermes|DeepSeek|Qdrant|NVIDIA|FTS5|WAL|VACUUM|nginx|systemd|FastAPI)\b')
-
-
-def _env_pattern(env_key: str) -> "re.Pattern | None":
-    """从环境变量读取 `|` 分隔的自定义词表，编译成实体识别正则。
-
-    部署方专属的机房代号、纪念日、人名等不硬编码在源码里，例如：
-        export AIDUMEM_SERVER_KEYWORDS="tokyo|osaka"
-        export AIDUMEM_DATE_KEYWORDS="1月1日|周年"
-    未设置时返回 None，该类实体不参与提取。
-    """
-    raw = (os.environ.get(env_key) or "").strip().strip("|")
-    if not raw:
-        return None
-    words = [re.escape(w.strip()) for w in raw.split("|") if w.strip()]
-    if not words:
-        return None
-    return re.compile("(" + "|".join(words) + ")")
-
-
-# 可选的部署方自定义实体（服务器代号 / 纪念日期）
-#
-# 血训（v15）：这两个正则原本在 import 时就固化，一旦模块比 setenv 先加载
-# （或 systemd 单元漏了 Environment=），自定义实体就永久不参与抽取，
-# 且全程静默。改为惰性 + 环境变量变化自动重建。
-_ENV_PATTERN_CACHE: dict = {}
-
-
-def _env_pattern_cached(env_key: str) -> "re.Pattern | None":
-    raw = (os.environ.get(env_key) or "").strip().strip("|")
-    cached = _ENV_PATTERN_CACHE.get(env_key)
-    if cached is None or cached[0] != raw:
-        _ENV_PATTERN_CACHE[env_key] = (raw, _env_pattern(env_key))
-    return _ENV_PATTERN_CACHE[env_key][1]
-
-def _extract_entities(text: str) -> list[str]:
-    """原生的实体提取 — 保持首次出现顺序去重"""
-    seen, candidates = set(), []
-    def _add(name):
-        n = name.strip()
-        if n and n.lower() not in seen: seen.add(n.lower()); candidates.append(n)
-    for m in _RE_QUOTED.finditer(text):       _add(m.group(1))
-    for m in _RE_AKA.finditer(text):          _add(m.group(1)); _add(m.group(2))
-    _re_server = _env_pattern_cached("AIDUMEM_SERVER_KEYWORDS")
-    _re_date = _env_pattern_cached("AIDUMEM_DATE_KEYWORDS")
-    for pat in [_RE_USER, _RE_AI, _RE_PROJECT, _re_server, _RE_TECH, _re_date]:
-        if pat is None: continue
-        for m in pat.finditer(text):          _add(m.group(0))
-    return candidates
+# 确定性实体抽取器随记忆图谱(co_occurrence 边)迁到 ducky.graph_memory;此处保留旧名 re-export。
+from ducky.graph_memory import (  # noqa: F401,E402
+    _RE_QUOTED, _RE_AKA, _RE_USER, _RE_AI, _RE_PROJECT, _RE_TECH,
+    _env_pattern, _ENV_PATTERN_CACHE, _env_pattern_cached, _extract_entities,
+)
 
 def _extract_key_facts(category: str, limit: int = 100,
                        user_id: str = "", bank_id: str = "") -> list:
@@ -230,103 +177,8 @@ _L1_PREFIXES = tuple(
 )
 
 
-def _auto_detect_level(category: str) -> str:
-    if category in _L0_CATEGORIES: return "L0"
-    if _L1_PREFIXES and category.startswith(_L1_PREFIXES): return "L1"
-    return "L2"
-
-def _vault_refine(category, fact_key, fact_value, level):
-    """vault-write 强制提炼占位（可扩展 LLM 提炼）"""
-    return {"status": "noop"}
-
-# ── 6.5  Feedback ──
-def _fact_feedback_impl(fact_id: int, helpful: bool,
-                        user_id: str = "", bank_id: str = ""):
-    """v20 P0-2 opt-in 作用域护栏（默认零改动）：
-
-    fact_id 是全局唯一主键，v19 语义里 feedback 是管理员级全库操作，
-    不传作用域时原样保留。传了任一作用域参数，就必须先证明这条事实
-    属于该域，防止甲库调用方枚举 id 去动乙库事实的信任分。
-    域不符与不存在同码同文案（404），不泄露他库 fact 的存在性。
-    """
-    try:
-        conn = _get_facts_conn()
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT category,trust_score,user_id,bank_id FROM facts WHERE id=?",
-                        (fact_id,))
-            row = cur.fetchone()
-            row_scope = (str(row["user_id"] or "default"),
-                         str(row["bank_id"] or "default")) if row else None
-        except sqlite3.OperationalError as exc:
-            # 老库还没迁出作用域列：整表视作 default 域（与存量回填口径一致）
-            #
-            # 甲8：一次瞬时故障走到这里，row_scope 会被写成 ("default","default")。
-            # 对具名库调用方是 fail-closed（域不符 → 404，还算安全）；但**默认域
-            # 的调用方会匹配上**，于是能去改一条其实属于具名库的事实的
-            # trust_score。危害比 _extract_key_facts 那处窄，方向一样。
-            if not is_legacy_schema_error(exc):
-                raise
-            cur.execute("SELECT category,trust_score FROM facts WHERE id=?", (fact_id,))
-            row = cur.fetchone()
-            row_scope = ("default", "default") if row else None
-        if not row:
-            conn.close()
-            raise HTTPException(404, f"fact_id={fact_id} 不存在")
-        if user_id or bank_id:
-            from ducky.bank_contract import (
-                BankScopeError, normalize_bank_id, normalize_user_id,
-            )
-            try:
-                want_uid = normalize_user_id(user_id) if user_id else ""
-                want_bid = normalize_bank_id(bank_id) if bank_id else ""
-            except BankScopeError as be:
-                conn.close()
-                raise HTTPException(400, f"非法作用域: {be}")
-
-            # 改名默认身份（如 alice）与字面量 'default' 折叠同域
-            # （v19.4.2 教训，口径同 salience.conflict._canon_uid）
-            def _canon(uid: str) -> str:
-                return "default" if uid == DEFAULT_USER_ID else uid
-
-            if ((want_uid and _canon(want_uid) != _canon(row_scope[0]))
-                    or (want_bid and want_bid != row_scope[1])):
-                conn.close()
-                raise HTTPException(404, f"fact_id={fact_id} 不存在")
-        if row["category"] in _L0_CATEGORIES:
-            conn.close()
-            return {"status":"ok","message":"铁律类不受feedback影响","noop":True}
-        old_trust = row["trust_score"]
-        delta = 0.10 if helpful else -0.15
-        new_trust = min(1.0, max(0.0, old_trust + delta))
-        col = "helpful_count" if helpful else "unhelpful_count"
-        cur.execute(f"UPDATE facts SET trust_score=?,{col}={col}+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                   (new_trust, fact_id))
-        conn.commit()
-        cur.execute("SELECT helpful_count,unhelpful_count,trust_score FROM facts WHERE id=?", (fact_id,))
-        updated = cur.fetchone()
-        conn.close()
-        return {"status":"ok","fact_id":fact_id,"trust_before":old_trust,"trust_after":updated["trust_score"],
-                "helpful_count":updated["helpful_count"],"unhelpful_count":updated["unhelpful_count"],
-                "delta":round(updated["trust_score"]-old_trust,3)}
-    except HTTPException: raise
-    except Exception as e:
-        logger.error(f"feedback 失败: {e}")
-        raise HTTPException(500, api_error_detail(e))
-
 # ── 6.6  矛盾检测 v1 ──
-CONTRADICTION_WORDS = [
-    ("启用","关闭","禁用"),("开启","关闭","禁用"),("成功","失败","挂了"),
-    ("升级","降级","回滚"),("新建","删除","移除"),("开启","停止","暂停"),
-    ("正常","异常","故障"),("可用","不可用","不可达"),("通过","失败","未通过"),
-]
 
-# ── tags ──
-def _load_tags() -> dict:
-    if os.path.exists(TAGS_FILE):
-        try: return json.loads(open(TAGS_FILE).read())
-        except (json.JSONDecodeError, OSError): pass
-    return {}
 
 def _save_tags(tags: dict):
     os.makedirs(os.path.dirname(TAGS_FILE), exist_ok=True)
@@ -356,12 +208,10 @@ def _save_patterns(patterns: dict):
 from ducky.text_fts import (
     _init_text_fts,  # noqa: F401 —— 兼容 re-export（旧路径 ducky.hot.legacy_helpers._init_text_fts）
     _index_memory,  # noqa: F401 —— 兼容 re-export
-    _unindex_memory,  # noqa: F401 —— 兼容 re-export
     _bm25_keyword_search,  # noqa: F401 —— 兼容 re-export
     _like_search,  # noqa: F401 —— 兼容 re-export
     _hybrid_search,  # noqa: F401 —— 兼容 re-export
 )
-from ducky.api_errors import api_error_detail
 
 # ═══════════════════════════════════════════════
 # §8  Observations + Reflect（Hindsight 移植）
@@ -436,64 +286,6 @@ def _background_scene_cluster_loop():
         if not _shutdown_sleep(43200):
             return  # 停机请求（P2-20）：收尾退出
 
-def _observations_columns(conn) -> set:
-    """返回 observations 表的实际列集（表不存在返回空集）。"""
-    try:
-        return {r[1] for r in conn.execute("PRAGMA table_info(observations)").fetchall()}
-    except Exception as exc:
-        logger.debug("observations 列探测跳过: %s", exc)
-        return set()
-
-
-def _ensure_observations_table(conn):
-    """幂等建 observations 表，并按需补 user_id 列。
-
-    v19.4.1（P1-3）：该表自 v7 起只有读取方（GET /observe），
-    写入方 `_run_consolidation` 早已退化为占位（由 Layer1 自检 +
-    Instinct 毕业接管），全仓从未有过 DDL —— 全新部署调 /observe
-    直接 `no such table: observations` 500。
-
-    列集刻意对齐**生产存量库的真实 schema**（v7 时代手工建的表：
-    id / category / summary / content / source_ids / proof_count /
-    confidence / created_at / updated_at / is_stale / history），
-    而不是另发明一套 —— 否则新旧两套列集会在同一份数据上分叉。
-    `CREATE TABLE IF NOT EXISTS` 对存量库是 no-op，绝不 DROP / 改类型 / 删数据。
-
-    user_id 列单独用 ADD COLUMN 幂等补齐（存量库没有这一列），
-    补不上也不影响读取 —— 路由侧会按实际列集决定是否施加租户过滤。
-    """
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS observations (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            category    TEXT NOT NULL DEFAULT 'general',
-            summary     TEXT NOT NULL DEFAULT '',
-            content     TEXT NOT NULL DEFAULT '',
-            source_ids  TEXT NOT NULL DEFAULT '[]',
-            proof_count INTEGER NOT NULL DEFAULT 1,
-            confidence  REAL NOT NULL DEFAULT 0.5,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            is_stale    INTEGER NOT NULL DEFAULT 0,
-            history     TEXT NOT NULL DEFAULT '[]',
-            user_id     TEXT DEFAULT ''
-        )
-    """)
-    # 存量库（v7 手工建表）没有 user_id 列，幂等补上。
-    if "user_id" not in _observations_columns(conn):
-        try:
-            conn.execute("ALTER TABLE observations ADD COLUMN user_id TEXT DEFAULT ''")
-            logger.info("🏗️ observations 迁移：已补列 user_id")
-        except Exception as exc:
-            logger.debug("observations user_id 补列跳过: %s", exc)
-
-    for stmt in (
-        "CREATE INDEX IF NOT EXISTS idx_obs_category ON observations(category)",
-    ):
-        try:
-            conn.execute(stmt)
-        except Exception as exc:
-            logger.debug("observations 索引跳过: %s", exc)
-    conn.commit()
 
 # v20 P0-2：scenes 带作用域列；唯一约束按 (user_id, bank_id, member_keys)
 # 分域去重——两个 bank 各自持有同一 member_keys 的场景互不吞噬。

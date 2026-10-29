@@ -254,36 +254,6 @@ def test_self_edit_parse_decision_invalid():
     assert _parse_decision("") is None
 
 
-def test_self_edit_log_and_list_and_rollback(monkeypatch):
-    from ducky.self_edit import ensure_self_edit_schema, _log_edit, list_edits, rollback_edit
-    from ducky.text_fts import _init_text_fts
-    import ducky.self_edit as se
-    monkeypatch.setattr(se, "_checked", False)
-    monkeypatch.setattr(utils, "TEXT_FTS_DB", os.path.join(_tmp_dir, "text_fts.db"))
-    _init_text_fts()
-
-    ensure_self_edit_schema()
-    mem = _FakeMemory()
-
-    # 先记一笔编辑账本（模拟 duplicate 合并）
-    edit_id = _log_edit("m1", "default", "duplicate", "用户喜欢 Python", "用户喜欢 Python 与 Go", "同主题合并", 0.8)
-    assert edit_id > 0
-
-    edits = list_edits(user_id="default")
-    assert len(edits) == 1
-    assert edits[0]["action"] == "duplicate"
-    assert edits[0]["old_content"] == "用户喜欢 Python"
-
-    # 回滚：把 m1 恢复到旧内容
-    res = rollback_edit(edit_id, memory=mem)
-    assert res["status"] == "ok"
-    assert mem.store["m1"]["memory"] == "用户喜欢 Python"
-
-    # 二次回滚应失败（已回滚）
-    res2 = rollback_edit(edit_id, memory=mem)
-    assert res2["status"] == "error"
-
-
 def test_self_edit_extract_text():
     from ducky.self_edit import _extract_text
     assert _extract_text("纯文本") == "纯文本"
@@ -331,38 +301,6 @@ def test_reflect_parse_invalid():
     from ducky.reflect import _parse_insights
     assert _parse_insights("") == []
     assert _parse_insights("没有任何结构化内容") == []
-
-
-def test_reflect_save_dedup_and_list():
-    from ducky.reflect import ensure_reflect_schema, save_insights, get_reflections
-
-    ensure_reflect_schema()
-    insights = [
-        {"type": "pattern", "content": "用户近期专注产品定位", "confidence": 0.8, "evidence": ["m1"]},
-    ]
-    added = save_insights(insights, user_id="default", source="test")
-    assert added == 1
-
-    # 重复内容不重复入库
-    added2 = save_insights(insights, user_id="default", source="test")
-    assert added2 == 0
-
-    rows = get_reflections(user_id="default", limit=10)
-    assert len(rows) == 1
-    assert rows[0]["type_label"] == "模式识别"
-
-
-def test_reflect_inject_context():
-    from ducky.reflect import ensure_reflect_schema, save_insights, inject_reflections
-
-    ensure_reflect_schema()
-    save_insights(
-        [{"type": "prediction", "content": "用户接下来可能要部署到生产", "confidence": 0.75}],
-        user_id="default", source="test",
-    )
-    ctx = inject_reflections(user_id="default", limit=5)
-    assert "[Reflections" in ctx
-    assert "部署到生产" in ctx
 
 
 def test_reflect_run_no_llm_returns_empty(monkeypatch):

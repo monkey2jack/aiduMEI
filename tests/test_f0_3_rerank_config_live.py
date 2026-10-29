@@ -153,6 +153,7 @@ def test_alias_config_remains_automatic_and_editable(channel):
 def test_local_mode_blocks_even_an_enabled_channel(channel, monkeypatch):
     _, calls, _ = channel
     monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
     assert _rank()[1]["status"] == "blocked_by_engine_mode"
     assert calls == []
 

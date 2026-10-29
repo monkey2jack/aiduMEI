@@ -2,96 +2,104 @@
 ducky.routes_registry — 统一路由注册表
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 收拢所有业务线路由，api_server 仅需调用此处。
+
+f0.6+++ WP2（接口瘦身）：只保留真实调用方在用的端点 ——
+  · 扁平根路径 = 宿主智能体 CC 钩子（/health /api/core-memory /search /add /session/distill）
+    + 写契约（/update /delete，回归集与 push_gate 走它）+ 运维探针（/livez /readyz /metrics）
+  · /api 子应用 = 控制台 UI（frontend/js 以 /api 为根）实际调用的端点
+两处共用同一套 handler，按 ``only`` 白名单各自注册，不再整表镜像。
 """
 from __future__ import annotations
 
 import logging
 from fastapi import FastAPI
 
-from ducky.routes_core import register_core_routes
+from ducky.hot import register_core_routes
 from ducky.routes_v8 import register_v8_routes
 from ducky.routes_clotho import register_clotho_routes
-from ducky.hot.legacy import register_legacy_routes
+from ducky.hot.legacy_routes import register_legacy_routes
 from ducky.extended.routes import register_extended_routes
 from ducky.federation.routes import register_federation_routes
 from ducky.routes_octopus import register_octopus_routes
-from ducky.hot.raw_drawer import register_raw_drawer_routes
-from ducky.code_graph import register_code_graph_routes
 from ducky.routes_config import register_config_routes
 from ducky.routes_evolve import register_evolve_routes
-from ducky.routes_obsidian import register_obsidian_routes
 from ducky.routes_knowledge import register_knowledge_routes
-from ducky.routes_pantheon import register_pantheon_routes
-from ducky.routes_p0 import register_p0_routes
-from ducky.routes_p1 import register_p1_routes
-from ducky.routes_persona import register_persona_routes
 from ducky.routes_graph import register_graph_routes
-from ducky.system_endpoints import GatedRegistrar, assert_all_gated
+from ducky.system_endpoints import assert_all_gated
 
 logger = logging.getLogger("aiduMEM.RoutesRegistry")
 
-def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities_fn) -> None:
-    """按序注册所有端点：Core(HOT) -> v8 -> Clotho -> Extended -> Legacy -> Octopus"""
+# 扁平根路径：CC 钩子 + 写契约 + 运维
+FLAT_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/health"), ("GET", "/livez"), ("GET", "/readyz"), ("GET", "/metrics"),
+    ("GET", "/api/core-memory"), ("POST", "/search"), ("POST", "/add"),
+    ("POST", "/session/distill"), ("POST", "/update"), ("POST", "/delete"),
+})
+
+# /api 子应用：控制台 UI（/login、/login/hint 由 api_server 自己注册）
+UI_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/health"), ("GET", "/config"), ("PUT", "/config/{section}"),
+    ("POST", "/config/_speed"), ("POST", "/config/password"), ("POST", "/config/test"), ("GET", "/domains"),
+    ("GET", "/crystals"), ("GET", "/dossier"), ("GET", "/events/history"),
+    ("GET", "/evolve/report"), ("POST", "/evolve/feedback"),
+    ("GET", "/facts"), ("GET", "/facts/categories"), ("GET", "/facts/entities/list"),
+    ("GET", "/facts/trust-stats"), ("GET", "/federation/agents"),
+    ("GET", "/governance/candidates"), ("POST", "/governance/review"),
+    ("GET", "/graph/neighbors"), ("GET", "/graph/stats"), ("GET", "/graph/checkup"), ("GET", "/graph/nebula"), ("GET", "/knowledge/tree"),
+    ("GET", "/opinions"), ("GET", "/opinions/aggregate"), ("POST", "/opinions/set"),
+    ("GET", "/recent"), ("GET", "/scene"), ("GET", "/stats"), ("GET", "/usage"),
+    ("GET", "/tombstones"), ("POST", "/tombstone/restore"),
+    ("POST", "/search"), ("POST", "/search_trace"), ("POST", "/update"), ("POST", "/delete"),
+    ("POST", "/reload"),
+})
+
+
+class _Only:
+    """注册门面：只把白名单内的 (method, path) 真正挂到 app 上，其余 handler 不注册。"""
+
+    def __init__(self, app, only: frozenset[tuple[str, str]]) -> None:
+        self._app, self._only = app, only
+
+    def __getattr__(self, name):
+        return getattr(self._app, name)
+
+    def _register(self, method: str, path: str, kwargs: dict):
+        if (method, path) not in self._only:
+            return lambda fn: fn
+        return getattr(self._app, method.lower())(path, **kwargs)
+
+    def get(self, path: str, **kw):
+        return self._register("GET", path, kw)
+
+    def post(self, path: str, **kw):
+        return self._register("POST", path, kw)
+
+    def put(self, path: str, **kw):
+        return self._register("PUT", path, kw)
+
+    def delete(self, path: str, **kw):
+        return self._register("DELETE", path, kw)
+
+
+def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities_fn,
+                        only: frozenset[tuple[str, str]] = FLAT_ROUTES) -> None:
+    """按 ``only`` 白名单注册端点（默认扁平集；/api 子应用传 UI_ROUTES）。"""
     from ducky.scope_auth import ScopeRegistrar
-    app = ScopeRegistrar(app)
+    target = app
+    app = _Only(ScopeRegistrar(app), only)
 
-    # 1. 注册 HOT 核心路由 (Crud, Add, Search, Health)
-    register_core_routes(app)
+    register_core_routes(app)        # health / add / search / crud
+    register_v8_routes(app)          # /session/distill
+    register_clotho_routes(app)      # /api/core-memory
+    register_extended_routes(app, get_memory_fn, get_db_fn, extract_entities_fn)  # /knowledge/tree
+    register_legacy_routes(app)      # /facts* /scene
+    register_federation_routes(app)  # /federation/agents
+    register_octopus_routes(app)     # /crystals
+    register_evolve_routes(app)      # /evolve/feedback /evolve/report
+    register_config_routes(app)      # /config* /domains
+    register_graph_routes(app)       # /graph/*
+    register_knowledge_routes(app)   # /dossier
 
-    # 2. 注册 v8 记忆管道流路由 (Ignition, Workspace, Broadcast, Jlens, Session)
-    register_v8_routes(app)
-
-    # 3. 注册 Clotho/Hyperion 核心引擎路由 (CoreMemory, Checkpoint, AutoDream)
-    register_clotho_routes(app)
-
-    # 4. 注册 Extended 15脉外延路由
-    register_extended_routes(app, get_memory_fn, get_db_fn, extract_entities_fn)
-
-    # 5. 注册 Legacy 遗留路由 (待拆分)
-    register_legacy_routes(app)
-
-    # 6. 注册 Pantheon 联邦层路由
-    register_federation_routes(app)
-
-    # 7. 注册 Octopus (v16.0) 专属三大特性路由 (ConflictResolver, TreeMemory, SkillCrystallizer)
-    register_octopus_routes(app)
-
-    # 8. 注册 Zeus (v18.0) Raw Drawer 原味抽屉路由
-    register_raw_drawer_routes(app)
-
-    # 9. 注册 Zeus (v18.0) Code Graph 代码图谱路由
-    register_code_graph_routes(app)
-
-    # 10. 注册 EvolveMem (v18.1) 检索自进化路由
-    register_evolve_routes(app)
-
-    # 11. 注册 aiduMEI 控制台配置路由 (GET /config, GET/POST /config/_speed)
-    register_config_routes(app)
-
-    # 12. 注册 v18.3 Obsidian 双链接入路由
-    register_obsidian_routes(app)
-
-    # 13. 注册 v19.0 P0 认知层路由（Reflect 反思 / 记忆去重自编辑）
-    register_p0_routes(app)
-
-    # 14.1 f0.6++ WP5 记忆图谱只读路由(neighbors/stats;scope read)
-    register_graph_routes(app)
-
-    # 14. 注册 v19.0 P1 记忆类型分离路由（四网络查询视图）
-    #     f0.3：经 GatedRegistrar 注册 —— 其中的 /skill/grow、/skill/drafts 属系统级
-    #     派生端点（全实例共享的 skill_crystals 表），自动挂上默认关闭的特性闸
-    #     （AIDUMEI_SKILL_DRAFTS_ENABLED）；其余路由原样透传。
-    register_p1_routes(GatedRegistrar(app))
-
-    # 15. 注册 v19.0 人格记忆基座路由（Persona Memory Layer）
-    register_persona_routes(app)
-
-    # 16. 注册 v21 知识治理只读端点（演化审计 / 记忆档案导出）
-    register_knowledge_routes(app)
-    register_pantheon_routes(app)
-
-    # f0.3：系统级（不在租户轴上）端点族必须全部挂着各自的默认关闭特性闸 ——
-    # 哪一个被注册成了裸路由（重构漏了闸），启动即失败，而不是静默对外敞开。
-    assert_all_gated(app)
-
-    logger.info("✅ 所有路由线注册完毕 (含 v18.0 Zeus + v18.1 EvolveMem + aiduMEI 配置 + Obsidian + v19.0 Reflect/类型分离/人格基座 + v21 知识治理)")
+    # f0.3：系统级端点必须挂着各自的默认关闭特性闸，漏闸即启动失败。
+    assert_all_gated(target)
+    logger.info("✅ 路由注册完毕（%d 个白名单端点）", len(only))

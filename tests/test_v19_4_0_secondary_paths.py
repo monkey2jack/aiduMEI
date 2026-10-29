@@ -150,8 +150,6 @@ def test_federation_merge_ledger():
 def test_ledger_hooks_present_in_secondary_paths():
     for rel in (
         os.path.join("ducky", "federation", "writer.py"),
-        os.path.join("ducky", "refine_memory.py"),
-        os.path.join("ducky", "extended", "routes.py"),
     ):
         with open(os.path.join(_REPO_ROOT, *rel.split(os.sep)), encoding="utf-8") as f:
             src = f.read()

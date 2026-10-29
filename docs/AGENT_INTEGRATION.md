@@ -2,6 +2,14 @@
 
 aiduMEI is the durable memory layer. The host's native memory remains the short-term conversation layer. Do not copy the same memory into both systems: the host handles current turns and working context; aiduMEI stores facts, raw records, core memory, traces, and long-term evolution.
 
+## One command: `scripts/connect_host.py` (f0.7)
+
+Do not hand-edit host config. Run `python scripts/connect_host.py` on the machine where the host runs. It detects Claude Code (`~/.claude/settings.json`), Codex CLI (`~/.codex/hooks.json`) and Hermes (plugin symlink + `memory.provider: aidumem`), backs up the host config, and idempotently wires all three lines (read `UserPromptSubmit`, write `Stop`, distill `SessionEnd`) with commands pointing at this repo's scripts — no copies, so an upgrade can never leave the host running stale hooks. Other hooks in the file are left untouched; `--uninstall` removes only aiduMEI's entries.
+
+It then proves the wiring on the spot: the real write hook stores a one-time nonce, the real read hook recalls it from a fresh session, and the test memory is deleted. `--claude-test` adds one real `claude -p` turn. The first output line is always `服务 ✅/❌ · 宿主接入 ✅/❌`; anything but ✅ exits non-zero. Point it at a remote service with `--url`. Codex still requires trusting non-managed hooks once (`/hooks` in the TUI, or `--dangerously-bypass-hook-trust` headless). Hosts it does not know (Cursor and others) are wired by hand as described below.
+
+After the fact, `/health` (authorized view) reports `probes.host_wiring` — the last write that carried a host origin — and adds a warning when the service has run for 30 minutes without any.
+
 ## The two wires (read this before anything else)
 
 aiduMEI needs **two** independent hooks in your host. Wiring only one of them is

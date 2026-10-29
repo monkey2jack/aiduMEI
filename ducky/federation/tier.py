@@ -14,7 +14,6 @@ ducky.federation.tier — 分层记忆与差异化衰减
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime, timedelta, timezone
 
 # ── 三层定义 ────────────────────────────────────────────
@@ -31,12 +30,6 @@ TIER_TTL_DAYS: dict[str, int | None] = {
     PROCEDURAL: None,
 }
 
-# 各层召回基础权重（procedural 最高，保证铁律优先）
-TIER_WEIGHT: dict[str, float] = {
-    PROCEDURAL: 1.00,
-    SEMANTIC: 0.85,
-    EPISODIC: 0.70,
-}
 
 # category 关键词 → tier 的推断规则（命中即返回，顺序敏感）
 _CATEGORY_RULES: tuple[tuple[str, str], ...] = (
@@ -96,27 +89,3 @@ def decay_deadline(tier: str, recorded_at: datetime | None = None) -> str | None
     return (base + timedelta(days=ttl)).isoformat()
 
 
-def tier_weight(tier: str) -> float:
-    """该层的召回基础权重。"""
-    return TIER_WEIGHT[normalize_tier(tier)]
-
-
-def decay_factor(tier: str, age_days: float) -> float:
-    """
-    分层衰减系数 ∈ (0, 1]。
-
-    procedural：恒为 1.0（铁律零衰减）。
-    其余层：以 TTL 为半衰期做指数衰减，到 TTL 时约 0.5，
-    永不归零——旧事实只沉底，不消失。
-    """
-    tier = normalize_tier(tier)
-    ttl = TIER_TTL_DAYS[tier]
-    if ttl is None:
-        return 1.0
-    age = max(0.0, float(age_days))
-    return math.exp(-math.log(2) * age / ttl)
-
-
-def score_multiplier(tier: str, age_days: float) -> float:
-    """层权重 × 衰减系数 = 该事实在综合排序中的最终乘子。"""
-    return tier_weight(tier) * decay_factor(tier, age_days)
