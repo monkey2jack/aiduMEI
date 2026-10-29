@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 
 import pytest
@@ -19,71 +18,6 @@ _DB = os.path.join(_tmp, "facts.db")
 
 import ducky.utils as utils  # noqa: E402
 utils.FACTS_DB = _DB
-
-
-@pytest.fixture(autouse=True)
-def _db():
-    utils.FACTS_DB = _DB
-    c = sqlite3.connect(_DB)
-    c.executescript(
-        "DROP TABLE IF EXISTS pantheon_halls; DROP TABLE IF EXISTS hall_grants; "
-        "DROP TABLE IF EXISTS facts; PRAGMA user_version=0; "
-        "CREATE TABLE facts(id INTEGER PRIMARY KEY, user_id TEXT, bank_id TEXT);")
-    from ducky.schema_bootstrap import apply_migrations
-    apply_migrations(c)
-    c.commit()
-    c.close()
-    yield
-
-
-class TestPantheonNegativeTemplate:
-    """众神殿端点的负向对照（D1 已普查，本类是行为层模板）。"""
-
-    def test_stranger_cannot_grant_for_others(self):
-        """陌生人代他人签发借阅必须被拒。"""
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from ducky.routes_pantheon import register_pantheon_routes
-        app = FastAPI()
-        register_pantheon_routes(app)
-        c = TestClient(app)
-        r = c.post("/pantheon/grant", params={
-            "grantor_user_id": "victim", "grantee_user_id": "attacker",
-            "caller": "attacker",  # 非本人非 admin
-        })
-        assert r.json()["status"] == "error", "陌生人代他人签发必须被拒"
-
-    def test_stranger_cannot_revoke(self, monkeypatch):
-        """非 admin 不能撤销他人借阅。"""
-        monkeypatch.setenv("AIDUMEI_FEDERATION_ADMINS", "admin")
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from ducky.routes_pantheon import register_pantheon_routes
-        app = FastAPI()
-        register_pantheon_routes(app)
-        c = TestClient(app)
-        # 先由 admin 签发（caller=admin 在 AIDUMEI_FEDERATION_ADMINS 名单里）
-        r = c.post("/pantheon/grant", params={
-            "grantor_user_id": "alice", "grantee_user_id": "bob",
-            "caller": "admin",
-        })
-        assert r.json()["status"] == "ok"
-        gid = r.json()["grant"]["grant_id"]
-        # 陌生人撤销
-        r = c.post(f"/pantheon/grant/{gid}/revoke", params={"caller": "mallory"})
-        assert r.json()["status"] == "error", "非 admin 不能撤销"
-
-    def test_empty_caller_denied_on_management(self):
-        """管理面空 caller 一律拒（v22.0 零匿名）。"""
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from ducky.routes_pantheon import register_pantheon_routes
-        app = FastAPI()
-        register_pantheon_routes(app)
-        c = TestClient(app)
-        for ep in ["/pantheon/grant", "/pantheon/hall/x/deactivate"]:
-            r = c.post(ep, params={"grantor_user_id": "a", "grantee_user_id": "b"})
-            assert r.json()["status"] == "error", f"{ep} 空 caller 必须被拒"
 
 
 class TestCallerBindingNegativeTemplate:

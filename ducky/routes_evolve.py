@@ -4,12 +4,10 @@ ducky.routes_evolve — EvolveMem v18.1 路由
 端点列表：
   POST /evolve/feedback   — 用户对某条记忆打反馈（有用/无用/修正）
   GET  /evolve/report     — 获取进化状态报告
-  POST /evolve/cycle      — 手动触发一次进化循环（调试用）
-  POST /evolve/episode/feedback — 任务级（轨迹）反馈，按位置回传信用（v21.2 M1）
 
-f0.3：report / cycle 是全库统计与全库维护作业（不按域隔离），默认关闭，设
+f0.3：report 是全库统计作业（不按域隔离），默认关闭，设
 AIDUMEI_EVOLVE_ADMIN_ENABLED=true 才放行（见 ducky.system_endpoints）。
-两个 feedback 端点是控制台与 MCP 的默认接入路径，保持默认开启。
+feedback 端点是控制台与 MCP 的默认接入路径，保持默认开启。
 """
 from __future__ import annotations
 
@@ -28,8 +26,6 @@ from ducky.evolve_mem import (
     ensure_evolve_schema,
     get_evolve_report,
     record_feedback,
-    record_episode_feedback,
-    run_evolution_cycle,
 )
 from ducky.system_endpoints import system_route
 
@@ -55,14 +51,6 @@ class FeedbackRequest(BaseModel):
         default="", max_length=ID_FIELD_MAX_CHARS,
         description="v20 opt-in 作用域：与 user_id 搭配，越库反馈直接拒"
     )
-
-
-class EpisodeFeedbackRequest(BaseModel):
-    """v21.2 M1：任务级反馈 —— 调的是「这一整串操作」，不是「这一条记忆」。"""
-    session_id: str = Field(..., max_length=ID_FIELD_MAX_CHARS,
-                            description="本次会话 id；结算该会话当前开着的 episode")
-    reward: float = Field(..., ge=-1.0, le=1.0,
-                          description="任务奖励：>0 成功 / <0 失败。有界 [-1,1]")
 
 
 def register_evolve_routes(app: FastAPI) -> None:
@@ -100,25 +88,6 @@ def register_evolve_routes(app: FastAPI) -> None:
             logger.error(f"evolve_feedback 失败: {e}", exc_info=True)
             return {"status": "error", "detail": str(e)}
 
-    @app.post("/evolve/episode/feedback", summary="任务级反馈 — 轨迹信用分配（v21.2 M1）")
-    def evolve_episode_feedback(req: EpisodeFeedbackRequest) -> dict:
-        """对本 session 当前 episode 给一次任务级反馈并立即结算。
-
-        与 /evolve/feedback 的分工：那个调「被点名的那一条」，这个调
-        「这一整串操作」——奖励按轨迹位置回传，越靠近结果的步骤担得越重。
-
-        只写 evolve 侧表与 salience，**不碰 facts 正文**（v21.2 红线）。
-        """
-        try:
-            result = record_episode_feedback(req.session_id, req.reward)
-            if not result.get("ok"):
-                # 没有开着的 episode 是一种如实回报，不是错误 —— 调用方
-                # 需要能区分「结算了」和「没东西可结算」。
-                return {"status": "ok", **result}
-            return {"status": "ok", **result}
-        except Exception as e:
-            logger.error(f"evolve_episode_feedback 失败: {e}", exc_info=True)
-            return {"status": "error", "detail": str(e)}
 
     @app.get("/evolve/report", **system_route("evolve_admin", summary="EvolveMem 进化状态报告"))
     def evolve_report() -> dict:
@@ -132,21 +101,5 @@ def register_evolve_routes(app: FastAPI) -> None:
             logger.error(f"evolve_report 失败: {e}", exc_info=True)
             return {"status": "error", "detail": str(e)}
 
-    @app.post("/evolve/cycle", **system_route("evolve_admin", summary="手动触发进化循环（调试）"))
-    def evolve_cycle() -> dict:
-        """
-        手动执行一次 EvolveMem 进化循环（正常由后台每 6h 自动执行）。
-        返回本次 boost/decay 数量和 zero-hit 查询统计。
 
-        **这是全库维护作业，不按域隔离（v20.0 乙1）**：它扫 salience 全表调
-        权重，不带 user_id / bank_id 过滤，也不返回任何一条记忆的正文，只回
-        聚合计数。理由见 ducky.evolve_mem.run_evolution_cycle 的说明。
-        """
-        try:
-            result = run_evolution_cycle()
-            return {"status": "ok", **result}
-        except Exception as e:
-            logger.error(f"evolve_cycle 失败: {e}", exc_info=True)
-            return {"status": "error", "detail": str(e)}
-
-    logger.info("✅ EvolveMem 路由已注册 (/evolve/feedback · /evolve/report · /evolve/cycle)")
+    logger.info("✅ EvolveMem 路由已注册 (/evolve/feedback · /evolve/report)")

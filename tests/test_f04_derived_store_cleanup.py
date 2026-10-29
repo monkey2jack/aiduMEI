@@ -1,10 +1,8 @@
 """Deletion must reach the same physical stores as the real readers/writers."""
-import json
 import sqlite3
 
 import pytest
 
-from test_f04_auth_boundaries import api as api
 from test_f04_recovery import world as world
 
 
@@ -22,7 +20,11 @@ def derived(world, tmp_path, monkeypatch):
     for name, path in paths.items():
         with sqlite3.connect(path) as conn:
             if name in ('facts', 'observations'):
-                legacy._ensure_observations_table(conn)
+                # f0.6+++ WP2：/observe 写入端已移除，建表器随之删除；删除链仍须
+                # 清掉磁盘上的历史 observations 行，这里按存量 schema 手工建表。
+                conn.execute('CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                             "category TEXT NOT NULL DEFAULT 'general', summary TEXT NOT NULL, "
+                             "content TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '')")
                 for owner in ('alice', 'bob', ''):
                     conn.execute('INSERT INTO observations(category,summary,content,user_id) VALUES(?,?,?,?)',
                                  ('general', owner + '-summary', owner + '-body', owner))
@@ -68,21 +70,3 @@ def test_real_store_failure_keeps_repair_debt_and_retries(derived, table):
         assert conn.execute(f'SELECT COUNT(*) FROM {table} WHERE {where}').fetchone()[0] == 0
 
 
-@pytest.mark.parametrize('limit', [1, 2, 4])
-def test_mcp_facts_limit_reaches_real_http_reader(api, monkeypatch, limit):
-    import mcp_server
-    client, _, connect = api
-    with connect() as conn:
-        for owner, bank in [('alice', 'work'), ('alice', 'private'), ('bob', 'work')]:
-            for n in range(5):
-                conn.execute('INSERT INTO facts(category,fact_key,fact_value,user_id,bank_id,trust_score) VALUES(?,?,?,?,?,?)',
-                             ('general', 'limit-probe-' + str(n), owner + '-' + bank, owner, bank, .8))
-    def actual_get(path, params):
-        result = client.get(path, params={**params, 'caller_user_id': 'alice'})
-        assert result.status_code == 200, result.text
-        return result.json()
-    monkeypatch.setattr(mcp_server, '_api_get', actual_get)
-    result = json.loads(mcp_server.facts_search('limit-probe', limit=limit, user_id='alice', bank_id='work'))
-    assert result['count'] == limit
-    assert len(result['facts']) == limit
-    assert all(r['fact_value'] == 'alice-work' for r in result['facts'])

@@ -29,7 +29,6 @@ import sys
 import argparse
 import threading
 import time
-import urllib.parse
 
 import httpx
 from pathlib import Path
@@ -253,17 +252,14 @@ class _GuardedFastMCP(FastMCP):
     """Register every tool through one guard; scope SSE state per connection.
 
     f0.6 W-13（hark 审计 P0-3 / muse H-2）：破坏性工具默认不注册。宿主
-    Agent 被提示注入时，一次 `mem_delete_all(confirm=True)` 就能整域清库
-    且连墓碑一起擦（不可恢复）；「confirm 参数由模型自己填」不构成独立
-    确认。现在 mem_update / mem_delete / mem_delete_all / autodream_trigger /
-    crystals_detect / conflict_resolve 需部署侧显式
+    Agent 被提示注入时可借破坏性工具改写/删除记忆；「confirm 参数由模型
+    自己填」不构成独立确认。现在 mem_update / mem_delete 需部署侧显式
     AIDUMEI_MCP_DANGEROUS_TOOLS=1 才注册，默认工具集只含读+追加写。
     """
     DANGEROUS_TOOLS_ENV = "AIDUMEI_MCP_DANGEROUS_TOOLS"
-    DANGEROUS_TOOL_NAMES = frozenset({
-        "mem_update", "mem_delete", "mem_delete_all",
-        "autodream_trigger", "crystals_detect", "conflict_resolve",
-    })
+    # f0.6+++ WP2：mem_delete_all / autodream_trigger / crystals_detect /
+    # conflict_resolve 随其 REST 端点一起移除，破坏性工具只剩这两个。
+    DANGEROUS_TOOL_NAMES = frozenset({"mem_update", "mem_delete"})
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -330,21 +326,6 @@ def mem_add(messages: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAUL
 
 
 @mcp.tool()
-def mem_add_raw(content: str, source: str = "mcp", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """原味抽屉（Raw Drawer）— 零 LLM 直存原始文本，不经过提炼压缩。
-
-    适合存入代码片段、完整对话记录、原始日志等需要原文检索的内容。
-
-    Args:
-        content: 要存储的原始文本内容
-        source:  来源标识（如 cursor_hook / claude_code / manual）
-        user_id: 用户标识
-    """
-    result = _api_post("/add/raw", {"content": content, "source": source, "user_id": user_id, "bank_id": bank_id})
-    return _ok(result)
-
-
-@mcp.tool()
 def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_id: str = DEFAULT_BANK_ID,
                session_id: str = "") -> str:
     """语义搜索记忆（内置相关性闸门 + 显著性 boost）。
@@ -379,42 +360,6 @@ def mem_search(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 5, bank_
 
 
 @mcp.tool()
-def mem_search_deep(query: str, user_id: str = DEFAULT_USER_ID, top_k: int = 10,
-                    bank_id: str = "default") -> str:
-    """深度搜索 — 同时检索向量库 + FTS5 全文索引 + facts 结构化知识库，三路并行召回。
-
-    比 mem_search 召回更全面，适合知识库查询和精确事实检索。
-
-    Args:
-        query:   搜索关键词
-        user_id: 用户标识
-        top_k:   每路返回结果数，默认 10
-    """
-    # v20.2.4（外审 F-21）：此前**接了 user_id 却不发送** —— 调用方以为选了
-    # 租户，实际查的是默认域；而 /search/deep 那时还没有 scope 参数（F-05 已补），
-    # 于是这条 MCP 工具直接放大了「次级 API 全库吐正文」的影响面。
-    result = _api_get("/search/deep", {
-        "query": query,
-        "depth": min(max(top_k // 5, 1), 3),
-        "user_id": user_id,
-        "bank_id": bank_id,
-    })
-    return _ok(result)
-
-
-@mcp.tool()
-def mem_recent(user_id: str = DEFAULT_USER_ID, limit: int = 10, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """获取最近添加的记忆列表。
-
-    Args:
-        user_id: 用户标识
-        limit:   返回条数，默认 10
-    """
-    result = _api_get("/recent", {"user_id": user_id, "limit": limit, "bank_id": bank_id})
-    return _ok(result)
-
-
-@mcp.tool()
 def mem_update(memory_id: str, content: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
     """更新指定 ID 的记忆内容。
 
@@ -439,31 +384,9 @@ def mem_delete(memory_id: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DE
     return _ok(result)
 
 
-@mcp.tool()
-def mem_delete_all(user_id: str = DEFAULT_USER_ID, confirm: bool = False, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """⚠️ 危险：清空指定用户的全部记忆。操作不可逆，请谨慎使用。
-
-    Args:
-        user_id: 用户标识
-        confirm: 是否二次确认（清空任何用户都必须为 True）
-    """
-    result = _api_post("/delete_all", {"user_id": user_id, "confirm": confirm, "bank_id": bank_id})
-    return _ok(result)
-
-
 # ═══════════════════════════════════════════════════════
 # ② 统计与健康
 # ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def mem_stats(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """查看记忆统计信息（总数、用户分布、显著性统计等）。
-
-    Args:
-        user_id: 用户标识
-    """
-    result = _api_get("/stats", {"user_id": user_id, "bank_id": bank_id})
-    return _ok(result)
 
 
 @mcp.tool()
@@ -473,228 +396,8 @@ def mem_health() -> str:
     return _ok(result)
 
 
-@mcp.tool()
-def mem_usage() -> str:
-    """查看 API 使用量统计（各模型调用次数、Token 消耗等）。"""
-    result = _api_get("/usage")
-    return _ok(result)
-
-
 # ═══════════════════════════════════════════════════════
-# ③ Facts 结构化知识库
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def facts_search(query: str, limit: int = 10, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """搜索结构化知识事实库（facts）。
-
-    Facts 是经过实体提取的高质量结构化知识，与向量记忆互补。
-
-    Args:
-        query: 搜索关键词
-        limit: 返回条数，默认 10
-    """
-    result = _api_get("/facts/search", {"query": query, "top_k": limit, "user_id": user_id, "bank_id": bank_id})
-    return _ok(result)
-
-
-@mcp.tool()
-def facts_list(category: str = "", limit: int = 20, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """列出结构化知识事实。
-
-    Args:
-        category: 筛选类别（如 preference / event / skill / identity）
-        limit:    返回条数，默认 20
-    """
-    params: dict = {"limit": limit, "user_id": user_id, "bank_id": bank_id}
-    if category:
-        params["category"] = category
-    result = _api_get("/facts", params)
-    return _ok(result)
-
-
-@mcp.tool()
-def facts_add(content: str, category: str = "general", source: str = "mcp",
-              fact_key: str = "", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """向结构化知识库添加一条 Fact。
-
-    Args:
-        content:  事实内容文本
-        category: 分类（preference / event / skill / identity / general）
-        source:   来源标识
-    """
-    # v20.2.4（外审 F-21）：此前发的是 JSON body {"content", "category", "source"}。
-    # 端点 add_fact 的入参是**散装标量**（从 query 读），且**根本没有 content
-    # 字段** —— 于是这个工具从来没成功存进过任何一条事实：请求 200，内容全丢。
-    # content 的落点是 fact_value；参数走 query。
-    result = _api_post("/facts/add", None, params={
-        "fact_value": content,
-        "fact_key": (fact_key or content[:40]),
-        "category": category,
-        "source": source,
-        "user_id": user_id,
-        "bank_id": bank_id,
-    })
-    return _ok(result)
-
-
-@mcp.tool()
-def facts_entities(entity: str = "") -> str:
-    """查询 facts 实体图谱。
-
-    Args:
-        entity: 实体名称（为空则返回所有实体列表）
-    """
-    if entity:
-        result = _api_get("/facts/related", {"entity": entity})
-    else:
-        result = _api_get("/facts/entities/list")
-    return _ok(result)
-
-
-@mcp.tool()
-def facts_preferences() -> str:
-    """获取用户偏好 facts（category=preference 的结构化知识）。"""
-    result = _api_get("/facts/preferences")
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ④ 代码图谱（Zeus v18.0 新增）
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def code_impact(file_path: str) -> str:
-    """分析修改指定文件的波及范围（爆炸半径）。
-
-    在修改代码前调用，快速了解哪些其他文件依赖此文件，防止意外破坏。
-
-    Args:
-        file_path: 要分析的文件路径（相对或绝对路径）
-    """
-    # v20.2.4（外审 F-21）：API 的 ImpactRequest 要的是 `changed_files`（列表），
-    # 这里一直发 `file_path` —— 服务端拿到空列表，工具从来没真正工作过。
-    result = _api_post("/code/impact", {"changed_files": [file_path]})
-    return _ok(result)
-
-
-@mcp.tool()
-def code_graph_view(path: str = "") -> str:
-    """查看代码依赖图谱。
-
-    Args:
-        path: 筛选路径前缀（为空则返回全图摘要）
-    """
-    params: dict = {}
-    if path:
-        params["path"] = path
-    result = _api_get("/code/graph", params or None)
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑤ Session 会话持久化
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def session_start(user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
-                  session_id: str = "") -> str:
-    """开始一个新会话，建立记忆锚点。
-
-    Args:
-        user_id: 用户标识
-        bank_id: 记忆库标识
-        session_id: 可选，外部 Agent 自有会话 UUID；不传则服务端生成 ses_*。
-
-    Note:
-        会话 id 优先采纳外部传入的 session_id，未传则由**服务端生成**并在响应里返回。
-    """
-    # v21.1（S6）：v20.2.4 曾删掉本参数——因当时端点 /session/start 的签名是
-    # (user_id, bank_id)、**根本不接收** session_id，声明即假承诺。v21.0.1 起端点
-    # 已真正接收 session_id（外部 Agent 原生 UUID 优先），故本工具随之加回，与
-    # route/plugin 三入口契约对齐——签名说的仍是实话，只是「实话」的内容变了。
-    result = _api_post("/session/start", None,
-                       params={"user_id": user_id, "bank_id": bank_id,
-                               "session_id": session_id})
-    return _ok(result)
-
-
-@mcp.tool()
-def session_end(session_id: str, user_id: str = DEFAULT_USER_ID,
-                bank_id: str = DEFAULT_BANK_ID) -> str:
-    """结束会话，触发记忆沉淀和显著性更新。
-
-    Args:
-        session_id: 要结束的会话标识
-        user_id: 创建会话的用户标识
-        bank_id: 创建会话的记忆库标识
-    """
-    # 🔴v20.3.2-beta（外审 P1-5）：端点是 `def session_end(session_id: str)` ——
-    # 裸标量参数，FastAPI 从 **query** 绑定。发进 body 会恒 422。
-    # 同型缺陷在 ad3ba6c 已修过 scripts/agent_integration_check.py 一处，
-    # 这一处漏了 —— 「加完一处漏一处」。元守卫现在按 FastAPI 依赖图判绑定来源。
-    result = _api_post("/session/end", None,
-                       params={"session_id": session_id, "user_id": user_id, "bank_id": bank_id})
-    return _ok(result)
-
-
-@mcp.tool()
-def session_list() -> str:
-    """列出所有已记录的历史会话摘要。"""
-    result = _api_get("/session/list")
-    return _ok(result)
-
-
-@mcp.tool()
-def session_report(session_id: str, user_id: str = DEFAULT_USER_ID,
-                   bank_id: str = DEFAULT_BANK_ID) -> str:
-    """获取指定会话的详细记忆报告。
-
-    Args:
-        session_id: 会话标识
-        user_id: 创建会话的用户标识
-        bank_id: 创建会话的记忆库标识
-    """
-    # v20.2.4（外审 F-21）：API 侧是 @app.get("/session/report")，这里用的是 POST
-    # —— 405 一路被 _ok() 包成正常返回，调用方看不出工具坏了。
-    result = _api_get("/session/report", {"session_id": session_id,
-                                         "user_id": user_id, "bank_id": bank_id})
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑥ 观察与反思（Observe & Reflect）
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def mem_observe(query: str = "", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """观察记忆全景 — 返回高层次记忆摘要和热点话题。
-
-    Args:
-        query:   可选筛选关键词
-        user_id: 用户标识
-    """
-    params: dict = {"user_id": user_id, "bank_id": bank_id}
-    if query:
-        params["query"] = query
-    result = _api_get("/observe", params)
-    return _ok(result)
-
-
-@mcp.tool()
-def mem_reflect(topic: str, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """对某个话题进行深度反思 — 联结相关记忆，生成洞察。
-
-    Args:
-        topic:   反思话题
-        user_id: 用户标识
-    """
-    result = _api_post("/reflect", {"topic": topic, "user_id": user_id, "bank_id": bank_id})
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑦ 核心记忆块（Core Memory / Persona）
+# ③ 核心记忆块（Core Memory）
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
@@ -704,210 +407,6 @@ def core_memory_list(user_id: str = DEFAULT_USER_ID,
     result = _api_get("/api/core-memory", {
         "user_id": user_id, "bank_id": bank_id, "caller_user_id": _mcp_principal(),
     })
-    return _ok(result)
-
-
-@mcp.tool()
-def core_memory_get(block_key: str, user_id: str = DEFAULT_USER_ID,
-                    bank_id: str = DEFAULT_BANK_ID) -> str:
-    """获取指定核心记忆块。
-
-    Args:
-        block_key: 记忆块键名（如 user_profile / preferences / identity）
-        user_id: 记忆所属用户；默认当前配置的用户
-        bank_id: 记忆所属库；默认 default
-    """
-    result = _api_get(f"/api/core-memory/{urllib.parse.quote(block_key)}", {
-        "user_id": user_id, "bank_id": bank_id, "caller_user_id": _mcp_principal(),
-    })
-    return _ok(result)
-
-
-@mcp.tool()
-def mem_persona() -> str:
-    """获取 AI 自我人设定义（ai-self persona block）。"""
-    result = _api_get("/persona/ai-self")
-    return _ok(result)
-
-
-# ── v19.0 人格记忆基座（Persona Memory Layer）MCP 工具 ──
-# 与旧 /persona/ai-self 静态人设互补：新基座是按情境检索的自传体记忆库。
-
-@mcp.tool()
-def mem_persona_build(
-    persona_card: str = "",
-    persona_name: str = "",
-    persona_key: str = "",
-    mode: str = "synthesis",
-    source_material: str = "",
-    use_llm: bool = True,
-) -> str:
-    """构建人格记忆基座（v19.0 Persona Memory Layer）。
-
-    两种模式：
-      - synthesis 合成：从一句话人设生成虚构自传体记忆库（面向虚构角色）
-      - grounded 真实：从 source_material 抽取组织记忆，零虚构，每条可回溯来源
-
-    Args:
-        persona_card:    合成模式用，简短人设
-        persona_name:    人设名称
-        persona_key:     稳定标识（省略则自动推导）
-        mode:            synthesis | grounded
-        source_material: 真实模式用，素材原文（多行）
-        use_llm:         是否调用 LLM（False 时合成模式走规则降级）
-    """
-    body: dict = {
-        "persona_card": persona_card,
-        "persona_name": persona_name,
-        "persona_key": persona_key,
-        "mode": mode,
-        "source_material": source_material,
-        "use_llm": use_llm,
-    }
-    result = _api_post("/persona/build", body)
-    return _ok(result)
-
-
-@mcp.tool()
-def mem_persona_retrieve(
-    situation: str,
-    persona_key: str = "",
-    bank_id: int = 0,
-    k: int = 5,
-    level: str = "",
-) -> str:
-    """按当前情境检索人格记忆（动态条件化，替代整卡注入）。
-
-    Args:
-        situation:   当前情境描述（如「用户在做前端开发」）
-        persona_key: 基座标识（省略则用 bank_id）
-        bank_id:     指定基座版本 ID（与 persona_key 二选一）
-        k:           返回条数
-        level:       可选只取某层 L(人生阶段)/G(一般事件)/E(具体经历)
-    """
-    body: dict = {
-        "situation": situation,
-        "persona_key": persona_key,
-        "bank_id": bank_id,
-        "k": k,
-        "level": level,
-    }
-    result = _api_post("/persona/retrieve", body)
-    return _ok(result)
-
-
-@mcp.tool()
-def mem_persona_banks(persona_key: str = "", status: str = "") -> str:
-    """列出人格记忆基座（含版本历史、L/G/E 计数，可回滚）。
-
-    Args:
-        persona_key: 可选，只列某个基座
-        status:      可选，按状态过滤（ready | superseded | building | failed）
-    """
-    params: dict = {}
-    if persona_key:
-        params["persona_key"] = persona_key
-    if status:
-        params["status"] = status
-    result = _api_get("/persona/banks", params)
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑧ AutoDream 自动梦境（后台自演化）
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def autodream_status() -> str:
-    """查看 AutoDream 自动记忆演化的当前状态。"""
-    result = _api_get("/api/autodream/status")
-    return _ok(result)
-
-
-@mcp.tool()
-def autodream_report() -> str:
-    """获取最近一次 AutoDream 的执行报告（合并、蒸馏、归档摘要）。"""
-    result = _api_get("/api/autodream/report")
-    return _ok(result)
-
-
-@mcp.tool()
-def autodream_trigger() -> str:
-    """手动触发一次 AutoDream 演化（正常由定时任务驱动，此工具用于调试）。"""
-    result = _api_post("/api/autodream/trigger", {})
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑨ Raw Drawer 统计
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def raw_stats() -> str:
-    """查看原味抽屉（Raw Drawer）的存储统计。"""
-    result = _api_get("/raw/stats")
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑩ 知识树与场景
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def knowledge_tree() -> str:
-    """查看记忆知识树结构（按话题层级组织的记忆全景）。"""
-    result = _api_get("/knowledge/tree")
-    return _ok(result)
-
-
-@mcp.tool()
-def mem_scene(query: str = "") -> str:
-    """查看场景记忆簇（自动聚类的话题场景）。
-
-    Args:
-        query: 可选筛选关键词
-    """
-    params: dict = {}
-    if query:
-        params["query"] = query
-    result = _api_get("/scene", params or None)
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑪ 技能结晶（Skill Crystallizer — v16.0 Octopus）
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def crystals_list() -> str:
-    """列出已结晶的技能（从高频解决方案中自动提炼的可复用模式）。"""
-    result = _api_get("/crystals")
-    return _ok(result)
-
-
-@mcp.tool()
-def crystals_detect() -> str:
-    """手动触发技能结晶检测（分析近期记忆，识别可提炼为技能的高频模式）。"""
-    result = _api_post("/crystals/detect", {})
-    return _ok(result)
-
-
-# ═══════════════════════════════════════════════════════
-# ⑫ 冲突解决（Conflict Resolver — v16.0 Octopus）
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def conflict_resolve(topic: str = "", user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> str:
-    """检测并解决记忆冲突（矛盾的记忆会影响召回质量）。
-
-    Args:
-        topic:   可选，聚焦在某个话题范围内检测冲突
-        user_id: 用户标识
-    """
-    body: dict = {"user_id": user_id, "bank_id": bank_id}
-    if topic:
-        body["topic"] = topic
-    result = _api_post("/conflict/resolve", body)
     return _ok(result)
 
 
@@ -1058,35 +557,6 @@ def auto_memory_loop() -> None:
         except Exception as e:
             logger.error(f"❌ 自动记忆异常: {e}", exc_info=True)
         time.sleep(21600)  # 每 6 小时一次
-
-
-# ═══════════════════════════════════════════════════════
-# ⑬ EvolveMem 检索自进化（v18.1 新增）
-# ═══════════════════════════════════════════════════════
-
-@mcp.tool()
-def evolve_feedback(memory_id: str, signal: str, query: str = "", correction_text: str = "") -> str:
-    """提交对某条记忆的调用反馈，用于自动调整记忆权重。
-
-    Args:
-        memory_id: 记忆 UUID
-        signal:    反馈信号 ('useful' | 'useless' | 'correction')
-        query:     触发该记忆的搜索词（可选）
-        correction_text: 若为 'correction'，填入修正后的内容（可选）
-    """
-    body = {"memory_id": memory_id, "signal": signal}
-    if query:
-        body["query"] = query
-    if correction_text:
-        body["correction_text"] = correction_text
-    result = _api_post("/evolve/feedback", body)
-    return _ok(result)
-
-@mcp.tool()
-def evolve_report() -> str:
-    """获取 EvolveMem 检索自进化的近期统计报告（搜索命中率、动态权重调整）。"""
-    result = _api_get("/evolve/report")
-    return _ok(result)
 
 
 # ═══════════════════════════════════════════════════════

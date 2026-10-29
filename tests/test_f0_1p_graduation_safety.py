@@ -81,21 +81,3 @@ def test_add_succeeded_rejects_every_silent_failure_shape():
         assert _add_succeeded(good) is True, f"正常写入 {good!r} 被误判为失败"
 
 
-def test_graduate_endpoint_defaults_to_dry_run():
-    """破坏性端点的默认值必须在安全侧：`POST /graduate` 默认只预览。"""
-    src = open(os.path.join(_REPO, "ducky", "routes_v8.py"), encoding="utf-8").read()
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "graduate_instincts":
-            defaults = dict(zip(
-                [a.arg for a in node.args.args][-len(node.args.defaults):],
-                node.args.defaults,
-            ))
-            dr = defaults.get("dry_run")
-            assert dr is not None, "graduate_instincts 的 dry_run 没有默认值"
-            assert isinstance(dr, ast.Constant) and dr.value is True, (
-                f"dry_run 默认应为 True（只预览），实际 {getattr(dr, 'value', dr)!r} —— "
-                "不带参数调一次就真删，默认值方向错了"
-            )
-            return
-    raise AssertionError("graduate_instincts 不在 routes_v8.py 里 —— 守卫失去着力点")

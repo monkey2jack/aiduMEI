@@ -3,13 +3,12 @@
 
 v20.3.1（九份审计 P0-3）修掉两处空断言 —— 上一版的「接入检查」给宿主的
 绿灯有两个是假的：
-  1. GET /gate 携带 JSON body：FastAPI 对 GET 只读 query string，body 里的
-     nonce 被整个丢弃 → 恒命中 empty_query 早返回 → 任何 200 都算过，
-     相关性闸门从未被真正测过。
+  1. GET 携带 JSON body：FastAPI 对 GET 只读 query string，body 被整个丢弃
+     （当年是 /gate 恒命中 empty_query）。request() 对 GET 一律走 query string。
   2. `values.count(nonce)` 是整串相等：写入的是 `f"{nonce} is the handshake."`，
      检索结果里永远不会有裸 nonce → 恒 count==0 → 恒过。重复注入五次它也绿。
-判据改为：gate 必须真的判定过 nonce（needs_memory=True 且 reason 非 empty_query）；
 重复检测改为子串包含计数，且带「故意注入两次必须变红」的负向对照（见测试）。
+f0.6+++ WP2：检查面收到保留路由（/health /add /search /api/core-memory /delete）。
 """
 from __future__ import annotations
 
@@ -37,7 +36,7 @@ def request(method: str, path: str, body=None, expect=(200,)):
     data = None
     if method.upper() == "GET" and isinstance(body, dict):
         # v20.3.1：GET 的参数走 query string —— 服务端 GET 路由只读 URL
-        # 参数，JSON body 会被整个丢弃（这正是上一版 /gate 假绿灯的根因）。
+        # 参数，JSON body 会被整个丢弃（这正是当年 /gate 假绿灯的根因）。
         qs = urllib.parse.urlencode({k: v for k, v in body.items() if v is not None})
         if qs:
             path = f"{path}?{qs}"
@@ -59,11 +58,6 @@ def check(name: str, ok: bool, data):
     STEPS.append({"name": name, "status": "pass" if ok else "fail", "data": data})
     if not ok:
         raise AssertionError(f"{name} failed: {data}")
-
-
-def scoped_path(path: str, **params: str) -> str:
-    """POST routes such as CoreMemory inject and session start read query only."""
-    return f"{path}?{urllib.parse.urlencode(params)}"
 
 
 # 与 /health 的 ingest_liveness 探针同一口径（两处判据必须同源，
@@ -99,39 +93,19 @@ def main() -> int:
         })
         check("add", status == 200 and added.get("status") == "ok"
               and added.get("durable") is not False, added)
-        status, gate = request("GET", "/gate", {"query": f"remember {nonce}", "user_id": tenant, "bank_id": "default"})
-        # v20.3.1：只看 200 是假绿灯 —— empty_query 也是 200。闸门必须
-        # 真的对本次 nonce 做过相关性判定。
-        check("gate",
-              status == 200 and gate.get("needs_memory") is True and gate.get("reason") != "empty_query",
-              gate)
         status, searched = request("POST", "/search", {
             "query": nonce, "user_id": tenant, "caller_user_id": tenant,
             "bank_id": "default", "limit": 5,
         })
         check("search", status == 200 and searched.get("status") == "ok"
               and searched.get("recall_verdict") == "found", searched)
-        status, raw = request("POST", "/add/raw", {"content": f"integration raw {nonce}", "user_id": tenant, "bank_id": "default"})
-        check("raw", status == 200 and raw.get("status") in {"ok", "partial"}, raw)
-        status, injected = request("POST", scoped_path(
-            "/api/core-memory/inject", user_id=tenant, bank_id="default",
-            caller_user_id=tenant))
-        check("core-inject", status == 200 and injected.get("status") == "ok"
-              and injected.get("user_id") == tenant
-              and injected.get("bank_id") == "default", injected)
-        status, session_start = request("POST", scoped_path(
-            "/session/start", user_id=tenant, bank_id="default"))
-        check("session-start", status == 200 and session_start.get("status") == "ok"
-              and bool(session_start.get("session_id"))
-              and session_start.get("user_id") == tenant
-              and session_start.get("bank_id") == "default", session_start)
-        session_id = session_start.get("session_id") if isinstance(session_start, dict) else None
-        status, session_end = request("POST", scoped_path(
-            "/session/end", session_id=session_id, user_id=tenant, bank_id="default"))
-        check("session-end", status == 200 and session_end.get("status") == "ok"
-              and session_end.get("session_id") == session_id
-              and session_end.get("user_id") == tenant
-              and session_end.get("bank_id") == "default", session_end)
+        # f0.6+++ WP2：/gate、/add/raw、/api/core-memory/inject、/session/start|end
+        # 随路由瘦身下线；CoreMemory 只剩 CC 读线用的 GET /api/core-memory。
+        status, core = request("GET", "/api/core-memory", {
+            "user_id": tenant, "bank_id": "default", "caller_user_id": tenant})
+        check("core-memory", status == 200 and core.get("status") == "ok"
+              and core.get("user_id") == tenant
+              and core.get("bank_id") == "default", core)
         results = searched.get("results", [])
         values = [r.get("memory") or r.get("content") or r.get("fact_value") for r in results]
         # v20.3.1：整串相等改为子串包含 —— 写入的是 f"{nonce} is the handshake."，
@@ -139,8 +113,17 @@ def main() -> int:
         # 的旧判据抓不到任何东西；子串计数才是「同一条记忆被注入几次」。
         dup_count = sum(1 for v in values if v and nonce in str(v))
         check("no-duplicate-injection", dup_count <= 1, {"values": values[:10], "dup_count": dup_count})
-        status, cleanup = request("POST", "/delete_all", {"user_id": tenant, "bank_id": "default", "confirm": True})
-        check("cleanup", status in (200, 207) and cleanup.get("status") == "committed", cleanup)
+        # f0.6+++ WP2：/delete_all 下线 —— 按 nonce 命中逐条 /delete 清掉本次写入。
+        hits = [r.get("id") for r in results
+                if nonce in str(r.get("memory") or r.get("content") or "") and r.get("id")]
+        failed = []
+        for memory_id in hits:
+            status, deleted = request("POST", "/delete", {
+                "memory_id": memory_id, "user_id": tenant, "caller_user_id": tenant,
+                "bank_id": "default"})
+            if status != 200 or deleted.get("status") == "error":
+                failed.append({"id": memory_id, "status": status, "body": deleted})
+        check("cleanup", bool(hits) and not failed, {"deleted": len(hits) - len(failed), "failed": failed})
 
         # ── 宿主接线（v21.2.0：这一段是一次真实事故的产物）──────────────
         #

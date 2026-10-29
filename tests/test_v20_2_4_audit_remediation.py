@@ -166,6 +166,7 @@ def test_stub_guard_has_reach():
 class TestLocalGearMakesNoOutboundCall:
     def test_call_llm_is_blocked_and_counted(self, monkeypatch):
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         import ducky.llm_client as lc
         # 前提反证：真发请求的那个函数被换成炸弹 —— 一旦闸门漏了，测试会响
         monkeypatch.setattr(lc.requests, "post",
@@ -174,6 +175,7 @@ class TestLocalGearMakesNoOutboundCall:
 
     def test_rerank_is_blocked_with_honest_status(self, monkeypatch):
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         import ducky.mem0_runtime as rt
         assert rt.rerank("q", ["a", "b"]) == []
         telem = rt.last_rerank_telemetry()
@@ -188,6 +190,7 @@ class TestLocalGearMakesNoOutboundCall:
         import ducky.llm_client as lc
         for mode in ("cloud", "auto"):
             monkeypatch.setenv("AIDUMEI_ENGINE_MODE", mode)
+            monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
             called = {"n": 0}
 
             def _fake_post(*a, **k):
@@ -421,7 +424,7 @@ def test_ci_has_the_three_new_acceptance_jobs():
 # Count only tests/test_*.py; register intentional changes here.
 # f0.5：+1 = tests/test_f05_carrier_and_backoff.py（退避/载体用例的
 # AIDUMEI_DATA_DIR 隔离沙箱，须先于 import 设环境，tmp_path 做不到）
-_MKDTEMP_BASELINE = 63
+_MKDTEMP_BASELINE = 56  # f0.6+++ WP2: 63 -> 56 (tests for removed routes deleted)
                                 # 2026-09-10 v20.5.0：+4（test_v20_5_0_lineage_identity / grant_authz /
                                 # backfill / crud_update 四个新模块的模块级测试库——模块顶层覆盖
                                 # utils.FACTS_DB 必须用持久目录，tmp_path 函数级作用域做不到）

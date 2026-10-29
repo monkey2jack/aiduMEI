@@ -72,22 +72,14 @@ def bound_client(monkeypatch):
 
 
 @pytest.mark.parametrize("method,path,placement,payload", [
-    ("GET", "/recent", "params", {}),
-    ("GET", "/stats", "params", {}),
-    ("GET", "/facts", "params", {}),
-    ("GET", "/facts/categories", "params", {}),
-    ("GET", "/memory/types", "params", {}),
-    ("GET", "/reflect/list", "params", {}),
-    ("GET", "/session/list", "params", {}),
-    ("POST", "/session/start", "params", {}),
+    ("GET", "/api/recent", "params", {}),
+    ("GET", "/api/stats", "params", {}),
+    ("GET", "/api/facts", "params", {}),
+    ("GET", "/api/facts/categories", "params", {}),
     ("GET", "/api/core-memory", "params", {}),
-    ("POST", "/add/raw", "json", {"content": "synthetic"}),
     ("POST", "/add", "json", {"messages": [{"role": "user", "content": "synthetic"}], "infer": False}),
     ("POST", "/update", "json", {"memory_id": "nonexistent", "content": "synthetic"}),
     ("POST", "/delete", "json", {"memory_id": "nonexistent"}),
-    ("POST", "/delete_all", "json", {"confirm": True}),
-    ("POST", "/persona/ai-self/add", "params", {"category": "identity", "key": "x", "value": "synthetic"}),
-    ("POST", "/memory/types/reset", "json", {}),
 ])
 def test_token_a_cannot_claim_to_be_target_b(bound_client, method, path, placement, payload):
     client, headers = bound_client
@@ -98,7 +90,7 @@ def test_token_a_cannot_claim_to_be_target_b(bound_client, method, path, placeme
 
 def test_full_governance_cannot_be_enabled_by_forged_admin(bound_client):
     client, headers = bound_client
-    response = client.get("/governance/candidates", params={"caller_user_id": "admin"}, headers=headers)
+    response = client.get("/api/governance/candidates", params={"caller_user_id": "admin"}, headers=headers)
     assert response.status_code == 403
 
 
@@ -127,17 +119,7 @@ def test_registered_scope_census_requires_the_shared_wrapper():
                 count += 1
                 if not getattr(route.endpoint, "__aidumei_scoped__", False):
                     violations.append(route.path)
-    assert count >= 100
+    assert count >= 25   # f0.6+++ WP2：瘦身后（扁平 + /api）
     assert not violations
 
 
-@pytest.mark.parametrize("method,path,params", [
-    ("POST", "/pantheon/grant", {"grantor_user_id": "agent-b", "grantee_user_id": "agent-a", "caller": "agent-b"}),
-    ("POST", "/pantheon/grant/nonexistent/revoke", {"caller": "admin"}),
-    ("GET", "/pantheon/grants", {"user_id": "agent-b", "caller": "admin"}),
-    ("GET", "/pantheon/halls", {"caller": "admin"}),
-])
-def test_pantheon_management_cannot_self_report_owner_or_admin(bound_client, method, path, params):
-    client, headers = bound_client
-    response = client.request(method, path, headers=headers, params=params)
-    assert response.status_code == 403, response.text

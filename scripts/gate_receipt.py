@@ -14,7 +14,7 @@ import time
 
 
 REQUIRED_STEPS = {"tests": "tests.log", "static": "ruff.log", "compile": "compile.log",
-                  "goldenset": "goldenset.log",
+                  "goldenset": "goldenset.log", "goldenset_native": "goldenset_native.log",
                   "tree-scan": "tree-scan.log", "message-scan": "message-scan.log",
                   "metadata-scan": "metadata-scan.log", "workflow": "workflow.log"}
 

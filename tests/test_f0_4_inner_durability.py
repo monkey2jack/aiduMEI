@@ -92,12 +92,3 @@ def test_new_add_sidecar_failure_is_not_swallowed_or_redispatched(tmp_path, mode
     assert len(out['vectors']) == 2 and out['health']['repair_required'] == 1
 
 
-@pytest.mark.parametrize('mode', ['rollback_fts', 'rollback_salience', 'rollback_salience_uncertain'])
-def test_rollback_after_ack_sidecar_failure_propagates_without_claiming_undone(tmp_path, mode):
-    out = probe(tmp_path, mode)
-    assert out['error_type'] == ('MutationUncertain' if mode.endswith('_uncertain')
-                                 else 'OperationalError')
-    assert out['undone'] == 0
-    assert [row['kind'] for row in sdk_rows(out)] == ['mem0_add', 'mem0_update']
-    assert all(row['state'] == 'acknowledged' for row in sdk_rows(out))
-    assert len(out['vectors']) == 1 and out['vectors'][0]['memory'] == out['restored']

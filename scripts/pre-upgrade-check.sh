@@ -152,39 +152,22 @@ smoke() {
 }
 
 smoke "health"     GET  "/health"
-smoke "stats"      GET  "/stats"
-smoke "categories" GET  "/facts/categories"
-smoke "list user"  GET  "/facts?category=%E5%A4%A7%E5%8F%94"
-smoke "search user" GET  "/facts/search?query=%E5%A4%A7%E5%8F%94&top_k=5"
+smoke "stats"      GET  "/api/stats"
+smoke "categories" GET  "/api/facts/categories"
+smoke "list user"  GET  "/api/facts?category=%E5%A4%A7%E5%8F%94"
+smoke "search user" POST "/search" '{"query":"用户","limit":5}'
 
 # ============================================================================
-# 步骤 4: 3 个 cron 脚本的 --dry-run
+# 步骤 4: native 内核只读体检（f0.7 P2-3：原先 dry-run 的 dedup_facts / decay_scanner /
+#         recompute_trust 三个脚本早已不存在，这一步一直是空转的「跳过」）
 # ============================================================================
-step "步骤 4/5 — 3 个 cron 脚本 --dry-run"
+step "步骤 4/5 — native 内核只读体检"
 
-dry_run() {
-  local script="$1"
-  local path="${SCRIPTS_DIR}/${script}"
-  if [[ ! -f "${path}" ]]; then
-    warn "脚本不存在，跳过: ${script}"
-    return
-  fi
-  # 先看脚本是否声明 --dry-run
-  if grep -q -- "--dry-run" "${path}" 2>/dev/null; then
-    echo "  🧪 ${script} --dry-run"
-    if "${VENV_PY}" "${path}" --dry-run 2>&1 | tail -5; then
-      ok "${script} --dry-run 完成"
-    else
-      bad "${script} --dry-run 失败"
-    fi
-  else
-    warn "${script} 不支持 --dry-run（已跳过）"
-  fi
-}
-
-dry_run "dedup_facts.py"
-dry_run "decay_scanner.py"
-dry_run "recompute_trust.py"
+if PREFLIGHT_OUT=$("${VENV_PY}" "${SCRIPTS_DIR}/native_preflight.py" --data-dir "${GATE_DATA_DIR}" 2>&1); then
+  ok "native 体检：${PREFLIGHT_OUT}"
+else
+  bad "native 体检未过：${PREFLIGHT_OUT}"
+fi
 
 # ============================================================================
 # 步骤 5: 端到端集成测试

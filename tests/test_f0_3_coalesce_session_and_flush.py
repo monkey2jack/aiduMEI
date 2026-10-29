@@ -5,9 +5,8 @@ coalesce key used to read session_id/session/chat_id/conversation_id only,
 so turns of different sessions were merged into one batch and the batch's
 provenance was the first turn's.
 
-C4 (S-4): POST /add/coalesce/flush ran layer1 without the batch's infer flag,
-had no LLM-failure fallback, and answered 200 {"status": "ok"} even when a
-batch failed after its buffer had already been drained.
+C4 (S-4, manual flush endpoint) was removed with POST /add/coalesce/flush in
+f0.6+++ WP2; its tests went with it.
 """
 from __future__ import annotations
 
@@ -79,11 +78,7 @@ def test_origin_agent_is_an_axis_too(queue):
     assert sorted(b["metadata"]["_origin_agent"] for b in batches) == ["cursor", "hermes"]
 
 
-# ── route rig for C3 (end to end) and C4 ────────────────────────────────
-
-class LLMError(RuntimeError):
-    """Same type *name* the pipeline recognizes as an LLM-leg failure."""
-
+# ── route rig for C3 (end to end) ─────────────────────────────────────────
 
 class _Mem:
     """Signature-aligned with mem0.Memory.add / get_all / search."""
@@ -91,13 +86,10 @@ class _Mem:
     def __init__(self):
         from types import SimpleNamespace
         self.adds = []
-        self.fail_direct = False
         self.vector_store = SimpleNamespace(client=object(), collection_name="")
 
     def add(self, messages, *, user_id=None, agent_id=None, run_id=None, metadata=None,
             timestamp=None, expiration_date=None, infer=True, memory_type=None, prompt=None):
-        if self.fail_direct:
-            raise RuntimeError("vector store down (simulated)")
         self.adds.append({"messages": messages, "user_id": user_id,
                           "metadata": metadata, "infer": infer})
         return {"results": [{"id": f"m-{len(self.adds)}", "memory": str(messages),
@@ -173,98 +165,7 @@ def test_hook_shaped_add_requests_of_two_sessions_buffer_separately(rig):
     client, _, _, _ = rig
     _buffer(client, "hook turn of session one", session="s-1")
     _buffer(client, "hook turn of session two", session="s-2")
-    status = client.get("/add/coalesce", params={"user_id": "alice"}).json()
-    assert status["buffer_count"] == 2, status
+    # f0.6+++ WP2: GET /add/coalesce (status) was removed; read the buffer.
+    assert len(coalesce._coalesce_buf) == 2, coalesce._coalesce_buf
 
 
-@pytest.mark.parametrize("infer", [False, True])
-def test_manual_flush_keeps_the_batch_infer_flag(rig, infer):
-    client, _, calls, _ = rig
-    _buffer(client, "short turn waiting for its batch", infer=infer)
-    r = client.post("/add/coalesce/flush", params={"user_id": "alice", "bank_id": "work"})
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "ok" and r.json()["n"] == 1
-    assert [c["infer"] for c in calls] == [infer], (
-        "manual flush re-inferred (or dropped) the batch's own infer flag")
-    assert calls[0]["bank_id"] == "work"
-
-
-def test_manual_flush_falls_back_to_direct_write_on_llm_error(rig):
-    client, mem, calls, state = rig
-    state["layer1_error"] = LLMError("llm gateway timeout (simulated)")
-    queued = _buffer(client, "turn whose distillation will fail")
-    r = client.post("/add/coalesce/flush", params={"user_id": "alice", "bank_id": "work"})
-    assert r.status_code == 200, r.text
-    entry, = r.json()["flushed"]
-    assert entry["ok"] is True and entry["distillation"] == "skipped_llm_error", entry
-    assert len(mem.adds) == 1 and mem.adds[0]["infer"] is False, (
-        "LLM failure must fall back to the deterministic direct write")
-    job = client.get(f"/add/job/{queued['job_id']}",
-                     params={"user_id": "alice", "bank_id": "work"}).json()["job"]
-    assert job["status"] == "done"
-
-
-def test_manual_flush_reports_failure_instead_of_ok(rig):
-    client, mem, _, state = rig
-    state["layer1_error"] = RuntimeError("layer1 exploded (simulated, not an LLM error)")
-    mem.fail_direct = True
-    queued = _buffer(client, "turn that cannot be stored")
-    r = client.post("/add/coalesce/flush", params={"user_id": "alice", "bank_id": "work"})
-    assert r.status_code == 500, r.text
-    body = r.json()
-    assert body["status"] == "failed" and body["failed"] == 1
-    assert body["flushed"][0]["ok"] is False and body["flushed"][0]["error"]
-    job = client.get(f"/add/job/{queued['job_id']}",
-                     params={"user_id": "alice", "bank_id": "work"}).json()["job"]
-    assert job["status"] == "repair_required"
-    assert job["durable"] is False
-
-
-def test_manual_flush_partial_is_207(rig, monkeypatch):
-    client, mem, _, state = rig
-    _buffer(client, "session one turn", session="s-1")
-    _buffer(client, "session two turn", session="s-2")
-    seen = {"n": 0}
-
-    def flaky(memory, messages_json, user_id, metadata, bank_id="default", infer=True):
-        seen["n"] += 1
-        if "session two" in str(messages_json):
-            raise RuntimeError("second batch broken (simulated)")
-        return {"status": "ok", "action": "indexed", "details": {}}
-
-    import ducky.hot.add as hot_add
-    monkeypatch.setattr(hot_add, "lazy_import_layer1", lambda: flaky)
-    mem.fail_direct = True
-    r = client.post("/add/coalesce/flush", params={"user_id": "alice", "bank_id": "work"})
-    assert r.status_code == 207, r.text
-    body = r.json()
-    assert body["status"] == "partial" and body["n"] == 2 and body["failed"] == 1
-
-
-def test_manual_flush_without_executor_does_not_drain_the_queue(monkeypatch, queue):
-    import ducky.hot.add as hot_add
-    monkeypatch.setattr(coalesce, "_coalesce_flush_cb", None)
-    monkeypatch.setattr(hot_add, "get_memory", lambda: _Mem())   # backend ready
-    queue.coalesce_enqueue("alice", "buffered turn", _hook_md("s-1", 1), bank_id="work")
-    app = FastAPI()
-    hot_add.register_add_routes(app)
-    r = TestClient(app).post("/add/coalesce/flush", params={"user_id": "alice"})
-    assert r.status_code == 503 and r.json()["status"] == "unavailable"
-    assert len(queue._coalesce_buf) == 1, "queue drained with nobody to run the batch"
-
-
-def test_manual_flush_on_an_unconfigured_backend_is_the_standard_503(monkeypatch, queue):
-    """Zero-credential deployments keep the actionable 503 (what to configure)."""
-    import ducky.hot.add as hot_add
-    from fastapi import HTTPException
-
-    def _unconfigured():
-        raise HTTPException(503, "memory backend not ready: see /health, or use /add/raw")
-
-    monkeypatch.setattr(hot_add, "get_memory", _unconfigured)
-    queue.coalesce_enqueue("alice", "buffered turn", _hook_md("s-1", 1), bank_id="work")
-    app = FastAPI()
-    hot_add.register_add_routes(app)
-    r = TestClient(app).post("/add/coalesce/flush", params={"user_id": "alice"})
-    assert r.status_code == 503 and "/health" in r.text
-    assert len(queue._coalesce_buf) == 1

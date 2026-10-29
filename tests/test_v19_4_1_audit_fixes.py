@@ -18,7 +18,6 @@ tests/test_v19_4_1_audit_fixes.py — v19.4.1 审计补丁版回归测试
   P0-4  单条删除级联清原文层
   P1-1  幂等键根治（纯字符串载荷同样幂等 + occurrences 计数）
   P1-2  中文切词与 trigram 索引对齐 + _recall_path 可自证
-  P1-3  observations 幂等建表，/observe 开箱不再 500
   P2-2  PBKDF2 口令 + 旧格式自动升级
   P2-4  router_usage 默认禁用
 """
@@ -317,21 +316,6 @@ def test_p02_trajectory_exposes_tenant_scope():
     assert step["scoped"] is True
 
 
-def test_p02b_cross_tenant_overwrite_is_prevented():
-    """P0-2b：不同租户写同一 (category, fact_key) 不得互相销毁
-
-    唯一约束是 ON CONFLICT(agent_id, category, fact_key)，而 /facts/add 此前
-    把 agent_id 恒写常量 —— 于是 bob 写入会直接覆盖 alice 的 fact_value。
-    这是跨租户数据破坏，比可见性泄漏更严重。
-    """
-    import pathlib
-    routes = pathlib.Path(_REPO_ROOT, "ducky", "hot", "legacy_routes.py").read_text(encoding="utf-8")
-    assert "effective_agent" in routes, "/facts/add 未按租户落 agent_id（P0-2b 回退）"
-    assert "_PANTHEON_DEFAULT_AGENT, _PANTHEON_DEFAULT_PROFILE" not in routes, (
-        "agent_id 仍被写成常量，跨租户覆盖未修"
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════
 # P2-2  PBKDF2 口令与旧格式自动升级
 # ═══════════════════════════════════════════════════════════════════
@@ -371,7 +355,8 @@ def test_p22_session_lifecycle():
     assert ttl > 0
     assert auth.validate_session(token) is True
     assert auth.validate_session("not-a-real-token") is False
-    assert auth.revoke_session(token) is True
+    # f0.6+++ WP2：/logout 与单会话 revoke 随路由瘦身移除；吊销面只剩改密时的全量吊销
+    assert auth.revoke_all_sessions() >= 1
     assert auth.validate_session(token) is False
 
 
@@ -412,126 +397,6 @@ def test_p24_router_usage_never_spawns_ssh_when_disabled(monkeypatch):
     monkeypatch.setattr(ru.subprocess, "check_output", _boom)
     assert ru.fetch_router_llm_usage() == {}
     assert called["n"] == 0
-
-
-# ═══════════════════════════════════════════════════════════════════
-# P1-3  observations 建表与生产 schema 兼容
-# ═══════════════════════════════════════════════════════════════════
-
-_PRODUCTION_OBS_DDL = """
-CREATE TABLE observations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category TEXT NOT NULL DEFAULT 'general',
-    summary TEXT NOT NULL,
-    content TEXT NOT NULL,
-    source_ids TEXT NOT NULL DEFAULT '[]',
-    proof_count INTEGER NOT NULL DEFAULT 1,
-    confidence REAL NOT NULL DEFAULT 0.5,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    is_stale INTEGER NOT NULL DEFAULT 0,
-    history TEXT NOT NULL DEFAULT '[]'
-);
-"""
-
-
-def _fresh_obs_conn(tmp_path, *, legacy: bool):
-    """造一个 observations 库连接。legacy=True 时用生产存量 schema（无 user_id）。"""
-    import sqlite3
-
-    db = tmp_path / "observations.db"
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    if legacy:
-        conn.executescript(_PRODUCTION_OBS_DDL)
-        conn.execute(
-            "INSERT INTO observations (category, summary, content) VALUES (?,?,?)",
-            ("habit", "早起", "用户习惯早上六点起床"),
-        )
-        conn.commit()
-    return conn
-
-
-def test_p13_ensure_observations_is_idempotent(tmp_path):
-    """全新库：幂等建表，重复调用无副作用"""
-    from ducky.hot.legacy_helpers import _ensure_observations_table, _observations_columns
-
-    conn = _fresh_obs_conn(tmp_path, legacy=False)
-    _ensure_observations_table(conn)
-    _ensure_observations_table(conn)
-    cols = _observations_columns(conn)
-    assert {"id", "category", "summary", "content", "is_stale", "user_id"} <= cols
-    n = conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='observations'"
-    ).fetchone()[0]
-    assert n == 1
-
-
-def test_p13_legacy_production_schema_gets_user_id_column(tmp_path):
-    """存量库（v7 手工建表，无 user_id）必须被幂等补列，且历史数据零丢失
-
-    这条断言来自生产实机 schema 探针：生产 observations 表的列集与本地
-    新建表不同，本地测试库替代不了实机验证。
-    """
-    from ducky.hot.legacy_helpers import _ensure_observations_table, _observations_columns
-
-    conn = _fresh_obs_conn(tmp_path, legacy=True)
-    assert "user_id" not in _observations_columns(conn), "前提：存量 schema 无 user_id"
-
-    _ensure_observations_table(conn)
-
-    assert "user_id" in _observations_columns(conn), "存量库未补上 user_id 列"
-    rows = conn.execute("SELECT summary, user_id FROM observations").fetchall()
-    assert len(rows) == 1, "迁移丢了历史观察数据（零破坏铁律违反）"
-    assert rows[0]["summary"] == "早起"
-    # 历史行 user_id 为空 → 宽松档下视为未标记归属，仍对本机可见
-    assert (rows[0]["user_id"] or "") == ""
-
-
-def test_p13_legacy_columns_preserved(tmp_path):
-    """建表 DDL 必须对齐生产列集，不得另发明一套让新旧数据分叉"""
-    from ducky.hot.legacy_helpers import _ensure_observations_table, _observations_columns
-
-    conn = _fresh_obs_conn(tmp_path, legacy=False)
-    _ensure_observations_table(conn)
-    cols = _observations_columns(conn)
-    for col in ("summary", "source_ids", "proof_count", "confidence", "history"):
-        assert col in cols, f"缺少生产 schema 的列 {col}，新旧库将分叉"
-
-
-def test_p13_observe_route_guards_missing_user_id_column(tmp_path, monkeypatch):
-    """路由不得假设 user_id 列存在 —— 补列失败时也必须能读，不能 500
-
-    模拟「迁移因锁/权限失败」：打桩让补列成为 no-op，再传 user_id 查询。
-    """
-    import sqlite3
-
-    import ducky.hot.legacy_helpers as helpers
-    from ducky.hot.legacy_routes import register_legacy_routes
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    db = tmp_path / "observations.db"
-    conn0 = sqlite3.connect(str(db))
-    conn0.executescript(_PRODUCTION_OBS_DDL)
-    conn0.execute(
-        "INSERT INTO observations (category, summary, content) VALUES ('habit','早起','六点起床')"
-    )
-    conn0.commit()
-    conn0.close()
-
-    monkeypatch.setattr(utils, "OBS_DB", str(db))
-    monkeypatch.setattr(helpers, "OBS_DB", str(db))
-    # 让补列变成 no-op，模拟迁移失败后的运行时状态
-    monkeypatch.setattr(helpers, "_ensure_observations_table", lambda conn: None)
-
-    app = FastAPI()
-    register_legacy_routes(app)
-    client = TestClient(app)
-
-    resp = client.get("/observe", params={"user_id": "some_tenant"})
-    assert resp.status_code == 200, "缺列时应降级为不过滤，而不是 500"
-    assert resp.json()["status"] == "ok"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1036,7 +901,7 @@ def test_yellow_b_docs_paths_follow_auth_gate():
         assert path in api_server._DOC_PATHS, f"{path} 未纳入文档路径集合"
 
     # 登录与健康检查必须永久免凭据（否则拿不到凭据 / 监控误判服务挂了）
-    for path in ("/login", "/api/login", "/health", "/api/health", "/logout"):
+    for path in ("/api/login", "/api/login/hint", "/health", "/api/health"):
         assert path in api_server._ALWAYS_PUBLIC_PATHS
 
     os.environ.pop("AIDUMEM_PUBLIC_DOCS", None)

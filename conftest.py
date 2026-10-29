@@ -292,3 +292,26 @@ def pytest_unconfigure(config):
     _sys.stdout.flush()
     _sys.stderr.flush()
     os._exit(code)
+
+
+#: f0.7 WP3b：默认内核改 native 之后，下面这些老用例本来就是在测 **mem0 内核路径**
+#: （往 mem0_runtime / Memory 里塞替身、断言 qdrant 腿、本地备胎腿、mem0 写入流水），
+#: 未显式选内核时把它们钉在 mem0 上——测的东西不变；native 默认路径由
+#: test_kernel_native / test_f07_* / 实验机无 mem0 从零验收覆盖。用例内自己 setenv 的以用例为准。
+_MEM0_KERNEL_LEGACY_TESTS = frozenset({
+    "test_f04_local_point_identity.py", "test_f04_recovery.py", "test_f04_wal_write_fence.py",
+    "test_f04p_prewrite_extraction.py", "test_f062_event_at_roundtrip.py", "test_f06pp_graph_memory.py",
+    "test_f0_3_async_idempotency.py", "test_f0_3_rerank_rejection.py", "test_f0_4_durability_http.py",
+    "test_f0_4_inner_durability.py", "test_f0_4_mutation_durability.py", "test_first_run_experience.py",
+    "test_v20_2_5_audit_remediation.py", "test_v20_2_autoshift.py", "test_v20_3_1_idempotency_paths.py",
+    "test_v20_3_2_zero_cred_first_run.py", "test_v20_4_idempotency_release.py",
+    "test_v20_vector_backend_contract.py",
+})
+
+
+@pytest.fixture(autouse=True)
+def _pin_mem0_kernel_for_legacy_mem0_tests(request, monkeypatch):
+    if os.path.basename(str(request.node.fspath)) in _MEM0_KERNEL_LEGACY_TESTS \
+            and not os.environ.get("AIDUMEI_MEMORY_KERNEL"):
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")
+    yield

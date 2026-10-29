@@ -56,14 +56,6 @@ def test_bank_id_is_actually_forwarded_not_just_accepted():
     assert not problems, f"收了 bank_id 却没往下传（「定义了不接线」）：{problems}"
 
 
-def test_facts_tools_take_bank_id_too():
-    """facts_* 工具同样要带域：事实库也是按 (user_id, bank_id) 隔离的。"""
-    names = {name: params for name, params, _ in _mcp_tools()}
-    for t in ("facts_search", "facts_add"):
-        assert t in names, f"找不到 {t}"
-        assert "bank_id" in names[t], f"{t} 不收 bank_id"
-
-
 # ══════════════════════════════════════════════════════════════
 # P1-11 · top_k 必须有上限（Codex F-03）
 # ══════════════════════════════════════════════════════════════

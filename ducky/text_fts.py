@@ -334,54 +334,6 @@ def _set_memory_type(memory_id, memory_type, *, user_id=DEFAULT_USER_ID,
         conn.close()
 
 
-def _upsert_typed_memory(memory_id, content, memory_type, *, user_id=DEFAULT_USER_ID,
-                         bank_id=DEFAULT_BANK_ID, category=None) -> bool:
-    """Fill a historical type without replacing a newer FTS text/category."""
-    scope = make_scope(user_id, bank_id)
-    storage_id = scoped_storage_key(memory_id, scope)
-    conn = get_text_conn()
-    scope_sql, scope_params = scope_clause(scope, flavor="canonical")
-    try:
-        row = conn.execute(
-            "SELECT memory_type FROM memories "
-            "WHERE id=?" + scope_sql,
-            (storage_id, *scope_params),
-        ).fetchone()
-        if row is not None:
-            # A vector payload can lag a corrected FTS row in both text and
-            # category. The backfill owns only the six-type label.
-            if row[0] == memory_type:
-                return False
-            conn.execute(
-                "UPDATE memories SET memory_type=? WHERE id=?" + scope_sql,
-                (memory_type, storage_id, *scope_params),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO memories (id,content,user_id,bank_id,category,memory_type) "
-                "VALUES (?,?,?,?,?,?)",
-                (storage_id, content, scope.user_id, scope.bank_id,
-                 category if category is not None else "", memory_type),
-            )
-        conn.commit()
-        return True
-    except sqlite3.Error:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _unindex_memory(memory_id, user_id=DEFAULT_USER_ID, bank_id=DEFAULT_BANK_ID):
-    if not memory_id:
-        return
-    scope = make_scope(user_id, bank_id)
-    conn = get_text_conn()
-    conn.execute("DELETE FROM memories WHERE id=? AND user_id=? AND bank_id=?", (scoped_storage_key(memory_id, scope), scope.user_id, scope.bank_id))
-    conn.commit()
-    conn.close()
-
-
 def _backfill_text_fts(limit: int = 2000, user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID) -> int:
     """从 mem0 拉一批记忆灌入 FTS，供向量失败时兜底。
 

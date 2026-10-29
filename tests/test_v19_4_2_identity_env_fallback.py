@@ -508,6 +508,8 @@ def test_env_file_parser_is_not_duplicated_in_repo_code():
 #
 # 生产实测：2026-08-19 身份改名，让 8-17 写下的 10 条真反思一起消失，
 # 靠逐库清点 user_id 分布才捞回来。本组用例把这一跳钉死。
+# f0.6+++ WP2：reflections 的读取端（/reflect/list · get_reflections）随路由瘦身
+# 移除，可见性两条用例同删；写侧去重放宽（save_insights）仍在，继续钉住。
 
 _LEGACY_CONTENT = "改名之前落库的历史洞察"
 _NAMED_CONTENT = "具名租户 alice 自己的洞察"
@@ -530,14 +532,15 @@ for uid, content in (("default", %r), ("alice", %r)):
 conn.commit()
 conn.close()
 
+dup_added = reflect.save_insights(
+    [{"content": %r, "type": "pattern"}], DEFAULT_USER_ID, "seed")
+conn = get_facts_conn()
+rows = conn.execute("SELECT user_id, content FROM reflections").fetchall()
+conn.close()
 print(json.dumps({
     "default_user_id": DEFAULT_USER_ID,
-    "seen_by_default_identity": sorted(
-        r["content"] for r in reflect.get_reflections(DEFAULT_USER_ID, limit=50)),
-    "seen_by_alice": sorted(
-        r["content"] for r in reflect.get_reflections("alice", limit=50)),
-    "dup_added": reflect.save_insights(
-        [{"content": %r, "type": "pattern"}], DEFAULT_USER_ID, "seed"),
+    "rows": sorted([r[0], r[1]] for r in rows),
+    "dup_added": dup_added,
 }, ensure_ascii=False))
 ''' % (_LEGACY_CONTENT, _NAMED_CONTENT, _LEGACY_CONTENT)
 
@@ -556,32 +559,6 @@ def _run_reflect_probe(env_file_path, tmp_path, **extra):
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def test_reflections_written_before_rename_stay_visible(env_file, tmp_path):
-    """身份改名之后，改名前写下的洞察必须仍然看得见。
-
-    这条红 = 用户的历史反思在一次配置变更后静默消失，而系统一切正常。
-    """
-    out = _run_reflect_probe(env_file, tmp_path)
-    assert out["default_user_id"] == _ENV_USER, "前置条件没成立：身份没从 .env 读到"
-    assert _LEGACY_CONTENT in out["seen_by_default_identity"], (
-        f"默认身份改名为 {_ENV_USER!r} 之后，改名前以字面量 'default' 落库的洞察"
-        f"查不到了（实得 {out['seen_by_default_identity']!r}）。"
-        "表现是 0 条、无报错、无日志 —— 用户只会觉得「反思怎么没了」。"
-    )
-
-
-def test_reflections_widening_does_not_leak_named_tenants(env_file, tmp_path):
-    """放宽只针对字面量 'default'，绝不能顺手把具名租户也捞进来。"""
-    out = _run_reflect_probe(env_file, tmp_path)
-    assert _NAMED_CONTENT not in out["seen_by_default_identity"], (
-        "默认身份看到了具名租户 alice 的洞察 —— 放宽写过头了，这是越权"
-    )
-    assert out["seen_by_alice"] == [_NAMED_CONTENT], (
-        f"具名租户的可见范围被改动了，实得 {out['seen_by_alice']!r}；"
-        "alice 既不该看到 'default' 的历史条目，也不该看到别人的"
-    )
-
-
 def test_reflections_widening_does_not_create_duplicates(env_file, tmp_path):
     """读取放宽之后，去重也必须跟着放宽，否则同一条洞察会被写第二遍。
 
@@ -593,8 +570,8 @@ def test_reflections_widening_does_not_create_duplicates(env_file, tmp_path):
         f"已存在于 'default' 名下的洞察又被写了 {out['dup_added']} 条到 "
         f"{_ENV_USER!r} 名下 —— 去重没有跟着读取一起放宽"
     )
-    assert out["seen_by_default_identity"].count(_LEGACY_CONTENT) == 1, (
-        f"同一条洞察出现了多次：{out['seen_by_default_identity']!r}"
+    assert [c for _u, c in out["rows"]].count(_LEGACY_CONTENT) == 1, (
+        f"同一条洞察出现了多次：{out['rows']!r}"
     )
 
 
@@ -605,10 +582,9 @@ def test_legacy_deployment_behaviour_is_byte_identical(env_file, tmp_path):
     """
     out = _run_reflect_probe(env_file, tmp_path, AIDUMEM_DEFAULT_USER_ID="default")
     assert out["default_user_id"] == "default", "前置条件没成立"
-    assert out["seen_by_default_identity"] == [_LEGACY_CONTENT], (
-        f"老部署的可见范围变了，实得 {out['seen_by_default_identity']!r}"
+    assert out["rows"] == [["alice", _NAMED_CONTENT], ["default", _LEGACY_CONTENT]], (
+        f"老部署的落库形态变了，实得 {out['rows']!r}"
     )
-    assert out["seen_by_alice"] == [_NAMED_CONTENT]
     assert out["dup_added"] == 0
 
 

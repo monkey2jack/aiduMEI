@@ -99,23 +99,3 @@ def test_list_agents_escape_hatch_restores_legacy_behavior(monkeypatch):
     assert resp.status_code == 200, resp.text
     assert {a["agent_id"] for a in resp.json()["agents"]} == {"agent_alpha", "agent_beta"}
 
-
-def test_list_agents_filters_still_forwarded_with_caller():
-    """caller 门槛不能把原有查询参数吃掉：profile / include_inactive 照旧生效。"""
-    from ducky.federation.registry import deactivate_agent, register_agent
-    register_agent("agent_alpha", profile="ops")
-    register_agent("agent_beta", profile="chat")
-    deactivate_agent("agent_beta")
-    client = _http_client()
-
-    resp = client.get("/federation/agents", params={
-        "caller_agent_id": "agent_alpha", "profile": "ops",
-    })
-    assert resp.status_code == 200, resp.text
-    assert {a["agent_id"] for a in resp.json()["agents"]} == {"agent_alpha"}
-
-    resp = client.get("/federation/agents", params={
-        "caller_agent_id": "agent_alpha", "include_inactive": False,
-    })
-    assert resp.status_code == 200, resp.text
-    assert {a["agent_id"] for a in resp.json()["agents"]} == {"agent_alpha"}

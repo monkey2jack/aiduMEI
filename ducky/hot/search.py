@@ -11,6 +11,15 @@ from ducky.api_models import SearchRequest, SearchResponse
 from ducky.api_errors import error_envelope
 
 
+def _verbatim_hits(query, uid, limit, bank_id):
+    """原文层证据。native 内核本身就存原话,原文层是重复副本,不再占结果配额。"""
+    from ducky.mem0_runtime import native_kernel_active
+    if native_kernel_active():
+        return []
+    from ducky.verbatim_vault import verbatim_search
+    return verbatim_search(query, uid, limit=limit, bank_id=bank_id)
+
+
 def _query_fingerprint(q: str) -> str:
     """P2-18（v20.3.2 正式版）：INFO 日志不落用户查询原文 —— 日志是第八个泄露面。
     只留 sha1 前 10 位，够在同一份日志里把「同一查询多次召回」串起来。"""
@@ -536,9 +545,8 @@ def register_search_routes(app: FastAPI) -> None:
             # 在既有召回结果之上，并行检索原文层并融合返回（主干优先、保留配额、
             # 失败干净降级）。让召回的不只是蒸馏后的事实，还有说过的原话。
             try:
-                from ducky.verbatim_vault import verbatim_search
                 from ducky.verbatim_relevance import original_lookup_query
-                v_hits = verbatim_search(original_lookup_query(req.query), uid, limit=max(20, effective_limit), bank_id=bank_id)
+                v_hits = _verbatim_hits(original_lookup_query(req.query), uid, max(20, effective_limit), bank_id)
                 # v21.2 M2：原文腿在打分**之后**融合，绕过了 scoring 里的回声
                 # 抑制 —— 不在这里补一刀，向量腿滤掉的那句话会被原文腿原样送
                 # 回来（实机冒烟实测到的漏网）。verbatim 行自带 session_id，
@@ -690,23 +698,3 @@ def register_search_routes(app: FastAPI) -> None:
                 **error_envelope(e),
             }
 
-    # 🔴1：Tahoe-Gate 相关性闸门端点。此前 relevance_check 全库零生产调用，
-    # 「省 Token」卖点是画饼。现暴露为 /gate，供宿主 Agent 在对话上下文注入前
-    # 先问一句「这轮要不要检索记忆」——闲聊直接跳过检索，真正省掉 Token 与算力。
-    @app.get("/gate")
-    def gate(query: str = "", text: str = "", q: str = ""):
-        """相关性闸门：判断这条 query 是否需要检索记忆上下文。
-
-        兼容 query / text / q 三种入参键名。
-        返回 {needs_memory, reason, scope}。宿主在注入记忆前调用它，
-        needs_memory=false 时可整轮跳过 /search，省掉无谓的向量检索。
-        """
-        actual_query = (query or text or q or "").strip()
-        if not actual_query:
-            return {"status": "ok", "needs_memory": False, "reason": "empty_query", "scope": None}
-        try:
-            from ducky.pipeline.memory_gate import relevance_check
-            return {"status": "ok", **relevance_check(actual_query)}
-        except Exception as e:
-            logger.error(f"gate 失败: {e}")
-            return {"status": "error", "needs_memory": True, "reason": f"gate_error: {e}", "scope": None}

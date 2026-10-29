@@ -2,18 +2,17 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 from ducky.mutation_journal import MutationUncertain
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from ducky.mem0_compat import get_all_memories
 from ducky.api_models import (
-    DeleteAllRequest,
     DeleteRequest,
     GovernanceReviewRequest,
-    InjectContextRequest,
     OpinionSetRequest,
     TombstoneRestoreRequest,
     UpdateRequest,
@@ -32,11 +31,21 @@ from ducky.mem0_runtime import (
     get_memory,
     reset_memory_singleton,
 )
-from ducky.wal_engine import cascade_delete_memory, cascade_delete_all
+from ducky.wal_engine import cascade_delete_memory, replace_stale_copies
 from ducky.failure_ledger import feature_failed
 from ducky.api_errors import api_error_detail
 
 logger = logging.getLogger("aiduMEM.hot")
+
+
+def _update_verbatim_handle(memory_id: str, user_id: str, bank_id: str, content: str) -> dict:
+    """f0.6+++：/search 交出的 verbatim:N 句柄也能 /update —— 按 /delete 删旧原文
+    （墓碑 / 本地点 / 派生摘要 / 缓存），再落新原文。"""
+    status = cascade_delete_memory(memory_id, user_id=user_id, bank_id=bank_id).get("status")
+    if status != "committed":
+        raise HTTPException(404 if status == "not_found" else 500, f"verbatim update failed: {status}")
+    failed = replace_stale_copies(user_id, bank_id, "", content, new_is_verbatim=True)
+    return {"status": "partial" if failed else "ok", "facts_sync": "not_a_fact", "failed_layers": failed}
 
 
 def register_crud_routes(app: FastAPI) -> None:
@@ -206,86 +215,6 @@ def register_crud_routes(app: FastAPI) -> None:
             logger.error(f"delete 失败: {e}")
             raise HTTPException(500, api_error_detail(e))
 
-    @app.post("/delete_all")
-    def delete_all(req: DeleteAllRequest):
-        # 🔴P0-3: 强制显式指定 user_id，清空 default 全库必须二次确认 confirm=True
-        if not req.user_id or not req.user_id.strip():
-            raise HTTPException(400, "user_id 必须显式指定，拒绝空参数清库")
-        scope = make_scope(req.user_id, req.bank_id)
-        from ducky.scope_auth import require_scope_access
-        require_scope_access(scope.user_id, req.caller_user_id,
-                             bank_id=scope.bank_id, action="delete")
-        user_id = _normalize_user_id(scope.user_id)
-        # v20.1.1（N-1）：删除路径限流（默认 3/min）——生产 14 天 delete_all
-        # 共 7 次，正常操作打不到上限；循环误删在清空更多域之前被拦停。
-        from ducky.rate_guard import check_rate, delete_all_global_rate_limit, delete_all_rate_limit
-        # v20.4.0（P1-8）：删除路径同样叠全局桶 —— 轮换租户的循环删除拦在总量线
-        _retry = check_rate("delete_all", user_id, limit=delete_all_rate_limit(),
-                            global_limit=delete_all_global_rate_limit())
-        if _retry is not None:
-            raise HTTPException(
-                status_code=429,
-                detail=f"delete_all 频率超限（租户 {user_id}）：{_retry}s 后重试；"
-                       f"上限可经 AIDUMEI_RATE_DELETE_ALL_PER_MIN 调整（0=关闭）",
-                headers={"Retry-After": str(_retry)},
-            )
-        if not getattr(req, "confirm", False):
-            # v19.4.2：文案原先把默认身份写死成 "(default)"。部署方配了
-            # AIDUMEM_DEFAULT_USER_ID 之后，报错里说的租户和实际要清的
-            # 租户不是同一个，运维照着文案排查会走岔。改成回报真实身份。
-            raise HTTPException(400, f"清空用户({user_id})全部记忆具有破坏性，必须传递 confirm: true 二次确认")
-
-        try:
-            res = cascade_delete_all(user_id=user_id, bank_id=scope.bank_id, confirm=getattr(req, "confirm", False))
-            # v20.2.5（外审 F-02）：**透传底层的三态判决**。
-            #
-            # 这一行原先硬编码 `{"status": "ok"}` —— 底层无论返回什么都被抹平成
-            # ok，连 v20.2.4 加的 `not_cleared` 也**从没到达过调用方**（那条
-            # 「如实告知没清什么」的修复因此是半假的：底层加了，出口没透）。
-            # 与 F-03 同型：改了代码，但在链路的另一端断掉。
-            #
-            # HTTP 状态跟着业务状态走 —— 外审门槛要的是「注入任意一层故障，
-            # HTTP 与业务状态都必须显式失败」。207 会强制调用方注意到
-            # 「不是完全成功」，而 200 + 一个藏在 body 里的字段不会。
-            outcome = res.get("status", "failed")
-            body = {
-                "status": outcome,
-                "details": res.get("details", {}),
-                "failed_layers": res.get("failed_layers", []),
-                "not_cleared": res.get("not_cleared", []),
-            }
-            if outcome == "committed":
-                return body
-            if outcome == "partial":
-                return JSONResponse(status_code=207, content=body)
-            return JSONResponse(status_code=500, content=body)
-        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
-        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
-        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"delete_all 失败: {e}")
-            raise HTTPException(500, api_error_detail(e))
-
-    # v20.2.5（用户实测 Y-NEW3）：DELETE 方法别名。
-    #
-    # RESTful 惯例删除用 DELETE，集成方按惯例调 `DELETE /delete?memory_id=xxx`
-    # 直接吃 405 —— 会以为接口坏了。
-    #
-    # 但**光加一个 `@app.delete` 装饰器是假修**：`DeleteRequest` 是 body 模型，
-    # 而 DELETE 按惯例不带 body（httpx / requests 的 delete() 连 json= 参数都
-    # 不给）。用户实机实测用的正是 query 参数。所以别名必须**收 query**，
-    # 再转调同一个处理函数 —— 一份删除逻辑，两种调法。
-    @app.delete("/delete")
-    def delete_via_http_method(
-        memory_id: str = Query(..., description="要删除的记忆 id"),
-        user_id: str = Query(DEFAULT_USER_ID),
-        bank_id: str = Query(DEFAULT_BANK_ID),
-        caller_user_id: str = "",
-    ):
-        """`DELETE /delete?memory_id=…` —— 与 `POST /delete` 行为逐字相同。"""
-        return delete(DeleteRequest(memory_id=memory_id, user_id=user_id, bank_id=bank_id, caller_user_id=caller_user_id))
 
     # 🪦 tombstone 遗忘层（v19.4.0 Mímir 借鉴 B3）：遗忘不是删除，留痕可恢复
     @app.get("/tombstones")
@@ -540,7 +469,8 @@ def register_crud_routes(app: FastAPI) -> None:
         default/default 认领 —— 只放宽判读，不迁移数据。
         """
         try:
-            got = mem.get(memory_id)
+            from ducky.memory_kernel import scope_kwargs
+            got = mem.get(memory_id, **scope_kwargs(mem, user_id, bank_id))
         except Exception as ge:
             raise HTTPException(503, f"无法核验记忆归属（向量后端读取失败），拒绝更新: {api_error_detail(ge)}")
         item = None
@@ -559,6 +489,7 @@ def register_crud_routes(app: FastAPI) -> None:
         stored_bank = str(meta.get("bank_id") or DEFAULT_BANK_ID)
         if stored_user != user_id or stored_bank != bank_id:
             raise HTTPException(404, f"memory not found: {memory_id}")
+        return item
 
     @app.post("/update")
     def update(req: UpdateRequest):
@@ -579,8 +510,10 @@ def register_crud_routes(app: FastAPI) -> None:
                                  bank_id=scope.bank_id, action="write")
             from ducky.scope_auth import sanitize_memory_or_raise
             content = sanitize_memory_or_raise(content)
+            if req.memory_id.strip().lower().startswith("verbatim:"):
+                return _update_verbatim_handle(req.memory_id, user_id, scope.bank_id, content)
             # v20.4.0（P1-3）：归属先验，未验证不许动向量。
-            _verify_vector_ownership(mem, req.memory_id, user_id, scope.bank_id)
+            _old = _verify_vector_ownership(mem, req.memory_id, user_id, scope.bank_id)
             # /update 会把 bank_id 盖进向量 metadata 并按该域重建 FTS 索引，
             # 也就是说它能把一条记忆搬进一个从没被注册过的域。写路径里只有
             # 这一处漏了注册（add / tombstone / core_memory / conflict_resolver
@@ -590,7 +523,27 @@ def register_crud_routes(app: FastAPI) -> None:
             # （归属先验之后，metadata 里的 bank_id 只可能等于原值 —— /update
             # 不再具备「搬域」能力，盖写是幂等重申。）
             ensure_bank_registered(scope)
-            mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id})
+            from ducky.memory_kernel import scope_kwargs
+            mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id},
+                       **scope_kwargs(mem, user_id, scope.bank_id))
+            _stale = replace_stale_copies(user_id, scope.bank_id, _old.get("memory"), content,
+                                          memory_id=req.memory_id)
+            # f0.7 P0-3（外审 sesame F-04 / glm #1）：改写后旧正文派生的 pattern 事实撤掉、新正文重新抽取；
+            # 别的现存记忆仍说着旧值时保留。失败只记账，不阻断改写。
+            pattern_sync = None
+            try:
+                from ducky.pattern_extract import extract_and_store
+                from ducky.wal_engine import _cascade_single_pattern_facts, _make_layer_failure_recorder
+                _pres: dict = {}
+                _pfail: list = []
+                _cascade_single_pattern_facts(mem, scope, req.memory_id, _old.get("memory") or "", _pres,
+                                              _make_layer_failure_recorder(_pfail))
+                pattern_sync = {"removed": _pres.get("pattern_facts", 0), "failed_layers": _pfail,
+                                "stored": (extract_and_store(content, user_id=user_id, bank_id=scope.bank_id)
+                                           or {}).get("stored", 0)}
+            except (sqlite3.Error, ValueError, KeyError, OSError) as pe:
+                logger.warning(f"/update 派生事实同步跳过: {pe}")
+                feature_failed("pattern_extract", pe)
 
             # 同步更新 FTS
             try:
@@ -672,7 +625,8 @@ def register_crud_routes(app: FastAPI) -> None:
                 logger.warning(f"facts update on update 失败（已出声，不再静默）: {fte}")
                 facts_sync = "error"
 
-            return {"status": "ok", "facts_sync": facts_sync}
+            return {"status": "partial" if _stale else "ok", "facts_sync": facts_sync,
+                    "pattern_sync": pattern_sync, "failed_layers": _stale}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
@@ -716,23 +670,4 @@ def register_crud_routes(app: FastAPI) -> None:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    def _do_inject_context(req: InjectContextRequest) -> dict:
-        from ducky.scope_auth import require_scope_access
-        require_scope_access(req.user_id, req.caller_user_id,
-                             bank_id=req.bank_id, action="read")
-        from ducky.facts_recall import inject_context as inject_facts_context
-        # 🔴P0-2（v19.4.1）：注入上下文按租户收窄 —— 注入是记忆流向宿主
-        # 模型的出口，此处漏租户等于把别人的事实喂进本租户的对话。
-        # InjectContextRequest 早已带 user_id 字段，此前未透传。
-        return inject_facts_context(
-            req.query,
-            k=req.k,
-            level=req.level,
-            max_tokens=req.max_tokens,
-            user_id=req.user_id,
-            bank_id=req.bank_id,
-        )
 
-    @app.post("/facts/inject-context")
-    def inject_context(req: dict):
-        return _do_inject_context(InjectContextRequest(**req))

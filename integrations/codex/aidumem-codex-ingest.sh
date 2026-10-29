@@ -31,6 +31,8 @@
 #   - 绝不拖累宿主：沉淀异步后台发出，hook 立即返回；任何异常静默 exit 0
 #   - 安静≠失声：跳过与失败往 stderr 写一行结构化诊断
 set -uo pipefail
+# f0.7 P3：新前缀别名（connect_host 写 AIDUMEI_URL；AIDUMEM_URL 设了仍优先）
+if [ -z "${AIDUMEM_URL:-}" ] && [ -n "${AIDUMEI_URL:-}" ]; then export AIDUMEM_URL="$AIDUMEI_URL"; fi
 
 AIDUMEM_URL="${AIDUMEM_URL:-http://127.0.0.1:8767}"
 SESSION_PREFIX="${AIDUMEI_CODEX_SESSION_PREFIX-codex-}"
@@ -205,7 +207,8 @@ if spool and os.path.isdir(spool):
         pass
 
 print(json.dumps({
-    "session_id": (prefix + sid) if sid else "",
+    # 幂等加前缀：宿主/重放已带前缀时不再叠加（cc-cc- 双前缀，f0.6+++ WP6）
+    "session_id": (sid if sid.startswith(prefix) else prefix + sid) if sid else "",
     "user_id": os.environ.get("AIDUMEI_HOOK_UID", "default"),
     "bank_id": os.environ.get("AIDUMEI_HOOK_BID", "default"),
     "messages": messages,

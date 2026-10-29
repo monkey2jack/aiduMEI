@@ -97,7 +97,6 @@ _INGEST_MIN_READS = _int_env("AIDUMEI_INGEST_MIN_READS", 5, minimum=1)
 _DISTILL_MIN_SESSIONS = _int_env("AIDUMEI_DISTILL_MIN_SESSIONS", 3, minimum=1)
 
 
-
 def _reconcile_degraded_details(degraded: list, probes: dict) -> list:
     """让 `degraded_details` 解释 `degraded` 里的**每一项**。
 
@@ -386,13 +385,10 @@ def register_health_routes(app: FastAPI) -> None:
         module_ok.update({
             "v8_ignition":    _can_import("ducky.pipeline.memory_ignition"),
             "v8_workspace":   _can_import("ducky.pipeline.memory_workspace"),
-            "v8_broadcast":   _can_import("ducky.federation.broadcast"),
             "v8_jlens":       _can_import("ducky.pipeline.memory_jlens"),
-            "v8_persistence": _can_import("ducky.pipeline.memory_persistence"),
             "v2.1_salience":  _can_import("ducky.salience.core"),
             "v2.1_gate":      _can_import("ducky.pipeline.memory_gate"),
             "v2.1_envelope":  _can_import("ducky.tool_envelope"),
-            "v18.3_obsidian": _can_import("ducky.routes_obsidian"),
             "scoring_engine": _can_import("ducky.scoring"),
             "wal_engine":     _can_import("ducky.wal_engine"),
             "injection_guard": _can_import("ducky.security.injection_guard"),
@@ -1093,6 +1089,14 @@ def register_health_routes(app: FastAPI) -> None:
         # f0.3（A6）：consolidator 最近一轮的运行摘要（只进授权视图；告警进 warnings，
         # 不进 degraded —— 匿名公开视图不因它有任何变化）。模块级函数、零分支调用。
         probes["consolidator"] = _consolidator_probe(warnings)
+        # f0.7 P3-4：宿主接线状态（最近一次带宿主溯源的写入）；只进授权视图，告警进 warnings
+        try:
+            from ducky import host_wiring
+            probes["host_wiring"], _hw_warn = host_wiring.status(_START_TS)
+            if _hw_warn:
+                warnings.append(_hw_warn)
+        except (ImportError, OSError, ValueError) as _hw_exc:
+            probes["host_wiring"] = {"error": str(_hw_exc)[:100]}
         try:
             from ducky.pipeline.memory_gate import entity_keywords_status
             ek = entity_keywords_status()
@@ -1499,23 +1503,6 @@ def register_health_routes(app: FastAPI) -> None:
             return JSONResponse(body, status_code=503)
         return body
 
-    @app.get("/diagnostics")
-    def diagnostics(request: Request):
-        """完整深度探针（v20.4 P2-17）：与授权 /health 同一份载荷，
-        匿名语义不同 —— /health 为兼容给匿名调用方留键公开视图，
-        /diagnostics 是运维端点：门禁启用时无凭据一律 401，不做降级视图。
-        """
-        _gate, _authz = _resolve_authz(request)
-        if _gate and not _authz:
-            return JSONResponse(
-                {
-                    "error": "unauthorized",
-                    "detail": "Missing or invalid credentials: log in to the console "
-                              "or send Authorization: Bearer <AIDUMEM_API_TOKEN>",
-                },
-                status_code=401,
-            )
-        return _run_full_probe()
 
     @app.get("/metrics")
     def metrics(days: int = 7):

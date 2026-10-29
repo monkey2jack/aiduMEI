@@ -17,7 +17,6 @@ import pytest
 
 from ducky.bank_contract import BankScopeError
 from ducky.pipeline.memory_broadcast import broadcast_chain, broadcast_expand
-from ducky.pipeline import memory_persistence as persistence
 
 
 class _FakeMem:
@@ -102,99 +101,6 @@ def test_broadcast_expand_cannot_locate_foreign_memory():
 
 
 # ═══════════════ 3. Session 持久化 ═══════════════
-def test_session_scope_fixed_at_start_and_inherited_by_search():
-    mem = _FakeMem(_seed_items())
-    started = persistence.session_start("user_x", bank_id="bank_a")
-    assert started["bank_id"] == "bank_a"
-    sid = started["session_id"]
-
-    res = persistence.session_search(mem, sid, "猫的情况", limit=5, user_id="user_x", bank_id="bank_a")
-    assert res["status"] == "ok"
-    assert mem.search_filters[-1] == {"user_id": "user_x", "bank_id": "bank_a"}
-    ids = [r["id"] for r in res["results"]]
-    assert "mem_a" in ids and "mem_b" not in ids and "mem_legacy" not in ids
-
-    # 第二次搜索走「历史上下文」路径（Step 1），同样必须守域
-    res2 = persistence.session_search(mem, sid, "猫喜欢什么", limit=5, user_id="user_x", bank_id="bank_a")
-    assert res2["status"] == "ok"
-    assert mem.search_filters[-1]["bank_id"] == "bank_a"
-    ids2 = [r["id"] for r in res2["results"]]
-    assert "mem_b" not in ids2 and "mem_legacy" not in ids2
-
-    # session_end 交还作用域，供 session_end 反思按域反思
-    ended = persistence.session_end(sid, user_id="user_x", bank_id="bank_a")
-    assert ended["status"] == "ok"
-    assert ended["bank_id"] == "bank_a"
-
-
-def test_session_default_bank_keeps_v19_filter_shape():
-    mem = _FakeMem(_seed_items())
-    started = persistence.session_start("user_x")
-    assert started["bank_id"] == "default"
-    sid = started["session_id"]
-
-    res = persistence.session_search(mem, sid, "记忆", limit=5, user_id="user_x")
-    assert res["status"] == "ok"
-    assert mem.search_filters[-1] == {"user_id": "user_x"}, \
-        "默认域 filters 必须保持 v19 形状（无 bank_id 键）"
-    ids = [r["id"] for r in res["results"]]
-    assert "mem_legacy" in ids
-    assert "mem_a" not in ids and "mem_b" not in ids
-    persistence.session_end(sid, user_id="user_x")
-
-
-def test_session_start_invalid_bank_raises():
-    with pytest.raises(BankScopeError):
-        persistence.session_start("user_x", bank_id="../etc")
 
 
 # ═══════════════ 4. v8 路由层递进 ═══════════════
-def test_v8_routes_thread_bank_scope(monkeypatch):
-    """防「函数修了、路由没传」：/recall_chain 递进 req.bank_id，
-    /session/start 收 bank_id，非法作用域包成 error dict 不抛 500。"""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    import ducky.routes_v8 as routes_v8
-
-    mem = _FakeMem(_seed_items())
-    monkeypatch.setattr(routes_v8, "get_memory", lambda: mem)
-
-    app = FastAPI()
-    routes_v8.register_v8_routes(app)
-    client = TestClient(app)
-
-    resp = client.post("/recall_chain", json={
-        "query": "猫的情况", "user_id": "user_x", "bank_id": "bank_a",
-    })
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "ok", body
-    assert mem.search_filters[-1] == {"user_id": "user_x", "bank_id": "bank_a"}
-    ids = [i["id"] for level in body["chain"] for i in level["results"]]
-    assert "mem_b" not in ids and "mem_legacy" not in ids
-
-    resp = client.post("/session/start",
-                       params={"user_id": "user_x", "bank_id": "bank_a"})
-    assert resp.status_code == 200
-    assert resp.json()["bank_id"] == "bank_a"
-
-    # v21.0.1：支持客户端传入自定义 session_id
-    resp_custom = client.post("/session/start",
-                              params={"user_id": "user_x", "bank_id": "bank_a", "session_id": "agent_custom_uuid_123"})
-    assert resp_custom.status_code == 200
-    assert resp_custom.json()["session_id"] == "agent_custom_uuid_123"
-    assert resp_custom.json()["bank_id"] == "bank_a"
-
-    resp = client.post("/session/start",
-                       params={"user_id": "user_x", "bank_id": "../etc"})
-    assert resp.status_code == 200, "v8 约定：异常包成 error dict 不抛 500"
-    assert resp.json()["status"] == "error"
-
-    resp = client.post("/ignition_test", json={
-        "query": "猫", "user_id": "user_x", "bank_id": "bank_a",
-    })
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "ok", resp.json()
-    assert mem.search_filters[-1] == {"user_id": "user_x", "bank_id": "bank_a"}, \
-        "/ignition_test 没把作用域下推进 mem.search"

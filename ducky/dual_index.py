@@ -53,12 +53,17 @@ def ensure_local_collection(client=None) -> None:
         logger.info("🪫 本地向量库 %s 已建（%d 维）", LOCAL_COLLECTION, LOCAL_EMBED_DIM)
 
 
+def _native() -> bool:
+    from ducky.mem0_runtime import native_kernel_active
+    return native_kernel_active()
+
+
 def _local_off() -> bool:
     """云端档：本地腿整条关闭（不写、不搜、不加载模型）。写入侧静默跳过
     是对的 —— 部署方**明确选择了**没有备胎，那不是故障，不该进欠账。"""
     try:
         from ducky.engine_mode import local_leg_enabled
-        return not local_leg_enabled()
+        return _native() or not local_leg_enabled()   # native:无本地备胎索引
     except Exception:
         return False
 
@@ -172,7 +177,7 @@ def delete_local(point_ids: List[str | int], client=None, *, user_id=None, bank_
     """
     point_ids = list(dict.fromkeys(pid for value in point_ids
                                   if (pid := _local_point_id(value)) is not None))
-    if not point_ids:
+    if not point_ids or _native():
         return 0
     try:
         client = client or _qdrant_client()
@@ -213,6 +218,8 @@ def delete_local(point_ids: List[str | int], client=None, *, user_id=None, bank_
 
 def delete_local_by_scope(user_id: str, bank_id: str = "default", client=None) -> int:
     """delete_all 的本地腿：payload 谓词删（与云侧枚举复筛同语义）。"""
+    if _native():
+        return 0
     try:
         from qdrant_client import models as qm
         client = client or _qdrant_client()
@@ -279,6 +286,8 @@ def search_local(query: str, user_id: str, bank_id: str = "default",
 
 
 def local_point_count(client=None) -> Optional[int]:
+    if _native():
+        return 0
     try:
         client = client or _qdrant_client()
         existing = {c.name for c in client.get_collections().collections}

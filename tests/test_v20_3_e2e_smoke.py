@@ -75,6 +75,7 @@ def test_default_api_matches_server_listen_port(monkeypatch, env, expected_port)
     captured = {}
     namespace = {
         "os": os,
+        "sys": SimpleNamespace(argv=["api_server.py"]),  # main() 读 --port（WP6）
         "logger": SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
         "_api_token": lambda: "test-token",
         "_enforce_public_binding_policy": lambda: None,
@@ -166,6 +167,7 @@ def test_valid_config_path_is_respected_and_passes(smoke, tmp_path, monkeypatch)
 
 def test_local_mode_needs_no_cloud_keys(smoke, tmp_path, monkeypatch):
     monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
     monkeypatch.setenv("AIDUMEM_CONFIG_FILE", str(tmp_path / "absent.json"))
     smoke.config()
     assert smoke.results[0]["status"] == "PASS"
@@ -247,7 +249,7 @@ def test_trace_declares_own_tenant_for_bearer_auth(smoke, monkeypatch):
             return {"trace": {"stages": []}}
 
     def bearer_trace(method, url, **kwargs):
-        assert (method, url) == ("POST", "http://test.local/search_trace")
+        assert (method, url) == ("POST", "http://test.local/api/search_trace")
         assert kwargs["headers"] == smoke.headers
         body = kwargs["json"]
         assert body["user_id"] == smoke.tenant
@@ -256,7 +258,7 @@ def test_trace_declares_own_tenant_for_bearer_auth(smoke, monkeypatch):
         return Response()
 
     monkeypatch.setattr(smoke.trace.__globals__["requests"], "request", bearer_trace)
-    assert bearer_trace("POST", "http://test.local/search_trace", headers=smoke.headers,
+    assert bearer_trace("POST", "http://test.local/api/search_trace", headers=smoke.headers,
                         json={"user_id": smoke.tenant}).status_code == 403
     smoke.trace()
     assert smoke.failures == 0
@@ -264,12 +266,20 @@ def test_trace_declares_own_tenant_for_bearer_auth(smoke, monkeypatch):
 
 
 def test_cleanup_partial_is_failure(smoke):
+    """f0.6+++ WP2: cleanup = search the nonce, then /delete each hit; any
+    delete that does not succeed is a FAIL (was: /delete_all 207 partial)."""
     class Response:
-        status_code = 207
-        text = "{}"
+        def __init__(self, status, payload):
+            self.status_code, self._payload, self.text = status, payload, "{}"
         def json(self):
-            return {"status": "partial", "failed_layers": ["fts"]}
-    smoke.request = lambda *args, **kwargs: Response()
+            return self._payload
+
+    def request(method, path, **kwargs):
+        if path == "/search":
+            return Response(200, {"results": [{"id": "m1", "memory": "smoke-nonce body"}]})
+        return Response(500, {"status": "error", "failed_layers": ["fts"]})
+    smoke.nonce = "smoke-nonce"
+    smoke.request = request
     smoke.cleanup()
     assert smoke.results[0]["status"] == "FAIL"
     assert smoke.failures == 1
@@ -353,7 +363,8 @@ def test_every_scoped_smoke_request_declares_its_caller(monkeypatch):
     """f0.4+ WP3: the hourly smoke 403'd for days because /add carried no caller.
 
     v22.0 requires bearer callers to declare caller_user_id on every scoped
-    route; /search and /search_trace did, /add, flush and cleanup did not. The
+    route; /search and /search_trace did, /add, flush and cleanup did not (flush
+    and /delete_all are gone since f0.6+++ WP2; cleanup is /search + /delete). The
     check runs every request through the real hall authorization with a bearer
     principal, so an undeclared caller fails exactly as it did in production.
     """
@@ -363,6 +374,7 @@ def test_every_scoped_smoke_request_declares_its_caller(monkeypatch):
     module = _load_smoke()
     smoke = module.Smoke("http://test.local", "aidumei-smoke-tenant", 0, True)
     rejected = []
+    deleted = []
 
     class _Resp:
         def __init__(self, status, payload):
@@ -386,12 +398,13 @@ def test_every_scoped_smoke_request_declares_its_caller(monkeypatch):
                 auth.clear_request_auth_kind()
         if path == "/add":
             return _Resp(200, {"status": "ok", "action": "coalesce_buffered"})
-        if path == "/search":
-            return _Resp(200, {"recall_verdict": "found", "results": [{"memory": "x"}]})
-        if path == "/search_trace":
+        if path == "/search":   # echo the query so cleanup finds hits to /delete
+            return _Resp(200, {"recall_verdict": "found",
+                               "results": [{"id": "m1", "memory": str(scope.get("query"))}]})
+        if path == "/delete":
+            deleted.append(scope.get("memory_id"))
+        if path == "/api/search_trace":
             return _Resp(200, {"trace": {"stage": 1}})
-        if path == "/delete_all":
-            return _Resp(200, {"status": "committed"})
         return _Resp(200, {"status": "ok"})
 
     monkeypatch.setattr(module.requests, "request", request)
@@ -400,5 +413,6 @@ def test_every_scoped_smoke_request_declares_its_caller(monkeypatch):
     smoke.cleanup()
     assert rejected == [], f"smoke requests without a declared caller: {rejected}"
     steps = {r["step"]: r["status"] for r in smoke.results}
-    assert steps.get("add") == "WARN" and steps.get("flush") == "PASS", steps
+    assert steps.get("add") == "WARN", steps
     assert steps.get("recall") == "PASS" and steps.get("cleanup") == "PASS", steps
+    assert deleted == ["m1"], deleted

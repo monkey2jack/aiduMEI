@@ -45,8 +45,12 @@ def set_origin_from_metadata(meta: dict | None) -> contextvars.Token:
         turn = int(md.get("_origin_turn") or 0)
     except (TypeError, ValueError):
         turn = 0
+    agent = str(md.get("_origin_agent") or "")
+    if agent:
+        from ducky import host_wiring  # f0.7 P3-4：/health 报宿主接线状态
+        host_wiring.note(agent)
     return set_origin(
-        agent=str(md.get("_origin_agent") or ""),
+        agent=agent,
         session_id=str(md.get("_origin_session_id") or ""),
         turn=turn,
     )

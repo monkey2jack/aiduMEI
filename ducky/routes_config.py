@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 from typing import Optional
@@ -44,6 +45,32 @@ _URL_FIELDS = {"openai_base_url", "host"}
 # f0.6 W-12：外呼四段（decision 段走自己的 validate，不在此列）
 _EGRESS_SECTIONS = {"llm", "embedder", "rerank", "vision"}
 
+def _host_as_ip(host: str):
+    """主机名若是 IP 的任一写法就返回 ip_address，否则 None（域名）。
+
+    f0.7 P1-4（外审 muse P1-06）：ipaddress 只认点分十进制，而 HTTP 客户端经 inet_aton 也认
+    十进制整数（2130706433）、十六进制（0x7f000001 / 0x7f.0.0.1）、八进制（0177.0.0.1）——
+    这些写法此前被当成「域名」放行，私网拦截形同虚设。"""
+    import ipaddress
+    import socket
+    h = host.strip("[]")
+    try:
+        return ipaddress.ip_address(h)
+    except ValueError:
+        pass
+    if re.fullmatch(r"[0-9a-fx.]+", h) and any(c.isdigit() for c in h):
+        try:
+            return ipaddress.ip_address(socket.inet_aton(h))
+        except OSError:
+            return None
+    return None
+
+
+def _model_endpoint_allow() -> set:
+    raw = os.environ.get("AIDUMEI_MODEL_ENDPOINT_ALLOW", "")
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
 def _reject_private_endpoint(url: str) -> str | None:
     """拦截私网/链路本地/元数据地址与明文 http（muse S-1：169.254.169.254
     与内网端点此前全放行，是把凭据+记忆原文转投内网/云元数据的通道）。"""
@@ -56,16 +83,24 @@ def _reject_private_endpoint(url: str) -> str | None:
         # 元数据/内部地址最先拦——它们以 https 出现也不放行
         if host == "169.254.169.254" or host.endswith(".internal"):
             return "云元数据/内部地址禁止作为模型端点"
+        # f0.7：自家内网/tailnet 上的 vLLM 等模型机——部署方在 .env 显式点名才放行
+        # (AIDUMEI_MODEL_ENDPOINT_ALLOW=gpu-box,192.168.1.50,100.64.0.20)。
+        # 元数据地址已在上面先拦,名单也放不过。
+        if host in _model_endpoint_allow():
+            return None
         if parsed.scheme == "http" and host not in ("127.0.0.1", "localhost"):
             return "明文 http 仅允许 loopback（127.0.0.1/localhost）；远程端点必须 https"
-        import ipaddress
-        try:
-            ip = ipaddress.ip_address(host)
+        ip = _host_as_ip(host)
+        if ip is not None:
+            import ipaddress
             _loopback_ok = ip.is_loopback and host in ("127.0.0.1",)
-            if not _loopback_ok and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
+            # f0.7 P1-4（外审 muse P1-06）：补 CGNAT 100.64/10（tailnet 地址段）与 IPv4 映射的 IPv6
+            _cgnat = ip.version == 4 and ip in ipaddress.ip_network("100.64.0.0/10")
+            if ip.version == 6 and ip.ipv4_mapped is not None:
+                ip = ip.ipv4_mapped
+            if not _loopback_ok and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                                     or ip.is_unspecified or ip.is_multicast or _cgnat):
                 return f"私网/保留地址禁止作为模型端点: {host}"
-        except ValueError:
-            pass  # 域名，非 IP
         return None
     except Exception as exc:
         return f"端点校验失败: {exc}"
@@ -74,10 +109,14 @@ def _reject_private_endpoint(url: str) -> str | None:
 def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, old_section: dict | None = None) -> str | None:
     """返回错误文案；None = 通过。"""
     if section == "decision":
-        return _validate_decision_fields(cfg, body or {}, old_section or {})
+        return _validate_decision_section(cfg, body or {}, old_section or {})
     if section in {"rerank", "decision"} and body is not None and "enabled" in body:
         if not isinstance(body["enabled"], bool):
             return f"{section}.enabled must be a JSON boolean"
+    if section == "rerank" and body is not None and body.get("provider") is not None:
+        from ducky.mem0_runtime import RERANK_PROVIDERS
+        if not isinstance(body["provider"], str) or body["provider"].lower() not in RERANK_PROVIDERS:
+            return "不支持的 rerank 供应商: " + str(body.get("provider"))[:40]
     allow = _SECTION_FIELD_ALLOWLIST.get(section)
     if allow is None:
         return None  # _features 走布尔合并分支，不进这里
@@ -88,29 +127,54 @@ def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, o
         v = str(cfg.get(k) or "").strip()
         if v and not (v.startswith("http://") or v.startswith("https://")):
             return f"{section}.{k} 只接受 http(s) URL，收到: {v[:40]}"
-    # f0.6 W-12（muse S-1 修复项）：decision 段的「换端点必须显式给新 key」
-    # 与私网/元数据地址拦截，推广到 llm / embedder / rerank / vision 四段
-    # ——此前只有 decision 有此防护，而 S-1 整包转投链走的正是 llm 段。
     if section in _EGRESS_SECTIONS:
-        old_cfg = dict((old_section or {}).get("config") or {})
-        ep = str(cfg.get("openai_base_url") or "").strip()
-        if ep and ep != old_cfg.get("openai_base_url"):
-            if old_cfg.get("api_key") and (not isinstance(cfg.get("api_key"), str)
-                                           or not cfg["api_key"].strip()):
-                return (f"changing {section} endpoint requires an explicit API key"
-                        "（换端点必须显式给新 key，空 key 不再默认沿用旧凭据）")
-            _err = _reject_private_endpoint(ep)
-            if _err:
-                return f"{section}.openai_base_url: {_err}"
+        err = _validate_egress_endpoint(section, cfg, old_section or {})
+        if err:
+            return err
+    if section == "vector_store":
+        return _validate_vector_store_path(cfg)
+    return None
+
+
+def _validate_decision_section(cfg: dict, body: dict, old_section: dict) -> str | None:
+    err = _validate_decision_fields(cfg, body, old_section)
+    if err:
+        return err
+    # f0.7 P1-4（外审 muse P1-06）：decision 段同样拦私网/元数据端点（此前只有四段外呼有）
+    ep = str(cfg.get("openai_base_url") or "").strip()
+    old_ep = str((old_section.get("config") or {}).get("openai_base_url") or "")
+    if ep and ep != old_ep:
+        _err = _reject_private_endpoint(ep)
+        if _err:
+            return f"decision.openai_base_url: {_err}"
+    return None
+
+
+def _validate_egress_endpoint(section: str, cfg: dict, old_section: dict) -> str | None:
+    """f0.6 W-12（muse S-1 修复项）：decision 段的「换端点必须显式给新 key」
+    与私网/元数据地址拦截，推广到 llm / embedder / rerank / vision 四段
+    ——此前只有 decision 有此防护，而 S-1 整包转投链走的正是 llm 段。"""
+    old_cfg = dict(old_section.get("config") or {})
+    ep = str(cfg.get("openai_base_url") or "").strip()
+    if not ep or ep == old_cfg.get("openai_base_url"):
+        return None
+    if old_cfg.get("api_key") and (not isinstance(cfg.get("api_key"), str) or not cfg["api_key"].strip()):
+        return (f"changing {section} endpoint requires an explicit API key"
+                "（换端点必须显式给新 key，空 key 不再默认沿用旧凭据）")
+    _err = _reject_private_endpoint(ep)
+    return f"{section}.openai_base_url: {_err}" if _err else None
+
+
+def _validate_vector_store_path(cfg: dict) -> str | None:
     path_v = str(cfg.get("path") or "").strip()
-    if section == "vector_store" and path_v:
-        import os as _os
-        from ducky.utils import DATA_DIR
-        real = _os.path.realpath(path_v if _os.path.isabs(path_v)
-                                 else _os.path.join(DATA_DIR, path_v))
-        root = _os.path.realpath(DATA_DIR)
-        if real != root and not real.startswith(root + _os.sep):
-            return f"vector_store.path 必须位于数据根内（{root}），收到: {path_v[:60]}"
+    if not path_v:
+        return None
+    import os as _os
+    from ducky.utils import DATA_DIR
+    real = _os.path.realpath(path_v if _os.path.isabs(path_v) else _os.path.join(DATA_DIR, path_v))
+    root = _os.path.realpath(DATA_DIR)
+    if real != root and not real.startswith(root + _os.sep):
+        return f"vector_store.path 必须位于数据根内（{root}），收到: {path_v[:60]}"
     return None
 
 
@@ -139,9 +203,19 @@ def _validate_decision_fields(cfg: dict, body: dict, old: dict) -> str | None:
     return validate(candidate)
 
 
+def _decision_defaults(provider: str) -> dict:
+    try:
+        from ducky.decision import DEFAULTS
+        m, u = DEFAULTS.get(provider) or (None, None)
+        return {"model": m, "openai_base_url": u}
+    except ImportError:
+        return {}
+
+
 def _channel_section(section: str, body: dict, old: dict, cfg: dict) -> dict:
     return {"enabled": body.get("enabled", old.get("enabled", section == "rerank")),
-            "provider": body.get("provider") or old.get("provider") or ("nace" if section == "decision" else None),
+            "provider": (body.get("provider") or old.get("provider")
+                         or ("nace" if section == "decision" else "openai_compatible")),
             "config": cfg}
 
 
@@ -315,6 +389,9 @@ def _build_config_view() -> dict:
                 "mode": dc.get("mode", "auto"),
                 "_note": dc.get("_note", ""),
             },
+            # f0.7：没写 model/地址时实际走供应商默认值——单列出来给控制台标「默认」，
+            # 不冒充成已填（同 P1-4 口径）。
+            "defaults": _decision_defaults(dec.get("provider") or "nace"),
         },
         "vision": {
             "provider": vis.get("provider") or llm.get("provider"),
@@ -452,9 +529,17 @@ def register_config_routes(app: FastAPI) -> None:
         logger.info("🛠️ 配置段已在线更新: %s", section)
         return {"status": "ok", "updated": section, "config": _build_config_view()}
 
-    @app.get("/config/_speed")
-    def get_speed() -> dict:
-        return load_speed_cfg()
+
+    @app.post("/config/test")
+    def test_config(body: dict | None = None, caller: str = "") -> dict:
+        """设置页「测试连接」:对各模型段做一次最小真实调用(f0.7)。
+
+        body 可选 {"sections": ["llm", ...]};不给则全测。须 admin(同 GET /config)。
+        """
+        _require_config_admin(caller, operation="config:test")
+        from ducky.config_probe import probe_all
+        secs = (body or {}).get("sections")
+        return {"status": "ok", **probe_all(secs if isinstance(secs, list) else None)}
 
     @app.post("/config/_speed")
     def update_speed(body: dict, caller: str = "") -> dict:

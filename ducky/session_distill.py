@@ -288,6 +288,8 @@ def distill_session(session_id: str, *, user_id: str = "",
 
     joined = "\n".join(f"- {r['text']}" for r in rows)
     emo = _emotion_hits(joined)
+    from ducky.security.injection_guard import DATA_ONLY_RULE, fence_lines_for_llm
+    fenced = fence_lines_for_llm([f"- {r['text']}" for r in rows], label="会话记录")   # f0.7 P1-1
 
     summary, mode = "", "fallback"
     try:
@@ -295,8 +297,8 @@ def distill_session(session_id: str, *, user_id: str = "",
         out = call_llm(
             "下面是一次对话里记下的内容。用一到两句话说出这一程最值得记住的是什么。\n"
             "要求：具体，点出人和事；不要罗列，不要总结套话；不要超过 80 字。\n\n"
-            + joined,
-            system="你在为一个长期记忆系统提炼会话精华。只输出那一两句话本身。",
+            + fenced,
+            system="你在为一个长期记忆系统提炼会话精华。只输出那一两句话本身。" + DATA_ONLY_RULE,
             max_tokens=200, temperature=0.3, timeout=30)
         if out and out.strip():
             summary, mode = out.strip()[:400], "llm"
@@ -565,7 +567,10 @@ def source_keys_before_delete(memory_id: str, user_id: str, bank_id: str,
             if row:
                 text = text or str(row[0] or "").strip()
                 sessions.add(str(row[1] or ""))
-        if text:
+        if text and not vid.isdigit():
+            # f0.7 P6e（生产事故 2026-10-29）：删单行原文句柄只删这一行，派生精华只认这一行；
+            # 旧逻辑按正文 hash 跨会话扩张 —— 删一行宿主催促句（各会话一字不差）把别的会话
+            # 由它派生的 5 条精华连坐删掉。记忆级删除仍按 hash 找候选，再由调用方按实际认领行收窄。
             for row in conn.execute(
                     "SELECT id, session_id FROM verbatim_turns WHERE content_hash=?" + frag,
                     (summary_text_hash(text), *sparams)).fetchall():
@@ -734,64 +739,4 @@ def find_derived_summaries(mem: Any, scope, keys: dict,
 # coverage.  Partially overlapping generations (a long session whose bounded
 # window slid forward) are kept on purpose.
 
-def superseded_summaries(items: list) -> list[dict[str, Any]]:
-    """Pure selection over a scope's vector items (mem0 get_all shape)."""
-    from ducky.origin_context import is_session_summary
-    by_session: dict[str, list[tuple[str, str, frozenset]]] = {}
-    for item in items or []:
-        md = _item_metadata(item)
-        if not is_session_summary(md) or md.get("distill_source_refs_truncated"):
-            continue
-        refs = frozenset(_normalize_refs(md.get("distill_source_refs")))
-        mid = str(item.get("id") or item.get("memory_id") or "").strip()
-        sid = str(md.get("_origin_session_id") or "")
-        if not refs or not mid or not sid:
-            continue           # cannot prove coverage: keep it
-        created = str(item.get("created_at") or md.get("created_at") or "")
-        by_session.setdefault(sid, []).append((created, mid, refs))
-    doomed: list[dict[str, Any]] = []
-    for sid, gens in by_session.items():
-        gens.sort()
-        for i, (created, mid, refs) in enumerate(gens):
-            newer = [(m, r) for (_, m, r) in gens[i + 1:] if m != mid]
-            keeper = next((m for m, r in newer if refs <= r), None)
-            if keeper:
-                doomed.append({"id": mid, "session_id": sid, "created_at": created,
-                               "source_count": len(refs), "superseded_by": keeper})
-    return doomed
 
-
-def prune_superseded_summaries(user_id: str, bank_id: str, *, apply: bool = False,
-                               mem: Any = None) -> dict[str, Any]:
-    """Dry-run by default; ``apply`` deletes through the normal cascade."""
-    from ducky.bank_contract import make_scope
-    from ducky.wal_engine import _scoped_vector_items, cascade_delete_memory
-    scope = make_scope(user_id or DEFAULT_USER_ID, bank_id or DEFAULT_BANK_ID)
-    if mem is None:
-        from ducky.mem0_runtime import get_memory
-        mem = get_memory()
-    items, complete = _scoped_vector_items(mem, scope)
-    if not complete:
-        # Same rule as delete_all: an incomplete enumeration is never "nothing to do".
-        return {"status": "refused", "reason": "vector_enumeration_incomplete",
-                "user_id": scope.user_id, "bank_id": scope.bank_id}
-    doomed = superseded_summaries(items)
-    out: dict[str, Any] = {
-        "status": "ok" if apply else "dry_run", "user_id": scope.user_id,
-        "bank_id": scope.bank_id, "summaries_scanned": sum(
-            1 for i in items if _item_metadata(i).get("kind") == "session_distill"),
-        "candidates": doomed}
-    if not apply:
-        return out
-    deleted, failed = [], []
-    for entry in doomed:
-        res = cascade_delete_memory(entry["id"], user_id=scope.user_id, bank_id=scope.bank_id)
-        status = (res or {}).get("status")
-        # Same success vocabulary as POST /delete: committed / not_found.
-        (deleted if status in ("committed", "not_found") else failed).append(
-            {"id": entry["id"], "status": status,
-             "failed_layers": (res or {}).get("failed_layers", [])})
-    out.update(deleted=deleted, failed=failed)
-    if failed:
-        out["status"] = "partial"
-    return out

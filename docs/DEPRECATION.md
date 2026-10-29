@@ -19,7 +19,6 @@
 | 模块 | 角色 | introduced_at | last_supported_version | deprecated_at | planned_removal_version | replacement | 登记符号 |
 |---|---|---|---|---|---|---|---|
 | `ducky/add_speed.py` | /add 高速路径兼容门面（星号 re-export `ducky.speed.*`，旧 import 路径不变） | v9.1（2026-08-01 首提交即在场） | v20.x（当前全支持） | v20.4.0（立账，转入「仅兼容」） | v21（复核调用方清零后移除） | `ducky.speed` 子包（直接 import 真源） | `messages_to_text`、`try_fastpath_text` |
-| `ducky/routes_core.py` | HOT 主链路兼容门面（转发 `ducky.hot.register_core_routes`） | v9.1（2026-08-01 首提交即在场） | v20.x（当前全支持） | v20.4.0（立账，转入「仅兼容」） | v21（复核调用方清零后移除） | `ducky.hot`（`register_core_routes` 真源） | `register_core_routes` |
 | `ducky/hot/legacy_routes.py` | SQLite Legacy 路由组（/facts 系列旧契约） | v15 世代（2026-08-14 首次出现） | v20.x（当前全支持） | v20.4.0（立账，转入「仅兼容」） | v21（复核调用方清零后移除） | 现行 facts REST（routes_* 组）与 MCP `facts_*` 工具 | `register_legacy_routes` |
 | `ducky/memory_salience.py` | 显著性兼容门面（转发 `ducky.pipeline.memory_salience` 与 `ducky.salience` 包；v19.4.1 补齐过转发面） | v11.1 重构（2026-08-01 首提交即在场） | v20.x（当前全支持） | v20.4.0（立账，转入「仅兼容」） | v21（复核调用方清零后移除） | `ducky.salience` 包 / `ducky.pipeline.memory_salience`（直接 import 真源） | `decay_all`、`get_stats` |
 | `ducky/extended/` | 扩展路由 + 自动记忆**实装包**（外审 GPT 报告误记名为 `routes_extended.py`，实物是本包；非门面，登记以正视听） | v9.1（2026-08-01 首提交即在场） | v20.x（当前全支持） | 未退役（实装模块，非兼容层） | 不退役（v21 评估 auto_memory 后台环与 routes 是否拆分，拆分再登记） | 无需替代（实装）；如需精细依赖可直接 import `ducky.extended.auto_memory` / `ducky.extended.routes` | `register_extended_routes`、`AUTO_MEMORY_STATE` |

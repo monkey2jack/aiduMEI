@@ -262,27 +262,3 @@ def test_v19_3_3_no_nested_except_same_name_shadowing():
     assert not offenders, f"嵌套 except-as-e 同名遮蔽（外层变量被内层删除，再引用即 NameError）: {offenders}"
 
 
-def test_v19_3_3_persona_error_path_no_nameerror(monkeypatch):
-    """v19.3.3: build_persona 错误路径回归实测——当建档失败且 conn.close() 也失败时，
-    必须正常返回 error dict，而不是因变量遮蔽抛 NameError。"""
-    import sqlite3
-    import ducky.persona_memory as pm
-
-    class BrokenConn:
-        def execute(self, *args, **kwargs):
-            raise sqlite3.OperationalError("no such table: persona_banks")
-
-        def commit(self):
-            raise sqlite3.OperationalError("cannot commit")
-
-        def close(self):
-            raise sqlite3.OperationalError("cannot close")
-
-    monkeypatch.setattr(pm, "ensure_persona_schema", lambda: None)
-    monkeypatch.setattr(pm, "_get_conn", lambda: BrokenConn())
-
-    res = pm.build_persona("测试人格卡", use_llm=False)
-    assert isinstance(res, dict)
-    assert res["status"] == "error"
-    assert "基座建档失败" in res["detail"]
-    assert "no such table" in res["detail"]

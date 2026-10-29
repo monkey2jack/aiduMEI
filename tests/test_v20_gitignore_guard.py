@@ -94,6 +94,11 @@ _ISOLATED_ENV = {
     **os.environ,
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_SYSTEM": "/dev/null",
+    # f0.7 P2-2（外审 sesame）：core.excludesFile 未设时 git 仍会读 $XDG_CONFIG_HOME/git/ignore
+    # （默认 ~/.config/git/ignore）——掐掉全局配置文件不等于掐掉默认忽略文件。显式指到 /dev/null。
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "core.excludesFile",
+    "GIT_CONFIG_VALUE_0": "/dev/null",
 }
 
 

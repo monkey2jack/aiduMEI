@@ -171,17 +171,6 @@ class DeleteRequest(BaseModel):
     caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
 
 
-class DeleteAllRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    # 🔴P0-3: 必须显式指定 user_id，缺失拒绝执行
-    user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
-    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
-    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)
-    # 清空 default 租户必须显式传递 confirm=True
-    confirm: bool = False
-
-
 class TombstoneRestoreRequest(BaseModel):
     """🪦 tombstone 恢复请求（v19.4.0 Mímir 借鉴 B3）"""
     model_config = ConfigDict(extra="allow")
@@ -228,14 +217,3 @@ class UpdateRequest(BaseModel):
     content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
 
 
-class InjectContextRequest(BaseModel):
-    # 新 facts 注入协议；user_content 保留兼容旧调用方。
-    query: str = Field(default="", max_length=QUERY_FIELD_MAX_CHARS)
-    k: int = Field(default=5, ge=1, le=100)
-    level: str = Field(default="L0", max_length=16)
-    max_tokens: int = 1000
-    user_content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
-    assistant_content: str = Field(default="", max_length=TEXT_FIELD_MAX_CHARS)
-    user_id: str = Field(default=DEFAULT_USER_ID, max_length=ID_FIELD_MAX_CHARS)
-    bank_id: str = Field(default=DEFAULT_BANK_ID, max_length=ID_FIELD_MAX_CHARS)
-    caller_user_id: str = Field(default="", max_length=ID_FIELD_MAX_CHARS)

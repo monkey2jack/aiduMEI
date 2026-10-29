@@ -493,6 +493,14 @@ def _consolidate(summary: dict) -> None:
         summary.update({"status": "aborted", "abort_reason": "api_unreachable"})
         return
 
+    # ── Step 0: 墓碑快照 TTL（f0.7 P0-3：erase_expired_snapshots 此前无人调用，TTL 形同虚设）──
+    try:
+        from ducky.tombstone import erase_expired_snapshots
+        summary["tombstone_ttl"] = erase_expired_snapshots()
+    except (OSError, ValueError, ImportError, RuntimeError) as e:
+        summary["tombstone_ttl"] = {"error": f"{type(e).__name__}: {e}"[:200]}
+        logger.warning("墓碑快照 TTL 擦除失败: %s", e)
+
     # ── Step 1: Salience 衰减（v8.3.0: Lane 感知乘系数）──
     stats_before = get_stats()
     result = decay_all()

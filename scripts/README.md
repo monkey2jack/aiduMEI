@@ -2,6 +2,7 @@
 
 | Script | Purpose | Mutates data? | Repeatable? | When to run |
 |---|---|---|---|---|
+| `connect_host.py` | One-command host wiring (Claude Code / Codex / Hermes): back up host config, idempotently add read/write/distill hooks, then a live nonce self-test through the real hooks; first line `服务 ✅/❌ · 宿主接入 ✅/❌` | Host config (backed up); one test memory, deleted after | Idempotent; `--dry-run` / `--uninstall` / `--check` | After install, and after moving the repo or changing the service URL |
 | `e2e_smoke.py` | End-to-end write/recall/trace/cleanup acceptance via HTTP | Yes, in a temporary tenant | Yes | After install, upgrade, restore, or host integration |
 | `health_check.py` | Layer/API/model health report | No | Yes | Health inspection |
 | `update_crontab.sh` | Install or list periodic maintenance jobs | Changes crontab | Idempotent | Once per deployment; use `--list` to inspect |

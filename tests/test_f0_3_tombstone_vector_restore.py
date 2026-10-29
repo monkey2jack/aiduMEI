@@ -259,6 +259,7 @@ def test_local_engine_mode_does_not_require_a_cloud_point(world, monkeypatch):
     pid = _memory(fake)
     tid = _delete(pid)
     monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
     import ducky.dual_index as di
     monkeypatch.setattr(di, "upsert_local",
                         lambda point_id, text, payload, client=None, *, enqueue_on_fail=True: True)

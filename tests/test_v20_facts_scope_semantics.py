@@ -162,62 +162,6 @@ def test_unmigrated_db_keeps_v19_shape():
 
 # ── B：conflict_resolver 的失效写必须同一把尺子 ────────────────────
 
-def test_conflict_resolver_channel_marker_cannot_invalidate_claimed_rows():
-    """bob 已认领的行（哪怕 source='alice'）不许被 alice 的消解失效；
-    未认领 + 渠道匹配的行照旧可被认领失效（v19 存量语义）。"""
-    conn = _migrate_and_seed([
-        ("shared_key", "alice-old", "cli", "cli", "alice", "default"),
-        ("shared_key", "unclaimed-old", "alice", "alice", "default", "default"),
-        ("shared_key", "bob-old", "alice", "alice", "bob", "default"),
-    ])
-    conn.close()
-
-    from ducky.conflict_resolver import resolve_fact_conflict
-
-    out = resolve_fact_conflict("p", "shared_key", "brand-new", user_id="alice")
-    assert out["invalidated"] == 2, f"期望失效 2 行（自有+未认领）: {out}"
-
-    conn = sqlite3.connect(_DB)
-    alive = {
-        r[0] for r in conn.execute(
-            "SELECT fact_value FROM facts WHERE valid_to IS NULL"
-        )
-    }
-    conn.close()
-    assert alive == {"bob-old"}, (
-        f"存活集合={sorted(alive)}：bob 已认领的行被渠道标记打穿即为跨租户写"
-    )
-
-
-def test_conflict_resolver_named_bank_scope_is_strict():
-    """alice 在 work 域消解：她自己 home 域、bob 的 work 域一行不许动。"""
-    conn = _migrate_and_seed([
-        ("nb_key", "alice-work-old", "cli", "cli", "alice", "work"),
-        ("nb_key", "alice-home-old", "cli", "cli", "alice", "home"),
-        ("nb_key", "bob-work-old", "alice", "alice", "bob", "work"),
-        ("nb_key", "unclaimed-src-alice", "alice", "alice", "default", "work"),
-    ])
-    conn.close()
-
-    from ducky.conflict_resolver import resolve_fact_conflict
-
-    out = resolve_fact_conflict(
-        "p", "nb_key", "brand-new", user_id="alice", bank_id="work"
-    )
-    assert out["invalidated"] == 1, f"具名域只该失效 alice 自己那一行: {out}"
-
-    conn = sqlite3.connect(_DB)
-    alive = {
-        r[0] for r in conn.execute(
-            "SELECT fact_value FROM facts WHERE valid_to IS NULL"
-        )
-    }
-    conn.close()
-    assert alive == {"alice-home-old", "bob-work-old", "unclaimed-src-alice"}, (
-        f"存活集合={sorted(alive)}"
-    )
-
-
 # ── 路由层：bank_id 参数接通（防「函数修了、路由没传」） ─────────────
 
 def test_facts_route_threads_bank_id(monkeypatch):

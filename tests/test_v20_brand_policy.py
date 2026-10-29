@@ -126,7 +126,7 @@ def _code_files():
 # 生产侧日志采集按 aiduMEM.* / aiduMEM-v* 过滤。一次「顺手清理品牌残留」的全局替换
 # 会把这些一起改掉：服务照常起、日志照常写，只是再也进不了采集管道。
 # 数字放在这里，少一处就红。
-_LOGGER_SITES = 108  # f0.6++：+aiduMEM.graph_memory ×2（graph 数据层与路由层各一处，同名 logger）；此前 106=f0.6.4：+aiduMEM.memory_kernel ×3（可换层包内三处，同名 logger）；103=v21.2.0：+aiduMEM.distill；v21 preview：+aiduMEM.Dossier +aiduMEM.RoutesKnowledge；v21.1：+aiduMEM.pantheon +aiduMEM.RoutesPantheon；f0.6：+aiduMEM.api_errors
+_LOGGER_SITES = 92  # f0.6+++ WP2：108 → 92（路由白名单收敛后删除的模块带走 16 处同名 logger；采集规则按前缀过滤不受影响）；此前 108=f0.6++：+aiduMEM.graph_memory ×2（graph 数据层与路由层各一处，同名 logger）；此前 106=f0.6.4：+aiduMEM.memory_kernel ×3（可换层包内三处，同名 logger）；103=v21.2.0：+aiduMEM.distill；v21 preview：+aiduMEM.Dossier +aiduMEM.RoutesKnowledge；v21.1：+aiduMEM.pantheon +aiduMEM.RoutesPantheon；f0.6：+aiduMEM.api_errors
 # 累积记账（每次变动都要写明来路，否则这个数字迟早变成没人敢动的常数）：
 #   · v20.2 自动挡: +3（gear/local_embed/dual_index）
 #   · v20.2.1 外审 R1: +1（rate_guard）
@@ -176,7 +176,6 @@ _FROZEN_ENV_KEYS = {
     "AIDUMEM_NEW_SESSION_MAX",
     "AIDUMEM_PATH",
     "AIDUMEM_PERSONA_ENABLED",
-    "AIDUMEM_PERSONA_MAX_MEMORIES",
     "AIDUMEM_PUBLIC_DOCS",
     "AIDUMEM_PYTHON",
     "AIDUMEM_RECALL_SCORE_FLOOR",
@@ -358,8 +357,8 @@ def test_guard_tables_are_not_empty_and_point_at_real_files():
     assert {k for k, _ in _CRITICAL_ENV_READS} <= _FROZEN_ENV_KEYS, (
         "高危键表里有键不在冻结集里 —— 两张表对不上，说明其中一张已经过期"
     )
-    assert len(_FROZEN_ENV_KEYS) == 73, (
-        "冻结集条数从 73 变成了 %d —— 请确认这是有意增删，"
+    assert len(_FROZEN_ENV_KEYS) == 72, (  # f0.6+++ WP2: 73 -> 72 (the persona max-memories key removed with the persona count route)
+        "冻结集条数从 72 变成了 %d —— 请确认这是有意增删，"
         "而不是被一次批量改名带过去的。" % len(_FROZEN_ENV_KEYS)
     )
     rels = (

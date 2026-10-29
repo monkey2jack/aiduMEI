@@ -14,10 +14,71 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import sqlite3
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger("aiduMEM.graph_memory")
+
+# ── 确定性实体抽取器(co_occurrence 边的依据;自 hot/legacy_helpers 迁入,逻辑逐字不变) ──
+_RE_QUOTED      = re.compile(r'["\\\']([^"\\\']+)["\\\']')
+_RE_AKA         = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
+_RE_USER        = re.compile(r'\b(User|用户)\b')
+_RE_AI          = re.compile(r'\b(AI|Assistant|助手)\b')
+# 品牌名跨了三代（duMem → aiduMEM → aiduMEI），而这条正则是拿去匹配**存量记忆文本**的。
+# IGNORECASE 帮不上忙：aiduMEM 与 aiduMEI 差在最后一个字母。只留新名 = 老记忆里的项目实体
+# 全部认不出来；只留旧名 = 改名之后写进来的新记忆全部认不出来。匹配器必须同时覆盖两代。
+_RE_PROJECT     = re.compile(r'\b(aiduMEI|aiduMEM|duMem|mem0|Hermes|Qdrant|FastAPI|SQLite)\b', re.IGNORECASE)
+_RE_TECH        = re.compile(r'\b(Hermes|DeepSeek|Qdrant|NVIDIA|FTS5|WAL|VACUUM|nginx|systemd|FastAPI)\b')
+
+
+def _env_pattern(env_key: str) -> "re.Pattern | None":
+    """从环境变量读取 `|` 分隔的自定义词表，编译成实体识别正则。
+
+    部署方专属的机房代号、纪念日、人名等不硬编码在源码里，例如：
+        export AIDUMEM_SERVER_KEYWORDS="tokyo|osaka"
+        export AIDUMEM_DATE_KEYWORDS="1月1日|周年"
+    未设置时返回 None，该类实体不参与提取。
+    """
+    raw = (os.environ.get(env_key) or "").strip().strip("|")
+    if not raw:
+        return None
+    words = [re.escape(w.strip()) for w in raw.split("|") if w.strip()]
+    if not words:
+        return None
+    return re.compile("(" + "|".join(words) + ")")
+
+
+# 可选的部署方自定义实体（服务器代号 / 纪念日期）
+#
+# 血训（v15）：这两个正则原本在 import 时就固化，一旦模块比 setenv 先加载
+# （或 systemd 单元漏了 Environment=），自定义实体就永久不参与抽取，
+# 且全程静默。改为惰性 + 环境变量变化自动重建。
+_ENV_PATTERN_CACHE: dict = {}
+
+
+def _env_pattern_cached(env_key: str) -> "re.Pattern | None":
+    raw = (os.environ.get(env_key) or "").strip().strip("|")
+    cached = _ENV_PATTERN_CACHE.get(env_key)
+    if cached is None or cached[0] != raw:
+        _ENV_PATTERN_CACHE[env_key] = (raw, _env_pattern(env_key))
+    return _ENV_PATTERN_CACHE[env_key][1]
+
+def _extract_entities(text: str) -> list[str]:
+    """原生的实体提取 — 保持首次出现顺序去重"""
+    seen, candidates = set(), []
+    def _add(name):
+        n = name.strip()
+        if n and n.lower() not in seen: seen.add(n.lower()); candidates.append(n)
+    for m in _RE_QUOTED.finditer(text):       _add(m.group(1))
+    for m in _RE_AKA.finditer(text):          _add(m.group(1)); _add(m.group(2))
+    _re_server = _env_pattern_cached("AIDUMEM_SERVER_KEYWORDS")
+    _re_date = _env_pattern_cached("AIDUMEM_DATE_KEYWORDS")
+    for pat in [_RE_USER, _RE_AI, _RE_PROJECT, _re_server, _RE_TECH, _re_date]:
+        if pat is None: continue
+        for m in pat.finditer(text):          _add(m.group(0))
+    return candidates
 
 _DEPTHS = (1, 2, 3)
 _EDGE_TYPES = ("update_chain", "same_session", "co_occurrence")
@@ -39,8 +100,25 @@ CREATE INDEX IF NOT EXISTS idx_ge_dst ON graph_edges(user_id, bank_id, dst_type,
 """
 
 
+_NATIVE_CONN: Dict[str, sqlite3.Connection] = {}
+
+
 def _conn() -> sqlite3.Connection:
-    """沿用 facts 连接与隔离谓词(单库设计;WP8 迁移时随真源同移)。"""
+    """边在哪个库:native 内核写边进 memory.db(单库真源),mem0 内核沿用 facts 连接。
+
+    f0.7 P4 实测:生产 native 后 memory.db 有 1387 条边,而这里一直读 facts.db 的空表,
+    控制台心图因此只会显示「图未派生」——读写两头必须指向同一个库。
+    """
+    from ducky.mem0_runtime import native_kernel_active
+    if native_kernel_active():
+        from ducky.memory_kernel.impl_native import default_db_path
+        path = default_db_path()
+        c = _NATIVE_CONN.get(path)
+        if c is None:
+            c = sqlite3.connect(path, timeout=10, check_same_thread=False)
+            c.execute("PRAGMA busy_timeout=10000")
+            _NATIVE_CONN[path] = c
+        return c
     from ducky.core_memory import _get_conn as _cm_conn
     return _cm_conn()
 
@@ -193,3 +271,42 @@ def graph_stats(user_id: str, bank_id: str = "default") -> Dict[str, int]:
         by_type[et] = n
         total += n
     return {"total_edges": total, "by_type": by_type}
+
+
+def nebula(user_id: str, bank_id: str = "default", limit: int = 1500) -> Dict[str, Any]:
+    """记忆星云(f0.7 P4):整张真实图谱一次给前端画,按需加载、只读。
+
+    节点 = 有边的记忆(按度数取前 limit 个,万点也不卡),附类型与一句摘要;
+    边 = 两端都在节点集里的真实关系边(三类,不含猜测)。
+    """
+    limit = max(50, min(int(limit or 1500), 3000))
+    ensure_graph_schema()
+    conn = _conn()
+    from ducky.bank_contract import make_scope
+    from ducky.scope_sql import scope_clause
+    frag, args = scope_clause(make_scope(user_id, bank_id))
+    rows = conn.execute(
+        "SELECT src_type, src_id, dst_type, dst_id, edge_type FROM graph_edges WHERE 1=1 " + frag,
+        args).fetchall()
+    degree: Dict[Tuple[str, str], int] = {}
+    for st, si, dt, di, _et in rows:
+        for k in ((st, si), (dt, di)):
+            degree[k] = degree.get(k, 0) + 1
+    keep = sorted(degree, key=lambda k: -degree[k])[:limit]
+    keep_set = set(keep)
+    info: Dict[str, Tuple[str, str]] = {}
+    has_mem = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'").fetchone() is not None
+    if has_mem and keep:
+        for mid, content, mtype in conn.execute(
+                "SELECT id, content, memory_type FROM memories WHERE 1=1 " + frag, args):
+            info[str(mid)] = (mtype or "", " ".join((content or "").split())[:60])
+    nodes = []
+    for nt, ni in keep:
+        mtype, text = info.get(ni) or info.get("verbatim:" + ni) or ("", "")
+        nodes.append({"id": nt + ":" + ni, "kind": nt, "memory_type": mtype or nt.upper(),
+                      "degree": degree[(nt, ni)], "text": text})
+    edges = [{"s": st + ":" + si, "t": dt + ":" + di, "type": et}
+             for st, si, dt, di, et in rows if (st, si) in keep_set and (dt, di) in keep_set]
+    return {"nodes": nodes, "edges": edges, "total_nodes": len(degree),
+            "total_edges": len(rows), "truncated": len(degree) > len(keep)}

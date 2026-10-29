@@ -18,5 +18,5 @@ logger = logging.getLogger("aiduMEM.memory_kernel")
 
 def create_mem0_kernel():
     """零参工厂:返回 mem0 单例句柄(与历史 get_memory 语义逐字一致)。"""
-    from ducky.mem0_runtime import get_memory as _legacy_get_memory
+    from ducky.mem0_runtime import _get_mem0_memory as _legacy_get_memory
     return _legacy_get_memory()

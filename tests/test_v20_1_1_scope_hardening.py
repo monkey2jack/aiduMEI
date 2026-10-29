@@ -61,31 +61,6 @@ class TestRateGuard:
         assert rg.add_rate_limit() == 77, "回退≠忽略配置"
         assert not rg.rate_config_errors()
 
-    def test_delete_all_route_returns_429_with_retry_after(self, monkeypatch, tmp_path):
-        """超限的 delete_all 必须 429 + Retry-After，绝不静默放行。"""
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-
-        import ducky.rate_guard as rg
-        import ducky.utils as utils
-        from ducky.hot.crud import register_crud_routes
-
-        monkeypatch.setattr(utils, "FACTS_DB", str(tmp_path / "facts.db"))
-        monkeypatch.setattr(rg, "delete_all_rate_limit", lambda: 1)
-        # Both requests must use the same natural-minute rate window even
-        # when the first request's real pipeline takes several seconds.
-        monkeypatch.setattr(rg, "check_rate", partial(rg.check_rate, now=1_700_000_040.0))
-        reset_rate_windows()
-
-        app = FastAPI()
-        register_crud_routes(app)
-        client = TestClient(app)
-        client.post("/delete_all", json={"user_id": "rl_user"})  # 第 1 次占额度
-        r2 = client.post("/delete_all", json={"user_id": "rl_user"})
-        assert r2.status_code == 429, r2.text
-        assert "Retry-After" in r2.headers
-        assert "AIDUMEI_RATE_DELETE_ALL_PER_MIN" in r2.json()["detail"], \
-            "429 文案必须教会调用方怎么调上限"
 
     def test_add_route_returns_429(self, monkeypatch, tmp_path):
         from fastapi import FastAPI
@@ -167,13 +142,11 @@ class TestMetadataShape:
 def r18_sandbox(monkeypatch, tmp_path):
     import ducky.core_memory as cm
     import ducky.mem0_runtime as runtime
-    import ducky.refine_memory as refine_memory
     import ducky.utils as utils
     from ducky.schema_bootstrap import ensure_core_schema
 
     db_path = str(tmp_path / "facts.db")
     monkeypatch.setattr(utils, "FACTS_DB", db_path)
-    monkeypatch.setattr(refine_memory, "_checked", False)
     monkeypatch.setattr(cm, "_initialized", False)
     cm._initialized_scopes.clear()
 
@@ -190,9 +163,13 @@ def r18_sandbox(monkeypatch, tmp_path):
     ensure_core_schema(force=True)
     # 三库建表走各自模块的 ensure（传入独立 conn，避开 legacy_helpers
     # 线程缓存连接绑死 import 时路径的坑——from-import 中毒同族）。
-    from ducky.hot.legacy_helpers import _ensure_observations_table, _ensure_scenes_table
+    # f0.6+++ WP2：observations 写入端（/observe）与建表器已移除；删除链仍须
+    # 清磁盘上的历史行，这里按存量 schema 手工建表。
+    from ducky.hot.legacy_helpers import _ensure_scenes_table
     conn = sqlite3.connect(db_path)
-    _ensure_observations_table(conn)
+    conn.execute("CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                 "category TEXT NOT NULL DEFAULT 'general', summary TEXT NOT NULL, "
+                 "content TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '')")
     _ensure_scenes_table(conn)
     conn.close()
 
