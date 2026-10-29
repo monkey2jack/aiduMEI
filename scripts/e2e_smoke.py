@@ -175,6 +175,7 @@ class Smoke:
     def add_and_recall(self) -> None:
         stamp = dt.datetime.now().strftime("%Y%m%d%H%M%S")
         nonce = f"aidumei-smoke-{stamp}"
+        self.nonce = nonce
         content = f"{nonce} 的验收暗号是 ORANGE-HORIZON-2026。"
         body = {
             "messages": [{"role": "user", "content": content}],
@@ -203,16 +204,6 @@ class Smoke:
         else:
             self.record("add", "PASS", "write accepted", {"action": action or "direct"})
 
-        if action in {"coalesce_buffered", "coalesce_flushed"}:
-            try:
-                response = self.request("POST", "/add/coalesce/flush", params={"user_id": self.tenant, "caller_user_id": self.tenant, "bank_id": "default", "force": "true"})
-                data = self._get_json(response)
-                if response.status_code != 200:
-                    self.record("flush", "FAIL", f"flush returned {response.status_code}", data)
-                else:
-                    self.record("flush", "PASS", "coalesce queue flushed", data)
-            except Exception as exc:
-                self.record("flush", "FAIL", f"flush failed: {exc}")
         if self.wait_seconds:
             time.sleep(self.wait_seconds)
 
@@ -248,7 +239,7 @@ class Smoke:
 
     def trace(self) -> None:
         try:
-            response = self.request("POST", "/search_trace", json={
+            response = self.request("POST", "/api/search_trace", json={   # WP2：trace 只在控制台 /api 下
                 "query": f"aidumei-smoke-{dt.datetime.now().strftime('%Y%m%d')}",
                 "user_id": self.tenant,
                 "caller_user_id": self.tenant,
@@ -271,24 +262,28 @@ class Smoke:
         })
 
     def cleanup(self) -> None:
+        """f0.6+++ WP2：/delete_all 已下线 —— 按暗号搜出本次冒烟写入的记忆，逐条 /delete。"""
+        nonce = getattr(self, "nonce", "")
+        if not nonce:
+            self.record("cleanup", "WARN", "nothing was written; skip cleanup")
+            return
+        scope = {"user_id": self.tenant, "caller_user_id": self.tenant, "bank_id": "default"}
         try:
-            response = self.request("POST", "/delete_all", json={
-                "user_id": self.tenant,
-                "caller_user_id": self.tenant,      # 同上：写/删都要声明自己
-                "bank_id": "default",
-                "confirm": True,
-            })
-            data = self._get_json(response)
+            response = self.request("POST", "/search", json={"query": nonce, "limit": 20, **scope})
+            hits = [r for r in (self._get_json(response).get("results") or [])
+                    if nonce in str(r.get("memory") or r.get("text") or "")]
+            failed = []
+            for hit in hits:
+                r = self.request("POST", "/delete", json={"memory_id": hit.get("id"), **scope})
+                if r.status_code != 200 or self._get_json(r).get("status") == "error":
+                    failed.append(hit.get("id"))
         except Exception as exc:
             self.record("cleanup", "FAIL", f"cleanup failed: {exc}")
             return
-        if response.status_code not in (200, 207):
-            self.record("cleanup", "FAIL", f"cleanup returned {response.status_code}", data)
+        if failed:
+            self.record("cleanup", "FAIL", "some smoke memories could not be deleted", {"ids": failed})
             return
-        if data.get("status") != "committed":
-            self.record("cleanup", "FAIL", "cleanup did not fully commit", data)
-            return
-        self.record("cleanup", "PASS", "smoke tenant cleared", {"status": data.get("status")})
+        self.record("cleanup", "PASS", "smoke memories deleted", {"deleted": len(hits)})
 
     def run(self) -> dict[str, Any]:
         self.health()

@@ -104,7 +104,7 @@ def _transport_failure_kind(exc: BaseException) -> str:
 # ducky.security.injection_guard._BOUNDARY_MARKERS **同口径**，
 # 改一处必须改另一处 —— 否则就是「服务端修好了，插件这条旁路还开着」。
 _BOUNDARY_MARKERS = (
-    "<<<RECORD_START", "<<<RECORD_END", "[END OF DATA CONTEXT]", "[DATA:",
+    "<<<RECORD_START", "<<<RECORD_END", "[END OF DATA CONTEXT]", "[END OF DATA CONTEXT", "[DATA:",
     "<memory>", "</memory>", "[以下为召回的记忆数据",
 )
 

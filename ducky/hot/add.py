@@ -70,16 +70,6 @@ def _index_direct_results(add_result, *, user_id: str, bank_id: str,
             raise
 
 
-def _flush_http_response(report: dict):
-    """f0.3 (C4): HTTP status follows the flush outcome (same idiom as /delete)."""
-    from fastapi.responses import JSONResponse
-    status = report.get("status")
-    if status == "ok":
-        return report
-    code = {"partial": 207, "unavailable": 503}.get(status, 500)
-    return JSONResponse(status_code=code, content=report)
-
-
 def _store_ingress(user_id, bank_id, messages_json, md, _full_text, text_preview):
     """Called only under a durable request/job intent and the scope lock."""
     ensure_bank_registered(make_scope(user_id, bank_id))
@@ -144,6 +134,11 @@ def _store_ingress(user_id, bank_id, messages_json, md, _full_text, text_preview
     except Exception as _lv:
         feature_failed("dual_index_local", _lv)
         logger.debug(f"🪫 [DualIndex] 原文本地向量跳过: {_lv}")
+
+
+def _native_kernel() -> bool:
+    from ducky.mem0_runtime import native_kernel_active
+    return native_kernel_active()
 
 
 def _write_mode():
@@ -292,7 +287,9 @@ def _run_pipeline(mem, uid, msgs, meta, *, bank_id, infer):
     # 确定性直写秒回（原文/硬事实/云向量照落，内容照样可召回；
     # 欠的只是蒸馏精修，故障账本与事件账本可查）。closed/half-open
     # 走真实蒸馏，半开拿真实写入当探针（命门教训）。
-    batch_infer = bool(infer)
+    # native 内核 /add 只存原话(不调 LLM,蒸馏走 /session/distill):按 infer=False 走,不给 LLM 挡位记假信号
+    from ducky.mem0_runtime import native_kernel_active
+    batch_infer = bool(infer) and not native_kernel_active()
     attempts_before = _sdk_attempt_count(uid, bank_id)
     from ducky.origin_context import set_origin_from_metadata, reset_origin
     _origin_token = set_origin_from_metadata(meta)  # v21 收口 🟢-1：token 配对
@@ -384,7 +381,6 @@ def _run_batch(mem, uid, msgs, meta, jids, *, bank_id, infer):
         for jid in jids:
             _mark_job_failed(jid)
         raise
-
 
 
 def _dispatch_async(req, background_tasks, job_id, messages_json, md, infer_flag,
@@ -492,7 +488,6 @@ def _dispatch_async(req, background_tasks, job_id, messages_json, md, infer_flag
         "preview": text_preview,
         "coalesce_skip": why,
     }, provisional=True)
-
 
 
 def register_add_routes(app: FastAPI) -> None:
@@ -797,7 +792,7 @@ def register_add_routes(app: FastAPI) -> None:
                     f"Memory content rejected: {_rejection}. "
                     "If this is legitimate verbatim text (e.g. a quoted prompt-injection sample), "
                     "set AIDUMEM_INJECTION_GUARD_MODE=log_only to store it with a warning instead of "
-                    "blocking; the guard applies to /add and /add/raw alike.",
+                    "blocking.",
                 )
 
             # v20.4.0（P1-9 · Kimi P2-1）：检测通过后**保结构**清洗控制字符，
@@ -823,6 +818,12 @@ def register_add_routes(app: FastAPI) -> None:
             def _apply_validated():
                 durable_owned.append(True)
                 _store_ingress(req.user_id, req.bank_id, messages_json, md, _full_text, text_preview)
+                if mode == "local" and _native_kernel():
+                    # f0.7 P3（实验机从零安装实测）：native 没有本地备胎索引（dual_index 对 native 关闭），
+                    # 本地档若照旧只走 _local_response，写入就落不进任何可召回的库——宿主写了等于没写。
+                    # native /add 本就只存原话、不调 LLM，零外呼承诺不受影响；向量在本地档降为 FTS-only。
+                    out = _direct_write(mem, req.user_id, messages_json, md, False, bank_id=req.bank_id)
+                    return _finalize_and({**out, "infer": False, "engine_mode": "local"})
                 if mode in ("local", "lite"):
                     return _finalize_and(_local_response(
                         mode, req.user_id, req.bank_id, messages_json, md))
@@ -862,82 +863,4 @@ def register_add_routes(app: FastAPI) -> None:
             logger.error(f"add 失败: {e}")
             raise HTTPException(500, api_error_detail(e))
 
-    @app.get("/add/job/{job_id}")
-    def add_job_status(job_id: str, user_id: str = "", bank_id: str = ""):
-        """查询异步 /add 任务状态。
 
-        v20.4.0（P1-5 · Kimi P2-2）：查询按 (user_id, bank_id) 校验归属 ——
-        与写入同一套规范化链。不带参数按默认租户查（单租户调用方不破坏），
-        归属不符按 404（不泄露存在性）。
-        """
-        try:
-            from ducky.add_speed import job_get
-            scope = make_scope(user_id, bank_id)
-            uid = _normalize_user_id(scope.user_id) if scope.user_id else "default"
-            rec = job_get(job_id, user_id=uid, bank_id=scope.bank_id)
-            if not rec:
-                raise HTTPException(404, f"job not found: {job_id}")
-            return {"status": "ok", "job": rec}
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(500, api_error_detail(e))
-
-    @app.get("/add/coalesce")
-    def add_coalesce_status(user_id: str = ""):
-        """查看会话合并队列水位（调试/运维）"""
-        try:
-            from ducky.add_speed import coalesce_status, ensure_coalesce_worker
-            ensure_coalesce_worker()
-            return {"status": "ok", **coalesce_status(user_id or None)}
-        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
-        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
-        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(500, api_error_detail(e))
-
-    @app.get("/add/coalesce/stats")
-    def add_coalesce_stats(reset: bool = False):
-        """潮浪命中统计：waves / saved_llm / by_profile / last_waves。reset=true 清零。"""
-        try:
-            from ducky.add_speed import coalesce_stats_snapshot
-            return {"status": "ok", **coalesce_stats_snapshot(reset=reset)}
-        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
-        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
-        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(500, api_error_detail(e))
-
-    @app.post("/add/coalesce/flush")
-    def add_coalesce_flush(user_id: str = "", force: bool = True,
-                           # v20.2.4（外审 F-04）：手动冲刷也必须接受作用域 ——
-                           # 否则一个域的 preview 会被交给另一个域处理。
-                           bank_id: str = ""):
-        """手动冲刷合并队列（调试）
-
-        f0.3 (C4): batches run through the *same* executor as the normal /add
-        worker (the registered flusher -> _execute_batch -> _run_pipeline), so
-        a batch keeps its own infer flag and an LLM failure falls back to the
-        deterministic direct write.  The response is honest per batch:
-        200 ok / 207 partial / 500 failed; 503 (queue untouched) when no
-        executor is registered in this process.
-        """
-        try:
-            from ducky.speed.coalesce import flush_now
-            # Backend readiness first: an unconfigured deployment gets the
-            # standard actionable 503 (what to configure, /health, /add/raw).
-            get_memory()
-            report = flush_now(user_id=(user_id or None), force=force,
-                               bank_id=(bank_id or None))
-            return _flush_http_response(report)
-        # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
-        # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
-        # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(500, api_error_detail(e))

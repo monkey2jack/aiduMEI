@@ -83,7 +83,6 @@ class FakeMem0:
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
-    import ducky.checkpoint as checkpoint
     import ducky.mem0_runtime as runtime
     import ducky.memory_types as mt
     import ducky.utils as utils
@@ -98,7 +97,6 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(utils, "FACTS_DB", facts_db)
     monkeypatch.setattr(utils, "TEXT_FTS_DB", str(tmp_path / "text_fts.db"))
     monkeypatch.setattr(mt, "_checked", False)
-    monkeypatch.setattr(checkpoint, "_table_checked", False)
     monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "cloud")
     ensure_core_schema(force=True)
     _init_text_fts()
@@ -283,6 +281,7 @@ def test_local_mode_summary_written_by_add_is_cascaded_through_the_ledger(world,
     import ducky.session_distill as distill
     from ducky.wal_engine import cascade_delete_memory
     monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
     monkeypatch.setattr(hot_add, "get_memory", lambda: fake)
     monkeypatch.setattr(hot_add, "patch_llm_for_speed", lambda m: None, raising=False)
     monkeypatch.setattr(llm, "call_llm", lambda *a, **kw: "Alice picked blue")
@@ -316,7 +315,6 @@ def test_ordinary_write_records_no_sources(world):
 def test_delete_all_clears_ledger_and_receipts_and_counts_what_it_left(world):
     fake, q = world
     import ducky.idempotency as idem
-    from ducky.checkpoint import write_checkpoint
     from ducky.skill_crystallizer import init_crystallizer_schema
     from ducky.wal_engine import cascade_delete_all
     refs = _turns("alice", "work", "s-1", ["x one", "x two", "x three"])
@@ -324,10 +322,6 @@ def test_delete_all_clears_ledger_and_receipts_and_counts_what_it_left(world):
     for key, user, bank in (("ka", "alice", "work"), ("kb", "bob", "default")):
         st = idem.claim(key, user, bank, {"k": key})
         idem.finalize(key, user, bank, {"status": "ok"}, claimed_at=idem.claim_token(st))
-    write_checkpoint("sess-alice", {"cp_active_intent": "ship the design"},
-                     user_id="alice", bank_id="work")
-    write_checkpoint("sess-bob-1", {"cp_active_intent": "bob's own work"},
-                     user_id="bob", bank_id="work")
     init_crystallizer_schema()
     from ducky.utils import get_facts_conn
     conn = get_facts_conn()
@@ -345,9 +339,9 @@ def test_delete_all_clears_ledger_and_receipts_and_counts_what_it_left(world):
 
     nc = out["not_cleared"]
     assert all(isinstance(v, dict) and v["reason"] for v in nc.values())
-    assert nc["checkpoints"]["rows_scope"] == "tenant"
-    assert nc["checkpoints"]["rows"] == len(
-        q("SELECT 1 FROM checkpoints WHERE user_id='alice' AND bank_id='work'")) > 0
+    # f0.6+++ WP2: the checkpoint writer is gone; the legacy table stays in
+    # the exemption report (absent on a fresh install).
+    assert nc["checkpoints"]["rows_scope"] in ("absent", "tenant")
     assert nc["skill_crystals"] == {**nc["skill_crystals"], "rows": 2, "rows_scope": "table"}
     assert nc["store:persona"]["rows_scope"] in ("absent", "table")
 
@@ -357,3 +351,85 @@ def test_single_delete_keeps_the_plain_exemption_mapping(world):
     from ducky.wal_engine import cascade_delete_memory, delete_chain_exemptions
     out = cascade_delete_memory("verbatim:999999", user_id="alice", bank_id="work")
     assert out["not_cleared"] == delete_chain_exemptions()
+
+
+def _ws_ids(user, bank):
+    from ducky.memory_workspace import ws_status
+    return {i.get("memory_id") or i.get("id") for i in ws_status(user, bank_id=bank)["items"]}
+
+
+def test_verbatim_handle_delete_evicts_workspace(world):
+    """f0.6+++: delete by the verbatim:N handle /search returns also drops its cache copy."""
+    from ducky.memory_workspace import ws_push
+    from ducky.wal_engine import cascade_delete_memory
+    ref = _turns("alice", "work", "s-ws", ["port is 8767"])[0]
+    ws_push("alice", ref, "port is 8767", bank_id="work")
+    assert cascade_delete_memory(ref, user_id="alice", bank_id="work")["status"] == "committed"
+    assert ref not in _ws_ids("alice", "work")
+
+
+def test_update_replaces_old_text_everywhere(world, monkeypatch):
+    """f0.6+++: /update leaves no old-text copy (verbatim / cache) and accepts verbatim:N."""
+    from ducky.hot.crud import register_crud_routes
+    from ducky.memory_workspace import ws_push
+    fake, q = world
+    monkeypatch.setattr("ducky.hot.crud.get_memory", lambda: fake)
+    fake.get = lambda mid: {"id": mid, "memory": fake.vector_store.points[mid]["data"],
+                            "user_id": "alice", "metadata": {"bank_id": "work"}}
+    fake.update = lambda mid, data=None, metadata=None: fake.vector_store.points[mid].update(data=data)
+    fake.vector_store.points["m1"] = {"data": "port is 8767", "user_id": "alice", "bank_id": "work"}
+    ref = _turns("alice", "work", "s-up", ["port is 8767", "router is 8443"])
+    ws_push("alice", "m1", "port is 8767", bank_id="work")
+    app = FastAPI()
+    register_crud_routes(app)
+    c = TestClient(app)
+    body = {"user_id": "alice", "bank_id": "work"}
+    assert c.post("/update", json={**body, "memory_id": "m1", "content": "port is 9900"}).status_code == 200
+    assert "m1" not in _ws_ids("alice", "work")
+    texts = lambda: {r["content"] for r in q("SELECT content FROM verbatim_turns")}
+    assert "port is 8767" not in texts()
+    r = c.post("/update", json={**body, "memory_id": ref[1], "content": "router is 9443"})
+    assert r.status_code == 200, r.text
+    assert texts() == {"router is 9443"}
+    assert c.post("/update", json={**body, "memory_id": "verbatim:999999", "content": "x"}).status_code == 404
+
+
+NUDGE = "[Your previous response had no visible output. Please continue.]"
+
+
+def test_p6e_verbatim_delete_does_not_take_other_sessions_summaries(world):
+    """f0.7 P6e（生产事故 2026-10-29）：同一句宿主催促句出现在多个会话里；删其中一个
+    会话的那一行，只连坐由这一行派生的精华，别的会话由它们各自那一行派生的精华必须留下。"""
+    fake, _ = world
+    from ducky.wal_engine import cascade_delete_memory
+    ra = _turns("alice", "work", "s-a", ["real a", NUDGE])
+    rb = _turns("alice", "work", "s-b", ["real b", NUDGE])
+    pa = _summary(fake, "alice", "work", "s-a", "summary of session a", ra)
+    pb = _summary(fake, "alice", "work", "s-b", "summary of session b", rb)
+    out = cascade_delete_memory(ra[1], user_id="alice", bank_id="work")
+    assert out["status"] == "committed", out
+    gone = [d["id"] for d in out["details"].get("derived_summaries", [])]
+    assert gone == [pa]
+    assert pb in fake.vector_store.points
+
+
+def test_p6e_memory_delete_spares_unclaimed_identical_rows_summaries(world):
+    """记忆级删除：同文行按认领规则给别的活记忆留下的那行不删，由它派生的精华也不连坐。"""
+    fake, _ = world
+    from ducky.text_fts import _index_memory
+    from ducky.wal_engine import cascade_delete_memory
+    _turns("alice", "work", "s-c", ["real c", NUDGE])
+    rd = _turns("alice", "work", "s-d", ["real d", NUDGE])
+    pd = _summary(fake, "alice", "work", "s-d", "summary of session d", rd)
+    keep = str(uuid.uuid4())       # 另一条活记忆仍说着这句（会话 s-d）
+    fake.vector_store.insert([[0.1]], payloads=[{"data": NUDGE, "user_id": "alice", "bank_id": "work",
+                                                 "_origin_session_id": "s-d"}], ids=[keep])
+    _index_memory(keep, NUDGE, user_id="alice", bank_id="work")
+    mid = str(uuid.uuid4())
+    fake.vector_store.insert([[0.1]], payloads=[{"data": NUDGE, "user_id": "alice", "bank_id": "work",
+                                                 "_origin_session_id": "s-c"}], ids=[mid])
+    _index_memory(mid, NUDGE, user_id="alice", bank_id="work")
+    out = cascade_delete_memory(mid, user_id="alice", bank_id="work")
+    assert out["status"] == "committed", out
+    assert pd not in [d["id"] for d in out["details"].get("derived_summaries", [])]
+    assert pd in fake.vector_store.points

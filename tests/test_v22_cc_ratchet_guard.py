@@ -76,7 +76,7 @@ _BASELINE: dict[str, dict[str, tuple[int, str]]] = {
         "_try_workspace_route": (6, "workspace 快路:f0.6.3 自 search 拆出,行为逐字不变"),
     },
     "ducky/hot/crud.py": {
-        "register_crud_routes": (103, "组装器；f0.6 W-25 limit 钳制 +3（修复性增长）"),
+        "register_crud_routes": (104, "组装器；f0.6 W-25 limit 钳制 +3、f0.6+++ /update 认 verbatim:N +1（修复性增长）"),
     },
     "ducky/hot/legacy_routes.py": {
         "register_legacy_routes": (90, "组装器"),

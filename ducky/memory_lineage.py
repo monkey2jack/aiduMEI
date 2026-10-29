@@ -227,41 +227,6 @@ def record_terminal_lineage(
     return {"status": "error", "detail": "unreachable"}
 
 
-def get_memory_lineage(memory_id: str) -> list[dict[str, Any]]:
-    """获取指定 memory_id 的完整历史演化谱系链。"""
-    if not memory_id:
-        return []
-    ensure_lineage_schema()
-    conn = get_facts_conn()
-    try:
-        rows = conn.execute(
-            """SELECT lineage_id, memory_id, version, content_hash, previous_version_hash,
-                      action, actor, source, diff_summary, created_at
-               FROM memory_lineage
-               WHERE memory_id=?
-               ORDER BY version ASC""",
-            (memory_id,),
-        ).fetchall()
-
-        chain = []
-        for r in rows:
-            chain.append({
-                "lineage_id": r[0],
-                "memory_id": r[1],
-                "version": r[2],
-                "content_hash": r[3],
-                "previous_version_hash": r[4],
-                "action": r[5],
-                "actor": r[6],
-                "source": r[7],
-                "diff_summary": r[8],
-                "created_at": str(r[9]),
-            })
-        return chain
-    finally:
-        conn.close()
-
-
 def verify_lineage_integrity(memory_id: str | None = None) -> dict[str, Any]:
     """验证谱系链的哈希连续性、**事实行存在性与内容一致性**。
 

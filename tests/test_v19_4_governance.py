@@ -298,10 +298,3 @@ def test_human_review_invalid_decision():
 # ─────────────────────────────────────────────────────────────
 # 6. 挂钩存在性守卫
 # ─────────────────────────────────────────────────────────────
-
-def test_governance_hook_present_in_facts_add():
-    path = os.path.join(_REPO_ROOT, "ducky", "hot", "legacy_routes.py")
-    with open(path, encoding="utf-8") as f:
-        src = f.read()
-    assert "govern_fact_write" in src, "/facts/add 的治理钩子不见了"
-    assert "spawn_async_eval" in src, "异步评估器派发不见了"

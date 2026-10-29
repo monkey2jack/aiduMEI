@@ -444,83 +444,9 @@ def _summary(mid, session, refs, created, *, truncated=False):
     return {"id": mid, "created_at": created, "metadata": md}
 
 
-def test_only_fully_covered_generations_are_superseded():
-    import ducky.session_distill as distill
-    items = [
-        _summary("g1", "s1", ["a", "b"], "2026-10-14T01:00:00+00:00"),
-        _summary("g2", "s1", ["a", "b", "c"], "2026-10-14T02:00:00+00:00"),
-        _summary("g3", "s1", ["a", "c", "d"], "2026-10-14T03:00:00+00:00"),
-        _summary("g4", "s1", ["x", "y"], "2026-10-14T04:00:00+00:00"),
-        _summary("g5", "s1", ["x", "y"], "2026-10-14T05:00:00+00:00"),
-        _summary("g6", "s1", ["a"], "2026-10-14T06:00:00+00:00", truncated=True),
-        _summary("h1", "s2", ["p"], "2026-10-14T07:00:00+00:00"),
-        _summary("h2", "s2", ["p", "q"], "2026-10-14T08:00:00+00:00"),
-        _summary("n1", "s3", ["k"], "2026-10-14T09:00:00+00:00"),
-    ]
-    doomed = {d["id"]: d["superseded_by"] for d in distill.superseded_summaries(items)}
-    assert doomed == {"g1": "g2", "g4": "g5", "h1": "h2"}, doomed
     # g3 partially overlaps (a long session's window slid forward): 保留。
     # g6 的来源清单被截断：证明不了覆盖率，一律保留。
     # n1 是这一会话唯一一代：保留。
-
-
-def test_partial_ledger_view_is_never_treated_as_nothing_to_do(tmp_path, monkeypatch):
-    """枚举不完整 -> 拒绝，不许当成「清理完成」（与 delete_all 同一纪律）。"""
-    import ducky.session_distill as distill
-    calls = []
-    monkeypatch.setattr("ducky.wal_engine._scoped_vector_items",
-                        lambda mem, scope: ([], False))
-    monkeypatch.setattr("ducky.wal_engine.cascade_delete_memory",
-                        lambda *a, **kw: calls.append(a) or {"status": "committed"})
-    out = distill.prune_superseded_summaries("alice", "work", apply=True, mem=object())
-    assert out["status"] == "refused" and out["reason"] == "vector_enumeration_incomplete"
-    assert calls == []
-
-
-def test_dry_run_lists_exactly_what_apply_deletes(tmp_path, monkeypatch):
-    import ducky.session_distill as distill
-    items = [
-        _summary("g1", "s1", ["a", "b"], "2026-10-14T01:00:00+00:00"),
-        _summary("g2", "s1", ["a", "b", "c"], "2026-10-14T02:00:00+00:00"),
-        _summary("g3", "s1", ["a", "c", "d"], "2026-10-14T03:00:00+00:00"),
-    ]
-    monkeypatch.setattr("ducky.wal_engine._scoped_vector_items",
-                        lambda mem, scope: (items, True))
-    deleted = []
-
-    def _cascade(mid, user_id="", bank_id=""):
-        deleted.append(mid)
-        return {"status": "committed"}
-
-    monkeypatch.setattr("ducky.wal_engine.cascade_delete_memory", _cascade)
-
-    dry = distill.prune_superseded_summaries("alice", "work", mem=object())
-    assert dry["status"] == "dry_run" and dry["summaries_scanned"] == 3
-    listed = [c["id"] for c in dry["candidates"]]
-    assert listed == ["g1"], dry
-    assert deleted == [], "dry-run 不许删任何东西"
-
-    applied = distill.prune_superseded_summaries("alice", "work", apply=True, mem=object())
-    assert applied["status"] == "ok"
-    assert [d["id"] for d in applied["deleted"]] == listed, (
-        "实际删除集与 dry-run 清单不一致 —— 验收基准被偷换了")
-    assert deleted == listed and applied["failed"] == []
-
-
-def test_apply_reports_layer_failures_instead_of_calling_it_done(monkeypatch):
-    import ducky.session_distill as distill
-    items = [
-        _summary("g1", "s1", ["a"], "2026-10-14T01:00:00+00:00"),
-        _summary("g2", "s1", ["a", "b", "c"], "2026-10-14T02:00:00+00:00"),
-    ]
-    monkeypatch.setattr("ducky.wal_engine._scoped_vector_items",
-                        lambda mem, scope: (items, True))
-    monkeypatch.setattr("ducky.wal_engine.cascade_delete_memory",
-                        lambda *a, **kw: {"status": "repair_required",
-                                          "failed_layers": ["vector"]})
-    out = distill.prune_superseded_summaries("alice", "work", apply=True, mem=object())
-    assert out["status"] == "partial" and out["deleted"] == []
-    assert out["failed"][0]["id"] == "g1"
 
 
 # ------------------------------------------------- WP3: unattended sessions

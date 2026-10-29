@@ -79,7 +79,7 @@ def _gated_server(principal=None):
 def _load_mcp_core_functions(api_get):
     """Run the real tool bodies without requiring the optional MCP package."""
     tree = ast.parse((ROOT / "mcp_server.py").read_text(encoding="utf-8"))
-    names = {"core_memory_list", "core_memory_get"}
+    names = {"core_memory_list"}
     nodes = [copy.deepcopy(node) for node in tree.body
              if isinstance(node, ast.FunctionDef) and node.name in names]
     assert {node.name for node in nodes} == names
@@ -122,13 +122,11 @@ def test_mcp_core_tools_send_query_scope_for_default_and_custom_halls():
         tools = _load_mcp_core_functions(api_get)
         default = json.loads(tools["core_memory_list"]())
         custom = json.loads(tools["core_memory_list"](USER, "work"))
-        block = json.loads(tools["core_memory_get"]("pref identity", USER, "work"))
 
     assert default["user_id"] == "default"
-    assert custom["user_id"] == block["user_id"] == USER
-    assert custom["bank_id"] == block["bank_id"] == "work"
-    assert block["path"] == "/api/core-memory/pref%20identity"
-    assert len(calls) == 3
+    assert custom["user_id"] == USER
+    assert custom["bank_id"] == "work"
+    assert len(calls) == 2
     for call in calls:
         assert call["auth"] == f"Bearer {TOKEN}"
         assert call["query"]["caller_user_id"] == "default"

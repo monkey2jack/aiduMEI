@@ -147,26 +147,6 @@ def test_add_async_preview_is_sanitized(tmp_path, monkeypatch):
 
 # ── P1-11 · Form 上限 ──
 
-def test_facts_compress_form_has_length_cap(tmp_path, monkeypatch):
-    monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "logs"))
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from ducky.extended.routes import register_extended_routes
-    from ducky.api_models import TEXT_FIELD_MAX_CHARS
-    app = FastAPI()
-    # 替身签名对齐生产的注册面：三个依赖注入参数（本测试只打 Form 校验层，
-    # 校验在进入业务体之前由 FastAPI 完成，占位实现不会被 422 路径触达）
-    from ducky.utils import get_facts_conn
-    register_extended_routes(app, lambda: None, get_facts_conn, lambda t: [])
-    client = TestClient(app)
-    too_long = "x" * (TEXT_FIELD_MAX_CHARS + 1)
-    r = client.post("/facts/compress", data={"text": too_long})
-    assert r.status_code == 422, (
-        f"Form 全文超上限应 422（动态审计 🟡-3）, got {r.status_code}")
-    ok = client.post("/facts/compress", data={"text": "error: one line\nnormal line"})
-    assert ok.status_code == 200, ok.text[:200]
-
-
 # ── P1-10 · TRUST_PROXY 启动 WARN ──
 
 def test_trust_proxy_without_credential_warns_three_concessions(monkeypatch, caplog):

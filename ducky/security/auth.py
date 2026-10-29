@@ -313,13 +313,6 @@ def validate_session(token: str) -> bool:
         return bool(exp and exp > now)
 
 
-def revoke_session(token: str) -> bool:
-    if not token:
-        return False
-    with _session_lock:
-        return _sessions.pop(_token_hash(token), None) is not None
-
-
 def revoke_all_sessions() -> int:
     """撤销全部会话（改密码后调用，强制所有端重新登录）。"""
     with _session_lock:

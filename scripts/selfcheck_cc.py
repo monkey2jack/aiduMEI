@@ -153,7 +153,12 @@ def check_hooks(results: list):
         hit = any(script in c for c in cmds)
         results.append(("✅" if hit else "❌", f"hook {event}", script if hit else f"未挂载（期望 {script}）"))
         if hit:
+            # f0.7 P3：connect_host 写的命令直接指向仓库真源（不拷贝）；按命令里的实际路径核对
             p = HOOKS_DIR / script
+            for c in cmds:
+                for tok in c.replace("'", " ").replace('"', " ").split():
+                    if tok.endswith("/" + script):
+                        p = Path(tok)
             results.append(("✅" if p.exists() else "❌", "  脚本存在", str(p)))
     # SessionEnd 萃取语义（WP4 判据）：适配层必须复用 distill 真源，
     # 且绝不允许回到旧病灶 /session/start（重复建会话、提炼从未发生）。

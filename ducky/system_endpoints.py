@@ -4,11 +4,8 @@ ducky.system_endpoints - system-only endpoint families (f0.3)
 
 Every data endpoint of the engine is partitioned by the ``(user_id, bank_id)``
 tenant axis.  The families listed in ``FAMILIES`` are not: they expose derived
-data that is global to the whole instance (persona banks addressed by
-enumerable autoincrement ids, skill crystals mined from every tenant's facts,
-the server's own code graph, store-wide evolution statistics and the
-store-wide evolution job, skill drafts in the shared ``skill_crystals``
-table).
+data that is global to the whole instance (skill crystals mined from every
+tenant's facts, store-wide evolution statistics).
 
 They are therefore **off by default**.  Each family has one explicit flag;
 the route stays registered (so the route table, the OpenAPI document and the
@@ -20,9 +17,8 @@ loads at start-up) is the single source of truth.
 In OpenAPI the routes carry the ``system-only (not tenant-isolated)`` tag and
 ``x-aidumei-tenant-isolated: false`` / ``x-aidumei-feature-flag: <FLAG>``.
 
-Endpoints used by the default integration paths stay on: ``/evolve/feedback``
-and ``/evolve/episode/feedback`` (console, MCP) are per-memory / per-session
-writes and are not part of any family here.
+``/evolve/feedback`` (console) is a per-memory write and is not part of any
+family here.
 """
 from __future__ import annotations
 
@@ -46,36 +42,14 @@ class Family:
 
 FAMILIES: tuple[Family, ...] = (
     Family(
-        "persona", "AIDUMEM_PERSONA_ENABLED",
-        frozenset({
-            ("POST", "/persona/build"), ("GET", "/persona/banks"),
-            ("GET", "/persona/detail"), ("POST", "/persona/retrieve"),
-            ("POST", "/persona/rollback"), ("GET", "/persona/context"),
-        }),
-        "persona banks are instance-global; bank ids are enumerable autoincrement integers",
-    ),
-    Family(
         "crystals", "AIDUMEI_CRYSTALS_ENABLED",
-        frozenset({
-            ("GET", "/crystals"), ("POST", "/crystals/detect"), ("POST", "/crystals/use"),
-            ("POST", "/crystals/prune"), ("POST", "/crystals/approve"),
-        }),
+        frozenset({("GET", "/crystals")}),
         "skill crystals are mined across every tenant's facts and approved by global id",
     ),
     Family(
-        "code_graph", "AIDUMEI_CODE_GRAPH_ENABLED",
-        frozenset({("POST", "/code/impact"), ("GET", "/code/graph")}),
-        "scans the server's own source tree under AIDUMEM_HOME",
-    ),
-    Family(
         "evolve_admin", "AIDUMEI_EVOLVE_ADMIN_ENABLED",
-        frozenset({("GET", "/evolve/report"), ("POST", "/evolve/cycle")}),
-        "store-wide search statistics and the store-wide salience maintenance job",
-    ),
-    Family(
-        "skill_drafts", "AIDUMEI_SKILL_DRAFTS_ENABLED",
-        frozenset({("POST", "/skill/grow"), ("GET", "/skill/drafts")}),
-        "skill drafts live in the instance-global skill_crystals table",
+        frozenset({("GET", "/evolve/report")}),
+        "store-wide search statistics",
     ),
 )
 
@@ -119,39 +93,6 @@ def system_route(name: str, **route_kwargs):
     })
     merged["openapi_extra"] = extra
     return merged
-
-
-class GatedRegistrar:
-    """Pass-through facade over a FastAPI app for route modules that do not
-    gate themselves: any ``get/post/put/delete/patch`` registration of a path
-    listed in ``FAMILIES`` receives that family's gate and tags."""
-
-    def __init__(self, app) -> None:
-        self._app = app
-
-    def __getattr__(self, name):
-        return getattr(self._app, name)
-
-    def _register(self, method: str, path: str, kwargs: dict):
-        family = FAMILY_BY_ROUTE.get((method, path))
-        if family is not None:
-            kwargs = system_route(family.name, **kwargs)
-        return getattr(self._app, method.lower())(path, **kwargs)
-
-    def get(self, path: str, **kwargs):
-        return self._register("GET", path, kwargs)
-
-    def post(self, path: str, **kwargs):
-        return self._register("POST", path, kwargs)
-
-    def put(self, path: str, **kwargs):
-        return self._register("PUT", path, kwargs)
-
-    def delete(self, path: str, **kwargs):
-        return self._register("DELETE", path, kwargs)
-
-    def patch(self, path: str, **kwargs):
-        return self._register("PATCH", path, kwargs)
 
 
 def gate_status(app) -> dict[tuple[str, str], str]:

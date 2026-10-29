@@ -148,11 +148,11 @@ def test_readme_claims_match_runtime_facts():
             for dec in node.decorator_list:
                 if isinstance(dec, ast.Call) and getattr(dec.func, "attr", None) == "tool":
                     tools.append(node.name)
-    assert len(tools) == 41
+    assert len(tools) == 6  # f0.6+++ WP2: 41 -> 6 (mem_add/search/update/delete/health + core_memory_list)
     for name in ("README.md", "README_EN.md"):
         text = (root / name).read_text(encoding="utf-8")
         assert ":8768" not in text, f"{name} 仍写着错误 MCP 端口"
         assert "3.12+" not in text, f"{name} 仍写着 3.12+；pyproject 是 >=3.10"
-        assert "41 tools" in text or "41 工具" in text
+        assert "6 tools" in text or "6 工具" in text
         if name == "README.md":
             assert "服务自身不做鉴权" not in text

@@ -8,9 +8,26 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.7.0 (对外 f0.7 · 2026-10-29 维护者授权公开 · 底座更换:native 单库内核默认、mem0 可选)
+    用例总数 4310 → 3875(f0.6+++ 路由收敛后重新计数;本版 = 行为 3248 + 脚本/钩子 481 + 守卫 146)。
+    1. 内核:native 单库 SQLite 内核成为默认;mem0ai/qdrant-client 改为 requirements-mem0.txt 可选;
+       未迁移的旧 mem0 部署自动留在 mem0 并提示迁移。
+    2. 数据安全:连带删收窄、租户精确定位、删除真删、facts 查重降级、嵌入锁外计算、派生精华连坐收口。
+    3. 安全:召回 nonce 沙箱、注入规则补强、外呼私网拦截补全、distill scope 校验、钩子过滤词可配置。
+    4. 门禁与文档:native 基线进门禁、恒绿测试修复、回滚/升级门、私人词扫描与审计模板。
+    5. 宿主一键接入 connect_host:三钩子幂等挂载 + 当场验收 + 三态结论 + /health 接线探针。
+    6. 心图:记忆体检 /graph/checkup、记忆星云 /graph/nebula;品牌名爱嘟优忆思。
+    7. 设置页体检:逐模型真实测试连接、rerank provider 修复、本地 vLLM 预设。
+    8. 复核与自审:两轮复核 + 一轮对抗自审全部收口。
+    9. 本地档:默认 native;修复 /add 不可召回与墓碑恢复不全。
+
 v0.6.5 (对外 f0.6++ · 2026-10-26 维护者验收翻牌为公开版 · 二期主体:graph_memory
     +图谱API+前端图谱面板+goldenset_v2 真语料打分门+WP9 安全急修 · 2026-10-26)
-    用例总数 4277 → 4303（本版净增 26,无删除;以精确提交的收集回执为准;通过结果以运行回执为准）。
+    用例 4277 → 4308（本版净增 26,无删除;f0.6+++ WP6 遗留小修回归 +5,发版时归入新版本段;以精确提交的收集回执为准;通过结果以运行回执为准）。
+    f0.6+++ WP2(发版时归入新版本段):路由白名单收敛(HTTP 路由只留 CC 钩子与控制台在用的面)+不可达代码删除,
+    随之删去只测已移除路由/模块的用例;用例总数 4310 → 3875(f0.6+++ 集成 3737;WP2 后 3721;
+    集成 updfix + WP3a + native-HTTP + rankfix 后行为 3110 + 脚本/钩子 481 + 守卫 146;
+    f0.7 P3 宿主接入后 3800;本地档默认 native 后 3802;P4 心图体检、记忆星云与设置页体检后 3821 = 3194 + 481 + 146;私人词守卫后 3822 = 3195 + 481 + 146;复核修复后 3840 = 3213 + 481 + 146;P5 自审修复后 3862 = 3235 + 481 + 146;部署验收修复后 3867 = 3240 + 481 + 146;CC 催促句过滤后 3871 = 3244 + 481 + 146;派生精华连坐修复后 3873 = 3246 + 481 + 146;mem0 改可选（WP3b）后 3875 = 3248 + 481 + 146)。
     1. graph_memory 数据层:三类真实关系边(update_chain/same_session/co_occurrence),
        不预建全图,租户同款谓词,depth 1-3 展开;env_registry/route_policy 同步。
     2. 图谱 API GET /graph/neighbors + /graph/stats:守卫覆盖幂等写入/租户
@@ -90,7 +107,7 @@ v0.6.2 (对外 f0.6 双轨 · 出境知情文档/备份明文声明/event_at 顶
 
 v0.6.5 (对外 f0.6++ · 2026-10-26 维护者验收翻牌为公开版 · 二期主体:graph_memory
     +图谱api+前端 graph 面板+goldenset_v2 真语料 91 条真打分门+WP9 安全急修)
-    用例总数 4277 → 4303（净增 26,无删除）。详见 §24 任务书 WP5/WP6/WP7/WP9。
+    用例总数 4277 → 4308（净增 26,无删除;f0.6+++ WP6 回归 +5）。详见 §24 任务书 WP5/WP6/WP7/WP9。
 
 v0.6.1 (对外 f0.6.1 · 云腿本地候选合并 · 2026-10-23)
     用例总数 4266 → 4266（收集数持平——改版 1 条守卫用例，不净增）。
@@ -667,8 +684,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.6.5"
-FULL_VERSION = "f0.6++"
+SERVICE_VERSION = "0.7.0"
+FULL_VERSION = "f0.7"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -680,7 +697,10 @@ FULL_VERSION = "f0.6++"
 # 黄金集 v2 真语料+WP9）三仓推齐，维护者验收钦定翻牌——公开 Tag/Release
 # 升至 f0.6++，PUBLIC_RELEASE_VERSION 同步（先验承诺、跑分 before-public 的
 # 节奏以维护者指令为准）。
-PUBLIC_RELEASE_VERSION = "f0.6++"
+# f0.7（2026-10-29）：native 单库内核成为默认、mem0 改可选；删除真删、宿主一键接入、
+# 心图体检、设置页体检、七路外审 + 两轮复核 + 自审全部收口。维护者授权推大仓、
+# 打公开 Tag/Release，PUBLIC_RELEASE_VERSION 同步升至 f0.7。
+PUBLIC_RELEASE_VERSION = "f0.7"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -694,6 +714,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.7.0", "", "f0.7", "底座更换（2026-10-29 维护者授权公开）:native 单库 SQLite 内核成为默认、mem0 改可选 extra;删除真删(派生连坐收口)、宿主一键接入 connect_host、心图体检与记忆星云、设置页逐模型测试连接;七路外审+两轮复核+自审收口 · 2026-10-29"),
     ("0.6.5", "", "f0.6++", "二期主体（2026-10-26 维护者验收翻牌为公开版）:记忆图谱 graph_memory(三类真实关系边)+图谱 API+前端图谱面板+黄金集 v2 真语料(91 条)真打分门初版 + WP9 安全急修 · 2026-10-26"),
     ("0.6.4", "", "f0.6+", "一期 f0.6+（2026-10-25 维护者验收翻牌）：记忆内核可换层 memory_kernel(行为逐字不变,mem0 实现转调真身+native stub)+AST 守卫拦绕过点(白名单 5 项)+黄金集守卫与 push_gate 第五关(语料回填前为健全性级) · 2026-10-25"),
     ("0.6.3", "", "f0.6.3", "ASGI 真实端口 TOCTOU flaky 根治（起不来换端口重建）+ 召回主链拆分（向量腿/时间窗/快路三函数，search CC 38→3）+ CC 基线只降不升 · 2026-10-23"),

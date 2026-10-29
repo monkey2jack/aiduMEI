@@ -56,27 +56,6 @@ def main():
     target = memory.get_all(filters={'user_id': body['user_id']})['results'][0]['id']
     body['idempotency_key'] = 'inner-followup-key'
     extra = {'seed_sdk_count': seed_count, 'seed_target': target}
-    if mode.startswith('rollback_'):
-        restored = 'synthetic previous content restored by rollback'
-        eid = self_edit._log_edit(target, body['user_id'], 'duplicate', restored,
-                                  body['messages'][0]['content'], 'synthetic snapshot', .99)
-        if mode == 'rollback_fts':
-            fail_after_call(text_fts, '_index_memory')
-        else:
-            from ducky.salience import core
-            fail_after_call(core, 'on_memory_added', uncertain=mode.endswith('_uncertain'))
-        try:
-            self_edit.rollback_edit(eid, memory=memory, caller_user_id=body['user_id'])
-        except (sqlite3.OperationalError, journal.MutationUncertain) as exc:
-            extra['error_type'] = type(exc).__name__
-        else:
-            raise AssertionError('rollback silently returned success after sidecar failure')
-        with sqlite3.connect(utils.FACTS_DB) as conn:
-            extra['undone'] = conn.execute('SELECT undone FROM memory_edits WHERE edit_id=?',
-                                           (eid,)).fetchone()[0]
-        extra['restored'] = restored
-        dump(root, mode, client, memory, extra=extra)
-        return
     if mode.startswith('direct_') or mode == 'legacy_direct_fallback':
         from ducky import gear
         gear.should_try_llm = lambda: False

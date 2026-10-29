@@ -20,101 +20,15 @@ from ducky.utils import get_facts_conn, parse_iso_timestamp
 
 logger = logging.getLogger("aiduMEM.pantheon")
 
-# 借阅动作白名单——只读方向（读/导出）。众神殿①不开放跨殿写（各殿人格独立，
-# 记忆只能本殿自己写；要共享内容用借阅读，不是替他殿写）。
-VALID_ACTIONS = ("read", "export")
-
 
 class HallError(ValueError):
     """殿管理/借阅的输入非法（空标识、非法动作、自借阅等）；路由层包成 error dict。"""
 
 
-# ── 殿注册表 CRUD ─────────────────────────────────────────────────
+# 借阅动作白名单——只读方向（读/导出）。众神殿①不开放跨殿写（各殿人格独立，
+# 记忆只能本殿自己写；要共享内容用借阅读，不是替他殿写）。
+VALID_ACTIONS = ("read", "export")
 
-def _norm_uid(user_id: str) -> str:
-    uid = str(user_id or "").strip()
-    if not uid:
-        raise HallError("殿标识 user_id 不能为空")
-    if len(uid) > 200:
-        raise HallError("殿标识过长（上限 200）")
-    return uid
-
-
-def create_hall(user_id: str, display_name: str = "", description: str = "") -> dict:
-    """创建或更新一座殿（幂等：同 user_id 再建即更新元数据）。"""
-    uid = _norm_uid(user_id)
-    conn = get_facts_conn()
-    try:
-        conn.execute(
-            """INSERT INTO pantheon_halls (user_id, display_name, description)
-               VALUES (?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                   display_name=excluded.display_name,
-                   description=excluded.description,
-                   active=1,
-                   updated_at=CURRENT_TIMESTAMP""",
-            (uid, str(display_name or ""), str(description or "")),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    logger.info("众神殿：殿 %s 已登记/更新", uid)
-    return get_hall(uid) or {}
-
-
-def get_hall(user_id: str) -> dict | None:
-    uid = _norm_uid(user_id)
-    conn = get_facts_conn()
-    try:
-        row = conn.execute(
-            "SELECT user_id, display_name, description, active, created_at "
-            "FROM pantheon_halls WHERE user_id=?", (uid,)
-        ).fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return None
-    return {"user_id": row[0], "display_name": row[1], "description": row[2],
-            "active": bool(row[3]), "created_at": row[4]}
-
-
-def list_halls(include_inactive: bool = False) -> list[dict]:
-    conn = get_facts_conn()
-    try:
-        sql = ("SELECT user_id, display_name, description, active, created_at "
-               "FROM pantheon_halls")
-        if not include_inactive:
-            sql += " WHERE active=1"
-        sql += " ORDER BY created_at ASC"
-        rows = conn.execute(sql).fetchall()
-    finally:
-        conn.close()
-    return [{"user_id": r[0], "display_name": r[1], "description": r[2],
-             "active": bool(r[3]), "created_at": r[4]} for r in rows]
-
-
-def deactivate_hall(user_id: str) -> dict:
-    """停用一座殿（软删：active=0，绝不删记忆——生产数据生命线）。
-    连带撤销该殿【授出】的借阅（熄灯即收回钥匙），但保留【收到】的借阅记录（审计）。"""
-    uid = _norm_uid(user_id)
-    conn = get_facts_conn()
-    try:
-        cur = conn.execute(
-            "UPDATE pantheon_halls SET active=0, updated_at=CURRENT_TIMESTAMP "
-            "WHERE user_id=? AND active=1", (uid,))
-        # 撤销该殿授出的、尚未撤销的借阅
-        conn.execute(
-            "UPDATE hall_grants SET revoked_at=CURRENT_TIMESTAMP "
-            "WHERE grantor_user_id=? AND revoked_at IS NULL", (uid,))
-        conn.commit()
-        changed = cur.rowcount
-    finally:
-        conn.close()
-    logger.info("众神殿：殿 %s 已停用（软删，记忆无损）", uid)
-    return {"user_id": uid, "deactivated": bool(changed)}
-
-
-# ── 跨殿借阅 ───────────────────────────────────────────────────────
 
 def _normalize_actions(actions) -> str:
     if isinstance(actions, str):
@@ -138,6 +52,8 @@ def grant_hall_access(grantor_user_id: str, grantee_user_id: str,
                       actions="read", bank_id: str = "*",
                       expires_at: str | None = None, created_by: str = "") -> dict:
     """本殿(grantor)授权他殿(grantee)借阅。返回 grant dict。
+
+    f0.6+++ WP2：管理端点已下线；读侧（authorize_cross_hall）仍认借阅，本函数是其写入契约。
 
     - grantor==grantee 拒绝（不给自己发借阅——本殿访问自己天然放行）。
     - actions 白名单校验；bank_id='*' 表示殿内所有库，否则限定单库。
@@ -182,30 +98,18 @@ def grant_hall_access(grantor_user_id: str, grantee_user_id: str,
             "actions": acts.split(","), "bank_id": bank, "expires_at": expires_at}
 
 
-def revoke_hall_grant(grant_id: str) -> dict:
-    """撤销一条借阅（终态：revoked_at 一旦置就是终态，重授须发新 grant_id）。"""
-    gid = str(grant_id or "").strip()
-    if not gid:
-        raise HallError("grant_id 不能为空")
-    conn = get_facts_conn()
-    try:
-        cur = conn.execute(
-            "UPDATE hall_grants SET revoked_at=CURRENT_TIMESTAMP "
-            "WHERE grant_id=? AND revoked_at IS NULL", (gid,))
-        revoked = cur.rowcount
-        # v21.2 M8：只有**真撤到了**才记账 —— 对一条早已撤销（或不存在）的
-        # grant 记一笔「已撤销」，是往账本里写一件没发生过的事。
-        if revoked:
-            try:
-                from ducky.event_ledger import record_event
-                record_event(conn, actor="revoke", action="hall_grant_revoke",
-                             target_id=gid, reason="借阅撤销（终态）")
-            except Exception as _le:
-                logger.debug("借阅撤销留痕跳过: %s", _le)
-        conn.commit()
-    finally:
-        conn.close()
-    return {"grant_id": gid, "revoked": bool(revoked)}
+# ── 殿注册表 CRUD ─────────────────────────────────────────────────
+
+def _norm_uid(user_id: str) -> str:
+    uid = str(user_id or "").strip()
+    if not uid:
+        raise HallError("殿标识 user_id 不能为空")
+    if len(uid) > 200:
+        raise HallError("殿标识过长（上限 200）")
+    return uid
+
+
+# ── 跨殿借阅 ───────────────────────────────────────────────────────
 
 
 def check_hall_access(grantor_user_id: str, grantee_user_id: str,

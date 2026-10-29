@@ -32,51 +32,19 @@ UNCAPPED_TEXT_FIELDS: Dict[str, Dict[str, str]] = {
         "metadata": "dict 结构载荷，形态白名单见 _metadata_shape 校验器"
                     "（键数/键名/单值/总量/嵌套深度五重上限）",
     },
-    "RawDrawerRequest": {
-        "metadata": "dict 结构载荷（沿用既有宽松形态；收紧登记为后续候选）",
-    },
-    "ObsidianSyncRequest": {
-        "metadata": "dict 结构载荷（沿用既有宽松形态；收紧登记为后续候选）",
-    },
-    "CheckpointPayload": {
-        "blocks": "core memory 区块结构载荷（dict），块内容由 core_memory 层校验",
-    },
 }
 
 # ── 写路由台账 ──────────────────────────────────────────────────
 # 有 JSON body 模型的路由：path → 模型名。
 WRITE_ROUTE_MODELS: Dict[str, str] = {
     "/add": "AddRequest",
-    "/add/raw": "RawDrawerRequest",
-    "/api/checkpoint": "CheckpointPayload",
-    "/api/obsidian/sync": "ObsidianSyncRequest",
-    "/code/impact": "ImpactRequest",
-    "/conflict/resolve": "ConflictCheckRequest",
-    "/delete": "DeleteRequest",          # POST 形态；DELETE 形态为 query 标量
-    "/delete_all": "DeleteAllRequest",
+    "/delete": "DeleteRequest",
     "/evolve/feedback": "FeedbackRequest",
-    # v21.2 M1：任务级（轨迹）反馈 —— reward 有界 [-1,1]，session_id 有长度上限
-    "/evolve/episode/feedback": "EpisodeFeedbackRequest",
     "/governance/review": "GovernanceReviewRequest",
-    "/ignition_test": "SearchRequest",
-    "/jlens": "SearchRequest",
-    "/memory/refine": "RefineGroupRequest",
-    "/memory/refine/apply": "RefineActionRequest",
-    "/memory/refine/rollback": "RefineActionRequest",
-    "/memory/types/backfill": "BackfillRequest",
     "/opinions/set": "OpinionSetRequest",
-    "/persona/build": "PersonaBuildRequest",
-    "/persona/retrieve": "PersonaRetrieveRequest",
-    "/persona/rollback": "PersonaRollbackRequest",
-    "/recall_chain": "SearchRequest",
-    "/reflect": "ReflectRequest",
     "/search": "SearchRequest",
     "/search_trace": "SearchRequest",
-    "/self-edit/rollback": "RollbackRequest",
-    "/session/search": "SearchRequest",
-    "/skill/grow": "SkillGrowRequest",
     "/tombstone/restore": "TombstoneRestoreRequest",
-    "/tree/node": "TreeNodeRequest",
     "/update": "UpdateRequest",
 }
 
@@ -84,61 +52,12 @@ WRITE_ROUTE_MODELS: Dict[str, str] = {
 WRITE_ROUTES_SCALAR = {
     # v21.2.0 会话精华：纯提炼端点，入参只有三个标量 id，无自由文本载荷
     "/session/distill",
-    # f0.4+：旧精华去重，入参只有 id 与布尔开关
-    "/session/distill/prune",
-    "/add/coalesce/flush",
-    "/api/autodream/trigger",
-    "/api/checkpoint/cleanup",
-    "/api/checkpoint/inject",
-    "/api/core-memory/inject",
-    "/api/core-memory/{block_key}",
-    "/api/core-memory/core_current_project/refresh",
-    "/auto-memory/trigger",
-    "/broadcast_expand",
     "/config/_speed",
     "/config/password",
+    "/config/test",  # f0.7：只收可选段名列表，不落库
     "/config/{section}",
-    "/crystals/approve",
-    "/crystals/detect",
-    "/crystals/prune",
-    "/crystals/use",
-    "/evolve/cycle",
-    "/facts/add",
-    "/facts/compress",
-    "/facts/expire",
-    "/facts/feedback",
-    "/facts/inject-context",
-    "/facts/preference",
-    "/facts/tags/generate",
-    "/federation/agents/deactivate",
-    "/federation/agents/heartbeat",
-    "/federation/agents/register",
-    "/federation/facts/add",
-    "/federation/grants",
-    "/federation/grants/revoke",
-    # v21.1 众神殿：殿管理与借阅写端点（标量 query/path 参数，无大文本体）
-    "/pantheon/hall",
-    "/pantheon/hall/{user_id}/deactivate",
-    "/pantheon/grant",
-    "/pantheon/grant/{grant_id}/revoke",
-    "/federation/migrate",
-    "/graduate",
     "/login",
-    "/logout",
-    "/memory/types/reset",
-    "/observe/consolidate",
-    "/persona/ai-self/add",
-    "/persona/refresh",
-    "/prune/contradiction",
-    "/prune/contradiction-v2",
     "/reload",
-    "/scene/cluster",
-    "/session/end",
-    "/session/pin",
-    "/session/start",
-    "/session/unpin",
-    "/skill/discover",
-    "/workspace/clear",
 }
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -186,7 +105,10 @@ def find_budget_violations(app: Any) -> list[str]:
     violations: list[str] = []
 
     real: dict[str, type[BaseModel] | None] = {}
-    for route in app.routes:
+    routes = list(app.routes)
+    for mount in list(routes):   # /api 子应用（控制台）的写路由一并入账
+        routes.extend(getattr(getattr(mount, "app", None), "routes", None) or [])
+    for route in routes:
         methods = getattr(route, "methods", None) or set()
         if not (methods & _WRITE_METHODS):
             continue

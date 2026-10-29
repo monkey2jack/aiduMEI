@@ -1,12 +1,6 @@
 """v20.2.5 两份审计整改的验收门槛（用户视角 + 第三方外审）。
 
-A1 这一组的存在理由要写在最前面：v20.2.4 声称修了「refine 候选跨 bank」
-（马院士 F-10），实际是**算出了 SQL 子句却一个字都没拼进 SELECT**，而注释写着
-已修、结案陈词列为已修、**且没有任何测试盯着这条**。外审 F-03 用一个四行的
-SQLite 复现就把它翻出来了。
-
-所以这组用例的判据全部是**集合相等**，不是「有没有返回」——后者对
-「bank_b 的行也混进来了」这种缺陷毫无区分力。
+（A1 refine 候选/摘要作用域一组随 f0.6+++ WP2 移除 refine_memory 一并删除。）
 """
 import ast
 import os
@@ -42,134 +36,6 @@ def _make_facts_db(path, *, with_bank: bool = True):
         ensure_memory_banks_schema(conn)
     conn.commit()
     return conn
-
-
-class TestA1RefineCandidatesScoped:
-    """A1 · 外审 F-03：候选不许跨 bank。"""
-
-    @pytest.fixture
-    def conn(self, tmp_path):
-        c = _make_facts_db(tmp_path / "facts.db")
-        # 外审原始复现数据：bank_a 放 A、C；bank_b 放 B、D
-        c.executemany(
-            "INSERT INTO facts (category, fact_key, fact_value, source, user_id, bank_id)"
-            " VALUES ('general', ?, ?, ?, ?, ?)",
-            [("kA", "A", "alice", "alice", "bank_a"),
-             ("kC", "C", "alice", "alice", "bank_a"),
-             ("kB", "B", "alice", "alice", "bank_b"),
-             ("kD", "D", "alice", "alice", "bank_b")],
-        )
-        c.commit()
-        yield c
-        c.close()
-
-    def test_default_identity_branch_is_bank_scoped(self, conn):
-        """默认身份分支：取 bank_a 的候选必须**恰好**是 {A, C}。
-
-        判据是集合相等 —— 「返回了 A 和 C」对「B、D 也混进来了」没有区分力，
-        而那正是 F-03 的形态（外审实测返回 A、C、B、D 四条）。
-        """
-        from ducky.refine_memory import _load_candidates
-        got = {r["fact_value"] for r in _load_candidates(conn, "default", "general", 50, bank_id="bank_a")}
-        assert got == {"A", "C"}, f"候选跨了 bank：{sorted(got)}（期望恰好 A、C）"
-
-        other = {r["fact_value"] for r in _load_candidates(conn, "default", "general", 50, bank_id="bank_b")}
-        assert other == {"B", "D"}, f"另一侧也要对称成立：{sorted(other)}"
-
-    def test_named_tenant_branch_is_bank_scoped(self, conn):
-        """具名租户分支：此前**连 bank 参数都没用到**，只按 source 收身份轴。"""
-        from ducky.refine_memory import _load_candidates
-        got = {r["fact_value"] for r in _load_candidates(conn, "alice", "general", 50, bank_id="bank_a")}
-        assert got == {"A", "C"}, f"具名租户分支跨了 bank：{sorted(got)}"
-
-    def test_bank_clause_is_actually_spliced_into_sql(self):
-        """结构判据：算出来的子句必须**真的**进了 SQL 字符串。
-
-        F-03 的根因是「算了不用」—— 一个纯 AST/文本层面就能钉死的形态。
-        判据落在「f-string 里出现了 {_bclause}」+「参数里出现了 *_bparams」，
-        两者缺一都说明那半截又断了。
-        """
-        src = (_ROOT / "ducky" / "refine_memory.py").read_text(encoding="utf-8")
-        body = src[src.index("def _load_candidates"):src.index("def _parse_refine_json")]
-        assert body.count("_bclause}") == 2, (
-            "两个分支的 SELECT 里都必须拼上 {_bclause}（F-03 就是漏了这一步）"
-        )
-        assert body.count("*_bparams") == 2, "两个分支都必须把 _bparams 展开进参数元组"
-
-    def test_legacy_schema_degrades_without_narrowing(self, tmp_path):
-        """负向对照：v19 老库没有 bank_id 列时**不收窄、不报错**。
-
-        这条防的是「为了修 F-03 把老库打成 0 条候选」——本文件上方 v19.4.2
-        注释记着那种事故：refine 静默退化，返回一句合法的 skipped。
-        """
-        from ducky.refine_memory import _bank_clause, _load_candidates
-        c = _make_facts_db(tmp_path / "legacy.db", with_bank=False)
-        c.executemany(
-            "INSERT INTO facts (category, fact_key, fact_value, source) VALUES ('general', ?, ?, 'alice')",
-            [("k1", "L1"), ("k2", "L2")],
-        )
-        c.commit()
-        clause, params = _bank_clause(c, "bank_a")
-        assert (clause, params) == ("", []), "老库上不该收窄"
-        got = {r["fact_value"] for r in _load_candidates(c, "default", "general", 50, bank_id="bank_a")}
-        assert got == {"L1", "L2"}, f"老库候选被打没了：{sorted(got)}"
-        c.close()
-
-
-class TestA1AppliedSummaryScope:
-    """A1 · 外审 F-03/F-04 摘要错域：apply 出来的摘要行必须落在**账本记的那个库**。
-
-    这个类是变异探针逼出来的：上面四条用例全绿的时候，把 `owner_bank` 改回硬写
-    `DEFAULT_BANK_ID`（也就是 v20.2.4 的原样）**测试照样全绿** —— 说明「摘要继承
-    bank」这条修复当时没有任何测试盯着。**这正是 F-03 得以存在的同一个机制：
-    改了代码、没有判据。** 探针不跑就发现不了。
-    """
-
-    @pytest.fixture
-    def db(self, tmp_path, monkeypatch):
-        import ducky.utils as utils
-        path = str(tmp_path / "facts.db")
-        monkeypatch.setattr(utils, "FACTS_DB", path)
-        monkeypatch.setattr(utils, "TEXT_FTS_DB", str(tmp_path / "fts.db"))
-        assert str(tmp_path) in path and "/data/" not in path      # 两道护栏
-        c = _make_facts_db(path)
-        c.execute(
-            "CREATE TABLE refined_memories (refine_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " user_id TEXT NOT NULL DEFAULT 'default', bank_id TEXT NOT NULL DEFAULT 'default',"
-            " category TEXT NOT NULL DEFAULT 'general', source_ids TEXT NOT NULL,"
-            " summary TEXT NOT NULL, reason TEXT DEFAULT '', confidence REAL DEFAULT 0.5,"
-            " state TEXT DEFAULT 'proposed', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
-            " applied_at TIMESTAMP)"
-        )
-        c.executemany(
-            "INSERT INTO facts (category, fact_key, fact_value, source, user_id, bank_id)"
-            " VALUES ('general', ?, ?, 'alice', 'alice', 'work')",
-            [("s1", "旧事实一"), ("s2", "旧事实二")],
-        )
-        # 账本行记的是 alice/work
-        c.execute(
-            "INSERT INTO refined_memories (user_id, bank_id, category, source_ids, summary, state)"
-            " VALUES ('alice', 'work', 'general', '[1, 2]', '合并后的摘要', 'proposed')"
-        )
-        c.commit(); c.close()
-        return path
-
-    def test_summary_row_inherits_ledger_bank(self, db):
-        """外审实测：账本记 alice/work，apply 后摘要行落 alice/**default**。"""
-        from ducky.refine_memory import apply_refinement
-        res = apply_refinement(1, user_id="alice", bank_id="work")
-        assert res.get("status") in ("ok", "applied"), f"apply 未成功：{res}"
-
-        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT user_id, bank_id FROM facts WHERE fact_key='refined:1'"
-        ).fetchone()
-        conn.close()
-        assert row is not None, "摘要行没写进 facts"
-        assert (row["user_id"], row["bank_id"]) == ("alice", "work"), (
-            f"摘要落错域：{(row['user_id'], row['bank_id'])} —— 期望 ('alice', 'work')。"
-            "账本行记的 bank 必须被继承，不许硬写默认域"
-        )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -358,37 +224,6 @@ class TestA2DeleteOutcomeStates:
         exempt = {str(x) for x in out["not_cleared"]}
         assert not (failed & exempt), f"失败层混进了豁免清单：{failed & exempt}"
 
-    @pytest.mark.parametrize("outcome,expected_code", [
-        ("committed", 200),
-        ("partial", 207),      # 强制调用方注意到「不是完全成功」
-        ("failed", 500),
-    ])
-    def test_http_status_follows_business_outcome(self, outcome, expected_code, monkeypatch):
-        """HTTP 出口必须跟着业务状态走。
-
-        外审门槛的原话：「注入任意一层故障，HTTP 状态与业务状态必须显式失败」。
-        200 + 一个藏在 body 里的字段做不到这一点 —— 调用方只判 status_code 时
-        照样把部分删除当成全删。
-        """
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        import ducky.hot.crud as crud
-
-        monkeypatch.setattr(crud, "cascade_delete_all", lambda **kw: {
-            "status": outcome,
-            "details": {"facts_deleted": 3},
-            "failed_layers": [] if outcome == "committed" else [{"layer": "fts", "error_type": "RuntimeError"}],
-            "not_cleared": [{"store": "checkpoints", "reason": "exempt"}],
-        })
-        app = FastAPI()
-        crud.register_crud_routes(app)
-        resp = TestClient(app).post("/delete_all", json={"user_id": "u", "confirm": True})
-
-        assert resp.status_code == expected_code, (
-            f"outcome={outcome} 应映射到 HTTP {expected_code}，实得 {resp.status_code}")
-        body = resp.json()
-        assert body["status"] == outcome, "业务状态被抹平了（F-02 出口端的原形态）"
-        assert "not_cleared" in body, "not_cleared 没透传 —— v20.2.4 那条修复就是断在这里"
 
     def test_absent_backend_is_not_counted_as_failure(self, tmp_path, monkeypatch):
         """判据的另一半：**取不到后端**不算删除失败。
@@ -734,10 +569,9 @@ def test_every_handle_form_the_product_mints_has_a_delete_path():
         f"这些句柄形态产品发得出去，删除链却不认：{unhandled} —— "
         "拿它删会一层都命不中而回一句成功（D1 原形）"
     )
-    assert "raw-" in minted, (
-        "扫不到 raw- 这个位点了 —— 要么铸法改了（守卫失去着力点），"
-        "要么 /add/raw 没了（那 README 得跟着改）"
-    )
+    # f0.6+++ WP2：/add/raw（raw- 句柄的唯一铸点）随路由瘦身移除，当前无铸点；
+    # 删除链对存量 raw- 句柄的处理仍由上面 test_raw_handle_* 钉住。守卫留作
+    # 前向闸门：下一种句柄形态一出现即红。
 
 
 def test_raw_handle_delete_removes_the_facts_row(tmp_path, monkeypatch):

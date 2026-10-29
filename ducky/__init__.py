@@ -28,10 +28,6 @@ from .memory_broadcast import (
 from .memory_jlens import (
     collect_jlens_report, enhance_funnel_trace,
 )
-from .memory_persistence import (
-    session_start, session_search, session_pin, session_unpin,
-    session_report, session_end, session_list,
-)
 
 # v8 重构 — 统一工具函数
 from .utils import (
@@ -52,9 +48,6 @@ __all__ = [
     "broadcast_chain", "broadcast_expand",
     # v8 — J-lens
     "collect_jlens_report", "enhance_funnel_trace",
-    # v8 — Persistence
-    "session_start", "session_search", "session_pin", "session_unpin",
-    "session_report", "session_end", "session_list",
     # v8 — Utils
     "quick_sim", "tokenize", "jaccard_sim",
     "normalize_score", "parse_iso_timestamp",

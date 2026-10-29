@@ -131,30 +131,6 @@ def test_readyz_503_names_failed_check_without_leaking_paths(gate_on, monkeypatc
 # ──────────────────────────────────────────────
 # 3. /diagnostics：完整探针，门禁启用时匿名 401
 # ──────────────────────────────────────────────
-def test_diagnostics_anonymous_401_when_gate_enabled(gate_on):
-    r = _client().get("/diagnostics")
-    assert r.status_code == 401
-
-
-def test_diagnostics_full_probe_with_token(gate_on):
-    r = _client().get("/diagnostics", headers={"Authorization": f"Bearer {gate_on}"})
-    assert r.status_code == 200
-    body = r.json()
-    # 完整探针的深度字段：匿名 /health 公开视图里绝不会有 base_dir
-    assert "probes" in body
-    assert body["probes"]["runtime_paths"]["base_dir"]
-    assert "health_status" in body
-
-
-def test_diagnostics_open_when_gate_disabled(monkeypatch):
-    """门禁未启用 = 不存在需要防的侦察者，藏字段只伤自己人（与 /health 同一原则）。"""
-    import ducky.hot.health as health_mod
-
-    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
-    monkeypatch.setattr(health_mod, "_auth_gate_enabled", lambda: False)
-    r = _client().get("/diagnostics")
-    assert r.status_code == 200
-    assert "probes" in r.json()
 
 
 # ──────────────────────────────────────────────

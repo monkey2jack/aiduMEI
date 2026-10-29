@@ -225,9 +225,29 @@ def ensure_evolve_schema() -> None:
         except sqlite3.Error:
             pass
         logger.warning("evolve_queries 补列失败（下次启动重试）: %s", _mig_exc)
+    # f0.7 复核（外审 sesame §4.2 / haiku 偏离 2）：query 列只写不读，存量原文就地换成摘要。
+    try:
+        _digest_legacy_queries(conn)
+    except sqlite3.Error as _dq_exc:
+        logger.warning("evolve_queries 原文摘要化失败（下次启动重试）: %s", _dq_exc)
     conn.commit()
     conn.close()
     logger.info("✅ EvolveMem schema 就绪")
+
+
+def query_digest(query: str) -> str:
+    """检索问句不落库（f0.7 复核·外审 sesame §4.2；P5 自审 S-8）：这列只写不读（统计只看计数/分数/耗时）。
+    存原文 = 把用户每一句检索永久留在库里；存无盐短摘要，短问句仍可穷举还原。所以一律存空串。"""
+    return ""
+
+
+def _digest_legacy_queries(conn) -> int:
+    rows = conn.execute("SELECT id FROM evolve_queries WHERE query IS NOT NULL AND query <> ''").fetchall()
+    with conn:
+        conn.execute("UPDATE evolve_queries SET query='' WHERE query IS NOT NULL AND query <> ''")
+    if rows:
+        logger.info("✅ evolve_queries 存量检索原文 %d 条已清空", len(rows))
+    return len(rows)
 
 
 # ═══════════════════════════════════════════════
@@ -261,7 +281,7 @@ def log_search_quality(
         conn.execute(
             "INSERT INTO evolve_queries(query, hit_count, avg_score, latency_ms, "
             "gate_passed, ts, origin_session_id) VALUES(?,?,?,?,?,?,?)",
-            (query[:500], hit_count, avg_score, latency_ms, int(gate_passed),
+            (query_digest(query), hit_count, avg_score, latency_ms, int(gate_passed),
              time.time(), str(origin_session_id or "")[:256]),
         )
         conn.commit()
@@ -357,31 +377,6 @@ def episode_params() -> dict:
     }
 
 
-def credit_weights(n: int, *, gamma: float | None = None,
-                   lam: float | None = None) -> list[float]:
-    """轨迹位置信用权重 w_i = λ·(1/n) + (1−λ)·归一化(γ^(n−i))。
-
-    借鉴 Memmy 的 reward.gamma / reward.lambda 语义（思路级借鉴，独立实现）。
-    直觉：越靠近任务结果的那一步，对结果的贡献越可信；但也不能把功劳全给
-    最后一步 —— λ 那一半是「雨露均沾」的保底。返回的权重和恒为 1.0。
-
-    纯函数：不读库、不看钟、不读环境（参数由调用方显式给）。
-    """
-    if n <= 0:
-        return []
-    p = episode_params()
-    g = p["gamma"] if gamma is None else gamma
-    lm = p["lambda"] if lam is None else lam
-    if n == 1:
-        return [1.0]
-    # γ^(n−i)：i 从 1 计，最后一步指数为 0（权重最大）
-    raw = [g ** (n - i) for i in range(1, n + 1)]
-    total = sum(raw)
-    pos = [r / total for r in raw] if total > 0 else [1.0 / n] * n
-    uni = 1.0 / n
-    return [round(lm * uni + (1.0 - lm) * pv, 6) for pv in pos]
-
-
 def _now() -> float:
     return time.time()
 
@@ -467,70 +462,6 @@ def record_episode_step(memory_refs=None, *, session_id: str = "",
     except Exception as exc:
         logger.debug("record_episode_step 跳过: %s", exc)
         return 0
-
-
-def settle_episode(episode_id: str, reward: float) -> dict:
-    """结算一个 episode：任务奖励按轨迹位置回传给每一步，并聚合进 salience。
-
-    reward > 0 = 任务成功（整条轨迹受益）；< 0 = 失败（整条轨迹受罚，
-    但越靠后的步骤担责越重 —— 这正是「哪一步开始跑偏」的可学习信号）。
-
-    红线：只写 evolve 侧表与 salience，**绝不碰 facts 正文**。
-    """
-    ensure_evolve_schema()
-    reward = max(-1.0, min(1.0, float(reward or 0.0)))
-    conn = _get_evolve_conn()
-    try:
-        rows = conn.execute(
-            "SELECT memory_ref, step_idx FROM evolve_episode_steps "
-            "WHERE episode_id=? ORDER BY step_idx", (episode_id,)).fetchall()
-        if not rows:
-            return {"ok": False, "reason": "no_steps", "episode_id": episode_id}
-        n = len(rows)
-        weights = credit_weights(n)
-        p = episode_params()
-        applied = 0
-        for (row, w) in zip(rows, weights):
-            ref = row["memory_ref"] if hasattr(row, "keys") else row[0]
-            step_reward = round(reward * w, 6)
-            conn.execute(
-                "UPDATE evolve_episode_steps SET step_reward=?, credit_weight=? "
-                "WHERE episode_id=? AND memory_ref=?",
-                (step_reward, round(w, 6), episode_id, ref))
-            if abs(step_reward) >= p["min_trace_value"]:
-                _apply_salience_delta(ref, step_reward,
-                                      f"episode:{episode_id[:12]}")
-                applied += 1
-        conn.execute(
-            "UPDATE evolve_episodes SET status='closed', closed_at=?, reward=? "
-            "WHERE episode_id=?", (_now(), reward, episode_id))
-        conn.commit()
-        return {"ok": True, "episode_id": episode_id, "steps": n,
-                "reward": reward, "salience_applied": applied}
-    finally:
-        conn.close()
-
-
-def record_episode_feedback(session_id: str, reward: float) -> dict:
-    """对本 session 当前 episode 给一次任务级反馈并立即结算。
-
-    这是 M1 的用户面入口：与 record_feedback（单条记忆 ±salience）并存，
-    各管各的——单条反馈调「这一条」，episode 反馈调「这一整串」。
-    """
-    if not session_id:
-        return {"ok": False, "reason": "no_session"}
-    ensure_evolve_schema()
-    conn = _get_evolve_conn()
-    try:
-        row = conn.execute(
-            "SELECT episode_id FROM evolve_episodes WHERE session_id=? "
-            "AND status='open' ORDER BY started_at DESC LIMIT 1",
-            (session_id,)).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return {"ok": False, "reason": "no_open_episode", "session_id": session_id}
-    return settle_episode(row["episode_id"] if hasattr(row, "keys") else row[0], reward)
 
 
 def get_credit_map(memory_refs, *, user_id: str = "", bank_id: str = "") -> dict:

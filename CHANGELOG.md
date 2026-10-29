@@ -1,8 +1,26 @@
 # aiduMEI 版本演进史
 
+## v0.7.0 (对外 f0.7 · 2026-10-29 维护者授权公开 · 底座更换:native 单库内核默认、mem0 可选)
+
+> **用例总数 4310 → 3875**（f0.6+++ 路由收敛后重新计数;本版 = 行为 3248 + 脚本/钩子 481 + 守卫 146(`pytest --collect-only` 实测,三桶口径 `scripts/count_test_kinds.py` 可复算）。全量套件 3844 通过 / 31 跳过(含 mem0 旧内核路径,需加装 `requirements-mem0.txt`)。
+>
+> 质量口径:真实使用回归集 v3(私有,不公开)逐类不降;公开仓带同结构的虚构回归集(`benchmarks/build_public_regression.py` 生成)。本版起 README 不再引用任何公开跑分名次。
+
+- **内核**:native 单库 SQLite 内核成为所有档位的默认;`mem0ai` / `qdrant-client` 移出主依赖,改为 `requirements-mem0.txt` 与 `pip install ".[mem0]"`;默认进程不加载 mem0。未迁移的旧 mem0 部署(无 `memory.db` 且 mem0 历史有数据)自动留在 mem0 并在日志提示迁移(`scripts/migrate_to_native.py`);回退走 `scripts/native_to_mem0_resync.py`。
+- **数据安全(P0)**:同文连带删收窄到显式副本;内核按 (id, user_id, bank_id) 定位,跨租户歧义拒绝;删除真删(facts 单一真源、history 原文清除、墓碑纳入 TTL);facts 唯一索引建前查重降级;嵌入在锁外计算;派生精华连坐只跟随实际删除的原文行。
+- **安全(P1)**:召回统一 nonce 沙箱包裹;注入规则补强(指代、持久化指令、诱导工具、命令链);外呼私网拦截补全(IP 归一化、100.64/10 等);/session/distill 显式 scope 校验。CC 钩子过滤词改为可配置(`AIDUMEI_CC_DROP_TERMS`),不再写死在仓库。
+- **门禁与文档(P2)**:push_gate 回归关按 native 跑并提交 native 基线;修恒绿测试与隔离问题;回滚/升级门补齐;私人词扫描(`benchmarks/.scan_words` 或 `AIDUMEI_SCAN_WORDS`,不入库)+ 守卫测试;`docs/AUDIT_TEMPLATE.md`。
+- **宿主一键接入(P3)**:`scripts/connect_host.py` 自动识别 Claude Code / Codex / Hermes,备份后幂等写入读、写、萃取三条钩子,当场写入暗号→新会话召回验收,首行给出「服务 ✅/❌ · 宿主接入 ✅/❌」,未接入退出码非零;/health 增加宿主接线探针与 30 分钟无写入告警;install.txt 改为调用它。
+- **心图(P4)**:`GET /graph/checkup` 记忆体检(重复/过时/冲突)、`GET /graph/nebula` 记忆星云、点选看图谱邻居;品牌名统一为「爱嘟优忆思」。
+- **设置页体检(P4c)**:「测试连接」对 LLM / Vision / Embedding / Reranker / 决策模型逐个最小真实调用(POST /config/test,不回显密钥);修复首次保存 rerank provider 写成 null;本地 vLLM 预设与 `AIDUMEI_MODEL_ENDPOINT_ALLOW` 放行。
+- **复核与自审(P5/P6)**:两轮定向复核与一轮对抗自审的全部必修与建议项收口;evolve_queries 原文查询清空;CC 钩子剥除宿主自动催促句。
+- **本地档**:`ENGINE_MODE=local` 且未指定内核时默认 native;修复 native + local 档 /add 不可召回、本地档删除后墓碑恢复只恢复全文索引的问题。
+
 ## v0.6.5 (对外 f0.6++ · 2026-10-26 维护者验收翻牌为公开版 · 二期主体:graph_memory+图谱API+前端图谱面板+goldenset_v2 真语料打分门+WP9 安全急修)
 
-> **用例总数 4277 → 4303**（净增 26,无删除;以精确提交的收集回执为准）。
+>
+>
+
 
 - **graph_memory(数据层)**:三类真实关系边(update_chain / same_session / co_occurrence),不预建全图,租户同款谓词,depth 1-3 展开;graph_stats/API 已接 env_registry 与 route_policy(scope read 宣称)。
 - **图谱 API**:`GET /graph/neighbors` + `GET /graph/stats`;守卫覆盖 幂等写入/租户隔离/坏 depth 拒收/update_chain 派生真路径。

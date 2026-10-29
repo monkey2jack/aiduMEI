@@ -13,21 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ducky.federation.schema import DEFAULT_AGENT, DEFAULT_PROFILE
+from ducky.federation.schema import DEFAULT_AGENT
 
 # 历史行 agent_id/profile 为 NULL 时视为默认身份
 AGENT_EXPR = "COALESCE(agent_id, ?)"
-PROFILE_EXPR = "COALESCE(profile, ?)"
 TIER_EXPR = "COALESCE(memory_tier, 'semantic')"
-SHARED_EXPR = "COALESCE(shared, 1)"
-
-
-def agent_in(agent_ids: list[str]) -> tuple[str, list[Any]]:
-    """限定归属 Agent 集合。空列表返回恒真片段（不加限制）。"""
-    if not agent_ids:
-        return "1=1", []
-    placeholders = ",".join("?" for _ in agent_ids)
-    return f"{AGENT_EXPR} IN ({placeholders})", [DEFAULT_AGENT, *agent_ids]
 
 
 def agent_eq(agent_id: str) -> tuple[str, list[Any]]:
@@ -35,11 +25,3 @@ def agent_eq(agent_id: str) -> tuple[str, list[Any]]:
     return f"{AGENT_EXPR} = ?", [DEFAULT_AGENT, agent_id]
 
 
-def profile_eq(profile: str) -> tuple[str, list[Any]]:
-    """限定 profile。"""
-    return f"{PROFILE_EXPR} = ?", [DEFAULT_PROFILE, profile]
-
-
-def shared_only() -> tuple[str, list[Any]]:
-    """只取允许跨 Agent 共享的事实。"""
-    return f"{SHARED_EXPR} = 1", []

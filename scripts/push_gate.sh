@@ -103,12 +103,14 @@ gate_step compile "$PY" -m compileall -q ducky api_server.py mcp_server.py mem0_
   || fail "编译关未过"
 echo "  ✅ 编译关：0 语法错误"
 
-# f0.6+（WP2）：第五关——黄金集完整性守卫（schema/五类各 40/id 形态/判分器契约冒烟）。
-# 秒级、零 token。**如实边界**：v1 语料仍是种子占位（真实语料回填=f0.6++ WP7），
-# 本关此刻钉的是「集合健全+判分器契约活着」；语料回填后本关自动升级为真实打分门。
-gate_step goldenset "$PY" -m pytest tests/test_f06plus_golden_guard.py -q \
-  || fail "黄金集关未过（黄金集结构或判分器契约破缺；私有日志已保留）"
-echo "  ✅ 黄金集关：200 条·五类·判分器契约 OK（语料回填前为健全性级）"
+# f0.6+++（WP1）：第五关——真实使用回归集 v3（零 token、本地、<60 秒、逐类不降）。
+gate_step goldenset "$PY" -m benchmarks.regression --baseline benchmarks/regression_v3_baseline.json \
+  || fail "回归集关未过（v3 某类得分低于基线；私有日志已保留）"
+# f0.7 P2-1（外审 qwen F-3 / ds A-08）：生产内核是 native——门禁必须按 native 再跑一遍、对 native 基线。
+gate_step goldenset_native env AIDUMEI_MEMORY_KERNEL=native "$PY" -m benchmarks.regression \
+  --baseline benchmarks/regression_v3_baseline_native.json \
+  || fail "回归集关（native）未过（v3 某类得分低于 native 基线；私有日志已保留）"
+echo "  ✅ 回归集关：v3 逐类不降（mem0 + native）"
 
 
 # bash 3.2（macOS 自带 /bin/bash）没有 mapfile/readarray 内建 —— 用 while read 装数组，两边都跑得通。

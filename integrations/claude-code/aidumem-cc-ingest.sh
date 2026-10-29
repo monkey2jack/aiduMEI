@@ -27,6 +27,8 @@
 #   - 安静≠失声：跳过与失败往 stderr 写一行结构化诊断（宿主不显示，
 #     但人工排查时可见）
 set -uo pipefail
+# f0.7 P3：新前缀别名（connect_host 写 AIDUMEI_URL；AIDUMEM_URL 设了仍优先）
+if [ -z "${AIDUMEM_URL:-}" ] && [ -n "${AIDUMEI_URL:-}" ]; then export AIDUMEM_URL="$AIDUMEI_URL"; fi
 
 AIDUMEM_URL="${AIDUMEM_URL:-http://127.0.0.1:8767}"
 SESSION_PREFIX="${AIDUMEI_CC_SESSION_PREFIX-cc-}"
@@ -112,7 +114,7 @@ RAW_INPUT=$(cat)
 # ── 摘最后一轮 Q&A + session_id（环境变量传递，零拼接）──────
 PARSED=$(AIDUMEI_HOOK_INPUT="$RAW_INPUT" AIDUMEI_HOOK_PREFIX="$SESSION_PREFIX" \
   AIDUMEI_HOOK_UID="$_uid" AIDUMEI_HOOK_BID="$_bid" python3 -c '
-import json, os, sys
+import json, os, sys, re
 try:
     d = json.loads(os.environ.get("AIDUMEI_HOOK_INPUT", ""))
 except Exception:
@@ -121,6 +123,43 @@ sid = str(d.get("session_id") or "")[:256]
 tp = d.get("transcript_path")
 if not tp:
     sys.exit()
+# bridge/宿主注入的元数据块整体剥离，不进语义层。（2026-10-28 修复：
+# aiduCAT 下发的每条用户消息都以 <bridge_context> 开头，旧逻辑整条丢弃
+# → 有效用户消息恒为 0 → hook 静默 exit → 写线/萃取线全断。正确做法是
+# 剥掉注入壳后提取真正文，正文非空才保留。）
+_INJECT_RE = re.compile(
+    r"<(bridge_context|bridge_instructions|quoted_message|interactive_card|"
+    r"system-reminder|task-notification|pasted_content)[^>]*>.*?</\1\s*>",
+    re.S)
+_USER_INPUT_RE = re.compile(r"<user_input>(.*?)</user_input>", re.S)
+_NOISE = ("stop hook feedback:", "caveat:", "\U0001f4da[aidumei")
+# f0.7 P6d：CC 在模型空回复后自动补一句催促（以 user 身份写进 transcript），
+# 不是用户说的话 —— 剥掉；剥完为空整条丢弃（生产 10-18 起 14 个会话被当用户话入库）。
+_NUDGE_RE = re.compile(
+    r"\[?\s*your previous response had no visible output\.?"
+    r"(?:\s*please continue and produce a user-visible response\.?)?\s*\]?",
+    re.I)
+
+def user_text(c):
+    c = _INJECT_RE.sub("", c)
+    c = _NUDGE_RE.sub("", c)
+    m = _USER_INPUT_RE.search(c)
+    if m:
+        blob = m.group(1).strip()
+        if not blob:
+            return ""
+        try:
+            j = json.loads(blob)
+            if isinstance(j, dict) and j.get("text"):
+                return str(j["text"]).strip()
+        except Exception:
+            pass
+        return "" if blob.startswith("<") else blob
+    t = c.strip()
+    if t.lower().startswith(_NOISE):
+        return ""
+    return t
+
 msgs = []
 try:
     with open(tp, errors="replace") as f:
@@ -137,12 +176,21 @@ try:
                 continue
             c = m.get("content")
             if isinstance(c, list):
+                if c and all(isinstance(x, dict) and x.get("type") == "tool_result"
+                             for x in c):
+                    continue
                 c = " ".join(x.get("text", "") for x in c
                              if isinstance(x, dict) and x.get("type") == "text")
-            if not isinstance(c, str) or not c.strip():
+            if not isinstance(c, str):
                 continue
-            # 工具结果、系统注入块不是对话正文，不进语义层
-            if c.lstrip().startswith("<") or "tool_result" in str(c)[:30]:
+            if role == "user":
+                c = user_text(c)
+            else:
+                c = c.strip()
+                if c.lower() in ("no response requested.",
+                                 "no response requested"):
+                    c = ""
+            if not c:
                 continue
             msgs.append((role, c[:600]))
 except Exception:
@@ -156,7 +204,8 @@ if la:
     messages.append({"role": "assistant", "content": la[:500]})
 prefix = os.environ.get("AIDUMEI_HOOK_PREFIX", "cc-")
 print(json.dumps({
-    "session_id": (prefix + sid) if sid else "",
+    # 幂等加前缀：宿主/重放已带前缀时不再叠加（cc-cc- 双前缀，f0.6+++ WP6）
+    "session_id": (sid if sid.startswith(prefix) else prefix + sid) if sid else "",
     "user_id": os.environ.get("AIDUMEI_HOOK_UID", "default"),
     "bank_id": os.environ.get("AIDUMEI_HOOK_BID", "default"),
     "messages": messages,

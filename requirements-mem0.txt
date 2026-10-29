@@ -1,0 +1,10 @@
+# ============================================================================
+# aiduMEI — 可选：mem0 旧内核依赖（f0.7 起默认 native 内核不需要这些）
+# 需要时：pip install -r requirements-mem0.txt   或   pip install ".[mem0]"
+# 用途：AIDUMEI_MEMORY_KERNEL=mem0/shadow；scripts/migrate_to_native.py（从 mem0 迁移）；
+#      scripts/native_to_mem0_resync.py（回滚到 mem0）。
+# ============================================================================
+# mem0ai: 旧内核存储 + 检索主库（冻结 2.2.1）
+mem0ai==2.2.1
+# qdrant-client: mem0 后端用的向量数据库客户端（与生产环境对齐 1.18.0）
+qdrant-client==1.18.0

@@ -176,6 +176,18 @@ def track_vision_usage(input_tokens: int = 0, output_tokens: int = 0, total_toke
 # Return shape: a list of {index, relevance_score} sorted descending.
 # ---------------------------------------------------------------------------
 
+_rerank_session = None
+
+
+def _rerank_http():
+    """复用 keep-alive 会话：每次新建 TLS 在生产实测 ~0.4s/次（f0.6+++ WP6）。"""
+    global _rerank_session
+    if _rerank_session is None:
+        import requests
+        _rerank_session = requests.Session()
+    return _rerank_session
+
+
 def _rerank_http_error(r) -> None:
     """非 200 一律抛错（只带状态码，不带响应体——响应体可能回显凭据错误详情）。
 
@@ -188,7 +200,7 @@ def _rerank_http_error(r) -> None:
 
 def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
     """OpenAI-compatible rerank endpoint"""
-    import requests as req
+    req = _rerank_http()
     r = req.post(
         f"{cfg['base_url']}/rerank",
         allow_redirects=False,  # f0.6 W-12：禁重定向（同 llm/decision 段）
@@ -216,7 +228,7 @@ def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) ->
 
 def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
     """Jina AI rerank endpoint"""
-    import requests as req
+    req = _rerank_http()
     r = req.post(
         "https://api.jina.ai/v1/rerank",
         allow_redirects=False,  # f0.6 W-12：禁重定向
@@ -244,7 +256,7 @@ def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dic
 
 def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
     """Cohere / rerank endpoint"""
-    import requests as req
+    req = _rerank_http()
     r = req.post(
         "https://api.cohere.com/v1/rerank",
         allow_redirects=False,  # f0.6 W-12：禁重定向
@@ -274,7 +286,7 @@ def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[d
 
 def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int) -> list[dict]:
     """Generic OpenAI-compatible rerank endpoint (e.g. Azure, vLLM, LiteLLM rerank)."""
-    import requests as req
+    req = _rerank_http()
     base = cfg['base_url'].rstrip('/')
     url = f"{base}/rerank" if not base.endswith('/rerank') else base
     r = req.post(
@@ -336,7 +348,7 @@ def _load_rerank_config() -> dict:
             # Older configurations without a switch remain automatic.
             # Invalid non-boolean values fail closed instead of turning on.
             "enabled": section.get("enabled", True) is True,
-            "provider": section.get("provider", DEFAULT_RERANK_PROVIDER),
+            "provider": section.get("provider") or DEFAULT_RERANK_PROVIDER,  # f0.7：null 也回落默认(UI 首配会写 null)
             "model": rc.get("model", ""),
             "base_url": rc.get("openai_base_url", ""),
             "api_key": rc.get("api_key", ""),
@@ -459,12 +471,25 @@ def get_llm_usage() -> dict:
 # ═══════════════════════════════════════════════
 # §2  mem0 SDK 加载（延迟初始化）
 # ═══════════════════════════════════════════════
-try:
-    from mem0 import Memory
-    logger.info("✅ mem0 SDK loaded")
-except Exception as e:
-    logger.error(f"mem0 SDK 加载失败: {e}")
-    Memory = None
+# f0.7 WP3b：mem0 改为可选依赖（pip install ".[mem0]"）。不再在模块加载时 import ——
+# native 内核（默认）进程里从不加载 mem0；只有真正初始化 mem0 内核时才按需加载。
+Memory = None
+_SDK_TRIED = False
+
+
+def _load_mem0_sdk():
+    """按需加载 mem0 SDK；未安装返回 None（调用方报明确错误）。测试可直接 monkeypatch Memory。"""
+    global Memory, _SDK_TRIED
+    if Memory is not None or _SDK_TRIED:
+        return Memory
+    _SDK_TRIED = True
+    try:
+        from mem0 import Memory as _M
+        Memory = _M
+        logger.info("✅ mem0 SDK loaded")
+    except Exception as e:
+        logger.error(f"mem0 SDK 加载失败（mem0 内核需要 pip install '.[mem0]'）: {e}")
+    return Memory
 
 m = None  # 模块级单例（延迟填充）
 _mem_init_lock = threading.Lock()
@@ -636,7 +661,7 @@ class Mem0NotConfiguredError(HTTPException):
                 "记忆写入依赖的向量后端尚未配置："
                 "请复制 mem0_config_local.json.example 为 mem0_config_local.json，"
                 "填入 embedding / LLM 凭据；用 GET /health 查看 degraded 与 "
-                "degraded_details；不配凭据可先使用 POST /add/raw。"
+                "degraded_details。"
                 f"（原因：{reason}）"
             ),
         )
@@ -829,7 +854,23 @@ def _load_mem0_config() -> dict:
     return cfg
 
 
+def native_kernel_active() -> bool:
+    """AIDUMEI_MEMORY_KERNEL=native:旧的 Qdrant 直摸点(本地备胎索引/payload 同步/lite 挡)据此分支。"""
+    from ducky.memory_kernel import configured_kernel    # 单一真源（含本地档默认 native）
+    return configured_kernel() == "native"
+
+
 def get_memory():
+    """内核句柄入口(全仓 get_memory 触点都经此)。AIDUMEI_MEMORY_KERNEL 缺省/mem0 时
+    逐字走原 mem0 单例;native/shadow 交给 memory_kernel 注册表。"""
+    from ducky.memory_kernel import configured_kernel
+    if configured_kernel() == "mem0":
+        return _get_mem0_memory()
+    from ducky.memory_kernel import get_memory as _kernel_get_memory
+    return _kernel_get_memory()
+
+
+def _get_mem0_memory():
     """延迟初始化 mem0 单例，绑定到 sys 命名空间防止跨模块双重导入。"""
     global m
     with _mem_init_lock:
@@ -843,8 +884,8 @@ def get_memory():
             # 必须先加载配置：无配置时即使 mem0 SDK 未装，删除链也能收到
             # 明确的 Mem0NotConfiguredError；SDK 缺失本身则仍是真故障。
             cfg = _load_mem0_config()
-            if Memory is None:
-                raise RuntimeError("mem0 SDK 未加载")
+            if _load_mem0_sdk() is None:
+                raise RuntimeError("mem0 SDK 未安装：mem0 内核需要 pip install '.[mem0]'（默认 native 内核不需要）")
             _assert_vector_store_inside_sandbox(cfg)
             # 启动时清理 Qdrant 锁（与生产环境对齐：先读配置再清理）
             _clear_qdrant_lock()
@@ -935,9 +976,7 @@ def _mem0_unavailable_detail(exc: Exception) -> str:
         f"记忆写入依赖的向量后端尚未就绪：{cause}。"
         f"① 复制 {_CONFIG_EXAMPLE} 为 mem0_config_local.json 并填入你的 "
         f"embedding / LLM 凭据；② 用 GET /health 查看 degraded 与 "
-        f"degraded_details 确认还缺什么；"
-        f"③ 暂时不想配也可以先用 POST /add/raw —— 那条路零 LLM、零向量，"
-        f"仍会写入原文并建全文索引。原始错误：{raw[:160]}"
+        f"degraded_details 确认还缺什么。原始错误：{raw[:160]}"
     )
 
 
@@ -947,6 +986,9 @@ def reset_memory_singleton() -> None:
     m = None
     if hasattr(sys, "_aidumem_singleton"):
         sys._aidumem_singleton = None
+    if native_kernel_active():           # /reload 同代换新 native 单例(重读 embedder 配置)
+        from ducky.memory_kernel.impl_native import reset_native_singletons
+        reset_native_singletons()
 
 
 def is_mem_ready() -> bool:

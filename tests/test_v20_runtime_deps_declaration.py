@@ -87,10 +87,13 @@ def test_pyproject_runtime_deps_are_all_in_requirements():
     )
 
 
-def test_multipart_is_pinned_because_form_is_used_at_import_time():
-    """点名钉死 python-multipart —— 它是本守卫的立案由来。
+def test_multipart_is_pinned_if_form_is_used_at_import_time():
+    """python-multipart 是本守卫的立案由来。
 
-    只要仓里还有 Form(...) 的使用点，这个包就必须在 requirements.txt 里。
+    f0.6+++ WP2 显式重判：路由瘦身后 ducky/ 已无 Form(...) 使用点，
+    python-multipart 随之从 requirements.txt / pyproject 移除。守卫保留为
+    条件式：一旦有人重新引入 Form(...)，requirements.txt 必须钉住它，
+    否则 import api_server 直接 RuntimeError。
     """
     form_sites = []
     for base, _dirs, files in os.walk(os.path.join(_ROOT, "ducky")):
@@ -101,19 +104,12 @@ def test_multipart_is_pinned_because_form_is_used_at_import_time():
             src = open(path, encoding="utf-8").read()
             if re.search(r"[=(]\s*Form\(", src):
                 form_sites.append(os.path.relpath(path, _ROOT))
-    # 前提本身也是断言，不是 skip：Form(...) 使用点消失是**产品形态变化**，
-    # 不是环境差异——用 skip 会凭空造出一条假的「跳过轴」（跳过轴普查要求
-    # 每条轴都登记进 README 的全轴表，而这条根本不是轴）。前提没了就红，
-    # 逼人显式重判本守卫是否还该存在，与删除链矩阵「显式裁决不沉默」同纪律。
-    assert form_sites, (
-        "仓里已无 Form(...) 使用点 —— 本守卫的前提消失。"
-        "请确认 python-multipart 是否仍是必需依赖，然后显式重判本条用例。"
-    )
-    assert "python-multipart" in _requirements_names(), (
-        f"这些文件用了 FastAPI 的 Form(...)：{sorted(form_sites)}\n"
-        "FastAPI 在路由注册期（import 期）就要求 python-multipart，"
-        "requirements.txt 必须钉住它，否则 import api_server 直接 RuntimeError。"
-    )
+    if form_sites:
+        assert "python-multipart" in _requirements_names(), (
+            f"这些文件用了 FastAPI 的 Form(...)：{sorted(form_sites)}\n"
+            "FastAPI 在路由注册期（import 期）就要求 python-multipart，"
+            "requirements.txt 必须钉住它，否则 import api_server 直接 RuntimeError。"
+        )
 
 
 def test_guard_normalizes_package_name_spelling():

@@ -35,8 +35,7 @@ from ducky.llm_client import COGNITIVE_MAX_TOKENS, call_llm
 # `except Exception` 收进一条 logger.debug。既让合并功能整条失效，也让这道
 # 「LLM 回写前的注入清洗」自 v19.2.0 起从未真正执行过一次。
 from ducky.security.injection_guard import validate_and_sanitize_memory_content
-from ducky.utils import DEFAULT_USER_ID, get_facts_conn
-from ducky.failure_ledger import feature_failed
+from ducky.utils import get_facts_conn
 from ducky.mutation_journal import MutationUncertain, _check_scope, serialized_scope
 from ducky.mutation_fallback import require_no_sdk_since, sdk_attempt_count
 
@@ -369,107 +368,3 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
     }
 
 
-def rollback_edit(edit_id: int, memory=None, caller_user_id: str = "") -> dict:
-    """回滚一次自编辑：把记忆恢复到编辑前内容（用户可回滚合并）。
-
-    v22.0（雷霆审计 A4）：caller_user_id 非空时校验归属——caller 必须与
-    该次编辑的 user_id 一致，否则返回 error（不越权回滚他人的记忆）。
-    空 caller 按 v21.x 兼容语义放行（存量管理脚本/控制台不传 caller）。
-    """
-    ensure_self_edit_schema()
-    conn = get_facts_conn()
-    row = conn.execute(
-        "SELECT * FROM memory_edits WHERE edit_id=? AND undone=0", (edit_id,)
-    ).fetchone()
-    if not row:
-        conn.close()
-        return {"status": "error", "detail": f"edit_id={edit_id} 不存在或已回滚"}
-
-    # v22.0：越权回滚闸
-    if caller_user_id and caller_user_id != row["user_id"]:
-        conn.close()
-        return {"status": "error", "detail": f"edit_id={edit_id} 不归 caller({caller_user_id}) 所有（owner={row['user_id']}）"}
-
-    old_content = row["old_content"]
-    memory_id = row["memory_id"]
-
-    if not old_content:
-        conn.close()
-        return {"status": "error", "detail": "该编辑无旧内容快照，无法回滚"}
-
-    mem = memory
-    if mem is None:
-        try:
-            from ducky.mem0_runtime import get_memory
-            mem = get_memory()
-        except MutationUncertain:
-            conn.close()
-            raise
-        except Exception:
-            mem = None
-    if mem is None:
-        conn.close()
-        return {"status": "error", "detail": "mem0 不可用，无法回滚"}
-
-    try:
-        mem.update(memory_id, old_content)
-    except MutationUncertain:
-        conn.close()
-        raise
-    except Exception as e:
-        conn.close()
-        return {"status": "error", "detail": f"恢复失败: {e}"}
-
-    # 回滚后同步 FTS / salience 索引，否则 BM25 关键词搜索仍会命中
-    # 合并后的文本（旧记忆内容已恢复，索引却还是新的）。
-    try:
-        from ducky.text_fts import _index_memory
-        # 🔴v20 甲14 故意不传 category：回滚要还原的是**内容**，分类从来不在
-        # memory_edits 的快照里。原来这里硬写 category=""，等于每次回滚都顺手
-        # 把这条记忆的分类抹掉一次。不传 = 让 _index_memory 沿用行上既有分类。
-        _index_memory(memory_id, old_content, user_id=row["user_id"])
-    except MutationUncertain:
-        conn.close()
-        raise
-    except Exception as e:
-        feature_failed("index_memory", e)
-        logger.warning("回滚 FTS 同步失败: %s", type(e).__name__)
-        conn.close()
-        raise
-    try:
-        from ducky.salience.core import on_memory_added
-        # 🔴v20 故意不传作用域：memory_edits 只存 user_id 没有 bank_id，
-        # 而 preserve_heat 的作用域刷新是「传任一就两列全盖」——只传 user
-        # 会把命名库的 bank 戳重置回 'default'。不传 = 保留行上原有归属。
-        on_memory_added(memory_id, content=old_content, preserve_heat=True)
-    except MutationUncertain:
-        conn.close()
-        raise
-    except Exception as e:
-        feature_failed("evolve_on_added", e)
-        logger.warning("回滚 salience 同步失败: %s", type(e).__name__)
-        conn.close()
-        raise
-
-    conn.execute(
-        "UPDATE memory_edits SET undone=1 WHERE edit_id=?", (edit_id,)
-    )
-    conn.commit()
-    conn.close()
-    logger.info("↩️ self-edit 回滚: edit_id=%d memory_id=%s", edit_id, memory_id)
-    return {"status": "ok", "edit_id": edit_id, "memory_id": memory_id, "restored": old_content}
-
-
-def list_edits(user_id: str = DEFAULT_USER_ID, limit: int = 20, include_undone: bool = False) -> list[dict]:
-    """列出编辑账本（新的在前）。"""
-    ensure_self_edit_schema()
-    conn = get_facts_conn()
-    try:
-        sql = "SELECT * FROM memory_edits WHERE user_id=?"
-        if not include_undone:
-            sql += " AND undone=0"
-        sql += " ORDER BY edit_id DESC LIMIT ?"
-        rows = [dict(r) for r in conn.execute(sql, (user_id, max(1, min(int(limit), 200)))).fetchall()]
-        return rows
-    finally:
-        conn.close()

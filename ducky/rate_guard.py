@@ -98,10 +98,6 @@ def add_global_rate_limit() -> int:
     return _limit_from_env(_ADD_GLOBAL_ENV, _DEFAULT_ADD_GLOBAL_PER_MIN)
 
 
-def delete_all_global_rate_limit() -> int:
-    return _limit_from_env(_DELETE_ALL_GLOBAL_ENV, _DEFAULT_DELETE_ALL_GLOBAL_PER_MIN)
-
-
 def check_rate(route: str, user_id: str, *, limit: int,
                global_limit: Optional[int] = None,
                now: Optional[float] = None) -> Optional[int]:

@@ -1017,6 +1017,7 @@ class TestEngineModeOnRig:
         """本地档：云腿的两个入口（向量与蒸馏）都必须关死。"""
         client, fake, http, di = rig
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         gear.reset_gear_for_tests()
         assert gear.should_try_cloud() is False
         assert gear.should_try_llm() is False
@@ -1026,6 +1027,7 @@ class TestEngineModeOnRig:
         入了就是永不清零的假水位）。"""
         client, fake, http, di = rig
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         before = len(fake.add_calls)
         r = http.post("/add", json={"messages": "本地档写入：暗号是灯笼椒",
                                     "user_id": "u_lo"})

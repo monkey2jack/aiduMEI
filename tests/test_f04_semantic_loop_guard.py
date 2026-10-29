@@ -122,16 +122,15 @@ def test_stdio_semantic_variants_stop_at_five_and_distinct_business_calls_dispat
                 sent = requests[before:]
                 assert all(body["messages"] == json.loads(variants()[0]) for _, body in sent)
                 assert all(body["caller_user_id"] == "wire-principal" for _, body in sent)
-                # Tenant, bank, content whitespace and different tool each have
+                # Tenant, bank and content whitespace each have
                 # their own failure count; no unrelated operation is blocked.
                 base = variants()[0]
                 controls = [
                     await call(messages=base, user_id="wire-b", bank_id="test"),
                     await call(messages=base, user_id="wire-a", bank_id="another"),
                     await call(messages=base.replace("exact text", "exact  text"), user_id="wire-a", bank_id="test"),
-                    await call("mem_add_raw", content=base, user_id="wire-a", bank_id="test"),
                 ]
-                assert len(requests) == 14
+                assert len(requests) == 13
                 assert all(r["error"] != "circuit_open" and "retry_count" not in r for r in controls)
 
     try:

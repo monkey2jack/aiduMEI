@@ -43,6 +43,7 @@ import hashlib
 import logging
 import sqlite3
 from datetime import datetime, timezone
+from typing import Optional
 
 from ducky.utils import DEFAULT_USER_ID, get_facts_conn, get_text_conn
 from ducky.bank_contract import (
@@ -353,10 +354,7 @@ def store_verbatim(
         # v21.2 M2：session 口径必须与 origin_context / sidecar 对齐 ——
         # 三条腿各认各的键名，回声抑制就会在原文腿上漏（实机冒烟正是这么
         # 暴露的：向量腿滤掉了，原文腿又把同一句话原样送回来）。
-        session_id = str(
-            md.get("session_id") or md.get("conversation_id")
-            or md.get("_origin_session_id") or md.get("hermes_session_id") or ""
-        )
+        session_id = session_of(md)
         fconn = get_facts_conn()
         tconn = get_text_conn()
 
@@ -873,14 +871,49 @@ def delete_verbatim_by_id(
     return deleted
 
 
+def session_of(metadata: Optional[dict]) -> str:
+    """原文行的会话键：与 store_verbatim 写入时同一套键名优先级（改一边必须改两边）。"""
+    md = metadata or {}
+    return str(md.get("session_id") or md.get("conversation_id")
+               or md.get("_origin_session_id") or md.get("hermes_session_id") or "")
+
+
+def allocate_verbatim_claim(rows, other_sessions) -> list:
+    """单删时原文层认领哪些行（f0.7 复核·外审 haiku N3，P5 自审 S-1/S-2/S-3 收口）。
+
+    rows：这句话在本租户的原文行 [(turn_id, session_id)]；other_sessions：同租户里**别的**还逐字说着
+    这句话的独立活记忆各自的会话键（'' = 不明）。规则：先给每条别的记忆在它自己的会话里留一行；
+    会话不明的别的记忆，从严各留一行（优先留未记会话的行）。其余全部认领——
+    同文去重成一条记忆的多会话出处（S-2）、未记会话的重复行（S-3）都在内。返回认领的 turn_id（升序）。"""
+    pool = sorted((int(i), str(s or "")) for i, s in rows)
+    kept: set = set()
+    unknown = 0
+    for sess in other_sessions:
+        hit = next((i for i, s in pool if i not in kept and sess and s == sess), None)
+        if hit is not None:
+            kept.add(hit)
+        elif not sess:
+            unknown += 1
+    for _ in range(unknown):
+        hit = next((i for i, s in pool if i not in kept and not s), None)
+        if hit is None:
+            hit = next((i for i, s in pool if i not in kept), None)
+        if hit is None:
+            break
+        kept.add(hit)
+    return [i for i, _ in pool if i not in kept]
+
+
 def delete_verbatim_by_content(
     user_id: str,
     content: str,
     bank_id: str = DEFAULT_BANK_ID,
+    turn_ids=None,
 ) -> int:
     """按内容精确删除某租户的原文（P0-4 单条删除级联用）。
 
     以 content_hash 精确匹配，避免 LIKE 模糊误伤（延续 v19.2.0 精确匹配铁律）。
+    turn_ids 给定时只删其中的行（单删的认领结果，见 allocate_verbatim_claim；快照与重放共用同一批）。
     """
     if not user_id or not content or not str(content).strip():
         return 0
@@ -889,15 +922,19 @@ def delete_verbatim_by_content(
         scope = make_scope(user_id, bank_id)
         ensure_verbatim_schema()
         fconn = get_facts_conn()
-        chash = _content_hash(str(content).strip())
-        ids = [r["id"] for r in fconn.execute(
-            "SELECT id FROM verbatim_turns WHERE user_id=? AND content_hash=?",
-            (scope.user_id, chash),
-        ).fetchall()]
-        ids = [r["id"] for r in fconn.execute(
-            "SELECT id FROM verbatim_turns WHERE user_id=? AND bank_id=? AND content_hash=?",
-            (scope.user_id, scope.bank_id, chash),
-        ).fetchall()]
+        if turn_ids is not None:      # 认领清单（含拼接记忆的逐条原文行）按行号删，仍限本租户
+            claim = {int(i) for i in turn_ids}
+            ids = []
+            for tid in sorted(claim):
+                row = fconn.execute("SELECT id, user_id, bank_id FROM verbatim_turns WHERE id=?", (tid,)).fetchone()
+                if row and row["user_id"] == scope.user_id and row["bank_id"] == scope.bank_id:
+                    ids.append(row["id"])
+        else:
+            chash = _content_hash(str(content).strip())
+            ids = [r["id"] for r in fconn.execute(
+                "SELECT id FROM verbatim_turns WHERE user_id=? AND bank_id=? AND content_hash=?",
+                (scope.user_id, scope.bank_id, chash),
+            ).fetchall()]
         deleted = _delete_turn_ids(fconn, ids, scope)
         if deleted:
             logger.info("📼 原文层级联删除 %d 条 (user=%s)", deleted, user_id)

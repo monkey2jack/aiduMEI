@@ -91,7 +91,7 @@ check_service "card-webhook"
 step "步骤 2/4 — mem0 API stats 真发一次"
 
 STATS_T0=$(upgrade_now_ms)
-STATS_RESP=$(curl -s "${AUTH_ARGS[@]}" -w "\n__HTTP_CODE__:%{http_code}" "${API_BASE}/stats" || echo "__HTTP_CODE__:000")
+STATS_RESP=$(curl -s "${AUTH_ARGS[@]}" -w "\n__HTTP_CODE__:%{http_code}" "${API_BASE}/api/stats" || echo "__HTTP_CODE__:000")
 STATS_T1=$(upgrade_now_ms); STATS_MS=$((STATS_T1 - STATS_T0))
 STATS_CODE=$(echo "${STATS_RESP}" | tail -1 | sed 's/.*://')
 STATS_BODY=$(echo "${STATS_RESP}" | sed '$d')

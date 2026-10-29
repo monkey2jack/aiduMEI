@@ -423,7 +423,7 @@ def _seed_fact(conn, **kw):
 def test_insert_fact_branch_conflict_returns_same_row(facts_db):
     """🔴-1 回归形态在子步骤层钉死：同 key 二写冲突命中必须返回同一行 id。"""
     import ducky.utils as utils
-    from ducky.memory_lineage import get_memory_lineage
+    from lineage_reader import get_memory_lineage
     conn = utils.get_facts_conn()
     try:
         fid1, act1, gov1 = _seed_fact(conn)
@@ -443,7 +443,8 @@ def test_update_fact_branch_advances_hash_chain(facts_db):
     import ducky.utils as utils
     from ducky.federation.dedup import ACTION_UPDATE, DedupVerdict
     from ducky.federation.writer import _update_fact_branch
-    from ducky.memory_lineage import compute_content_hash, get_memory_lineage
+    from ducky.memory_lineage import compute_content_hash
+    from lineage_reader import get_memory_lineage
     conn = utils.get_facts_conn()
     try:
         fid, _, _ = _seed_fact(conn)

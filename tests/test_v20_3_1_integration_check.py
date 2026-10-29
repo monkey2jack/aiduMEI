@@ -2,7 +2,8 @@
 
 上一版的两盏假绿灯：
   1. GET /gate 携带 JSON body —— FastAPI 只读 query string，nonce 整个被
-     丢弃，恒命中 empty_query 早返回，任何 200 都算 PASS；
+     丢弃，恒命中 empty_query 早返回，任何 200 都算 PASS（/gate 已于
+     f0.6+++ WP2 下线，判据改打脚本仍在用的 GET /api/core-memory）；
   2. `values.count(nonce)` 整串相等 —— 写入的是 f"{nonce} is …"，检索结果
      里永远不会有裸 nonce，恒 count==0 恒过。
 
@@ -37,14 +38,16 @@ def _load_script():
 
 @pytest.fixture()
 def real_gate_bridge(monkeypatch):
-    """让脚本的 request() 打到真实 FastAPI /gate 路由。
+    """让脚本的 request() 打到真实 FastAPI GET 路由（f0.6+++ WP2 起 /gate
+    已下线，改用脚本仍在调的 GET /api/core-memory，它同样只读 query string）。
 
     只在 urlopen 层架桥 —— request() 的 GET/POST/body 处理逻辑是本轮的
     被测对象，必须用脚本本体，不许复刻。
     """
-    from ducky.hot import search as search_mod
+    import ducky.routes_clotho as clotho
+    monkeypatch.setattr(clotho, "get_all_blocks", lambda user_id, bank_id: {})
     app = FastAPI()
-    search_mod.register_search_routes(app)
+    clotho.register_clotho_routes(app)
     client = TestClient(app)
 
     def _bridge(req, timeout=20):
@@ -90,33 +93,31 @@ def test_gate_params_arrive_via_query_string(real_gate_bridge):
     脚本本体，同一个变异必须红。
     """
     script, client = real_gate_bridge
-    status, gate = script.request("GET", "/gate",
-                                  {"query": "integration-probe-xyz", "user_id": "u1", "bank_id": "default"})
-    assert status == 200
-    # empty_query 是 200 —— 所以只看 200 是假绿灯。reason 必须证明
-    # nonce 真的进了 relevance_check（脱离 empty_query），
-    # 而不是在路由签名处就被丢弃。needs_memory 的真值取决于相关性模型
-    # （probe 串可能合理判 no_signal），不硬编码。
-    assert gate.get("reason") != "empty_query", (
-        "gate 又把参数丢了：reason=empty_query 说明 nonce 根本没到达服务端"
-    )
-    assert "needs_memory" in gate, "gate 响应缺 needs_memory 字段"
+    status, core = script.request("GET", "/api/core-memory",
+                                  {"user_id": "integration-probe-u1", "bank_id": "probe-bank",
+                                   "caller_user_id": "integration-probe-u1"})
+    assert status == 200, core
+    # 回显的作用域必须是本次传的值 —— 参数被丢就会回落到默认租户/默认库。
+    assert core.get("user_id") == "integration-probe-u1", (
+        "GET 参数又丢了：user_id 回落默认值说明 query 根本没到达服务端")
+    assert core.get("bank_id") == "probe-bank"
 
 
 def test_get_with_dict_body_would_fail_this_assertion(real_gate_bridge):
-    """负向对照（判据区分力的证明）：body 形态的 GET 打 /gate，
-    服务端必然返回 empty_query —— 上一版正是这个形态恒过 check。"""
+    """负向对照（判据区分力的证明）：body 形态的 GET 读不到参数，
+    服务端回落默认作用域 —— 上一版正是这个形态恒过 check。"""
     script, client = real_gate_bridge
     # 直接用通用 request() 复刻旧 bug 形态：GET + JSON body（无 query string）
     # （TestClient.get() 不收 json= —— 通用形态才发得出 body）
-    resp = client.request("GET", "/gate",
-                          data=json.dumps({"query": "integration-probe-xyz"}).encode(),
+    resp = client.request("GET", "/api/core-memory",
+                          data=json.dumps({"user_id": "integration-probe-u1",
+                                           "bank_id": "probe-bank"}).encode(),
                           headers={"Content-Type": "application/json"})
-    assert resp.json().get("reason") == "empty_query", (
-        "服务端契约变了？GET+body 现在居然能读到 query —— 那本判据要重审"
+    assert resp.json().get("bank_id") != "probe-bank", (
+        "服务端契约变了？GET+body 现在居然能读到参数 —— 那本判据要重审"
     )
-    # 这证明：若脚本回归 body 形态，reason 必为 empty_query，
-    # 上一条测试的断言（reason != empty_query）必红 —— 区分力成立。
+    # 这证明：若脚本回归 body 形态，回显的作用域必不是传入值，
+    # 上一条测试的断言必红 —— 区分力成立。
 
 
 def test_duplicate_injection_substring_counting_has_discriminating_power():

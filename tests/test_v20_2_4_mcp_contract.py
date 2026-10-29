@@ -76,7 +76,8 @@ def routes():
 def test_every_tool_targets_a_real_endpoint(routes):
     """每个工具调的 (method, path) 必须真实存在。"""
     calls = _tool_calls()
-    assert len(calls) >= 30, f"只解析到 {len(calls)} 个工具调用 —— 解析器可能失效了"
+    # f0.6+++ WP2：工具集随路由瘦身收到 6 个工具（各一处调用）
+    assert len(calls) >= 6, f"只解析到 {len(calls)} 个工具调用 —— 解析器可能失效了"
     problems = []
     for name, method, path, _keys, lineno in calls:
         if path is None:

@@ -327,6 +327,9 @@ def test_no_module_hand_rolls_its_own_completion_client():
     豁免表就是这样一条条烂成永真的。**
     """
     ALLOWED = {
+        "ducky/config_probe.py":
+            "设置页「测试连接」：要对用户填的端点原样打一发 max_tokens=1 的探针并如实报错，"
+            "call_llm 的重试/密钥回退会掩盖填错的地址或密钥，形状上不能转交。",
         "ducky/decision.py":
             "决策供应商使用 state/questions 与 choice/noul 协议，非文本补全；"
             "无法转交 call_llm。独立出站闸、超时、熔断、凭据隔离和行为回归。",

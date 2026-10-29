@@ -261,7 +261,7 @@ class TestLoginBruteForceGuard:
         assert login_locked(ip) is None, "0 应关闭护栏（与写路径限流同语义）"
 
     def test_login_route_returns_429_with_retry_after(self, monkeypatch, tmp_path):
-        """端到端：超限后 /login 必须 429 + Retry-After，且**不再校验口令**
+        """端到端：超限后 /api/login 必须 429 + Retry-After，且**不再校验口令**
         （连正确口令都挡在门外——这正是「先查后验」的预期行为）。"""
         from fastapi.testclient import TestClient
 
@@ -281,7 +281,8 @@ class TestLoginBruteForceGuard:
         for _ in range(login_failure_limit()):
             record_login_failure("testclient")
 
-        r = client.post("/login", json={"password": "correct-password"})
+        # f0.6+++ WP2：UI 登录只挂在 /api/login（扁平 /login 已移除）
+        r = client.post("/api/login", json={"password": "correct-password"})
         assert r.status_code == 429, (
             f"超限后仍返回 {r.status_code} —— 护栏没接到路由上")
         assert r.headers.get("Retry-After"), "429 必须带 Retry-After"
@@ -315,6 +316,7 @@ class TestEngineModeSelection:
     def test_modes_map_to_leg_switches(self, monkeypatch, mode, cloud, local):
         import ducky.engine_mode as em
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", mode)
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         assert em.cloud_leg_enabled() is cloud
         assert em.local_leg_enabled() is local
 
@@ -586,6 +588,7 @@ class TestGearProbeIsHonestUnderPolicy:
     def test_local_mode_probe_says_disabled(self, monkeypatch):
         from ducky.gear import gear_status, llm_gear_status, should_try_cloud
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         assert should_try_cloud() is False
         for st in (gear_status(), llm_gear_status()):
             assert st["mode"] == "disabled_by_policy", st
@@ -598,6 +601,7 @@ class TestGearProbeIsHonestUnderPolicy:
         """区分力对照：云端档下云腿照常服役，探针**不许**报 disabled。"""
         from ducky.gear import gear_status
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", mode)
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         st = gear_status()
         assert st["mode"] in ("full", "lite") and st["policy_disabled"] is False
 
@@ -606,6 +610,7 @@ class TestGearProbeIsHonestUnderPolicy:
         lite 分支，混进第三个值会走错路。探针诚实 ≠ 判定改语义。"""
         from ducky.gear import current_mode, llm_current_mode
         monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+        monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
         assert current_mode() in ("full", "lite")
         assert llm_current_mode() in ("full", "lite")
 

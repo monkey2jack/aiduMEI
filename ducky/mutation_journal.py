@@ -472,6 +472,17 @@ def failed_before_write(kind, exc) -> bool:
             and str(exc).startswith(_PRE_WRITE_EXTRACTION_PREFIX))
 
 
+def _native_kernel() -> bool:
+    from ducky.mem0_runtime import native_kernel_active
+    return native_kernel_active()
+
+
+def _native_rolled_back(kind, exc) -> bool:
+    """native 内核每次 add/update 是 memory.db 单事务:抛异常 = 整笔回滚,结果确定没写。"""
+    return (kind in ('mem0_add', 'mem0_update') and isinstance(exc, Exception)
+            and not isinstance(exc, MutationUncertain) and _native_kernel())
+
+
 def _not_applied(mid, reason):
     with _db() as conn:
         cur = conn.execute('''UPDATE mutations SET state='not_applied', reason=?,updated_at=?
@@ -499,9 +510,10 @@ def perform_mutation(kind, user_id, bank_id, payload, callback, *, target_id='')
             _ack(mid, result)
             return result
         except BaseException as exc:
-            if failed_before_write(kind, exc):
+            native = _native_rolled_back(kind, exc)
+            if native or failed_before_write(kind, exc):
                 try:
-                    _not_applied(mid, PRE_WRITE_FAILURE_REASON)
+                    _not_applied(mid, 'native_tx_rolled_back' if native else PRE_WRITE_FAILURE_REASON)
                 except Exception:
                     pass  # unproven: fall through to the conservative path below
                 else:
@@ -546,6 +558,14 @@ def execute_request(user_id, bank_id, payload, callback, *, request_key=''):
             _ack(mid, result)
             return result
         except BaseException as exc:
+            if isinstance(exc, Exception) and not isinstance(exc, MutationUncertain) and _native_kernel():
+                # native:内核那一腿已在自己的 journal 行里有确定结论(acknowledged/not_applied),
+                # 请求级失败不再锁死整个作用域(旧 mem0 的 409 锁);原异常照抛,调用方拿到 5xx。
+                try:
+                    _not_applied(mid, 'native_request_failed')
+                except (MutationUncertain, sqlite3.Error):
+                    pass   # 记账失败不改变结论:原异常照抛
+                raise
             try:
                 _uncertain(mid, 'request_uncertain')
             except Exception:
@@ -578,7 +598,9 @@ def install_memory_journal(memory):
                     # update has no user_id in the SDK contract. Resolve owner
                     # from the existing record before any mutation, never use
                     # a caller's unverified metadata as the ownership source.
-                    item = memory.get(target)
+                    _skw = ({k: values[k] for k in ('user_id', 'bank_id') if values.get(k)}
+                            if getattr(memory, 'supports_scope', False) is True else {})
+                    item = memory.get(target, **_skw)
                     if not isinstance(item, dict) or not item.get('user_id'):
                         raise ValueError('cannot determine mutation target owner')
                     user = item['user_id']
@@ -586,7 +608,7 @@ def install_memory_journal(memory):
                 scope = make_scope(user, bank)
                 with scope_lock(scope.user_id, scope.bank_id):
                     if method == 'update':
-                        current = memory.get(target)
+                        current = memory.get(target, **_skw)
                         if not isinstance(current, dict) or not current.get('user_id'):
                             raise ValueError('mutation target no longer exists')
                         current_scope = make_scope(current['user_id'],
@@ -656,7 +678,7 @@ def update_job(job_id, **fields):
                 'error', 'failed', 'partial', 'repair_required')
             state = 'repair_required' if failed else 'acknowledged'
         elif status == 'error':
-            state = 'repair_required'
+            state = 'not_applied' if _native_kernel() else 'repair_required'   # 同 execute_request
         else:
             state = row['state']
         # Persist structured result. Error strings intentionally omitted.

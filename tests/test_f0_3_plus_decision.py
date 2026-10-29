@@ -149,6 +149,7 @@ def test_local_mode_and_other_user_do_not_call(channel, monkeypatch):
     _, calls, _ = channel
     assert d.classify("private memory", "bob", "default")[0] is None
     monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+    monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")   # 本档测 mem0 内核行为（f0.7 起本地档默认 native）
     assert len(d.filter_evidence("birthday", rows(), "test-user-one", "work")) == 2
     assert d.classify("private memory", "test-user-one", "work")[0] is None
     assert not calls and d.health()["decision_status"] == "blocked_by_engine_mode"
@@ -180,7 +181,7 @@ def test_invalid_config_keeps_file_unchanged(channel, body):
     assert path.read_bytes() == before
 
 
-def test_unauthorized_config_write_and_health_do_not_call(channel):
+def test_unauthorized_config_write_and_health_do_not_call(channel, monkeypatch):
     """f0.6 W-11/W-14 改写：admin 判据改 require_instance_admin 后——
 
     无凭据 TestClient = owner session（直通，cue A10 断路修复的同款行为）；
@@ -188,17 +189,23 @@ def test_unauthorized_config_write_and_health_do_not_call(channel):
     的原有防线保持。
     """
     path, calls, client = channel
-    # owner 直通：写入生效
+    # owner 直通：写入生效（f0.7 P2-2：真比对写前写后，不再用恒真断言）
+    before = path.read_bytes()
     assert client.put("/config/decision", json={"enabled": False}).status_code == 200
+    assert path.read_bytes() != before
     assert "synthetic-decision-key" not in client.get("/config").text
     # 自报 caller 不在名单（monkeypatch 的 _is_admin_caller 仍拦 Bearer 形态）：
     # 负向对照——带 caller 参数的请求被旧名单判据拒绝（require_instance_admin
     # 的 Bearer 分支内联同一名单语义）
-    r = client.put("/config/decision?caller=not-an-admin",
-                   json={"enabled": True})
-    assert r.status_code in (200, 403)  # 具体值由 require_instance_admin 凭据分支定
-    # 关键断言：写面校验存在且配置文件被 owner 会话动过
-    assert path.read_text() != channel[0].read_text() or True  # owner 写入已发生（前两行已验)
+    # f0.7 P2-2（外审 sesame/muse：原断言 `in (200, 403)` 与 `or True` 恒真）：无凭据 TestClient 是 owner
+    # session，自报 caller 不起作用。真负向对照 = Bearer 形态 + 不在管理员名单 → 403 且文件不动。
+    import ducky.security.auth as auth
+    monkeypatch.setattr(auth, "current_request_auth_kind", lambda: "bearer")
+    monkeypatch.delenv("AIDUMEI_FEDERATION_ADMINS", raising=False)
+    owner_written = path.read_bytes()
+    r = client.put("/config/decision?caller=not-an-admin", json={"enabled": True})
+    assert r.status_code == 403
+    assert path.read_bytes() == owner_written
 
 
 def test_removed_or_corrupt_config_never_reuses_key(channel):

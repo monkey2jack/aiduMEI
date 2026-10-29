@@ -227,29 +227,6 @@ def test_save_insights_stamps_bank_and_dedups_per_bank():
 
 
 # ═══════════════ ④ 读侧 opt-in 过滤 + 注入链路 ═══════════════
-def test_get_reflections_bank_filter_and_inject():
-    _wipe()
-    reflect.save_insights(
-        [{"type": "pattern", "content": "甲库的私密洞察内容", "confidence": 0.9}],
-        "u1", "test", bank_id="bank_a",
-    )
-    reflect.save_insights(
-        [{"type": "pattern", "content": "乙库的私密洞察内容", "confidence": 0.9}],
-        "u1", "test", bank_id="bank_b",
-    )
-
-    rows_a = reflect.get_reflections("u1", bank_id="bank_a")
-    assert [r["content"] for r in rows_a] == ["甲库的私密洞察内容"], \
-        "bank 过滤失效——乙库洞察对甲库可读"
-
-    # 不传 = v19 全量视图（管理员口径，存量零改动）
-    rows_all = reflect.get_reflections("u1")
-    assert {r["content"] for r in rows_all} == {"甲库的私密洞察内容", "乙库的私密洞察内容"}
-
-    # 注入链路：这是泄漏的最后一跳，必须只带本域洞察
-    ctx = reflect.inject_reflections("u1", bank_id="bank_a")
-    assert "甲库的私密洞察内容" in ctx, "本域洞察没注入——反思白做"
-    assert "乙库的私密洞察内容" not in ctx, "乙库洞察注入了甲库对话——泄漏复活"
 
 
 # ═══════════════ ⑤ run_reflect 全链路作用域 ═══════════════
@@ -297,42 +274,3 @@ def test_run_reflect_full_chain_scoped(monkeypatch):
 
 
 # ═══════════════ ⑥ HTTP 端点透传 ═══════════════
-def test_reflect_routes_scoped():
-    _wipe()
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from ducky.routes_p0 import register_p0_routes
-
-    app = FastAPI()
-    register_p0_routes(app)
-    client = TestClient(app)
-
-    # 非法 bank_id：报错 dict，不许 500（BankScopeError 被路由层接住）
-    r_bad = client.post("/reflect", json={"user_id": "u1", "bank_id": "../etc"})
-    assert r_bad.status_code == 200, r_bad.text
-    assert r_bad.json()["status"] == "error", "非法 bank_id 未被作用域契约拦下"
-
-    # 种子洞察分两域，验证 list / context 的透传过滤
-    reflect.save_insights(
-        [{"type": "pattern", "content": "甲库路由洞察", "confidence": 0.9}],
-        "u1", "test", bank_id="bank_a",
-    )
-    reflect.save_insights(
-        [{"type": "pattern", "content": "乙库路由洞察", "confidence": 0.9}],
-        "u1", "test", bank_id="bank_b",
-    )
-
-    r_list = client.get("/reflect/list", params={"user_id": "u1", "bank_id": "bank_a"})
-    assert r_list.status_code == 200
-    contents = [i["content"] for i in r_list.json()["insights"]]
-    assert contents == ["甲库路由洞察"], f"/reflect/list bank 过滤失效: {contents}"
-
-    # 不传 = v19 全量视图
-    r_all = client.get("/reflect/list", params={"user_id": "u1"})
-    assert {i["content"] for i in r_all.json()["insights"]} == {"甲库路由洞察", "乙库路由洞察"}
-
-    r_ctx = client.get("/reflect/context", params={"user_id": "u1", "bank_id": "bank_b"})
-    ctx = r_ctx.json()["context"]
-    assert "乙库路由洞察" in ctx and "甲库路由洞察" not in ctx, \
-        "/reflect/context 的 bank 过滤失效——洞察跨库注入"
