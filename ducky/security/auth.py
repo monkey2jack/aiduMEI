@@ -254,7 +254,11 @@ def check_ui_password(password: str) -> bool:
     if not isinstance(password, str) or not password:
         return False
 
+    env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
     stored, source = _read_hash_file()
+    # f0.7.1：设了环境变量口令时，自动生成的口令（source=auto）不再有效。
+    if stored and env_pwd and source == _SOURCE_AUTO:
+        stored = ""
     if stored:
         ok, needs_upgrade = verify_password(password, stored)
         if ok:
@@ -266,10 +270,31 @@ def check_ui_password(password: str) -> bool:
                 logger.info("🔐 控制台口令哈希已自动升级为 PBKDF2（旧单轮 sha256 已淘汰）")
             return True
 
-    env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
     if env_pwd and hmac.compare_digest(password, env_pwd):
         return True
     return False
+
+
+def retire_auto_password() -> bool:
+    """环境变量口令生效时，删掉自动生成的口令哈希（仅 source=auto）与明文初始口令文件。
+
+    返回是否删了东西。删除失败只记日志，不拖垮启动（check_ui_password 已在校验时忽略 auto 哈希）。
+    """
+    removed = False
+    hashed, source = _read_hash_file()
+    targets = [initial_password_path()]
+    if hashed and source == _SOURCE_AUTO:
+        targets.append(password_hash_path())
+    for path in targets:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                removed = True
+            except OSError as exc:
+                logger.warning("🔐 作废自动口令时删除 %s 失败: %s", path, exc)
+    if removed:
+        logger.warning("🔐 已设置 AIDUMEM_UI_PASSWORD：自动生成的控制台口令已作废（哈希与明文文件已删除）")
+    return removed
 
 
 # ── 会话存储 ────────────────────────────────────────────────────────────

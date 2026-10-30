@@ -145,8 +145,11 @@ def test_apply_restores_each_in_its_own_scope_and_writes_a_receipt(server, token
     rc = tool.main(["--base", server["base"], *FILTERS, "--apply", "--receipt", str(receipt)])
     assert rc == 0, capsys.readouterr()
     posts = [r[3] for r in server["requests"] if r[0] == "POST"]
-    assert posts == [{"tombstone_id": 1, "user_id": "alice", "bank_id": "default"},
-                     {"tombstone_id": 2, "user_id": "alice", "bank_id": "default"}]
+    # Bearer 请求的空 caller 一律 403（v22.0）：每条恢复以本域身份声明 caller
+    assert posts == [{"tombstone_id": 1, "user_id": "alice", "bank_id": "default",
+                      "caller_user_id": "alice"},
+                     {"tombstone_id": 2, "user_id": "alice", "bank_id": "default",
+                      "caller_user_id": "alice"}]
     data = json.loads(receipt.read_text())
     assert data["selected"] == 2 and data["restored"] == 2 and data["failed"] == 0
     assert all(r["ok"] and r["restored_at_confirmed"] for r in data["results"])
@@ -349,8 +352,9 @@ def test_end_to_end_restores_consolidator_deletes_through_the_service(tmp_path, 
         ids.append(pid)
     assert fake.vector_store.points == {}
 
-    app = FastAPI()
-    crud.register_crud_routes(app)
+    app, api = FastAPI(), FastAPI()
+    crud.register_crud_routes(api)
+    app.mount("/api", api)   # 与生产同形：f0.7 WP2 起墓碑端点只在 /api 子应用下
     client = TestClient(app)
 
     def via_testclient(self, method, path, *, query=None, body=None):
@@ -365,3 +369,39 @@ def test_end_to_end_restores_consolidator_deletes_through_the_service(tmp_path, 
     assert rc == 0, data
     assert data["restored"] == 2
     assert set(fake.vector_store.points) == set(ids), "vector points not back"
+
+
+def test_restores_through_the_real_gated_service(tmp_path, token, monkeypatch):
+    """真服务（f0.7 路由白名单 + 门禁开启）：路径与 caller 都必须对。
+
+    上一条把 crud 路由挂在裸 FastAPI 上、不开门禁，于是脚本打根路径 /tombstones、
+    不带 caller 也一直是绿的；真服务上那两条只在 /api 下，且 Bearer 空 caller 一律 403。
+    """
+    import api_server
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("AIDUMEI_ENGINE_MODE", "local")
+    client = TestClient(api_server.app)
+    auth = {"Authorization": f"Bearer {token}"}
+    user = f"tomb-{uuid.uuid4().hex[:8]}"
+    added = client.post("/add", headers=auth, json={
+        "messages": [{"role": "user", "content": "restore probe: the spare key is under the blue pot"}],
+        "user_id": user, "caller_user_id": user, "infer": False})
+    assert added.status_code == 200, added.text
+    recent = client.get("/api/recent", headers=auth, params={"user_id": user, "caller_user_id": user})
+    mid = recent.json()["results"]["results"][0]["id"]
+    deleted = client.post("/delete", headers=auth,
+                          json={"memory_id": mid, "user_id": user, "caller_user_id": user})
+    assert deleted.json()["status"] == "committed", deleted.text
+
+    def via_real_app(self, method, path, *, query=None, body=None):
+        resp = client.request(method, path, params=query, json=body, headers=self.headers)
+        assert resp.status_code == 200, (method, path, resp.status_code, resp.text[:200])
+        return resp.json()
+
+    monkeypatch.setattr(tool.Api, "_call", via_real_app)
+    receipt = tmp_path / "receipt.json"
+    rc = tool.main(["--base", "http://127.0.0.1:1", "--user-id", user,
+                    "--reason", "cascade_delete", "--apply", "--receipt", str(receipt)])
+    data = json.loads(receipt.read_text())
+    assert rc == 0 and data["restored"] == 1, data

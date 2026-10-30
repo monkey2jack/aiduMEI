@@ -52,6 +52,7 @@ for i, row in enumerate(rows):
     body = {
         'messages': messages,
         'user_id': 'default',
+        'caller_user_id': 'default',
         'metadata': {
             'fact_id': mem_id,
             'category': category,

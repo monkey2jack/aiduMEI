@@ -125,16 +125,21 @@ ${SUMMARY:+DESCRIPTION: $SUMMARY
 ---
 ${CONTENT}"
 
-# ── 发送到 aiduMEM Raw Drawer ──────────────────────────
+# ── 发送到 aiduMEM（原文直存）──────────────────────────
+# f0.7 WP2 起 /add/raw 已删除：改走 /add + infer=false（原文直存、不抽取），
+# Bearer 请求须同时声明 caller_user_id（v22.0）。
 # v20.2.4（外审 F-25）：user id **通过环境变量**交给 Python，不再插进源码。
 # 此前是 '${AIDUMEM_USER_ID}' 直接嵌在单引号字符串里 —— 值里带一个单引号就能
 # 闭合字符串并注入任意 Python 表达式（无害 payload 已实证可执行）。
 PAYLOAD=$(AIDUMEI_HOOK_UID="${AIDUMEM_USER_ID}" python3 -c "
 import json, os, sys
+uid = os.environ.get('AIDUMEI_HOOK_UID', '')
 print(json.dumps({
-    'content': sys.stdin.read(),
-    'source': 'cursor_hook',
-    'user_id': os.environ.get('AIDUMEI_HOOK_UID', ''),
+    'messages': [{'role': 'user', 'content': sys.stdin.read()}],
+    'user_id': uid,
+    'caller_user_id': uid,
+    'infer': False,
+    'metadata': {'source': 'cursor_hook'},
 }))
 " <<< "$STORE_TEXT")
 
@@ -147,14 +152,14 @@ chmod 600 "$RESP_FILE"
 trap 'rm -f "$RESP_FILE" "${_AUTH_HDR_FILE:-}"' EXIT INT TERM
 HTTP_CODE=$(curl -s -o "$RESP_FILE" -w "%{http_code}" \
     --max-time "$TIMEOUT" \
-    -X POST "${AIDUMEM_URL}/add/raw" \
+    -X POST "${AIDUMEM_URL}/add" \
     -H "Content-Type: application/json" \
     ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
     -d "$PAYLOAD" 2>/dev/null || echo "000")
 
 if [[ "$HTTP_CODE" == "200" ]]; then
-    ID=$(python3 -c "import json; d=json.load(open('$RESP_FILE')); print(d.get('id','?'))" 2>/dev/null || echo "?")
-    echo "✅ aiduMEI: ${REL_PATH} → Raw Drawer [${ID}]"
+    ACTION=$(python3 -c "import json, sys; d=json.load(open(sys.argv[1])); print(d.get('action') or d.get('status') or '?')" "$RESP_FILE" 2>/dev/null || echo "?")
+    echo "✅ aiduMEI: ${REL_PATH} → stored [${ACTION}]"
 elif [[ "$HTTP_CODE" == "401" || "$HTTP_CODE" == "403" ]]; then
     # 单独点名鉴权失败：这是最常见也最容易误判为「服务挂了」的一种失败。
     echo "⚠️  aiduMEI: 鉴权失败 (HTTP ${HTTP_CODE})。请设置 AIDUMEM_API_TOKEN，" >&2

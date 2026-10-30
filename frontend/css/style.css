@@ -130,18 +130,6 @@ a.foot-ver-link:hover {
   border-bottom-color: var(--accent, #4a9eff);
 }
 
-.foot-update-badge {
-  display: none; /* 默认隐藏；有更新时由 main.js 以 CSSOM 置 inline-block（v20.4.0-alpha P2-11：原 inline style 收编于此） */
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: #f5d04a;
-  color: var(--blue);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
 /* f0.4++：域切换下拉已按用户要求移除（原 .domain-badge-wrap/.domain-tag/
    .domain-select 三段死样式一并清理，对外分发面清理铁律）。 */
 .chip-user {

@@ -1,5 +1,5 @@
 {
- "schema": "regression.v3.baseline",
+ "schema": "regression.v3.result",
  "cases_version": "v3.0-public-synthetic",
  "per_category": {
   "fact_recall": {
@@ -18,9 +18,9 @@
    "score": 1.0
   },
   "temporal": {
-   "pass": 25,
+   "pass": 24,
    "n": 25,
-   "score": 1.0
+   "score": 0.96
   },
   "abstain": {
    "pass": 23,
@@ -28,9 +28,9 @@
    "score": 0.92
   },
   "cc_replay": {
-   "pass": 16,
+   "pass": 17,
    "n": 20,
-   "score": 0.8
+   "score": 0.85
   }
  },
  "total": {
@@ -38,8 +38,37 @@
   "n": 171,
   "score": 0.9591
  },
+ "runtime_s": 13.29,
+ "seed_s": 7.47,
  "mode": "local-inprocess(hash-embed, verdict_threshold=0.46)",
- "recorded_at": "2026-10-29 CST",
- "code_base": "f0.7 (0.7.0), mem0 kernel + public synthetic set",
- "note": "公开虚构集基线(benchmarks/build_public_regression.py 生成,种子固定)。维护者私有真实集的分数不随公开仓分发,两者不可互比。"
+ "failed": [
+  {
+   "id": "fr-013",
+   "category": "fact_recall"
+  },
+  {
+   "id": "tm-001",
+   "category": "temporal"
+  },
+  {
+   "id": "ab-008",
+   "category": "abstain"
+  },
+  {
+   "id": "ab-015",
+   "category": "abstain"
+  },
+  {
+   "id": "cc-002",
+   "category": "cc_replay"
+  },
+  {
+   "id": "cc-012",
+   "category": "cc_replay"
+  },
+  {
+   "id": "cc-019",
+   "category": "cc_replay"
+  }
+ ]
 }

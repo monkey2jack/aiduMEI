@@ -103,6 +103,22 @@ def test_pins_satisfy_every_pyproject_specifier() -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_platform_markers_match_between_the_two_manifests() -> None:
+    """A Linux-only pin must stay Linux-only in pyproject too.
+
+    requirements.txt marks inotify_simple `sys_platform == "linux"`, but pyproject
+    listed it unconditionally, so `pip install .` on macOS / Windows pulled a
+    Linux-only package that `pip install -r requirements.txt` correctly skipped.
+    """
+    locked = _requirements(REQUIREMENTS.read_text(encoding="utf-8"))
+    problems = []
+    for req in _pyproject_requirements():
+        pin = locked.get(canonicalize_name(req.name))
+        if pin is not None and pin.marker is not None and str(req.marker) != str(pin.marker):
+            problems.append(f"{req.name}: requirements.txt marker {pin.marker!s} but pyproject {req.marker}")
+    assert not problems, "\n".join(problems)
+
+
 def test_negative_control_previous_lines_were_ranges() -> None:
     old = _requirements("\n".join(OLD_LINES))
     assert all(_exact_version(req) is None for req in old.values())

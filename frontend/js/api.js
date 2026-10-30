@@ -139,7 +139,6 @@ class ApiError extends Error {
 
 /* /recent  -> { results: { results: [...] } }
    /search  -> { results: [...] }
-   /stats   -> { memories: { results: [...] } }
    Dig until we find the array. */
 function asRecords(payload) {
   if (!payload) return [];

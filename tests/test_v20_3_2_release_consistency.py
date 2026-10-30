@@ -114,8 +114,8 @@ def test_context_manager_exit_commits_on_success(facts_conn):
 def test_leaked_transaction_is_visible_at_borrow_time(facts_conn, caplog):
     """**P1-9 靶心②**：借出连接时若发现上一位借用者留下悬挂事务，必须**出声**（不静默）。
 
-    不在借出时自动回滚：同一线程内的嵌套借用（helper 再拿一次连接）是合法的，
-    自动回滚会毁掉外层在途写入。出声 + /health 计数，让泄漏可被定位。
+    出声 + /health 计数，让泄漏可被定位。同一请求的嵌套借用（戳相同）不算悬挂、
+    不回滚（见下一条）；戳不同的悬挂在借出时回滚（见 test_f07_tx_rollback_sync_routes）。
     """
     import logging
     u = facts_conn

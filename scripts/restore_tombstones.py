@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """scripts/restore_tombstones.py -- batch-restore tombstoned memories (f0.3 C8).
 
-Talks to the *running* service over HTTP (POST /tombstone/restore) and never
+Talks to the *running* service over HTTP (POST /api/tombstone/restore) and never
 opens the vector store itself: the service holds the embedded Qdrant lock,
 and the restore must go through the service's own embedder and stores.
 
 Selection comes from one of two read-only sources:
-  * the list API    GET /tombstones?user_id=&bank_id=   (one scope)   [default]
+  * the list API    GET /api/tombstones?user_id=&bank_id=   (one scope)   [default]
   * the database    --db PATH/facts.db, opened read-only (?mode=ro)   (all scopes)
 then filters: --reason --actor --target-type (fnmatch patterns, comma lists),
 --since/--until (ISO-8601, naive = UTC) and --utc-windows "HH:MM-HH:MM,..."
@@ -18,7 +18,7 @@ Default is a DRY RUN: the selection is printed (id, time, scope, reason,
 actor, target, 40-character preview) and nothing is changed.  --apply
 restores each tombstone with its own user_id/bank_id, verifies the result
 (the restore response's read-back of facts row / FTS row / vector point,
-then restored_at in a fresh /tombstones listing), writes a JSON receipt and
+then restored_at in a fresh /api/tombstones listing), writes a JSON receipt and
 exits 1 if anything failed.
 
 Credentials come from the repository's single credential source,
@@ -229,8 +229,10 @@ class Api:
             raise RuntimeError(f"HTTP {exc.code} on {method} {path}: {detail}") from exc
 
     def list_tombstones(self, user_id: str, bank_id: str, limit: int = _LIST_LIMIT) -> list:
-        out = self._call("GET", "/tombstones",
-                         query={"user_id": user_id, "bank_id": bank_id, "limit": limit})
+        # f0.7 WP2 起墓碑端点只在控制台子应用 /api 下；Bearer 须声明 caller（v22.0）
+        out = self._call("GET", "/api/tombstones",
+                         query={"user_id": user_id, "bank_id": bank_id, "limit": limit,
+                                "caller_user_id": user_id})
         rows = []
         for r in out.get("results") or []:
             row = {k: r.get(k) for k in _COLUMNS}
@@ -239,8 +241,9 @@ class Api:
         return rows
 
     def restore(self, tombstone_id: int, user_id: str, bank_id: str) -> dict:
-        return self._call("POST", "/tombstone/restore", body={
-            "tombstone_id": int(tombstone_id), "user_id": user_id, "bank_id": bank_id})
+        return self._call("POST", "/api/tombstone/restore", body={
+            "tombstone_id": int(tombstone_id), "user_id": user_id, "bank_id": bank_id,
+            "caller_user_id": user_id})
 
 
 # -- apply -----------------------------------------------------------------
@@ -291,7 +294,7 @@ def confirm_restored(api: Api, results: list) -> None:
             r["restored_at_confirmed"] = int(r["tombstone_id"]) in stamped
             if not r["restored_at_confirmed"]:
                 r["ok"] = False
-                r["error"] = "restored_at not visible in /tombstones after restore"
+                r["error"] = "restored_at not visible in /api/tombstones after restore"
 
 
 def write_receipt(path: str, payload: dict) -> str:

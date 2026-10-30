@@ -195,10 +195,13 @@ try:
             msgs.append((role, c[:600]))
 except Exception:
     sys.exit()
-lu = next((c for r, c in reversed(msgs) if r == "user"), None)
-la = next((c for r, c in reversed(msgs) if r == "assistant"), None)
-if not lu:
+lu_at = next((i for i in range(len(msgs) - 1, -1, -1) if msgs[i][0] == "user"), None)
+if lu_at is None:
     sys.exit()
+lu = msgs[lu_at][1]
+# 回答只取这一问之后的：本轮没有文字回答（只用了工具、被中断、No response requested）
+# 时只存问句。此前两者各自取「最后一条」，不看先后，会把上一轮的回答配给这一问。
+la = next((c for r, c in reversed(msgs[lu_at + 1:]) if r == "assistant"), None)
 messages = [{"role": "user", "content": lu[:500]}]
 if la:
     messages.append({"role": "assistant", "content": la[:500]})

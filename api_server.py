@@ -30,6 +30,11 @@ def _bootstrap_env_file() -> int:
                     continue
                 _k, _v = _line.split("=", 1)
                 _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+                # f0.7.1：与 parse_env_file 一致，容忍 `export KEY=VAL`（给 shell source 用的 .env）。
+                # 原先不剥前缀 → 键名变成 "export AIDUMEM_API_TOKEN"，服务端门禁静默关闭，
+                # 而钩子/脚本照常带 token 调用，一切看似正常。
+                if _k.startswith("export ") or _k.startswith("export\t"):
+                    _k = _k[len("export"):].strip()
                 if _k and _k not in _os.environ:
                     _os.environ[_k] = _v
                     _n += 1
@@ -860,6 +865,9 @@ async def _record_http_outcome(request: Request, call_next):
         # 请求 Y 的任何一次 commit 会把 X 的半截写一起提交（AST 扫描 69 处
         # 写路径无回滚）。现在请求收尾时按上下文戳回滚「本请求开启但未提交」
         # 的事务；嵌套借用不受影响（戳相同不回滚）。
+        # 注意：本中间件跑在事件循环线程，这里只够得着 async 路由的连接；同步路由
+        # （add/search/update/delete 等）在工作线程，由 utils._get_thread_conn 在同线程
+        # 下一次借出时回滚。
         _tx_janitor(_BORROW_CONTEXT.get())
         _BORROW_CONTEXT.reset(_ctx_token)
     http_metrics.record(response.status_code)
@@ -887,7 +895,15 @@ def _ensure_ui_password() -> None:
 
     env_pwd = os.environ.get("AIDUMEM_UI_PASSWORD", "").strip()
     hash_file = password_hash_path()
-    if not env_pwd and not os.path.exists(hash_file):
+    if env_pwd:
+        # f0.7.1：部署方显式设了环境变量口令 → 作废自动生成的口令（哈希 + 明文文件）。
+        # 原先两套口令同时有效，用户以为「已换密」，旧的自动口令（明文还躺在
+        # data/.ui_initial_password）照样能登录。只动 source=auto 的哈希；控制台改过的
+        # （source=user）不碰。
+        from ducky.security.auth import retire_auto_password
+        retire_auto_password()
+        return
+    if not os.path.exists(hash_file):
         gen_pwd = secrets.token_urlsafe(12)
 
         # v20 · P1-7：明文口令**只落 0600 文件，不进日志**。

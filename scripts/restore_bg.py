@@ -46,7 +46,7 @@ for i, row in enumerate(rows):
         content += f" ({summary})"
 
     messages = json.dumps([{'role': 'user', 'content': content}])
-    body = {'messages': messages, 'user_id': 'default', 'metadata': {'fact_id': mem_id, 'category': category, 'fact_key': key}}
+    body = {'messages': messages, 'user_id': 'default', 'caller_user_id': 'default', 'metadata': {'fact_id': mem_id, 'category': category, 'fact_key': key}}
 
     try:
         resp = requests.post(f'{api}/add', json=body, timeout=30, headers=_auth_headers())

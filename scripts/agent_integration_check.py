@@ -88,7 +88,7 @@ def main() -> int:
         nonce = f"integration-{secrets.token_hex(8)}"
         status, added = request("POST", "/add", {
             "messages": [{"role": "user", "content": f"{nonce} is the integration handshake."}],
-            "user_id": tenant, "bank_id": "default", "infer": False,
+            "user_id": tenant, "bank_id": "default", "caller_user_id": tenant, "infer": False,
             "metadata": {"force_sync": True},
         })
         check("add", status == 200 and added.get("status") == "ok"

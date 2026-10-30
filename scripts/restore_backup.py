@@ -115,9 +115,11 @@ def _restore(points: list[dict[str, Any]], api: str, dry_run: bool, limit: int) 
         if not content:
             failed += 1
             continue
+        owner = payload.get("user_id", "default")
         body = {
             "messages": [{"role": "user", "content": content}],
-            "user_id": payload.get("user_id", "default"),
+            "user_id": owner,
+            "caller_user_id": owner,
         }
         try:
             response = requests.post(
