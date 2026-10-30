@@ -159,7 +159,8 @@ def register_crud_routes(app: FastAPI) -> None:
                 "top_tags": dict(sorted(tag_counts.items(), key=lambda x: -x[1])[:10]),
                 "vision_count": vision_count,
                 "obsidian_count": obsidian_count,
-                "memories": all_mem,
+                # 不再回传 all_mem：控制台只读计数，原先每次开「心动」面板都把本域
+                # 全部记忆正文（limit=10000）整包下发；要列表走 /recent 分页。
             }
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分

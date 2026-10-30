@@ -13,7 +13,6 @@ aiduMEM Raw Drawer，防止 AI 遗忘已看过的代码。
   python3 claude-code-hook.py store --file ./my_module.py
   python3 claude-code-hook.py store --content "def foo(): ..." --desc "helper function"
   python3 claude-code-hook.py search "authentication logic"
-  python3 claude-code-hook.py impact ./api_server.py
 
 环境变量：
   AIDUMEM_URL        API 地址，默认 http://127.0.0.1:8767
@@ -177,17 +176,20 @@ def cmd_store(args: argparse.Namespace) -> None:
         # 从 stdin 读取
         content = sys.stdin.read()
 
-    result = _post("/add/raw", {
-        "content": content,
-        "source": "claude_code_hook",
+    # f0.7 WP2 起 /add/raw 已删除：改走 /add + infer=false（原文直存、不抽取）
+    result = _post("/add", {
+        "messages": [{"role": "user", "content": content}],
         "user_id": AIDUMEM_USER_ID,
+        "caller_user_id": AIDUMEM_USER_ID,
+        "infer": False,
+        "metadata": {"source": "claude_code_hook"},
     })
     if "error" in result:
         print(f"❌ 存储失败: {result['error']}", file=sys.stderr)
         if result.get("hint"):
             print(f"   {result['hint']}", file=sys.stderr)
         sys.exit(1)
-    print(f"✅ 存入 Raw Drawer: id={result.get('id', '?')}")
+    print(f"✅ 已存入: {result.get('action') or result.get('status', '?')}")
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -209,17 +211,6 @@ def cmd_search(args: argparse.Namespace) -> None:
         score = m.get("score", 0)
         text = m.get("memory", "")[:200]
         print(f"[{i}] score={score:.3f}\n    {text}\n")
-
-
-def cmd_impact(args: argparse.Namespace) -> None:
-    """分析文件改动的波及范围。"""
-    result = _post("/code/impact", {"file_path": args.file})
-    if "error" in result:
-        print(f"❌ 分析失败: {result['error']}", file=sys.stderr)
-        if result.get("hint"):
-            print(f"   {result['hint']}", file=sys.stderr)
-        sys.exit(1)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def cmd_health(args: argparse.Namespace) -> None:
@@ -251,11 +242,6 @@ def main() -> None:
     p_search.add_argument("query", help="搜索关键词")
     p_search.add_argument("--top-k", "-k", type=int, default=5, dest="top_k")
     p_search.set_defaults(func=cmd_search)
-
-    # impact
-    p_impact = subs.add_parser("impact", help="分析文件改动波及范围")
-    p_impact.add_argument("file", help="要分析的文件路径")
-    p_impact.set_defaults(func=cmd_impact)
 
     # health
     p_health = subs.add_parser("health", help="检查服务健康状态")

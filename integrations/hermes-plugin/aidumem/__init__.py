@@ -1144,7 +1144,8 @@ class AiduMemProvider(MemoryProvider):
                 return tool_error("aiduMEI unreachable")
             # /usage 返回逐日全量历史（几十 KB 起），整块塞进工具结果会把
             # health 挤出截断边界。只留最近一天。
-            usage_raw = self._client.try_request("GET", "/usage", timeout=_QUERY_TIMEOUT) or {}
+            # f0.7 WP2 起用量端点只在控制台子应用 /api 下（根路径 /usage 已 404）
+            usage_raw = self._client.try_request("GET", "/api/usage", timeout=_QUERY_TIMEOUT) or {}
             usage_latest: Dict[str, Any] = {}
             try:
                 daily = usage_raw.get("usage") if isinstance(usage_raw, dict) else None

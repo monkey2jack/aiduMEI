@@ -131,6 +131,8 @@ def push_to_aidumem(text: str, category: str, source: str) -> bool:
     payload = json.dumps({
         "messages": json.dumps([{"role": "user", "content": text}], ensure_ascii=False),
         "user_id": USER_ID,
+        # v22.0 起 Bearer 请求的空 caller 一律 403：带 token 必须同时声明 caller
+        "caller_user_id": USER_ID,
         "async_mode": True,  # 聊天侧默认异步
         "metadata": {
             "category": category,
@@ -172,7 +174,8 @@ def push_to_aidumem(text: str, category: str, source: str) -> bool:
             logger.error(
                 f"  ❌ HTTP {e.code} 鉴权失败：同步已停摆。"
                 f"请确认 AIDUMEM_API_TOKEN 已注入本进程"
-                f"（systemd 用 EnvironmentFile= 指向部署的 .env）| {body}"
+                f"（systemd 用 EnvironmentFile= 指向部署的 .env），"
+                f"且 caller_user_id 在 AIDUMEI_CALLER_BINDINGS 允许范围内 | {body}"
             )
         else:
             logger.warning(f"  ❌ HTTP {e.code}: {body}")

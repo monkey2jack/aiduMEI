@@ -222,11 +222,13 @@ def test_frontend_does_not_remask_raw_keys():
     assert "key.slice" not in text
     assert "m.api_key || m.config && m.config.api_key" in text
 
-def test_frontend_github_update_check_is_opt_in():
-    """Offline/self-hosted deployments must not leak client IP/version by default."""
-    text = (_ROOT / "frontend" / "js" / "main.js").read_text(encoding="utf-8")
-    assert "localStorage.getItem('aidumei.updateCheck') === '1'" in text
-    assert "if (ENABLE_UPDATE_CHECK) checkLatestVersion()" in text
+def test_frontend_makes_no_external_requests():
+    """f0.7.1: the console's GitHub update check was dead code (blocked by our own CSP
+    connect-src 'self'); removed rather than widening CSP — the console stays zero-egress."""
+    for name in ("main.js", "api.js", "panels.js"):
+        text = (_ROOT / "frontend" / "js" / name).read_text(encoding="utf-8")
+        assert "api.github.com" not in text, name
+        assert "aidumei.updateCheck" not in text, name
 
 def test_ui_package_excludes_local_dev_proxy():
     """The console directory must not contain a proxy with intentionally open write endpoints."""

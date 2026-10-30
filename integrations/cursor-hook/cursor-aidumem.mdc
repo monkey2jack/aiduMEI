@@ -13,13 +13,15 @@ When you make significant code changes (new functions, refactors, bug fixes), au
 After completing a meaningful code change (not trivial one-liners), call:
 
 ```
-POST http://127.0.0.1:8767/add/raw
+POST http://127.0.0.1:8767/add
 Content-Type: application/json
 
 {
-  "content": "FILE: <relative_path>\n\n<code_snippet_or_summary>",
-  "source": "cursor_hook",
-  "user_id": "default"
+  "messages": [{"role": "user", "content": "FILE: <relative_path>\n\n<code_snippet_or_summary>"}],
+  "user_id": "default",
+  "caller_user_id": "default",
+  "infer": false,
+  "metadata": {"source": "cursor_hook"}
 }
 ```
 

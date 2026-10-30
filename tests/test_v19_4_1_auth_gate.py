@@ -260,6 +260,50 @@ def test_short_password_rejected(env):
     assert resp.json()["status"] == "error"
 
 
+def test_console_owner_session_changes_password_without_caller(env, monkeypatch):
+    """控制台改密（panels.js）不带 caller，默认部署也没有 admin 名单：主人会话必须改得动。
+
+    此前改密单独用 `_is_admin_caller(caller)`，其余配置写面早已是 session 直通
+    （_require_config_admin）—— 于是首启提示「请通过控制台改密」在默认部署下永远走不通。
+    """
+    monkeypatch.delenv("AIDUMEI_FEDERATION_ADMINS", raising=False)
+    monkeypatch.delenv("AIDUMEM_API_TOKEN", raising=False)
+    auth_mod.write_password_hash(auth_mod.hash_password("initialpassword"))   # 门禁启用
+    client = env.client()
+    assert client.post("/api/login", json={"password": "initialpassword"}).status_code == 200
+
+    resp = client.post(
+        "/api/config/password",
+        json={
+            "current_password": "initialpassword",
+            "new_password": "brandnewpassword",
+            "confirm_password": "brandnewpassword",
+        },
+    )
+    assert resp.json()["status"] == "ok", resp.json()
+    assert env.client().post("/api/login", json={"password": "brandnewpassword"}).status_code == 200
+    # f0.7.1：没配 token 时，改密开启了 API 门禁 → 响应里必须明确警告
+    assert "AIDUMEM_API_TOKEN" in resp.json().get("warning", ""), resp.json()
+
+
+def test_bearer_caller_outside_admin_list_cannot_change_password(env):
+    """对照：Bearer 调用方仍须 admin，失败与其它配置写面一致返回 HTTP 403。"""
+    env.set_token("pw-change-token")
+    auth_mod.write_password_hash(auth_mod.hash_password("initialpassword"))
+    resp = env.client().post(
+        "/api/config/password",
+        params={"caller": "not-admin"},
+        headers={"Authorization": "Bearer pw-change-token"},
+        json={
+            "current_password": "initialpassword",
+            "new_password": "brandnewpassword",
+            "confirm_password": "brandnewpassword",
+        },
+    )
+    assert resp.status_code == 403
+    assert auth_mod.check_ui_password("initialpassword")
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 公共路径与可观测性
 # ═══════════════════════════════════════════════════════════════════

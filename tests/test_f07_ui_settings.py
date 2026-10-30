@@ -95,6 +95,29 @@ def test_ui_first_rerank_save_gets_working_provider(cfg):
     assert runtime._load_rerank_config()["provider"] == runtime.DEFAULT_RERANK_PROVIDER
 
 
+def test_llm_save_takes_effect_for_call_llm_without_reload(cfg, monkeypatch):
+    """PUT /config/llm 之后，call_llm 读到的就是新端点与新 key —— 不靠客户端再打 /reload。
+
+    get_llm_config 是进程级缓存；此前只有 /reload 才清。控制台保存后会补打 /reload，
+    只走 API 改配置的调用方则一直打旧 endpoint/key，直到重启。
+    """
+    from ducky import llm_client
+    path, client = cfg
+    monkeypatch.setattr(llm_client, "MEM0_CONFIG", str(path))
+    path.write_text(json.dumps({"llm": {"provider": "openai", "config": {
+        "model": "old-model", "openai_base_url": "https://old.example.invalid/v1", "api_key": "old-key"}}}))
+    llm_client.invalidate_llm_config_cache()
+    assert llm_client.get_llm_config()["base_url"] == "https://old.example.invalid/v1"
+
+    r = _put(client, "llm", {"provider": "openai", "config": {
+        "model": "new-model", "openai_base_url": "https://new.example.invalid/v1", "api_key": "new-key"}})
+    assert r.status_code == 200, r.text
+    now = llm_client.get_llm_config()
+    assert (now["model"], now["base_url"], now["api_key"]) == (
+        "new-model", "https://new.example.invalid/v1", "new-key")
+    llm_client.invalidate_llm_config_cache()
+
+
 def test_rerank_provider_choice_is_validated(cfg):
     _, client = cfg
     assert _put(client, "rerank", {"provider": "bogus", "config": {}}).status_code == 400

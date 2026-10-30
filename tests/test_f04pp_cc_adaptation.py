@@ -293,6 +293,51 @@ def test_wp6_stop_ingest_no_session_no_origin(tmp_path):
     assert body["metadata"]["_origin_session_id"] == ""
 
 
+def _stop_ingest_messages(tmp_path: Path, records: list) -> list:
+    tp = tmp_path / "transcript.jsonl"
+    tp.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+                  encoding="utf-8")
+    with _capture_server(lambda path: {"status": "accepted"}) as (port, calls):
+        r = _run_hook(_CC_HOOKS / "aidumem-cc-ingest.sh",
+                      {"session_id": "pair", "transcript_path": str(tp), "hook_event_name": "Stop"},
+                      _hook_env(port, tmp_path))
+        assert r.returncode == 0, r.stderr.decode(errors="replace")
+        assert _wait_for(calls, lambda p: p.startswith("/add"))
+        adds = [b for p, b in calls if p.startswith("/add")]
+    return json.loads(adds[0].decode())["messages"]
+
+
+def _turn(role: str, content) -> dict:
+    return {"type": role, "message": {"role": role, "content": content}}
+
+
+def test_stop_ingest_never_pairs_a_question_with_the_previous_answer(tmp_path):
+    """本轮没有文字回答（只调了工具）时只存问句。此前问句与回答各取「最后一条」、
+    不看先后，于是这一问被配上上一轮的回答，污染萃取与召回。"""
+    messages = _stop_ingest_messages(tmp_path, [
+        _turn("user", "Q1: what is the capital of France?"),
+        _turn("assistant", [{"type": "text", "text": "A1: Paris."}]),
+        _turn("user", "Q2: list the files in my repo"),
+        _turn("assistant", [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]),
+        _turn("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "a.txt"}]),
+    ])
+    assert messages == [{"role": "user", "content": "Q2: list the files in my repo"}]
+
+
+def test_stop_ingest_pairs_the_answer_given_after_tool_use(tmp_path):
+    """对照：工具调用之后给出的文字回答仍属于这一问。"""
+    messages = _stop_ingest_messages(tmp_path, [
+        _turn("user", "Q1: what is the capital of France?"),
+        _turn("assistant", [{"type": "text", "text": "A1: Paris."}]),
+        _turn("user", "Q2: list the files in my repo"),
+        _turn("assistant", [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]),
+        _turn("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "a.txt"}]),
+        _turn("assistant", [{"type": "text", "text": "A2: there is one file, a.txt."}]),
+    ])
+    assert [m["content"] for m in messages] == ["Q2: list the files in my repo",
+                                                "A2: there is one file, a.txt."]
+
+
 # ═══════════════════ WP4 · SessionEnd 萃取线适配层 ═══════════════════
 
 def test_wp4_sessionend_adapts_payload_to_distill_source(tmp_path):
