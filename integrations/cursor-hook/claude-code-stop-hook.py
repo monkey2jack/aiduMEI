@@ -233,6 +233,7 @@ def _write(user_text: str, asst_text: str, session_id: str, turn: int) -> bool:
             "messages": [{"role": "user", "content": user_text[:LIMIT]},
                          {"role": "assistant", "content": asst_text[:LIMIT]}],
             "user_id": _user_id(),
+            "caller_user_id": _user_id(),
             # 同 aidumem-ingest.sh：同步 /add 要跑完整抽取管线（生产实测 p50
             # 约 4 秒），而 Stop 钩子卡住会让宿主等着。异步下服务端先收下。
             "async_mode": True,
@@ -262,7 +263,7 @@ def _selftest() -> int:
     uid = _user_id()
     try:
         _call("/add", {"messages": [{"role": "user", "content": marker}],
-                       "user_id": uid, "async_mode": True,
+                       "user_id": uid, "caller_user_id": uid, "async_mode": True,
                        "metadata": {"_origin_agent": "claude-code-stop-selftest",
                                     "_origin_session_id": sid, "_origin_turn": 1,
                                     "channel": "selftest"}})

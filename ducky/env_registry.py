@@ -262,6 +262,9 @@ _F04PP_CC_OPS_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_INSTALL_DIR",
     "AIDUMEI_QDRANT_URL",
     "AIDUMEI_QDRANT_CONTAINER",
+    # f0.7.1：watchdog 的 systemd 单元名覆盖与 root 强制开关
+    "AIDUMEI_SYSTEMD_UNITS",
+    "AIDUMEI_WATCHDOG_ALLOW_ROOT",
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F04PP_CC_OPS_ENV_VARS
 

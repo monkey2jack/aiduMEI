@@ -1531,13 +1531,13 @@ async function renderSettings(body) {
 function renderPasswordForm() {
   return '<div class="editor mt10">' +
     '<div class="mc-row"><span class="mc-k">当前密码</span><input class="sinput mc-input" id="pwdCurrent" type="password" placeholder="Current password"></div>' +
-    '<div class="mc-row"><span class="mc-k">新密码</span><input class="sinput mc-input" id="pwdNew" type="password" placeholder="New password (min 4 chars)"></div>' +
+    '<div class="mc-row"><span class="mc-k">新密码</span><input class="sinput mc-input" id="pwdNew" type="password" placeholder="New password (min 8 chars)"></div>' +
     '<div class="mc-row"><span class="mc-k">确认新密码</span><input class="sinput mc-input" id="pwdConfirm" type="password" placeholder="Confirm new password"></div>' +
     '<div class="ebar">' +
       '<button class="ebtn save" id="pwdSave">保存密码 Save Password</button>' +
     '</div>' +
-    '<div class="hint pt8">修改后需重启服务生效。新密码将写入 <code>.env</code> 文件，下次启动自动加载。<br>' +
-      '<span class="en-label">Password saved to .env file. Restart service to take effect.</span></div>' +
+    '<div class="hint pt8">保存后即时生效，所有已登录会话需重新登录。<br>' +
+      '<span class="en-label">Takes effect immediately; all sessions must sign in again.</span></div>' +
     '<div class="hint mh18" id="pwdMsg"></div>' +
   '</div>';
 }
@@ -1553,8 +1553,8 @@ async function changePassword(body) {
     if (msgEl) msgEl.innerHTML = '<span class="c-bad">请填写完整 / Please fill all fields</span>';
     return;
   }
-  if (newPwd.length < 4) {
-    if (msgEl) msgEl.innerHTML = '<span class="c-bad">新密码至少 4 位 / Too short</span>';
+  if (newPwd.length < 8) {
+    if (msgEl) msgEl.innerHTML = '<span class="c-bad">新密码至少 8 位 / Too short (min 8)</span>';
     return;
   }
   if (newPwd !== confirm) {
@@ -1578,13 +1578,16 @@ async function changePassword(body) {
     var d = await r.json();
 
     if (r.ok && d && d.status === 'ok') {
-      if (msgEl) msgEl.innerHTML = '<span class="c-ok">✓ ' + esc(d.detail || '密码已更新') + '</span>';
+      if (msgEl) msgEl.innerHTML = '<span class="c-ok">✓ ' + esc(d.detail || '密码已更新') + '</span>' +
+        (d.warning ? '<br><span class="c-bad">⚠ ' + esc(d.warning) + '</span>' : '');
       // 清空输入
       if (body.querySelector('#pwdCurrent')) body.querySelector('#pwdCurrent').value = '';
       if (body.querySelector('#pwdNew')) body.querySelector('#pwdNew').value = '';
       if (body.querySelector('#pwdConfirm')) body.querySelector('#pwdConfirm').value = '';
     } else {
-      if (msgEl) msgEl.innerHTML = '<span class="c-bad">✗ ' + esc((d && d.detail) || '保存失败') + '</span>';
+      var det = d && d.detail;
+      if (det && typeof det === 'object') det = det.message || det.detail || JSON.stringify(det);
+      if (msgEl) msgEl.innerHTML = '<span class="c-bad">✗ ' + esc(det || '保存失败') + '</span>';
     }
   } catch (e) {
     if (msgEl) msgEl.innerHTML = '<span class="c-bad">✗ 网络错误 / Network error</span>';
