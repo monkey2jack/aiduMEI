@@ -526,6 +526,11 @@ def register_config_routes(app: FastAPI) -> None:
                 old_section["config"] = old_cfg
                 raw[section] = old_section
             _atomic_write_config(raw)
+        # 认知 LLM（治理/蒸馏/reflect 的 call_llm）读的是进程级缓存：写完就失效，
+        # 不依赖客户端记得再打 /reload —— 只走 API 改配置的调用方此前会一直用旧
+        # endpoint/key（换 key 往往正是因为旧 key 外泄）。mem0 单例仍由 /reload 换代。
+        from ducky.llm_client import invalidate_llm_config_cache
+        invalidate_llm_config_cache()
         logger.info("🛠️ 配置段已在线更新: %s", section)
         return {"status": "ok", "updated": section, "config": _build_config_view()}
 
@@ -583,13 +588,11 @@ def register_config_routes(app: FastAPI) -> None:
           · 改密成功后**撤销全部既有会话**，强制所有端重新登录 ——
             否则老会话仍能用旧凭据继续访问，改密等于没改。
 
-        v22.0（雷霆审计 B7）：须 admin。
+        v22.0（雷霆审计 B7）：须 admin。判据与其它配置写面同一个 `_require_config_admin`
+        （session 直通；Bearer 须绑定 + 名单）。此前这里单独用 `_is_admin_caller(caller)`：
+        控制台改密不带 caller、默认部署也没有 admin 名单，于是主人登录后改密永远被拒。
         """
-        from ducky.federation.routes import _is_admin_caller
-        from ducky.security.auth import enforce_caller_binding
-        enforce_caller_binding(caller, "config:write")
-        if not _is_admin_caller(caller):
-            return {"status": "error", "detail": "口令修改须 admin（AIDUMEI_FEDERATION_ADMINS）"}
+        _require_config_admin(caller, operation="config:write")
         from ducky.security.auth import (
             check_ui_password,
             hash_password,
@@ -621,10 +624,18 @@ def register_config_routes(app: FastAPI) -> None:
         # （auth.py 的 docstring 早写过同一条道理：口令的读者范围只许缩小。）
         revoked = revoke_all_sessions()
         logger.info("🔐 UI 登录口令已更新（PBKDF2 哈希），已撤销 %d 个既有会话", revoked)
-        return {
+        resp = {
             "status": "ok",
             "detail": "密码已更新并即时生效，所有已登录会话已失效 / "
                       "Password updated; all existing sessions revoked",
             "sessions_revoked": revoked,
             "restart_required": False,
         }
+        # f0.7.1：控制台改过的口令（source=user）会开启 API 门禁。没配 token 的回环部署，
+        # 钩子 / MCP / cron 从此会 401 —— 明确告诉主人，而不是让接入方静默失联。
+        if not os.environ.get("AIDUMEM_API_TOKEN", "").strip():
+            resp["warning"] = ("API 门禁已随口令开启，但未设置 AIDUMEM_API_TOKEN：不带凭据的钩子、MCP、"
+                               "定时任务将收到 401，请设置 token 并让接入方带上 / API gate is now on "
+                               "but AIDUMEM_API_TOKEN is unset: credential-less hooks/MCP/cron will get 401")
+            logger.warning("🔐 控制台改密开启了 API 门禁，但未设置 AIDUMEM_API_TOKEN —— 无凭据接入方将 401")
+        return resp

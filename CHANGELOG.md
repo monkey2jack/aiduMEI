@@ -1,5 +1,18 @@
 # aiduMEI 版本演进史
 
+## v0.7.1 (内部补丁 f0.7.1 · 2026-10-30 · 大仓 Tag/Release 仍为 f0.7)
+
+> **用例总数 3875 → 3907**(本版 = 行为 3279 + 脚本/钩子 482 + 守卫 146,`pytest --collect-only` 实测,`scripts/count_test_kinds.py` 可复算)。
+
+外部两轮审计修复补丁。社区 PR #38–#43、#45、#46、#48、#49(作者 @hermesai8888-creator)按维护流程并入,另加两条安全修复。
+
+- **数据完整性**:同步路由(add/search/update/delete)留下的悬挂事务,在同线程下一次借出连接时回滚;原先只记日志,下一个请求的 `commit()` 会把半截写入一并提交(#38)。
+- **安全**:服务端 `.env` 引导解析认 `export KEY=VAL`,与 `parse_env_file` 一致(原先门禁静默关闭);设置 `AIDUMEM_UI_PASSWORD` 后自动生成的口令作废,哈希与明文文件删除;`/stats` 不再回传全库记忆正文(#49);移除控制台 GitHub 更新检查(被自家 CSP 拦死,控制台保持零外连,替代 #44)。
+- **客户端契约**:所有仓内 `/add` 客户端补 `caller_user_id`(#40);墓碑恢复脚本、Cursor 钩子、Hermes 插件改打 WP2 后仍存在的路径,并加守卫测试(#41)。
+- **自审补强**:watchdog 识别 systemd 启动形态、单元由 systemd 管理时不拉起、拒绝 root 拉起,`.env` token 认 `export`;MCP 自动记忆暂时性失败重试 3 轮后放行游标、回退重试不重写已成功会话;控制台改密页文案与错误显示修正。
+- **升级须知**:① 控制台改密现在能成功,改过的口令会开启 API 门禁——未设 `AIDUMEM_API_TOKEN` 的回环部署,无凭据钩子/MCP/cron 将 401,改密响应会给出警告;② 设了 `AIDUMEM_UI_PASSWORD` 时,无来源标记的旧版口令哈希文件按自动口令处理并删除。
+- **修复**:控制台改密走 session 直通(#39);MCP 自动记忆 owner 查询修正、写失败不推游标(#42);Stop 钩子只取同一轮的回答(#43);配置写入后失效 LLM 缓存(#46);watchdog 启动分支与 bash 3.2 兼容(#48);`inotify_simple` 补 Linux 平台标记(#45)。
+
 ## v0.7.0 (对外 f0.7 · 2026-10-29 维护者授权公开 · 底座更换:native 单库内核默认、mem0 可选)
 
 > **用例总数 4310 → 3875**（f0.6+++ 路由收敛后重新计数;本版 = 行为 3248 + 脚本/钩子 481 + 守卫 146(`pytest --collect-only` 实测,三桶口径 `scripts/count_test_kinds.py` 可复算）。全量套件 3844 通过 / 31 跳过(含 mem0 旧内核路径,需加装 `requirements-mem0.txt`)。

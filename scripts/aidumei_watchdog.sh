@@ -3,7 +3,7 @@
 #
 # 职责（只做三件事，绝不多手）：
 #   1. qdrant 容器不在 → docker start 拉起
-#   2. API /health 不通 → 用守护脚本拉起（cd 铁律：必须从安装目录启动）
+#   2. API /health 不通 → 从安装目录拉起 api_server.py（cd 铁律：必须从安装目录启动）
 #   3. 每次拉起动作写日志留痕（含时间、原因、结果），供结案与巡检回读
 #
 # 铁律对齐：
@@ -21,7 +21,8 @@ INSTALL_DIR="${AIDUMEI_INSTALL_DIR:-$(cd -- "${_script_dir:+$_script_dir/..}" 2>
 API_URL="${AIDUMEI_URL:-http://127.0.0.1:8767}"
 QDRANT_CONTAINER="${AIDUMEI_QDRANT_CONTAINER:-qdrant-server}"
 GUARD_LOG="$INSTALL_DIR/logs/watchdog.log"
-START_SCRIPT="$INSTALL_DIR/start-aidumei.sh"
+# 解释器用绝对路径启动：与下面 pgrep 的匹配串逐字一致，否则下一跳认不出刚拉起的进程、重复拉起。
+API_PYTHON="$INSTALL_DIR/venv/bin/python"
 
 ts() { date '+%F %T'; }
 
@@ -32,7 +33,8 @@ mkdir -p "$INSTALL_DIR/logs"
 # token 经 stdin 交给 curl（-H @-），不上命令行 —— ps 对本机所有用户可见。
 _TOKEN="${AIDUMEM_API_TOKEN:-}"
 if [ -z "$_TOKEN" ] && [ -f "$INSTALL_DIR/.env" ]; then
-  _TOKEN=$(grep -E '^AIDUMEM_API_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)
+  # 认 `export KEY=VAL` 与引号，与服务端 .env 解析一致（f0.7.1）
+  _TOKEN=$(grep -E '^(export[[:space:]]+)?AIDUMEM_API_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | sed -e "s/^[\"']//" -e "s/[\"']\$//")
 fi
 AUTH_ARGS=(-H @-)
 _AUTH_HEADER=""
@@ -63,7 +65,9 @@ fi
 echo "$(ts) [watchdog] ⚠️ /health 异常（http_code=$HTTP_CODE），检查进程" >> "$GUARD_LOG"
 
 # 进程还在但 /health 不通（僵死/预热中）→ 不盲杀，留痕后等下一跳
-if pgrep -f "$INSTALL_DIR/venv/bin/python api_server.py" >/dev/null 2>&1; then
+# 匹配口径放宽（f0.7.1）：systemd 单元常写成 `<dir>/venv/bin/python3 <dir>/api_server.py`，
+# 与本脚本自己的启动串不同；认不出就会在 systemd 之外再起一个进程抢端口与 API 锁。
+if pgrep -f "$INSTALL_DIR/.*api_server\.py" >/dev/null 2>&1; then
   echo "$(ts) [watchdog] api_server 进程存在但 /health 未就绪（预热或僵死），本跳不处置，连续 5 跳未愈请人工介入" >> "$GUARD_LOG"
   # 连续未愈计数器：5 跳（约 5 分钟）后升级为显著告警行
   CNT_FILE="/tmp/.aidumei_watchdog_unhealthy_count"
@@ -75,14 +79,34 @@ if pgrep -f "$INSTALL_DIR/venv/bin/python api_server.py" >/dev/null 2>&1; then
   exit 0
 fi
 
-# 进程不在 → 拉起（cd 铁律在 start-aidumei.sh 内保证）
+# 进程不在 → 从安装目录拉起（cd 铁律）。
+# 此前调用仓库里并不存在的 start-aidumei.sh，拉起这一步必失败；那一行的 `&>>` 又是
+# bash 4 语法，macOS 自带 /bin/bash 3.2 解析整份脚本就报错 —— 连上面的探活都不会跑。
 rm -f /tmp/.aidumei_watchdog_unhealthy_count
-if [ ! -x "$START_SCRIPT" ] && [ ! -f "$START_SCRIPT" ]; then
-  echo "$(ts) [watchdog] ❌ 守护启动脚本不存在: $START_SCRIPT" >> "$GUARD_LOG"
+# 交给 systemd 管的部署：单元在跑或正在重启时，本脚本只留痕、不拉起（避免双进程抢锁）。
+# 单元名可用 AIDUMEI_SYSTEMD_UNITS 覆盖（空格分隔）；系统级与用户级都查。
+for _unit in ${AIDUMEI_SYSTEMD_UNITS:-aidumem-api.service aiduMEI.service}; do
+  for _scope in "" "--user"; do
+    _st=$(systemctl $_scope is-active "$_unit" 2>/dev/null)
+    case "$_st" in
+      active|activating|reloading)
+        echo "$(ts) [watchdog] $_unit 由 systemd${_scope:+ $_scope} 管理（$_st），本脚本不拉起" >> "$GUARD_LOG"
+        exit 0 ;;
+    esac
+  done
+done
+# root 拉起会让数据库 -wal/-shm 变成 root 属主，服务用户之后写不进去。
+if [ "$(id -u)" = "0" ] && [ "${AIDUMEI_WATCHDOG_ALLOW_ROOT:-0}" != "1" ]; then
+  echo "$(ts) [watchdog] ❌ 拒绝以 root 拉起 api_server（设 AIDUMEI_WATCHDOG_ALLOW_ROOT=1 可强制）" >> "$GUARD_LOG"
   exit 1
 fi
-echo "$(ts) [watchdog] api_server 进程不存在，用 $START_SCRIPT 拉起" >> "$GUARD_LOG"
-nohup bash "$START_SCRIPT" &>> "$INSTALL_DIR/logs/aidumem.log" &
+if [ ! -x "$API_PYTHON" ]; then
+  echo "$(ts) [watchdog] ❌ 找不到安装目录的解释器: $API_PYTHON" >> "$GUARD_LOG"
+  exit 1
+fi
+echo "$(ts) [watchdog] api_server 进程不存在，从 $INSTALL_DIR 拉起" >> "$GUARD_LOG"
+# exec：子 shell 直接变成服务进程，不留一个等待中的 shell 占着调用方（cron）的输出管道。
+(cd "$INSTALL_DIR" && exec nohup "$API_PYTHON" api_server.py >> "$INSTALL_DIR/logs/aidumem.log" 2>&1) </dev/null &
 disown
 
 # 拉起后复核（最多等 30s，服务冷启动含 mem0 预热）

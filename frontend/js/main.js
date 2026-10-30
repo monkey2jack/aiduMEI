@@ -48,13 +48,11 @@ function createHexBackground(selector, count, colors, opacity) {
 const BRAND_COLORS = ['#1f4e79', '#525252', '#000000'];
 
 /* ---------------------------------------------------------------------------
-   footer version display + version check
+   footer version display
    --------------------------------------------------------------------------- */
 
 // Current deployed version — mapped from aiduMEI /health
 let currentVersion = '—';
-const ENABLE_UPDATE_CHECK = localStorage.getItem('aidumei.updateCheck') === '1';
-const GITHUB_REPO_API = 'https://api.github.com/repos/monkey2jack/aiduMEI/releases/latest';
 
 function setDeployedVersion(ver, fullVer) {
   currentVersion = fullVer || ver || '—';
@@ -68,40 +66,6 @@ function setDeployedVersion(ver, fullVer) {
     if (fullVer) {
       el.href = 'https://github.com/monkey2jack/aiduMEI/releases/tag/' + fullVer;
     }
-  }
-}
-
-// numeric segment compare: -1 / 0 / +1
-// version like "18.2.0-zeus" is normalized to its pure numeric part first.
-function cmpVersion(a, b) {
-  const norm = function (s) {
-    return String(s).replace(/^v/i, '').replace(/-.*$/, '').trim();
-  };
-  const pa = norm(a).split('.').map(function (x) { return parseInt(x, 10) || 0; });
-  const pb = norm(b).split('.').map(function (x) { return parseInt(x, 10) || 0; });
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] || 0, y = pb[i] || 0;
-    if (x !== y) return x < y ? -1 : 1;
-  }
-  return 0;
-}
-
-async function checkLatestVersion() {
-  const badge = document.getElementById('foot-update');
-  try {
-    const resp = await fetch(GITHUB_REPO_API, { headers: { Accept: 'application/vnd.github+json' } });
-    if (!resp.ok) return;
-    const release = await resp.json();
-    const latest = (release.tag_name || '').replace(/^v/, '');
-    if (!latest || !currentVersion || currentVersion === '—') return;
-    // Show badge only when the deployed version lags behind GitHub latest.
-    if (cmpVersion(currentVersion, latest) < 0) {
-      badge.textContent = '有新版 v' + latest + ' / Update';
-      badge.title = '当前 v' + currentVersion + '，GitHub 最新 v' + latest + '，建议升级';
-      badge.style.display = 'inline-block';
-    }
-  } catch (e) {
-    // silently ignore — GitHub API might be rate-limited
   }
 }
 
@@ -321,7 +285,6 @@ async function initDomainSwitcher() {
   } catch (e) {
     setDeployedVersion('—');
   }
-  if (ENABLE_UPDATE_CHECK) checkLatestVersion();
   await initDomainSwitcher();
 })();
 

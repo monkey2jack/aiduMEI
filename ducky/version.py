@@ -8,6 +8,18 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.7.1 (内部补丁 f0.7.1 · 2026-10-30 · 大仓 Tag/Release 仍为 f0.7)
+    用例总数 3875 → 3907(本版 = 行为 3279 + 脚本/钩子 482 + 守卫 146)。
+    外部两轮审计修复:10 个社区 PR(#38-#43、#45、#46、#48、#49,作者 hermesai8888-creator)+ 维护方两条安全修复。
+    1. 数据完整性:同步路由留下的悬挂事务在同线程下一次借出时回滚(原先只记日志,会被下个请求一并提交)。
+    2. 安全:服务端 .env 引导解析认 `export KEY=VAL`(原先门禁静默关闭);设了 AIDUMEM_UI_PASSWORD 后作废自动生成口令并删明文文件;
+       /stats 不再回传全库正文;移除控制台 GitHub 更新检查(被自家 CSP 拦死,控制台保持零外连)。
+    3. 客户端:所有仓内 /add 客户端补 caller_user_id;墓碑恢复脚本、Cursor 钩子、Hermes 插件改打 WP2 后仍存在的路径。
+    4. 修复:控制台改密(session 直通)、MCP 自动记忆 owner 查询与「写失败不推游标」、Stop 钩子同轮问答配对、
+       配置写入后失效 LLM 缓存、watchdog 启动分支与 bash 3.2 兼容、inotify_simple 平台标记。
+    5. 自审补强:watchdog 尊重 systemd、拒绝 root 拉起;改密开启门禁时警告;MCP 重试上限与不重写;改密页文案。
+    6. 升级须知:控制台改过的口令会开启 API 门禁(无 token 时警告);设了环境变量口令时无来源标记的旧哈希按自动口令删除。
+
 v0.7.0 (对外 f0.7 · 2026-10-29 维护者授权公开 · 底座更换:native 单库内核默认、mem0 可选)
     用例总数 4310 → 3875(f0.6+++ 路由收敛后重新计数;本版 = 行为 3248 + 脚本/钩子 481 + 守卫 146)。
     1. 内核:native 单库 SQLite 内核成为默认;mem0ai/qdrant-client 改为 requirements-mem0.txt 可选;
@@ -684,8 +696,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.7.0"
-FULL_VERSION = "f0.7"
+SERVICE_VERSION = "0.7.1"
+FULL_VERSION = "f0.7.1"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -700,6 +712,8 @@ FULL_VERSION = "f0.7"
 # f0.7（2026-10-29）：native 单库内核成为默认、mem0 改可选；删除真删、宿主一键接入、
 # 心图体检、设置页体检、七路外审 + 两轮复核 + 自审全部收口。维护者授权推大仓、
 # 打公开 Tag/Release，PUBLIC_RELEASE_VERSION 同步升至 f0.7。
+# f0.7.1（2026-10-30）：外部审计（两轮）修复补丁——10 个社区 PR + 两条安全修复。维护者裁决：
+# 大仓 Tag/Release 保持 f0.7 不动，PUBLIC_RELEASE_VERSION 不随内部补丁翻牌（f0.6.1 先例）。
 PUBLIC_RELEASE_VERSION = "f0.7"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
@@ -714,6 +728,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.7.1", "", "f0.7.1", "外部两轮审计修复补丁:同步路由悬挂事务借出时回滚、控制台改密、客户端补 caller 与 WP2 后路径、MCP 自动记忆 owner 与游标、Stop 钩子同轮配对、/stats 不再回传全库正文、配置写入失效 LLM 缓存、watchdog 修复;服务端 .env 认 export 前缀、环境变量口令作废自动口令、移除控制台外连更新检查 · 2026-10-30"),
     ("0.7.0", "", "f0.7", "底座更换（2026-10-29 维护者授权公开）:native 单库 SQLite 内核成为默认、mem0 改可选 extra;删除真删(派生连坐收口)、宿主一键接入 connect_host、心图体检与记忆星云、设置页逐模型测试连接;七路外审+两轮复核+自审收口 · 2026-10-29"),
     ("0.6.5", "", "f0.6++", "二期主体（2026-10-26 维护者验收翻牌为公开版）:记忆图谱 graph_memory(三类真实关系边)+图谱 API+前端图谱面板+黄金集 v2 真语料(91 条)真打分门初版 + WP9 安全急修 · 2026-10-26"),
     ("0.6.4", "", "f0.6+", "一期 f0.6+（2026-10-25 维护者验收翻牌）：记忆内核可换层 memory_kernel(行为逐字不变,mem0 实现转调真身+native stub)+AST 守卫拦绕过点(白名单 5 项)+黄金集守卫与 push_gate 第五关(语料回填前为健全性级) · 2026-10-25"),

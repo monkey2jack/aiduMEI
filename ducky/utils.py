@@ -288,8 +288,9 @@ class _ConnProxy:
         return False
 
 
-# P1-9 配套：借出时发现悬挂事务的计数（/health 可见）。不在借出时自动回滚 ——
+# P1-9 配套：借出时发现悬挂事务的计数（/health 可见）。最初不在借出时自动回滚 ——
 # 同一线程内的嵌套借用（helper 再拿一次连接）是合法的，自动回滚会毁掉外层在途写入。
+# 有了下面的上下文戳之后，「戳不同」已能确定是别的请求留下的悬挂，借出时直接回滚（见 _get_thread_conn）。
 #
 # v20.3.2 正式版收口后修正：第一版把「借出时 in_transaction」一律计为悬挂，生产首日报了 2 次，
 # 仪器补上调用点后现场是 write_fact（INSERT 已执行、尚未 commit）→ 治理钩子 ensure_governance_schema
@@ -313,6 +314,10 @@ def rollback_dangling_for_context(ctx: str | None) -> int:
     请求收尾时已无合法在途写（路由函数都返回了），回滚是安全网而非破坏；
     其他戳（后台任务、脚本）的事务一概不碰。返回回滚的连接数，进 /health
     可观测。放 utils 是为了 api_server 中间件与测试都能直接调。
+
+    射程限制：只看**调用线程**的 threading.local。中间件在事件循环线程调它，所以只
+    覆盖 async 路由；同步路由跑在 anyio 工作线程，它们留下的悬挂由同一线程下一次
+    `_get_thread_conn` 借出时回滚（戳不同 = 别的请求留下的）。
     """
     if not ctx:
         return 0
@@ -403,9 +408,15 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
                         setattr(_thread_local, "tx_warned_at", _now)
                         logger.warning(
                             "⚠️ 借出 SQLite 连接时发现上一个请求留下的悬挂事务（db=%s，线程=%s）："
-                            "上一位借用者=%s，本次借用者=%s；上一位异常返回未 rollback/commit；"
+                            "上一位借用者=%s，本次借用者=%s；上一位异常返回未 rollback/commit，已回滚；"
                             "详见 /health probes.sqlite_leaked_transactions",
                             os.path.basename(db_path), _threading.current_thread().name, _prev, _site)
+                    # 只出声不回滚的话，本请求的任何一次 commit() 都会把上一位的半截写一起提交。
+                    # 请求收尾清道夫（rollback_dangling_for_context）跑在事件循环线程，看不到同步路由
+                    # 工作线程的 threading.local —— 这里是同一线程上唯一能接住它的地方。
+                    # 回滚失败落到下面的 except：关掉旧连接（隐式回滚）后重建。
+                    real_conn.rollback()
+                    setattr(_thread_local, f"txowner_{cache_key}", _cur)
                 else:
                     # 同一请求嵌套借用（合法），或无上下文戳分不清 —— 只记 DEBUG，不计数
                     logger.debug("借出连接时事务在途（嵌套借用或无戳场景）：db=%s 上一位=%s 本次=%s",

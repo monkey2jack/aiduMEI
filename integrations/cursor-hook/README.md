@@ -10,8 +10,9 @@
 
 ```
 After each significant code change, call:
-POST http://127.0.0.1:8767/add/raw
-Body: {"content": "<code snippet>", "source": "cursor", "user_id": "default"}
+POST http://127.0.0.1:8767/add
+Body: {"messages": [{"role": "user", "content": "<code snippet>"}], "user_id": "default",
+       "caller_user_id": "default", "infer": false, "metadata": {"source": "cursor"}}
 
 This stores your code into aiduMEI's Raw Drawer for long-term memory.
 ```
