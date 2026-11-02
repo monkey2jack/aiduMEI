@@ -40,6 +40,8 @@ WRITE_ROUTE_MODELS: Dict[str, str] = {
     "/add": "AddRequest",
     "/delete": "DeleteRequest",
     "/evolve/feedback": "FeedbackRequest",
+    "/forget": "ForgetRequest",              # f0.7+ 原则 8
+    "/forget/rules/delete": "RuleDeleteRequest",
     "/governance/review": "GovernanceReviewRequest",
     "/opinions/set": "OpinionSetRequest",
     "/search": "SearchRequest",

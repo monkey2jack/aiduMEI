@@ -1052,12 +1052,12 @@ def register_salience_for_add(add_result, user_id: str = "", bank_id: str = ""):
             on_memory_added(mid, content=content, user_id=user_id, bank_id=bank_id)
 
 
-def boost_salience_for_results(results):
-    """搜索结果 salience 提权"""
+def boost_salience_for_results(results, user_id: str = "", bank_id: str = ""):
+    """搜索结果 salience 提权（f0.7.4：带上检索作用域，补插的行不再落 default）"""
     if results is None:
         return
     for r in (results if isinstance(results, list) else results.get("results", [])):
         if isinstance(r, dict):
             mid = r.get("id") or r.get("memory_id", "")
             if mid:
-                on_memory_accessed(mid)
+                on_memory_accessed(mid, user_id=user_id, bank_id=bank_id)

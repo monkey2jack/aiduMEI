@@ -770,7 +770,7 @@ def cascade_delete_memory(
                 finally:
                     snapshot_conn.close()
             # P5 自审 S-1：重放直接用首轮认领的那批原文行；重算会因被删记忆已不在内核而认领错
-            _vb = saved.get("vb") or _verbatim_claim(scope, memory_id, _content_for_verbatim)
+            _vb = _replayed_verbatim_claim(saved, scope, memory_id, _content_for_verbatim)
             _narrow_derived_keys(_derived_keys, _vb)
         else:
             # f0.7 复核（外审 haiku N1/N3）：原文层认领规则先定下来，快照与实际删除用同一批行。
@@ -783,7 +783,10 @@ def cascade_delete_memory(
                 _layer_failed("snapshot", exc)
                 wal.mark_status(wal_id, "pending", error="snapshot unavailable")
                 return {"status": "failed", "details": res, "failed_layers": _failed_layers}
-            wal.checkpoint(wal_id, delete_snapshot={"tombstone_id": res["tombstone_id"], "vb": _vb})
+            # f0.7+ 原则 8：检查点只记认领了哪些行，不记正文——WAL 日志是只追加的，正文写进去就删不掉了；
+            # 重放时正文取自墓碑快照（上面 previous_snapshot 分支）。
+            wal.checkpoint(wal_id, delete_snapshot={"tombstone_id": res["tombstone_id"],
+                                                    "vb": {k: v for k, v in _vb.items() if k != "text"}})
 
         # 1. mem0 向量删除（实现在 _cascade_single_vector）。**获取后端**这道
         #    边界例外地留在编排层：守卫
@@ -811,7 +814,7 @@ def cascade_delete_memory(
         _kernel_text = "" if _content_for_verbatim else _kernel_text_before_delete(mem, scope, memory_id)
         # f0.7 复核（外审 haiku N1/N3）：原文层也用内核正文兜底；同租户还有别的记忆说着同一句时，
         # 只认领被删记忆所在会话的原文行，共用的原文本地点/欠账不动。
-        _vb_text = _content_for_verbatim or _kernel_text or _vb["text"]
+        _vb_text = _content_for_verbatim or _kernel_text or _vb.get("text", "")
         _vb_ids, _vb_shared, _vb_others = _vb["ids"], _vb["raw_kept"], _vb["others"]
 
         _scope_items = None
@@ -833,11 +836,6 @@ def cascade_delete_memory(
         _cascade_single_pending(scope, memory_id, _vb_text, res, _layer_failed,
                                 verbatim_shared=_vb_shared, text_shared=_vb_others)
 
-        # 4. salience.db / 5. evolve_mem.db：两表无租户列，按 memory_id 精确清理
-        #    （两层的「为什么历史上从未执行」随实现搬进对应函数）。
-        _cascade_single_salience(memory_id, res, _layer_failed)
-        _cascade_single_evolve(memory_id, res, _layer_failed)
-
         # 6. 📼 原文保真层 / 7. Workspace 单条驱逐 / 8+8b. 本地向量与 verbatim 本地点
         _cascade_single_verbatim(user_id, bank_id, memory_id, _vb_text,
                                  res, _layer_failed, turn_ids=_vb_ids)
@@ -845,6 +843,14 @@ def cascade_delete_memory(
         _cascade_single_local_vector(memory_id, res, _layer_failed)
         if not _vb_shared:
             _cascade_single_verbatim_local(user_id, bank_id, _vb_text, res, _layer_failed)
+
+        # 4. salience.db / 5. evolve_mem.db（f0.7+ · 外审 N4）：两层只按 memory_id 定位，
+        #    所以只在本租户的主层确实认领到这条记忆后才级联；否则 salience 只删盖着本租户戳的行、
+        #    evolve 不动——拿别人的 id 来删，什么都碰不到，也不再回报 matched。
+        _cascade_single_id_keyed(memory_id, user_id, bank_id, res, _layer_failed,
+                                 owned_hint=bool(_kernel_text or _content_for_verbatim))
+        # 5b. f0.7+ 写入判定影子日志（write_policy.db，无正文，只有 id/哈希/标签）
+        _cascade_single_write_policy(memory_id, user_id, bank_id, res, _layer_failed)
 
         # 9. f0.3 (C1): session summaries derived from this item go too
         #    (right to delete covers derived records; tombstoned, restorable).
@@ -920,6 +926,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "store:pattern_facts": ("clean", "f0.7 P0-3（外审 sesame F-04）：facts.db 里由这条记忆正文派生的 pattern 事实按正文重算精确撤销（§3c），别的现存记忆仍说着同一句时保留"),
     "store:evolve_queries": ("exempt", "检索问句（evolve_mem.db evolve_queries）f0.7 复核起只存 sha256 摘要、存量原文启动时换算（外审 sesame §4.2），不再含原文；不挂 memory_id，单删无需定位"),
     "store:native_meta": ("exempt", "f0.7 复核：native memory.db 的 meta 表只存内核 schema 版本与设置，不含用户内容"),
+    "store:write_policy": ("clean", "f0.7+ 写入判定影子日志 + 忘记规则 + 钥匙身份计数（write_policy.db）：verdicts 只存 id/哈希/标签不存正文，单删按 (memory_id,user,bank) 删（§20），delete_all 按域清 verdicts、保留 forget_rules（「不再保存」是对未来的指令，f0.7.3）；key_events 只有身份名与计数，无租户内容"),
     "pending_embeddings": ("clean", "v20.2 自动挡欠账账本：载荷含用户原文，(user_id, bank_id) 谓词删除（§15）——欠着的债也是债，删除承诺覆盖它"),
     # ── 显式申报的已知残留（申报不是沉默；沉默才是本矩阵要消灭的东西）──
     "observations":       ("clean",  "R-18(v20.1.1)：user 轴谓词删除（§12）——表无 bank 列，user 轴是它拥有的全部作用域表达力；v7 存量空 user_id 行不属于任何租户，不动"),
@@ -1166,6 +1173,7 @@ def cascade_delete_all(
         # 17. f0.3 会话精华来源账本 / 18. 幂等回执
         _cascade_all_distill_sources(scope, res, _layer_failed)
         _cascade_all_idempotency(scope, res, _layer_failed)
+        _cascade_all_write_policy(scope, res, _layer_failed)
 
         # 核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。
         # 辅助层残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
@@ -1262,6 +1270,10 @@ def _cascade_single_verbatim_handle(
         logger.warning("原文层按 id 删除失败: %s", ve)
         layer_failed("verbatim", ve)
     _cascade_single_workspace(user_id, bank_id, memory_id, res, layer_failed)
+    # f0.7.4：/search 给原文句柄也记显著性（salience 行 id 就是 verbatim:N），此前句柄删除不清它。
+    # 本租户确实删到了原文（或重放）才全删；否则只删盖本租户戳的行。
+    _owned = int(res.get("verbatim") or 0) > 0 or saved is not None
+    _cascade_single_salience(memory_id, res, layer_failed, scope=None if _owned else (user_id, bank_id))
     if (keys or {}).get("content"):
         _cascade_single_verbatim_local(user_id, bank_id, keys["content"], res, layer_failed)
     if int(res.get("verbatim") or 0) > 0 or saved is not None:
@@ -1370,6 +1382,45 @@ def _cascade_single_vector(
         _cascade_all_mem0_history(scope, res, layer_failed,
                                   {str(memory_id), *(res.get("raw_handle_resolved_ids") or [])})
     return _items if enumeration_ok else None
+
+
+def _replayed_verbatim_claim(saved: Dict[str, Any], scope: Any, memory_id: str,
+                             content: str) -> Dict[str, Any]:
+    """重放分支的原文认领：检查点（f0.7+ 起）不含正文，正文从调用方给的内容或仍在的认领行取回。"""
+    vb = dict(saved.get("vb") or _verbatim_claim(scope, memory_id, content))
+    if not vb.get("text"):
+        vb["text"] = content or _claimed_verbatim_text(scope, vb.get("ids") or [])
+    return vb
+
+
+def _cascade_single_id_keyed(memory_id: str, user_id: str, bank_id: str, res: Dict[str, Any],
+                             layer_failed: Any, *, owned_hint: bool) -> None:
+    """§4/§5 salience.db / evolve_mem.db（f0.7+ · 外审 N4）：两层只按 memory_id 定位，
+    所以只在本租户主层确实认领到这条记忆后才全量级联；否则 salience 只删盖着本租户戳的行、
+    evolve 不动——拿别人的 id 来删，什么都碰不到。"""
+    owned = _single_primary_matched(res) or owned_hint
+    _cascade_single_salience(memory_id, res, layer_failed, scope=None if owned else (user_id, bank_id))
+    if owned:
+        _cascade_single_evolve(memory_id, res, layer_failed)
+
+
+def _claimed_verbatim_text(scope: Any, ids: list) -> str:
+    """f0.7+：检查点不再存正文；重放时从仍在的认领行（按 id + 租户）取回正文。"""
+    ids = [int(i) for i in ids if str(i).isdigit()]
+    if not ids:
+        return ""
+    conn = get_facts_conn()
+    try:
+        predicate, params = scope_clause(scope)
+        row = conn.execute(
+            f"SELECT content FROM verbatim_turns WHERE id IN ({','.join('?' * len(ids))})" + predicate
+            + " LIMIT 1", [*ids, *params]).fetchone()
+        return (row[0] or "") if row else ""
+    except sqlite3.Error as exc:
+        logger.warning("claimed verbatim text unavailable: %s", exc)
+        return ""
+    finally:
+        conn.close()
 
 
 def _narrow_derived_keys(keys: Optional[Dict[str, Any]], vb: Optional[Dict[str, Any]]) -> None:
@@ -1873,10 +1924,35 @@ def _cascade_single_facts(
             conn.close()
 
 
+def _cascade_single_write_policy(memory_id: str, user_id: str, bank_id: str,
+                                 res: Dict[str, Any], layer_failed: Any) -> None:
+    """§20 f0.7+ write_policy.db 判定日志：按 (memory_id, user, bank) 删——忘了就是全忘。"""
+    try:
+        from ducky.write_policy import purge_memory
+        res["write_policy_rows"] = purge_memory([memory_id], user_id, bank_id)
+    except (ImportError, sqlite3.Error, OSError) as e:
+        logger.warning("write_policy 判定日志清理失败: %s", e)
+        layer_failed("write_policy", e)
+
+
+def _single_primary_matched(res: Dict[str, Any]) -> bool:
+    """本租户作用域内的层（向量/FTS/事实/原文/工作区/本地向量）是否认领到了这条记忆。"""
+    return (
+        bool(res.get("mem0_vector"))
+        or int(res.get("fts_rows") or 0) > 0
+        or int(res.get("facts") or 0) > 0
+        or int(res.get("verbatim") or 0) > 0
+        or bool(res.get("workspace_evicted"))
+        or bool(res.get("local_vector_deleted"))
+    )
+
+
 def _cascade_single_salience(
-    memory_id: str, res: Dict[str, Any], layer_failed: Any
+    memory_id: str, res: Dict[str, Any], layer_failed: Any, scope: Optional[tuple] = None
 ) -> None:
-    """§4 salience.db 清理（v19.4.1 修复：此前同样从未真正执行）。"""
+    """§4 salience.db 清理（v19.4.1 修复：此前同样从未真正执行）。
+
+    f0.7+（外审 N4）：scope=(user, bank) 时只删盖着该租户戳的行（未证明归属时用）。"""
     # 原实现 `DELETE FROM memory_salience WHERE memory_id=? AND user_id=?`
     # 有两个错误：真实表名是 `salience`（不是 memory_salience），且该表
     # **没有 user_id 列**（显著性是记忆级信号，不按租户分区）。两个错误都被
@@ -1888,7 +1964,7 @@ def _cascade_single_salience(
     # —— 日志报「删除成功 25/25」，实际全是空转。
     try:
         from ducky.salience import delete_salience
-        res["salience"] = delete_salience([memory_id])
+        res["salience"] = delete_salience([memory_id], scope=scope)
     except Exception as e:
         logger.warning("salience.db 清理失败: %s", e)
         layer_failed("salience", e)
@@ -2029,16 +2105,8 @@ def _single_delete_matched(res: Dict[str, Any]) -> bool:
     「执行过」，拿它判命中会把「跑了但 0 行」算成命中，等于把守卫做成
     白护栏。所以只看计数字段与向量布尔。
     """
-    return (
-        bool(res.get("mem0_vector"))
-        or int(res.get("fts_rows") or 0) > 0
-        or int(res.get("facts") or 0) > 0
-        or int(res.get("salience") or 0) > 0
-        or int(res.get("evolve") or 0) > 0
-        or int(res.get("verbatim") or 0) > 0
-        or bool(res.get("workspace_evicted"))
-        or bool(res.get("local_vector_deleted"))
-    )
+    # f0.7+（外审 N4）：salience/evolve 只按 id 定位，不能单独证明「本租户删到了东西」。
+    return _single_primary_matched(res)
 
 
 def _single_delete_verdict(
@@ -2540,6 +2608,16 @@ def _cascade_all_idempotency(scope: Any, res: Dict[str, Any], layer_failed: Any)
     except (ImportError, sqlite3.Error, OSError) as e:
         logger.warning("idempotency_keys delete_all 清理失败: %s", e)
         layer_failed("idempotency_keys", e)
+
+
+def _cascade_all_write_policy(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§20 f0.7+ write_policy.db：本域判定日志清空；忘记规则保留（f0.7.3）。"""
+    try:
+        from ducky.write_policy import purge_scope
+        res["write_policy_rows_deleted"] = purge_scope(scope.user_id, scope.bank_id)
+    except (ImportError, sqlite3.Error, OSError) as e:
+        logger.warning("write_policy delete_all 清理失败: %s", e)
+        layer_failed("write_policy", e)
 
 
 def _cascade_all_local_vectors(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:

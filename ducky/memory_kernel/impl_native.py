@@ -250,6 +250,25 @@ def _entities(text: str) -> list[str]:
     return sorted(e for e in ents if 1 < len(e) <= 64 and e not in _GENERIC_ENTITIES)[:12]
 
 
+def _wp_enrich(text: str, role: str, md: dict) -> dict:
+    """f0.7+:逐条打 层级/出处/条件 标签(只加字段)。策略模块任何故障都不许挡写入。"""
+    try:
+        from ducky import write_policy
+        return write_policy.enrich_metadata(text, role, md)   # 内部已 fail-open
+    except ImportError as exc:          # fail-open:不打标签照常写
+        logger.warning("write_policy enrich unavailable: %s", type(exc).__name__)
+        return dict(md)
+
+
+def _wp_observe(kernel, written: list, user_id: str, bank_id: str) -> None:
+    """f0.7+:写后影子判定(值得记/替换/冲突/忘记规则),只记日志不改数据。"""
+    try:
+        from ducky import write_policy
+        write_policy.observe_written(kernel, written, user_id, bank_id)   # 逐条已 fail-open
+    except ImportError as exc:
+        logger.warning("write_policy observe unavailable: %s", type(exc).__name__)
+
+
 class NativeMemory:
     """mem0 Memory 形状的单库内核句柄。"""
 
@@ -508,12 +527,14 @@ class NativeMemory:
         if memory_type:
             md["memory_type"] = memory_type
         md.setdefault("lane", "raw")      # 逐轮原话标记:打分层据此给长原话降权(蒸馏线自带 lane=distill)
-        todo = [(str(uuid.uuid4()), role, text, self._embed(text, "add")) for role, text in _texts(messages)]
+        todo = [(str(uuid.uuid4()), role, text, self._embed(text, "add"), _wp_enrich(text, role, md))
+                for role, text in _texts(messages)]
         with self._lock, self.conn:       # 嵌入已在锁外算完;正文/向量/历史/图边一个事务
-            for mem_id, role, text, vec in todo:
-                self._write(mem_id, text, vec, user_id=user_id, metadata=md, agent_id=agent_id, run_id=run_id,
+            for mem_id, role, text, vec, md_i in todo:
+                self._write(mem_id, text, vec, user_id=user_id, metadata=md_i, agent_id=agent_id, run_id=run_id,
                             role=role)
-        return {"results": [{"id": i, "memory": t, "event": "ADD"} for i, _r, t, _v in todo]}
+        _wp_observe(self, [(i, r, t, m) for i, r, t, _v, m in todo], user_id, str(md.get("bank_id") or "default"))
+        return {"results": [{"id": i, "memory": t, "event": "ADD"} for i, _r, t, _v, _m in todo]}
 
     def _apply_update(self, c, r, new: str, md: dict, vec, *, memory_type=None, category=None) -> list:
         """改一条记忆的事务体(update 与 vector_store 旁路共用,调用方持锁并持有事务)。

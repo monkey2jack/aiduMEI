@@ -296,7 +296,9 @@ def distill_session(session_id: str, *, user_id: str = "",
         from ducky.llm_client import call_llm
         out = call_llm(
             "下面是一次对话里记下的内容。用一到两句话说出这一程最值得记住的是什么。\n"
-            "要求：具体，点出人和事；不要罗列，不要总结套话；不要超过 80 字。\n\n"
+            "要求：具体，点出人和事；不要罗列，不要总结套话；不要超过 80 字。\n"
+            "偏好或习惯连同场景写（在哪、和谁、什么场合）；只说过一次的不要写成习惯，"
+            "「通常」不要写成「总是」；记录里没说、是你推断的，写成「可能」并点出依据。\n\n"
             + fenced,
             system="你在为一个长期记忆系统提炼会话精华。只输出那一两句话本身。" + DATA_ONLY_RULE,
             max_tokens=200, temperature=0.3, timeout=30)
@@ -342,6 +344,9 @@ def distill_session(session_id: str, *, user_id: str = "",
         "distill_source_refs": source_refs,
         "distill_emotion_hits": emo,       # 词表在 salience/config.LANE_KEYWORDS
         "distill_initial_salience": round(initial, 4),
+        # f0.7+ 原则 3：精华是推断产物，不是本人原话；依据 = 来源条数
+        "source_type": "inferred",
+        "basis": f"session_distill:{len(rows)} turns",
     }
     if refs_truncated:
         meta["distill_source_refs_truncated"] = True

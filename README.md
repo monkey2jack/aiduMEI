@@ -10,7 +10,7 @@ aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，M
 
 > **当前公开版本 f0.7。** 包版本 `0.7.0`，2026-10-29。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
 >
-> 当前代码 **f0.7.1**（f0.7 的审计修复补丁，内部候选，尚未公开发布独立 Release；公开 Release 仍为 f0.7）。包版本 `0.7.1`，2026-10-30，修复内容见 [CHANGELOG](CHANGELOG.md)。
+> 当前代码 **f0.7.4**（f0.7 的内部补丁：f0.7.1 审计修复 + f0.7.2「什么值得记」九条原则与每个 agent 一把钥匙 + f0.7.3 记忆隔离 + f0.7.4 过滤词按身份豁免与 salience 身份戳；内部候选，尚未公开发布独立 Release；公开 Release 仍为 f0.7）。包版本 `0.7.4`，2026-11-02，内容见 [CHANGELOG](CHANGELOG.md) 与 [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md)。
 
 ## 本版变化（f0.7）
 
@@ -188,8 +188,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **3907**（`pytest --collect-only` 实测，2026-10-30，f0.7.1 树）＝ **行为用例 3279 + 脚本/钩子行为 482 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
-| 独立开发机 | 3895 通过 · **12 跳过** —— f0.7 按收集数与缺席轴推导的验收目标（Python 3.12，仅缺 Hermes 宿主源码） |
+| 用例总数 | **4007**（`pytest --collect-only` 实测，2026-11-02，f0.7.4 树）＝ **行为用例 3379 + 脚本/钩子行为 482 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
+| 独立开发机 | 3995 通过 · **12 跳过** —— f0.7 按收集数与缺席轴推导的验收目标（Python 3.12，仅缺 Hermes 宿主源码） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，旧树）。f0.7 起全量套件同时测 mem0 旧内核，需加装 `requirements-mem0.txt`；只装 `requirements.txt` 的默认 native 路径改由从零安装验收与 CI 裸装冒烟覆盖（2026-10-29 实验机：安装、健康、写入、召回、删除、恢复通过） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（旧树 `de09794`，宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（旧树，工具、extras、宿主、模型缓存与公开 LoCoMo 数据集齐备） |
@@ -202,15 +202,15 @@ pytest tests/                                          # 全量回归
 python -m compileall ducky api_server.py mcp_server.py # 编译检查
 ```
 
-> **为什么要把 3895 和 1967 都写出来**：3895 是本树仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 3995 和 1967 都写出来**：3995 是本树仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条跳过自己就能验**：十四条跳过轴全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：3895 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：3907 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 3895 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：3995 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4007 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 3995 passed, 12 skipped
 > ```
 >
 > 「有宿主」那行要十四条轴同时齐备才拿得到。生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），旧树上实测跑出来是 1967 passed、26 skipped（2026-09-11，`de09794`）。

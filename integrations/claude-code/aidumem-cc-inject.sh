@@ -24,6 +24,7 @@
 #   AIDUMEI_CC_SESSION_PREFIX  会话 id 前缀，默认 cc-（写线/萃取线必须同值）
 #   AIDUMEI_CC_DROP_TERMS   召回条目过滤词，用 | 分隔（如另一个 agent 的人设词、机器名/IP）；
 #                           命中任一词的条目不注入本宿主上下文。可由 .env 兜底，默认空
+#   AIDUMEI_CC_DROP_TERMS_EXEMPT 不做上面过滤的身份（| 分隔，如 dudu）；默认空 = 全部过滤
 #
 # 设计原则（与 Hermes 版三线同源）：
 #   - 绝不拖累宿主：任何异常静默 exit 0，不阻塞对话
@@ -81,6 +82,18 @@ if [ -z "$_uid" ]; then
         || _uid=$(_lookup_env_key AIDUMEM_DEFAULT_USER_ID) \
         || _uid="default"
 fi
+# f0.7.3：一个 agent 一把钥匙。<钥匙目录>/<身份>.key 在就用它（只在运行时读文件，
+# 不进命令行、不进日志）；不在就沿用上面的 AIDUMEM_API_TOKEN。身份名只认安全字符，
+# 防「../」读到别的文件。钥匙目录：AIDUMEI_KEYS_DIR，默认 ~/.aidumei-keys。
+_kdir="${AIDUMEI_KEYS_DIR:-${HOME:+${HOME}/.aidumei-keys}}"
+case "$_uid" in
+  ''|.*|*[!A-Za-z0-9._-]*) ;;
+  *) if [ -n "$_kdir" ] && [ -f "$_kdir/$_uid.key" ] && [ -r "$_kdir/$_uid.key" ]; then
+       _k=$(head -n 1 "$_kdir/$_uid.key" 2>/dev/null | tr -d '\r\n\t ')
+       [ -n "$_k" ] && AIDUMEM_API_TOKEN="$_k"
+       unset _k
+     fi ;;
+esac
 _bid="${AIDUMEI_BANK_ID:-}"
 if [ -z "$_bid" ]; then
     _bid=$(_lookup_env_key AIDUMEI_BANK_ID) || _bid="default"
@@ -89,6 +102,15 @@ _drop="${AIDUMEI_CC_DROP_TERMS:-}"
 if [ -z "$_drop" ]; then
     _drop=$(_lookup_env_key AIDUMEI_CC_DROP_TERMS) || _drop=""
 fi
+# f0.7.4：过滤词是挡「别的 agent 的东西」进本会话的，不该挡本人自己的记忆。
+# AIDUMEI_CC_DROP_TERMS_EXEMPT 列出不过滤的身份（| 分隔，按身份名整词比对）；
+# 默认空 = 所有身份照旧过滤（不配置就不放宽）。
+_exempt="${AIDUMEI_CC_DROP_TERMS_EXEMPT:-}"
+if [ -z "$_exempt" ]; then
+    _exempt=$(_lookup_env_key AIDUMEI_CC_DROP_TERMS_EXEMPT) || _exempt=""
+fi
+_exempt=$(printf '%s' "$_exempt" | tr -d ' \t')
+case "|$_exempt|" in *"|$_uid|"*) _drop="" ;; esac
 
 # ── 自检（--selftest）：验证空环境下凭据+身份都从 .env 兜底读到了 ──────────
 # 必须在读 stdin 之前：下面 RAW_INPUT=$(cat) 会阻塞等 stdin。
@@ -185,7 +207,9 @@ try:
         d = json.loads(r.read())
     for item in (d.get("results") or [])[:3]:
         m = item.get("memory") if isinstance(item, dict) else str(item)
-        print("· " + " ".join(str(m or item).split())[:150])
+        # f0.7+ 原则 3：推断出来的（会话精华等）标明，别当成本人原话
+        tag = "（推断）" if isinstance(item, dict) and item.get("inferred") else ""
+        print("· " + tag + " ".join(str(m or item).split())[:150])
     # f0.5（fork 审计 F06）：降级照实透出——灯坏了不能冒充「没有记忆」。
     # 服务端契约：recall_verdict=degraded 时 results 不完整，degraded 列表
     # 载明哪个组件出了问题。静默失败是本 hook 的纪律，但「静默」只许用于

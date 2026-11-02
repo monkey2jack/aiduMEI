@@ -268,6 +268,23 @@ _F04PP_CC_OPS_ENV_VARS: frozenset[str] = frozenset((
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F04PP_CC_OPS_ENV_VARS
 
+# ── f0.7+（什么值得记 · 每 agent 一把钥匙）─────────────────────────────────
+# 写入判定默认影子（shadow/off）；原则 7 的屏蔽默认开（on/off 只是逃生口）；
+# 召回两个开关默认关；钥匙身份校验默认影子（0 记账 / 1 拒绝）。
+_F07PLUS_ENV_VARS: frozenset[str] = frozenset((
+    "AIDUMEI_WRITE_POLICY",
+    "AIDUMEI_SECRET_GUARD",
+    "AIDUMEI_WRITE_MAX_RAW_CHARS",
+    "AIDUMEI_RECALL_EXCLUDE_DAILY",
+    "AIDUMEI_RECALL_PRECISE",
+    "AIDUMEI_RECALL_PRECISE_K",
+    "AIDUMEI_RECALL_PRECISE_RATIO",
+    "AIDUMEI_AGENT_KEYS_FILE",
+    "AIDUMEI_AGENT_KEY_ENFORCE",
+    "AIDUMEI_KEYS_DIR",          # f0.7.3：钩子侧按身份找钥匙文件的目录（服务端不读）
+))
+KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F07PLUS_ENV_VARS
+
 
 # ── 前缀学说（v20.4.0-alpha · P1-10，六方外审 Qwen 独见实锤）─────────────────
 # `AIDUMEM_` = 冻结兼容旧前缀，`AIDUMEI_` = 当前前缀。新变量一律 AIDUMEI_。
@@ -353,6 +370,7 @@ DYNAMIC_ENV_PREFIXES: frozenset[str] = frozenset((
 # tests/test_f07_p1_security.py::test_hook_env_names_are_read_by_hooks。
 HOOK_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CC_DROP_TERMS",
+    "AIDUMEI_CC_DROP_TERMS_EXEMPT",   # f0.7.4：不做过滤词过滤的身份
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | HOOK_ENV_VARS
 

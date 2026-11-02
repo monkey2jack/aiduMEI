@@ -398,8 +398,10 @@ def _try_workspace_route(req, uid: str, bank_id: str, effective_limit: int,
         limit=effective_limit)
     if not ws_hits:
         return None
-    boost_salience_for_results(ws_hits)
+    boost_salience_for_results(ws_hits, uid, bank_id)
     _annotate_memory_types(ws_hits, user_id=uid, bank_id=bank_id)
+    from ducky.write_policy import annotate_and_filter
+    annotate_and_filter(ws_hits)      # f0.7+ 原则 3/6：快路同样标出处与层级（只标不滤）
     # v20.1 整改轮（R-06 · 外审 z P2-04）：本分支的三态字段集
     # 必须与 hybrid 分支一致 —— 上层按「有 confidence 才信」
     # 决策时，缺字段的 found 会被漏判或误判。
@@ -532,7 +534,7 @@ def register_search_routes(app: FastAPI) -> None:
                     _filter_results_by_time(results, req.before, req.after)
                 logger.info("🔍 mem0 裸搜: query_len=%d query_fp=%s user_id=%s bank_id=%s → %d 条", len(req.query), _query_fingerprint(req.query), _normalize_user_id(req.user_id), req.bank_id, len(results))
 
-            boost_salience_for_results(results)
+            boost_salience_for_results(results, uid, bank_id)
             _annotate_memory_types(results, user_id=_normalize_user_id(req.user_id),
                                    bank_id=getattr(req, "bank_id", "default") or "default")
 
@@ -570,6 +572,10 @@ def register_search_routes(app: FastAPI) -> None:
             # 闸门拦了多少、M2/M4/M6/M1 到底生没生效，全写进了一条死路。
             # 本轮审计的结论是「要有数据面旁证」，那就得先让证据到得了调用方。
             gate_telem = last_gate_telemetry()
+            # f0.7+ 原则 3/6/9：每条标出处（推断条目 inferred=true）与层级；
+            # 「不带当日流水」「少而准」两个开关默认关（影子期只标不滤）。
+            from ducky.write_policy import annotate_and_filter
+            results = annotate_and_filter(results, effective_limit)
             # Enforce the public output budget even on a degraded backend or
             # an adapter that returned more rows than requested.
             del results[effective_limit:]

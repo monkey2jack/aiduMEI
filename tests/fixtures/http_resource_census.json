@@ -369,5 +369,9 @@
   "path": "/config/test",
   "source": "ducky/routes_config.py",
   "resource": "memory-or-instance-state"
- }
+ },
+  {"app": "alias", "method": "POST", "path": "/forget", "source": "ducky/routes_write_policy.py", "resource": "memory-or-instance-state"},
+  {"app": "alias", "method": "GET", "path": "/forget/rules", "source": "ducky/routes_write_policy.py", "resource": "memory-or-instance-state"},
+  {"app": "alias", "method": "POST", "path": "/forget/rules/delete", "source": "ducky/routes_write_policy.py", "resource": "memory-or-instance-state"},
+  {"app": "alias", "method": "GET", "path": "/write-policy/verdicts", "source": "ducky/routes_write_policy.py", "resource": "memory-or-instance-state"}
 ]

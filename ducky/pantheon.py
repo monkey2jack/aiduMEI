@@ -172,6 +172,9 @@ def authorize_cross_hall(target_user_id: str, caller_user_id: str,
     clr = str(caller_user_id or "").strip()
     from ducky.security.auth import enforce_caller_binding
     enforce_caller_binding(clr, f"hall:{action}")
+    # f0.7+（外审 S3）：钥匙绑定的身份 vs 本次声明的租户/caller；默认影子只计数。
+    from ducky.agent_keys import check_scope
+    check_scope(tgt, clr, action)
     if clr == tgt:
         return True
     if not clr:

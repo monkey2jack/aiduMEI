@@ -67,6 +67,7 @@ class ScopeRegistrar:
                 bound = wire_signature.bind(*args, **values)
                 bound.apply_defaults()
                 call = dict(bound.arguments)
+                _check_agent_key(policy, models, call, method, path)
                 from ducky.security.auth import binding_policy_active, resolve_bound_caller
                 if policy.resource != "public" and binding_policy_active():
                     model_key = next(iter(models), None)
@@ -126,6 +127,24 @@ class ScopeRegistrar:
         return self._register("patch", path, kwargs)
 
 
+def _check_agent_key(policy, models, call, method, path):
+    """f0.7.3: per-agent key binding on every classified route (agent_keys.check_route)."""
+    from ducky import agent_keys
+    if policy.resource == "public" or agent_keys.current() is None:
+        return
+    model_key = next(iter(models), None)
+    model = call.get(model_key) if model_key else None
+    if path == "/facts/inject-context":
+        model = call.get("req")
+    if isinstance(model, dict):
+        data = {**call, **model}
+    elif model is not None and hasattr(model, "model_dump"):
+        data = {**call, **model.model_dump()}
+    else:
+        data = call
+    agent_keys.check_route(policy.resource, policy.action, data, method, path)
+
+
 def authorize_route_resource(policy, data, caller):
     """Authorize the declared resource; never infer permission from the verb."""
     from ducky.bank_contract import make_scope
@@ -159,6 +178,8 @@ def require_instance_admin(caller):
     from ducky.security.auth import current_request_auth_kind, enforce_caller_binding
     if current_request_auth_kind() in ("", "session"):
         return
+    from ducky import agent_keys   # f0.7.3: an agent key never acts for the whole instance
+    agent_keys.check_scope(agent_keys.GLOBAL_TARGET, "", "instance:admin")
     enforce_caller_binding(caller, "instance:admin")
     admins = {x.strip() for x in os.environ.get("AIDUMEI_FEDERATION_ADMINS", "").split(",") if x.strip()}
     if caller not in admins:

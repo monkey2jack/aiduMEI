@@ -380,7 +380,7 @@ def test_actual_search_http_cannot_bypass_changed_policy_in_workspace(channel, m
     monkeypatch.setattr(route, "ensure_bank_registered", lambda *a: None)
     monkeypatch.setattr(ws, "ws_lookup", lambda *a, **k: [{"id": "stale", "memory": "Weather", "score": .9}])
     monkeypatch.setattr(ws, "ws_feed_from_results", lambda *a, **k: None)
-    monkeypatch.setattr(route, "boost_salience_for_results", lambda *a: None)
+    monkeypatch.setattr(route, "boost_salience_for_results", lambda *a, **k: None)
     monkeypatch.setattr(route, "_annotate_memory_types", lambda *a, **k: None)
     def hybrid(*a, **k):
         return d.filter_evidence("birthday", rows(), "test-user-one", "work")

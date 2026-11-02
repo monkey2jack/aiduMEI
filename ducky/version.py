@@ -8,6 +8,33 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.7.4 (内部补丁 f0.7.4 · 2026-11-02 · 过滤词不再误伤本人记忆 + salience 行带真实身份 · 大仓 Tag/Release 仍为 f0.7)
+    用例总数 3997 → 4007(本版 = 行为 3379 + 脚本/钩子 482 + 守卫 146)。
+    1. CC/Codex 读线过滤词 AIDUMEI_CC_DROP_TERMS 新增豁免名单 AIDUMEI_CC_DROP_TERMS_EXEMPT(| 分隔的身份,整词比对):名单里的身份不过滤自己的记忆;默认空 = 照旧全部过滤。
+    2. /search 提权补插 salience 行带上检索作用域(此前落成 default);已有 default 戳的行被本作用域检索到时改成本作用域,别人的行不动。
+    3. 原文句柄 verbatim:N 删除时连同它的 salience 行一起清(本租户删到原文才全清,否则只清盖本租户戳的行)。
+    4. scripts/salience_relabel.py:存量 default 行按记忆真实主人改戳,默认 dry-run,--apply 先备份;孤儿与歧义只报告不删。
+    5. 新增用例:豁免身份保留自己的记忆、其他身份与默认照旧过滤、提权补插带戳、default 戳自愈不抢别人的行、原文句柄删除清 salience 且越权删不动、修复脚本 dry-run/apply。
+
+v0.7.3 (内部补丁 f0.7.3 · 2026-11-02 · 记忆隔离:每个 agent 只碰自己的记忆 · 大仓 Tag/Release 仍为 f0.7)
+    用例总数 3984 → 3997(本版 = 行为 3369 + 脚本/钩子 482 + 守卫 146)。
+    1. 钥匙身份在每一条已分类路由上都核(此前只在调用跨殿授权的处理函数里核,/stats、/recent、/tombstones、/metrics 等全局路由绕过);user_id 为空按全实例处理;agent 钥匙不做全实例操作。
+    2. CC 读/写/萃取线钩子按身份读钥匙文件 <AIDUMEI_KEYS_DIR>/<user_id>.key(默认 ~/.aidumei-keys),运行时读文件不上命令行;没有则用 AIDUMEM_API_TOKEN。
+    3. delete_all 只清判定日志,保留「不再保存」规则。
+    4. 新增用例:每条路由的钥匙隔离、主钥匙绑定后的路由隔离、delete_all 后规则仍在、三条钩子线的钥匙文件选择与路径穿越防护。
+
+v0.7.2 (内部补丁 f0.7.2 · 2026-11-02 · 「什么值得记」九条原则 + 每个 agent 一把钥匙 · 大仓 Tag/Release 仍为 f0.7)
+    用例总数 3907 → 3984(本版 = 行为 3356 + 脚本/钩子 482 + 守卫 146)。
+    1. 原则 7 生效:密钥/证件/签名在一切落库前屏蔽为 [redacted:类型];整段邮件原文、超长原文拷贝、只有钥匙的写入 422 拒收。
+    2. 原则 1/4/5/6 影子:写入判定、层级、本应替换与冲突裁决只记 write_policy.db(不存正文),不拦不改;拍板确认归当日流水。
+    3. 原则 2/3:元数据 condition / source_type / basis;召回标出推断条目;精华提示词不把一次说成习惯。
+    4. 原则 8:/api/forget 候选只列不删、按 id 走完整级联,可附「不再保存」规则;删除检查点不再写正文。
+    5. 原则 9:召回「少而准」「不带当日流水」两个开关,默认关。
+    6. 每个 agent 一把钥匙(外审 S3),默认影子只记账。
+    7. 外审 N4:salience/evolve 单删按归属收口。
+    8. 门禁台账如实登记:新路由、新表、except 棘轮 567→570、logger 契约 92→95。
+    9. 回归:六类逐类不降;新增四类虚构用例。
+
 v0.7.1 (内部补丁 f0.7.1 · 2026-10-30 · 大仓 Tag/Release 仍为 f0.7)
     用例总数 3875 → 3907(本版 = 行为 3279 + 脚本/钩子 482 + 守卫 146)。
     外部两轮审计修复:10 个社区 PR(#38-#43、#45、#46、#48、#49,作者 hermesai8888-creator)+ 维护方两条安全修复。
@@ -696,8 +723,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.7.1"
-FULL_VERSION = "f0.7.1"
+SERVICE_VERSION = "0.7.4"
+FULL_VERSION = "f0.7.4"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -714,6 +741,10 @@ FULL_VERSION = "f0.7.1"
 # 打公开 Tag/Release，PUBLIC_RELEASE_VERSION 同步升至 f0.7。
 # f0.7.1（2026-10-30）：外部审计（两轮）修复补丁——10 个社区 PR + 两条安全修复。维护者裁决：
 # 大仓 Tag/Release 保持 f0.7 不动，PUBLIC_RELEASE_VERSION 不随内部补丁翻牌（f0.6.1 先例）。
+# f0.7.2（2026-11-02）：「什么值得记」九条原则（原则 7 生效、其余影子）+ 每个 agent 一把钥匙（影子）。
+# 同 f0.7.1：内部补丁，大仓 Tag/Release 与 PUBLIC_RELEASE_VERSION 不动。
+# f0.7.3（2026-11-02）：记忆隔离——钥匙身份在每条路由上都核、钩子按身份读钥匙文件、delete_all 保留「不再保存」规则。内部补丁，同上不动。
+# f0.7.4（2026-11-02）：读线过滤词可按身份豁免、salience 行带真实身份、原文句柄删除清 salience。内部补丁，同上不动。
 PUBLIC_RELEASE_VERSION = "f0.7"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
@@ -728,6 +759,9 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.7.4", "", "f0.7.4", "读线过滤词按身份豁免(AIDUMEI_CC_DROP_TERMS_EXEMPT,默认空=全部过滤),本人记忆不再被自己的人设词挡掉;/search 提权补插的 salience 行带检索作用域,不再落 default;原文句柄删除连 salience 行一起清;scripts/salience_relabel.py 修存量(默认 dry-run) · 2026-11-02"),
+    ("0.7.3", "", "f0.7.3", "记忆隔离:钥匙身份在每一条路由上都核(全局路由 /stats /recent /tombstones /metrics 等不再绕过),user_id 为空按全实例处理,agent 钥匙不做全实例操作;CC 钩子按身份读钥匙文件 <AIDUMEI_KEYS_DIR>/<user_id>.key;delete_all 保留「不再保存」规则 · 2026-11-02"),
+    ("0.7.2", "", "f0.7.2", "「什么值得记」九条原则:写入前屏蔽密钥/证件/签名并拒收原文拷贝(生效),值得性/层级/替换/冲突判定影子记账,出处与条件元数据,/api/forget 候选只列、按 id 彻底删,召回少而准开关(默认关);每个 agent 一把钥匙(影子);外审 N4 单删按归属收口 · 2026-11-02"),
     ("0.7.1", "", "f0.7.1", "外部两轮审计修复补丁:同步路由悬挂事务借出时回滚、控制台改密、客户端补 caller 与 WP2 后路径、MCP 自动记忆 owner 与游标、Stop 钩子同轮配对、/stats 不再回传全库正文、配置写入失效 LLM 缓存、watchdog 修复;服务端 .env 认 export 前缀、环境变量口令作废自动口令、移除控制台外连更新检查 · 2026-10-30"),
     ("0.7.0", "", "f0.7", "底座更换（2026-10-29 维护者授权公开）:native 单库 SQLite 内核成为默认、mem0 改可选 extra;删除真删(派生连坐收口)、宿主一键接入 connect_host、心图体检与记忆星云、设置页逐模型测试连接;七路外审+两轮复核+自审收口 · 2026-10-29"),
     ("0.6.5", "", "f0.6++", "二期主体（2026-10-26 维护者验收翻牌为公开版）:记忆图谱 graph_memory(三类真实关系边)+图谱 API+前端图谱面板+黄金集 v2 真语料(91 条)真打分门初版 + WP9 安全急修 · 2026-10-26"),
