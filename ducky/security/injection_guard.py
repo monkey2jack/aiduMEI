@@ -300,6 +300,11 @@ def validate_and_sanitize_memory_content(content: str) -> Tuple[bool, str, Optio
         else:
             logger.warning("🛡️ [InjectionGuard] [LOG_ONLY] rule=%s", reason)
 
+    # f0.7+ 原则 7：凡经此函数落库的正文（/update、核心记忆、反思、联邦写入…）同样屏蔽密钥/证件/签名片段。
+    from ducky.write_policy import redact_forbidden
+    cleaned, _kinds = redact_forbidden(cleaned)
+    if _kinds:
+        logger.warning("🛡️ [WritePolicy] 屏蔽 %d 处敏感片段: %s", len(_kinds), ",".join(sorted(set(_kinds))))
     return True, cleaned, None
 
 

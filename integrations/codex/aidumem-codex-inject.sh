@@ -207,7 +207,9 @@ try:
         d = json.loads(r.read())
     for item in (d.get("results") or [])[:3]:
         m = item.get("memory") if isinstance(item, dict) else str(item)
-        print("· " + " ".join(str(m or item).split())[:150])
+        # f0.7+ 原则 3：推断出来的（会话精华等）标明，别当成本人原话
+        tag = "（推断）" if isinstance(item, dict) and item.get("inferred") else ""
+        print("· " + tag + " ".join(str(m or item).split())[:150])
     # P5 自审 S-9：与 CC 读线同口径——服务端明说召回降级时照实透出，灯坏了不能冒充「没有记忆」
     if d.get("recall_verdict") == "degraded":
         parts = d.get("degraded") or []
@@ -219,6 +221,8 @@ except Exception:
 # ── 组装注入（f0.7 复核·外审 sesame F-02 / haiku：与 CC 读线同一段 nonce 围栏，逐字一致，
 #    测试 test_codex_inject_fence_block_matches_cc 钉住两边不许漂移；静默失败，绝不阻塞对话）────────
 _drop="${AIDUMEI_CC_DROP_TERMS:-}"   # 过滤词与 CC 读线共用一个变量
+_exempt=$(printf '%s' "${AIDUMEI_CC_DROP_TERMS_EXEMPT:-}" | tr -d ' \t')   # f0.7.4：豁免身份同口径
+case "|$_exempt|" in *"|$_uid|"*) _drop="" ;; esac
 AIDUMEI_HOOK_CORE="$CORE" AIDUMEI_HOOK_RECALL="$RECALL" AIDUMEI_HOOK_DROP="$_drop" python3 -c '
 import os, re, secrets
 drop = [t for t in os.environ.get("AIDUMEI_HOOK_DROP", "").split("|") if t.strip()]

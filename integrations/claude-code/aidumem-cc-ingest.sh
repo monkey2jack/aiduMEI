@@ -75,6 +75,18 @@ if [ -z "$_uid" ]; then
         || _uid=$(_lookup_env_key AIDUMEM_DEFAULT_USER_ID) \
         || _uid="default"
 fi
+# f0.7.3：一个 agent 一把钥匙。<钥匙目录>/<身份>.key 在就用它（只在运行时读文件，
+# 不进命令行、不进日志）；不在就沿用上面的 AIDUMEM_API_TOKEN。身份名只认安全字符，
+# 防「../」读到别的文件。钥匙目录：AIDUMEI_KEYS_DIR，默认 ~/.aidumei-keys。
+_kdir="${AIDUMEI_KEYS_DIR:-${HOME:+${HOME}/.aidumei-keys}}"
+case "$_uid" in
+  ''|.*|*[!A-Za-z0-9._-]*) ;;
+  *) if [ -n "$_kdir" ] && [ -f "$_kdir/$_uid.key" ] && [ -r "$_kdir/$_uid.key" ]; then
+       _k=$(head -n 1 "$_kdir/$_uid.key" 2>/dev/null | tr -d '\r\n\t ')
+       [ -n "$_k" ] && AIDUMEM_API_TOKEN="$_k"
+       unset _k
+     fi ;;
+esac
 _bid="${AIDUMEI_BANK_ID:-}"
 if [ -z "$_bid" ]; then
     _bid=$(_lookup_env_key AIDUMEI_BANK_ID) || _bid="default"

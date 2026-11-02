@@ -25,6 +25,7 @@ from ducky.routes_config import register_config_routes
 from ducky.routes_evolve import register_evolve_routes
 from ducky.routes_knowledge import register_knowledge_routes
 from ducky.routes_graph import register_graph_routes
+from ducky.routes_write_policy import register_write_policy_routes
 from ducky.system_endpoints import assert_all_gated
 
 logger = logging.getLogger("aiduMEM.RoutesRegistry")
@@ -51,6 +52,8 @@ UI_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/tombstones"), ("POST", "/tombstone/restore"),
     ("POST", "/search"), ("POST", "/search_trace"), ("POST", "/update"), ("POST", "/delete"),
     ("POST", "/reload"),
+    ("POST", "/forget"), ("GET", "/forget/rules"), ("POST", "/forget/rules/delete"),
+    ("GET", "/write-policy/verdicts"),
 })
 
 
@@ -98,6 +101,7 @@ def register_all_routes(app: FastAPI, get_memory_fn, get_db_fn, extract_entities
     register_evolve_routes(app)      # /evolve/feedback /evolve/report
     register_config_routes(app)      # /config* /domains
     register_graph_routes(app)       # /graph/*
+    register_write_policy_routes(app)  # /forget* /write-policy/verdicts（f0.7+）
     register_knowledge_routes(app)   # /dossier
 
     # f0.3：系统级端点必须挂着各自的默认关闭特性闸，漏闸即启动失败。
