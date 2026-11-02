@@ -745,7 +745,9 @@ FULL_VERSION = "f0.7.4"
 # 同 f0.7.1：内部补丁，大仓 Tag/Release 与 PUBLIC_RELEASE_VERSION 不动。
 # f0.7.3（2026-11-02）：记忆隔离——钥匙身份在每条路由上都核、钩子按身份读钥匙文件、delete_all 保留「不再保存」规则。内部补丁，同上不动。
 # f0.7.4（2026-11-02）：读线过滤词可按身份豁免、salience 行带真实身份、原文句柄删除清 salience。内部补丁，同上不动。
-PUBLIC_RELEASE_VERSION = "f0.7"
+# f0.7+（2026-11-02）：维护者授权把 f0.7.1–f0.7.4 合并公开翻牌——大仓 Tag/Release 升至 f0.7+，
+# PUBLIC_RELEASE_VERSION 同步；LINEAGE 0.7.4 行对外列记 f0.7+（f0.6+ 先例），FULL_VERSION 保持 f0.7.4（/health 不变）。
+PUBLIC_RELEASE_VERSION = "f0.7+"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -759,7 +761,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("0.7.4", "", "f0.7.4", "读线过滤词按身份豁免(AIDUMEI_CC_DROP_TERMS_EXEMPT,默认空=全部过滤),本人记忆不再被自己的人设词挡掉;/search 提权补插的 salience 行带检索作用域,不再落 default;原文句柄删除连 salience 行一起清;scripts/salience_relabel.py 修存量(默认 dry-run) · 2026-11-02"),
+    ("0.7.4", "", "f0.7+", "公开 f0.7+(2026-11-02 维护者授权翻牌,代码 f0.7.4):读线过滤词按身份豁免(AIDUMEI_CC_DROP_TERMS_EXEMPT,默认空=全部过滤),本人记忆不再被自己的人设词挡掉;/search 提权补插的 salience 行带检索作用域,不再落 default;原文句柄删除连 salience 行一起清;scripts/salience_relabel.py 修存量(默认 dry-run) · 2026-11-02"),
     ("0.7.3", "", "f0.7.3", "记忆隔离:钥匙身份在每一条路由上都核(全局路由 /stats /recent /tombstones /metrics 等不再绕过),user_id 为空按全实例处理,agent 钥匙不做全实例操作;CC 钩子按身份读钥匙文件 <AIDUMEI_KEYS_DIR>/<user_id>.key;delete_all 保留「不再保存」规则 · 2026-11-02"),
     ("0.7.2", "", "f0.7.2", "「什么值得记」九条原则:写入前屏蔽密钥/证件/签名并拒收原文拷贝(生效),值得性/层级/替换/冲突判定影子记账,出处与条件元数据,/api/forget 候选只列、按 id 彻底删,召回少而准开关(默认关);每个 agent 一把钥匙(影子);外审 N4 单删按归属收口 · 2026-11-02"),
     ("0.7.1", "", "f0.7.1", "外部两轮审计修复补丁:同步路由悬挂事务借出时回滚、控制台改密、客户端补 caller 与 WP2 后路径、MCP 自动记忆 owner 与游标、Stop 钩子同轮配对、/stats 不再回传全库正文、配置写入失效 LLM 缓存、watchdog 修复;服务端 .env 认 export 前缀、环境变量口令作废自动口令、移除控制台外连更新检查 · 2026-10-30"),
