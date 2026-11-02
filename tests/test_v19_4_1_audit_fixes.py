@@ -1448,7 +1448,9 @@ def test_readme_public_version_claim_matches_service_version():
     zh = open(os.path.join(_REPO_ROOT, "README.md"), encoding="utf-8").read()
     en = open(os.path.join(_REPO_ROOT, "README_EN.md"), encoding="utf-8").read()
     assert current in {entry[2] for entry in LINEAGE}
-    if FULL_VERSION != current:
+    # f0.7+：当前代码的谱系行对外列 == 公开版本，即「当前代码已公开」（f0.6+ 先例：FULL_VERSION
+    # 仍是 f0.7.4，对外列翻牌为 f0.7+）。只有当前代码既不是公开版本、谱系也没翻牌时才要求「尚未公开」声明。
+    if current not in (FULL_VERSION, LINEAGE[0][2]):
         assert f"当前代码 **{FULL_VERSION}**" in zh and "尚未公开发布" in zh
         assert f"Current code: **{FULL_VERSION}**" in en and "internal candidate" in en
 

@@ -8,9 +8,9 @@
 
 aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
 
-> **当前公开版本 f0.7。** 包版本 `0.7.0`，2026-10-29。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
+> **当前公开版本 f0.7+。** 包版本 `0.7.4`，2026-11-02。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
 >
-> 当前代码 **f0.7.4**（f0.7 的内部补丁：f0.7.1 审计修复 + f0.7.2「什么值得记」九条原则与每个 agent 一把钥匙 + f0.7.3 记忆隔离 + f0.7.4 过滤词按身份豁免与 salience 身份戳；内部候选，尚未公开发布独立 Release；公开 Release 仍为 f0.7）。包版本 `0.7.4`，2026-11-02，内容见 [CHANGELOG](CHANGELOG.md) 与 [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md)。
+> f0.7+ = 代码 **f0.7.4**（f0.7 之上的四个补丁合并公开：f0.7.1 审计修复 + f0.7.2「什么值得记」九条原则与每个 agent 一把钥匙 + f0.7.3 记忆隔离 + f0.7.4 过滤词按身份豁免与 salience 身份戳）。九条原则里原则 7（密钥/证件/签名/整段原文）直接生效，其余先影子模式，见 [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md)。上一个公开版本 [f0.7](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7)（包 `0.7.0`，2026-10-29）。
 
 ## 本版变化（f0.7）
 

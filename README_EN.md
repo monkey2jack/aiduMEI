@@ -8,9 +8,9 @@
 
 aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI and Hermes: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
 
-> The current public release is **f0.7** (package `0.7.0`, 2026-10-29). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
+> The current public release is **f0.7+** (package `0.7.4`, 2026-11-02). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
 >
-> Current code: **f0.7.4** (internal patches on f0.7: the f0.7.1 audit fixes, the f0.7.2 "what is worth remembering" write policy and one key per agent, the f0.7.3 per-agent memory isolation, and the f0.7.4 per-identity drop-term exemption and salience identity stamps; internal candidate, no separate Release; the public Release remains f0.7; package `0.7.4`, 2026-11-02). See the [CHANGELOG](CHANGELOG.md) and [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md).
+> f0.7+ = code **f0.7.4** (the four patches on top of f0.7, published together: the f0.7.1 audit fixes, the f0.7.2 "what is worth remembering" write policy and one key per agent, the f0.7.3 per-agent memory isolation, and the f0.7.4 per-identity drop-term exemption and salience identity stamps). Principle 7 of the write policy (secrets, IDs, signatures, whole raw copies) is enforced; the others run in shadow mode first — see [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md). Previous public release: [f0.7](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7) (package `0.7.0`, 2026-10-29).
 
 ## What changed in f0.7
 
