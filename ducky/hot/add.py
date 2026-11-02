@@ -531,6 +531,11 @@ def register_add_routes(app: FastAPI) -> None:
             req.bank_id = scope.bank_id
             from ducky.scope_auth import sanitize_memory_structure
             req = req.model_copy(update={"metadata": sanitize_memory_structure(req.metadata)})
+            # f0.7+ 原则 7：最先屏蔽密钥/证件片段——幂等载荷、变更日志、异步作业都只见屏蔽后的正文。
+            from ducky import write_policy
+            _early_msgs, _early_kinds = write_policy.redact_messages_struct(req.messages)
+            if _early_kinds:
+                req = req.model_copy(update={"messages": _early_msgs})
             # v0.3++ A1：所有租户写入口经过同一 caller/scope 政策点。
             # action=write 禁止借用只读 grant 替他殿写入。
             from ducky.scope_auth import require_scope_access
@@ -805,7 +810,22 @@ def register_add_routes(app: FastAPI) -> None:
             # <memory> 边界的字面量中和（零宽字符打断）——落库前必须做，
             # 否则召回侧 shell 读线一看到 <memory> 就当「已包装」直接透传。
             messages_json = neutralize_messages_struct(messages_json)
+            # f0.7+ 原则 7（直接拦，不走影子）：密钥/证件/签名只屏蔽那一段，整段邮件/超长原文拷贝整条拒收。
+            # 在一切落库（原文柜、FTS、事实、向量）之前做，所以哪一层都拿不到原值。
+            messages_json, _redacted = write_policy.redact_messages_struct(messages_json)
+            _redacted = list(_early_kinds) + list(_redacted)
             _full_text = messages_to_text(messages_json)
+            _block = write_policy.hard_block_reason(_full_text, summary=is_session_summary(md))
+            if _block:
+                write_policy.log_hard_block(user_id=req.user_id, bank_id=req.bank_id, reason=_block,
+                                            text=_full_text, md=md)
+                raise HTTPException(422, {"status": "rejected", "reason": _block,
+                                          "message": "Not stored: aiduMEI keeps what a document or message "
+                                                     "says, never a raw copy or a credential."})
+            if _redacted:
+                md["redacted"] = sorted(set(_redacted))
+                logger.warning("🛡️ [WritePolicy] 写入前屏蔽 %d 处敏感片段: %s", len(_redacted),
+                               ",".join(sorted(set(_redacted))))
             text_preview = _full_text[:120]
 
             mode = _write_mode()

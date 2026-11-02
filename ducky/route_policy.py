@@ -44,6 +44,8 @@ GET /facts
 GET /facts/categories
 GET /facts/entities/list
 GET /facts/trust-stats
+GET /forget/rules
+GET /write-policy/verdicts
 '''),
     **_routes('scope', 'write', '''
 POST /add
@@ -52,9 +54,11 @@ POST /opinions/set
 POST /update
 POST /session/distill
 POST /evolve/feedback
+POST /forget/rules/delete
 '''),
     **_routes('scope', 'delete', '''
 POST /delete
+POST /forget
 '''),
     **_routes('scope', 'export', '''
 GET /dossier

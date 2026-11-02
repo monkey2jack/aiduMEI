@@ -20,7 +20,7 @@ def test_assessment_sees_only_final_evidence_and_does_not_filter(monkeypatch, wo
     monkeypatch.setattr(search, "get_memory", lambda: object())
     monkeypatch.setattr(search, "lazy_import_hybrid", lambda: lambda *a, **k: deepcopy(rows))
     monkeypatch.setattr(search, "ensure_bank_registered", lambda *a: None)
-    monkeypatch.setattr(search, "boost_salience_for_results", lambda *a: None)
+    monkeypatch.setattr(search, "boost_salience_for_results", lambda *a, **k: None)
     monkeypatch.setattr(search, "_annotate_memory_types", lambda *a, **k: None)
     monkeypatch.setattr(search, "_log_search_result", lambda *a: None)
     monkeypatch.setattr(verbatim_vault, "verbatim_search", lambda *a, **k: [])

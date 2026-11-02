@@ -1,5 +1,44 @@
 # aiduMEI 版本演进史
 
+## v0.7.4 (内部补丁 f0.7.4 · 2026-11-02 · 过滤词不再误伤本人记忆 + salience 行带真实身份 · 大仓 Tag/Release 仍为 f0.7)
+
+> **用例总数 3997 → 4007**(本版 = 行为 3379 + 脚本/钩子 482 + 守卫 146,`pytest --collect-only` 实测,`scripts/count_test_kinds.py` 可复算)。
+
+f0.7.3 上线后真实会话里查出的两处身份口径问题。
+
+- **读线过滤词按身份豁免**:`AIDUMEI_CC_DROP_TERMS` 原本用来挡别的 agent 的人设词、机器名进本会话,但对所有身份都生效——同一服务里的「本人」身份,自己含人设词的记忆在自己的会话里也被丢掉(能搜到、注入时没了)。新增 `AIDUMEI_CC_DROP_TERMS_EXEMPT`(`|` 分隔的身份名,整词比对,可由服务 `.env` 兜底):名单里的身份不做过滤词过滤。默认空 = 所有身份照旧过滤,不配置就不放宽。CC 与 Codex 读线同口径。身份隔离仍靠每个 agent 一把钥匙,过滤词只是附加一层。
+- **salience 行带真实身份**:`/search` 给结果提权时,没有 salience 行会补插一行,原先不带作用域,被列默认值记成 `default`(原文句柄 `verbatim:N` 与部分 agent 的记忆)。现在补插盖检索方的 `(user_id, bank_id)`;已有 `default` 戳的行被本作用域检索到时改成本作用域,已有真实主人的行不动。
+- **原文句柄删除清 salience**:用 `verbatim:N` 删除原文时连同它的 salience 行一起删(本租户确实删到原文才全删,否则只删盖本租户戳的行)。
+- **存量修复脚本** `scripts/salience_relabel.py`:把 `default` 行按记忆真实主人改戳(`verbatim:N` 看原文表,其余看 memory.db / text_fts.db)。默认只报告;`--apply` 先备份 salience.db 再改。找不到主人的孤儿、多个主人的歧义行只报告,从不删除。
+- 新增用例:豁免身份保留自己的记忆、其他身份与默认照旧过滤(CC/Codex 两条读线,含从服务 .env 读名单)、提权补插带戳、default 戳自愈不抢别人的行、原文句柄删除清 salience 且越权删不动、修复脚本 dry-run/apply/孤儿不删/歧义不猜。
+
+## v0.7.3 (内部补丁 f0.7.3 · 2026-11-02 · 记忆隔离:每个 agent 只碰自己的记忆 · 大仓 Tag/Release 仍为 f0.7)
+
+> **用例总数 3984 → 3997**(本版 = 行为 3369 + 脚本/钩子 482 + 守卫 146,`pytest --collect-only` 实测,`scripts/count_test_kinds.py` 可复算)。
+
+两个 agent 共用一个服务时,让各自的记忆从根上隔开。
+
+- **钥匙身份在每一条路由上都核**:f0.7.2 只在调用跨殿授权的处理函数里核对钥匙绑定,`/stats`、`/recent`、`/tombstones`、`/events/history`、`/write-policy/verdicts`、`/dossier`、`/metrics`、`/usage`、`/config` 等路由会放过别的 agent。现在路由注册层统一核:目标 `user_id` 必须在钥匙绑定里,`user_id` 为空(老代码里意为「全部租户」)按全实例处理;agent 钥匙(含绑了身份的主钥匙)不做全实例操作,留给控制台登录。影子模式(`AIDUMEI_AGENT_KEY_ENFORCE=0`)照旧只记账;同一请求的重复记账去重。
+- **钩子按身份读钥匙文件**:CC 读线/写线/萃取线解析出身份 `<user_id>` 后,若 `<AIDUMEI_KEYS_DIR>/<user_id>.key`(默认 `~/.aidumei-keys`)存在就用它,运行时读文件、不上命令行、不进日志;身份名只认安全字符,防路径穿越;没有钥匙文件则照旧用 `AIDUMEM_API_TOKEN`。
+- **delete_all 保留「不再保存」规则**:只清本域判定日志;「不再保存此类」是对以后的指令,清空记忆不应悄悄撤销它。
+- 新增用例:每条路由的钥匙隔离(自己 200、别人/全局/管理 403、影子只记账)、主钥匙绑定后的路由隔离、delete_all 后规则仍在、三条钩子线的钥匙文件选择与路径穿越防护。
+
+## v0.7.2 (内部补丁 f0.7.2 · 2026-11-02 · 「什么值得记」九条原则 + 每个 agent 一把钥匙 · 大仓 Tag/Release 仍为 f0.7)
+
+> **用例总数 3907 → 3984**(本版 = 行为 3356 + 脚本/钩子 482 + 守卫 146,`pytest --collect-only` 实测,`scripts/count_test_kinds.py` 可复算)。
+
+写入时按九条原则给每条记忆做判定(见 [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md))。**原则 7 直接生效,其余默认影子模式**:只判定、只记日志,不拦、不改,观察约一周确认不误杀后再逐条打开。
+
+- **原则 7 永远不记(生效)**:密钥、令牌、私钥、证件号、卡号、签名图在一切落库之前换成 `[redacted:类型]`(原文柜、全文索引、事实、向量、幂等载荷、变更日志都只见屏蔽后的正文;`/update` 等走内容校验的写入同样屏蔽);整段邮件原文、超过 `AIDUMEI_WRITE_MAX_RAW_CHARS`(默认 20000)的原文拷贝、只有一把钥匙的写入整条 422 拒收。`AIDUMEI_SECRET_GUARD=off` 只是逃生口。
+- **原则 1/4/5/6 影子判定**:每条写入记 `verdict(keep/daily/reject)`、层级 `profile/topic/daily`、本应替换的旧记忆与冲突裁决(本人直说 > 推断,新 > 旧,说不清 → 待确认),写进 `<DATA_DIR>/write_policy.db`(0600,只存 id/哈希/标签,不存正文)。`GET /api/write-policy/verdicts` 查询,`scripts/write_policy_replay.py` 对存量数据只读重放。「批准,做起来」这类拍板确认归当日流水,不当寒暄丢掉;承诺/约定类说法归长期画像层。
+- **原则 2/3 元数据**:每条记忆加 `condition`(场合/地点/人)、`source_type=direct|inferred` 与 `basis`;会话精华标为推断;`/search` 每条带 `inferred`,CC/Codex 读线钩子给推断条目加「(推断)」;会话精华提示词禁止把一次说成习惯、把「通常」说成「总是」。
+- **原则 8 说忘就彻底忘**:`POST /api/forget` 按查询只列候选、按 id 才删(与 `/delete` 同一条级联,含派生精华与判定日志),可附「不再保存此类」规则(写入时比对,影子);删除检查点不再把正文写进只追加的 `mem_mutations.wal`。
+- **原则 9 召回少而准**:`AIDUMEI_RECALL_PRECISE` / `AIDUMEI_RECALL_EXCLUDE_DAILY` 两个开关,默认关(实测「不带当日流水」会让回归分大幅下降,先看影子数据)。
+- **每个 agent 一把钥匙(外审 S3)**:`scripts/agent_keys.py create` 生成钥匙,只写进 0600 文件一次、不打印,服务端只存 sha256;钥匙绑定可代表的身份,默认影子(`AIDUMEI_AGENT_KEY_ENFORCE=0`)只给身份对不上的请求记账,全部换上自己的钥匙后再设 1。
+- **外审 N4**:salience / evolve 两层只按 memory_id 定位,单删时只在本租户主层确实认领到该记忆后才级联,否则只碰盖着本租户戳的行;salience/evolve 不再单独算作「删到了」。
+- **门禁台账(如实登记)**:新增 4 条路由入路由清单与写端点预算台账;write_policy.db 四张新表入迁移总账;wal_engine 一处 id 占位串入 f-string SQL 登记;`except Exception` 棘轮 567 → 570(+3,均为「影子标签绝不许打断写入/召回」,其余 8 处收窄到具体异常);logger 契约 92 → 95(新模块沿用 `aiduMEM.*` 前缀,采集规则不用改);作用域谓词一律走 `scope_clause`,手拼棘轮不升;CC 棘轮不升(新增分支拆进小函数)。
+- **回归**:真实回归集 v3 六类逐类与 f0.7.1 一致;新增四类(噪声不入库 / 推断不当事实 / 忘记后不复活 / 旧说法被替换)虚构用例 `benchmarks/regression_f07plus.json`。
+
 ## v0.7.1 (内部补丁 f0.7.1 · 2026-10-30 · 大仓 Tag/Release 仍为 f0.7)
 
 > **用例总数 3875 → 3907**(本版 = 行为 3279 + 脚本/钩子 482 + 守卫 146,`pytest --collect-only` 实测,`scripts/count_test_kinds.py` 可复算)。
