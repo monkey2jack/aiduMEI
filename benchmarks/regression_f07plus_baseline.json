@@ -1,0 +1,14 @@
+{
+  "schema": "aidumei-regression-f07plus-result",
+  "total": 44,
+  "passed": 44,
+  "score": 1.0,
+  "per_category": {
+    "noise_not_stored": 1.0,
+    "inference_not_fact": 1.0,
+    "forget_no_resurrect": 1.0,
+    "supersede_old": 1.0
+  },
+  "failed_ids": [],
+  "seconds": 16.9
+}

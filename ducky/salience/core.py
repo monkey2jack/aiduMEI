@@ -120,8 +120,13 @@ def on_memory_added(memory_id: str, initial_salience: float = 0.5,
     logger.debug(f"salience 注册: {memory_id[:16]} → {initial_salience} [{lane}] {scope_user}/{scope_bank}")
 
 
-def on_memory_accessed(memory_id: str):
+def on_memory_accessed(memory_id: str, user_id: str = "", bank_id: str = ""):
     """记忆被访问时 boost 显著性
+
+    f0.7.4：调用方（/search）把本次检索的作用域传来。没有行时补插的那一行盖上
+    (user_id, bank_id) 戳——此前补插不带戳，列默认值把它记成 default（生产 109 行
+    含原文 verbatim:N 与多个代理身份的记忆）；已有行戳还是 default 的顺手改成本作用域
+    （检索结果只来自本作用域，归属已证明）。不传 = 旧行为。
 
     ⚠️ 缺表/缺列时**静默跳过**，不许抛给调用方（甲17）。
 
@@ -137,6 +142,9 @@ def on_memory_accessed(memory_id: str):
     病因判据同上：只有确实缺表/缺列才降级，其余原样抛出。顺带收口一个旧洞：
     原来这里没有 ``try``，任何一次异常都会让连接漏掉（``conn.close()`` 走不到）。
     """
+    from ducky.bank_contract import normalize_bank_id, normalize_user_id
+    scope_user = normalize_user_id(user_id) if user_id else "default"
+    scope_bank = normalize_bank_id(bank_id) if bank_id else "default"
     now = time.time()
     conn = get_salience_conn()
     try:
@@ -152,9 +160,24 @@ def on_memory_accessed(memory_id: str):
             # f0.6 W-02：访问 boost 后衰减基准同步推进到 now——boost 写入
             # 的是「此刻新鲜值」，若基准仍停在旧时刻，下次 decay_all 会把
             # boost 前积累的衰减再算一遍。
+            if scope_user != "default":
+                # 戳还是 default 的行顺手认主（SET 右侧读的都是旧值，bank_id 的判断看的是改前 user_id）
+                conn.execute(
+                    "UPDATE salience SET salience = ?, last_access = ?, access_count = ?, salience_at = ?, "
+                    "user_id = CASE WHEN user_id = 'default' THEN ? ELSE user_id END, "
+                    "bank_id = CASE WHEN user_id = 'default' THEN ? ELSE bank_id END WHERE memory_id = ?",
+                    (new_s, now, cnt + 1, now, scope_user, scope_bank, memory_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE salience SET salience = ?, last_access = ?, access_count = ?, salience_at = ? WHERE memory_id = ?",
+                    (new_s, now, cnt + 1, now, memory_id)
+                )
+        elif user_id or bank_id:
             conn.execute(
-                "UPDATE salience SET salience = ?, last_access = ?, access_count = ?, salience_at = ? WHERE memory_id = ?",
-                (new_s, now, cnt + 1, now, memory_id)
+                "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at, salience_at, "
+                "user_id, bank_id) VALUES (?, ?, ?, 0, ?, ?, ?, ?)",
+                (memory_id, 0.5, now, now, now, scope_user, scope_bank)
             )
         else:
             conn.execute(
@@ -315,7 +338,7 @@ def get_batch_salience_records(memory_ids: list[str]) -> dict[str, dict]:
     finally:
         conn.close()
 
-def delete_salience(memory_ids) -> int:
+def delete_salience(memory_ids, scope: Optional[tuple] = None) -> int:
     """按 memory_id 批量删除显著性记录。返回删除行数。
 
     v19.4.1 补齐：wal_engine 的级联删除第 4 步写的是
@@ -339,9 +362,17 @@ def delete_salience(memory_ids) -> int:
     try:
         conn = get_salience_conn()
         placeholders = ",".join("?" for _ in ids)
-        n = conn.execute(
-            f"DELETE FROM salience WHERE memory_id IN ({placeholders})", ids
-        ).rowcount or 0
+        if scope:   # f0.7+（外审 N4）：归属未证明时只碰本租户戳的行（谓词出自 scope_clause 唯一入口）
+            from ducky.bank_contract import make_scope
+            from ducky.scope_sql import scope_clause
+            pred, params = scope_clause(make_scope(scope[0] or "default", scope[1] or "default"))
+            n = conn.execute(
+                f"DELETE FROM salience WHERE memory_id IN ({placeholders})" + pred, [*ids, *params]
+            ).rowcount or 0
+        else:
+            n = conn.execute(
+                f"DELETE FROM salience WHERE memory_id IN ({placeholders})", ids
+            ).rowcount or 0
         conn.commit()
         return n
     except Exception as exc:

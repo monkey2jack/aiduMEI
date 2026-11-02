@@ -49,7 +49,12 @@ class TestMessagesBudget:
     def test_messages_str_at_boundary_passes_validation(self, add_client):
         """边界值 50,000 字符必须过校验（业务结果如何不归本用例管）。"""
         r = add_client.post("/add", json={"messages": "字" * 50_000, "user_id": "cap_u"})
-        assert r.status_code != 422, f"边界值不许被误杀：{r.status_code} {r.text[:200]}"
+        # f0.7+ 原则 7：超过 AIDUMEI_WRITE_MAX_RAW_CHARS 的原文拷贝由写入政策整条拒收（也是 422），
+        # 那是业务结果；本用例只管「schema 校验不许误杀」——所以 422 只许是政策拒收，不许是校验错误列表。
+        if r.status_code == 422:
+            detail = r.json().get("detail")
+            assert isinstance(detail, dict) and detail.get("reason") == "oversized_raw_copy", (
+                f"边界值不许被 schema 校验误杀：{r.status_code} {r.text[:200]}")
 
     def test_messages_normal_payload_passes_validation(self, add_client):
         r = add_client.post("/add", json={"messages": "今天开了三小时会", "user_id": "cap_u"})

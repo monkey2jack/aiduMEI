@@ -234,6 +234,10 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     # "user_id=?" or "user_id=? AND bank_id=?"; owner/bank values are bound
     # separately. The scenes/observations table names are also fixed literals.
     ("ducky/wal_engine.py", "predicate"),
+    # f0.7+ 删除检查点不再存正文:重放时按认领到的原文行 id 取回正文。
+    # 插值只是 "?,?,…" 占位串(长度 = id 个数,id 先经 isdigit 过滤再 int),
+    # 租户谓词出自 scope_clause,值全走 ?。人工核对:wal_engine._claimed_verbatim_text。
+    ("ducky/wal_engine.py", "','.join('?' * len(ids))"),
 }
 
 
@@ -285,6 +289,10 @@ _SQL_KEYWORD_TABLES = {"ADD"}
 # 迁移逻辑留在各模块（幂等 ensure_*），这张表补的是「谁在改 schema」的
 # 全景账——新迁移点不登记即红。
 _MIGRATION_LEDGER = {
+    # f0.7+「什么值得记」影子日志 write_policy.db(新库,全部 CREATE IF NOT EXISTS,additive;
+    # verdicts 只存 id/哈希/标签,forget_rules 忘记规则,key_events 钥匙身份计数,meta 存 schema 版本)
+    ("ducky/write_policy.py", "CREATE", "verdicts"), ("ducky/write_policy.py", "CREATE", "forget_rules"),
+    ("ducky/write_policy.py", "CREATE", "key_events"), ("ducky/write_policy.py", "CREATE", "meta"),
     ("ducky/core_maintenance.py", "CREATE", "core_memory_revisions"),  # additive core history
     # f0.6++ WP5 graph_memory(CREATE graph_edges):三类真实关系边(additive,
     #      不动 facts 主表;租户谓词与 facts 同款)

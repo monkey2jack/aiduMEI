@@ -309,6 +309,9 @@ def _auth_enabled() -> bool:
     if _api_token():
         return True
     try:
+        from ducky import agent_keys
+        if agent_keys.configured():
+            return True
         from ducky.security.auth import ui_password_configured
         return ui_password_configured()
     except Exception as exc:
@@ -321,11 +324,14 @@ def _request_authorized(request: Request) -> bool:
     """钥匙 A（session cookie）∨ 钥匙 B（Bearer token），任一有效即放行。"""
     from ducky.security.auth import (
         SESSION_COOKIE_NAME,
+        fingerprint_token,
         set_request_auth_kind,
         set_request_token_fingerprint,
         validate_session,
     )
 
+    from ducky import agent_keys
+    agent_keys.clear_current()
     session_token = request.cookies.get(SESSION_COOKIE_NAME, "")
     if session_token and validate_session(session_token):
         # v22.0（雷霆审计 A3）：UI 会话 = 主人直连，跨殿授权可免 caller
@@ -333,8 +339,9 @@ def _request_authorized(request: Request) -> bool:
         return True
 
     token = _api_token()
+    supplied = request.headers.get("Authorization", "")
+    alt = request.headers.get("X-API-Token", "")
     if token:
-        supplied = request.headers.get("Authorization", "")
         if supplied and hmac.compare_digest(supplied, f"Bearer {token}"):
             # v20.5.1（T-07）：钥匙 B 通过时把 token 指纹挂进请求上下文，
             # 供联邦层 _require_caller 做 caller↔凭据轻量绑定
@@ -342,13 +349,22 @@ def _request_authorized(request: Request) -> bool:
             set_request_token_fingerprint(token)
             # v22.0（雷霆审计 A3）：API token = agent/集成，跨殿授权必须带 caller
             set_request_auth_kind("bearer")
+            agent_keys.set_current(None, fingerprint_token(token))
             return True
         # 兼容以 X-API-Token 头传递的调用方
-        alt = request.headers.get("X-API-Token", "")
         if alt and hmac.compare_digest(alt, token):
             set_request_token_fingerprint(token)
             set_request_auth_kind("bearer")
+            agent_keys.set_current(None, fingerprint_token(token))
             return True
+    # f0.7+（外审 S3）：每个 agent 一把钥匙，服务端只存 sha256，钥匙绑定身份（agent_keys.json）。
+    candidate = supplied[7:].strip() if supplied[:7].lower() == "bearer " else alt.strip()
+    entry = agent_keys.match(candidate) if candidate else None
+    if entry is not None:
+        set_request_token_fingerprint(candidate)
+        set_request_auth_kind("bearer")
+        agent_keys.set_current(entry, fingerprint_token(candidate))
+        return True
     return False
 
 
