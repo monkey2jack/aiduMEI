@@ -133,7 +133,7 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool, host: str | None = None
     AIDUMEM_ALLOW_INSECURE_PUBLIC=1 且 AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH 逐字
     等于监听地址时，按部署方声明放行（f0.3：与 REST 公网门禁同一确认口径）。
     """
-    import hmac
+    from ducky.security.auth import safe_equal as _safe_equal
 
     inner = mcp_obj.sse_app(mount_path="/sse")
     if loopback:
@@ -155,7 +155,7 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool, host: str | None = None
             if k == b"authorization":
                 presented = v.decode("latin-1").removeprefix("Bearer ").strip()
                 break
-        if not expected or not presented or not hmac.compare_digest(presented, expected):
+        if not expected or not presented or not _safe_equal(presented, expected):
             body = (b'{"detail":"MCP SSE requires Authorization: Bearer <AIDUMEM_API_TOKEN>"}')
             await send({"type": "http.response.start", "status": 401,
                         "headers": [(b"content-type", b"application/json"),

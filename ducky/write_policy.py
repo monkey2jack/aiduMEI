@@ -98,13 +98,31 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
 
 # key = value assignments: only the value goes, the sentence stays.
 _ASSIGN_RE = re.compile(
-    r"(?i)(?P<k>\b(?:api[_\- ]?key|access[_\- ]?key|secret(?:[_\- ]?key)?|client[_\- ]?secret|"
-    r"app[_\- ]?secret|auth[_\- ]?token|access[_\- ]?token|refresh[_\- ]?token|token|"
+    # f0.7.5（外审 sesame F3 / muse H-07）：左边界从 \b 改为「前面不是字母数字」——
+    # 下划线是 \w，`DB_PASSWORD=` / `DEEPSEEK_API_KEY=` / `aws_secret_access_key =`
+    # 这类 .env 标准写法此前整句漏打码。右边界仍是 \b（`password_hint:` 不算）。
+    r"(?i)(?P<k>(?<![A-Za-z0-9])(?:api[_\- ]?key|access[_\- ]?key|secret(?:[_\- ]?(?:access[_\- ]?)?key)?|"
+    r"client[_\- ]?secret|app[_\- ]?secret|auth[_\- ]?token|access[_\- ]?token|refresh[_\- ]?token|token|"
     r"password|passwd|pwd|passphrase)\b|密码|口令|密钥|秘钥|令牌)"
-    r"(?P<sep>[*_`]{0,3}\s*(?:[:=：]|is|是|为)\s*[*_]{0,3}\s*)[\"'`]?(?P<v>[A-Za-z0-9_\-+/=.!@#$%^&*~?]{8,200})")
-_PLACEHOLDER_RE = re.compile(r"^(?:[A-Z][A-Z0-9_]+|(?i:x{3,}|\*{3,}|\.{3,}|<.*>|\$\{?\w+\}?|changeme|"
+    # 分隔符：允许 JSON 键名后的引号（`"api_key": "…"`），以及「是：」「为：」「is:」复合写法。
+    r"(?P<sep>[*_`\"']{0,3}\s*(?:(?:is|是|为)\s*[:=：]?|[:=：])\s*[*_]{0,3}\s*)[\"'`]?"
+    r"(?P<v>[A-Za-z0-9_\-+/=.!@#$%^&*~?]{6,200})")
+_PLACEHOLDER_RE = re.compile(r"^(?:[A-Z][A-Z_]+|(?i:x{3,}|\*{3,}|\.{3,}|<.*>|\$\{?\w+\}?|changeme|"
                              r"redacted.*|your[_\-].*|example.*|placeholder.*|none|null|true|false)|"
                              r"[a-z]+(?:_[a-z]+)+)$")
+# 口令类键名后、不带数字/大小写/符号的值：只在明确赋值（: = ：）时算口令，
+# 且排除描述状态的常见词（"password: required"、"token: expired"）。
+_PASSWORD_KEY_RE = re.compile(r"(?i)(?:password|passwd|pwd|passphrase|secret|密码|口令|密钥|秘钥)")
+_STATE_WORDS = frozenset({
+    "required", "optional", "invalid", "expired", "missing", "empty", "wrong", "correct",
+    "incorrect", "changed", "reset", "needed", "protected", "hidden", "unknown", "default",
+    "enabled", "disabled", "masked", "omitted", "removed", "revoked", "rotated", "updated",
+    "provided", "supplied", "redacted", "secret", "password", "token", "notset", "unset",
+})
+# 不带信息量、只用于拆分识别的格式字符（零宽、软连字符、BOM、词连接符等）。
+_INVISIBLE_RE = re.compile("[\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff]")
+# 连续 ≥6 个全角 ASCII 字母数字/连字符/下划线/等号：按半角重扫一遍。
+_FULLWIDTH_RUN_RE = re.compile("[\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\uff0d\uff3f\uff1d]{6,}")
 
 # ID documents: a valid PRC resident ID (region + birth date + checksum).
 _CN_ID_RE = re.compile(r"(?<![0-9A-Za-z])([1-6]\d{5})((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(\d{3}[0-9Xx])(?![0-9A-Za-z])")
@@ -146,7 +164,7 @@ def _luhn(num: str) -> bool:
     return s % 10 == 0
 
 
-def _assignment_is_secret(value: str) -> bool:
+def _assignment_is_secret(value: str, key: str = "", sep: str = "") -> bool:
     v = value.strip().strip("\"'`")
     if _PLACEHOLDER_RE.match(v) or v.startswith("[redacted"):
         return False
@@ -154,10 +172,25 @@ def _assignment_is_secret(value: str) -> bool:
     # (ops chat is full of `pwd: /srv/...`); embedded URL credentials have their own pattern.
     if v.startswith(("/", "~/", "./", "../", "http://", "https://")):
         return False
+    is_password_key = bool(_PASSWORD_KEY_RE.search(key or ""))
+    # `max_token=4096` 是参数不是凭据；口令类键名下的纯数字（PIN）照打。
+    if v.isdigit() and not is_password_key:
+        return False
     has_digit = any(c.isdigit() for c in v)
     has_mixed = any(c.isupper() for c in v) and any(c.islower() for c in v)
     has_symbol = any(c in "!@#$%^&*+/=~?" for c in v)
-    return has_digit or has_mixed or has_symbol
+    if has_digit or has_mixed or has_symbol:
+        return True
+    # f0.7.5（外审 haiku F-02 / deepseek F-07）：`password: letmein` 这类纯字母口令。
+    explicit = any(ch in (sep or "") for ch in ":=：")
+    if not explicit or v.lower() in _STATE_WORDS:
+        return False
+    # 口令类键名：纯字母也算；token / key 类：≥16 位的纯字母串（`token=abcdefghijklmnop`）。
+    return is_password_key or len(v) >= 16
+
+
+def _fullwidth_to_ascii(m: re.Match) -> str:
+    return "".join(chr(ord(c) - 0xFEE0) for c in m.group(0))
 
 
 def redact_forbidden(text: str) -> tuple[str, list[str]]:
@@ -165,9 +198,29 @@ def redact_forbidden(text: str) -> tuple[str, list[str]]:
 
     Returns (new_text, kinds).  The rest of the sentence is kept: P7 is about
     never *storing* the secret, not about dropping the user's whole turn.
+
+    f0.7.5（外审 6 家一致：零宽 / 软连字符 / 全角变体可绕过）：先按原文打码；
+    再在「去掉不可见格式字符 + 全角字母数字串转半角」的视图上重扫。视图多抓到
+    东西时采用视图结果——此时落库文本不含零宽字符（它们没有信息量），边界记号
+    中和在视图上重做一遍，避免把 neutralize 插入的零宽打断一并剥掉。
     """
     if not isinstance(text, str) or not text or not secret_guard_on():
         return text, []
+    out, kinds = _redact_core(text)
+    if _INVISIBLE_RE.search(text) or _FULLWIDTH_RUN_RE.search(text):
+        view = _FULLWIDTH_RUN_RE.sub(_fullwidth_to_ascii, _INVISIBLE_RE.sub("", text))
+        v_out, v_kinds = _redact_core(view)
+        if len(v_kinds) > len(kinds):
+            try:
+                from ducky.security.injection_guard import neutralize_boundary_markers
+                v_out = neutralize_boundary_markers(v_out)
+            except ImportError:  # pragma: no cover
+                pass
+            return v_out, v_kinds
+    return out, kinds
+
+
+def _redact_core(text: str) -> tuple[str, list[str]]:
     kinds: list[str] = []
     out = text
 
@@ -182,7 +235,7 @@ def redact_forbidden(text: str) -> tuple[str, list[str]]:
         out = _sub(kind, pat, out)
 
     def _assign(m: re.Match) -> str:
-        if not _assignment_is_secret(m.group("v")):
+        if not _assignment_is_secret(m.group("v"), m.group("k"), m.group("sep")):
             return m.group(0)
         kinds.append("credential")
         return m.group("k") + m.group("sep") + REDACT_FMT.format("credential")
@@ -228,16 +281,62 @@ def hard_block_reason(text: str, *, summary: bool = False) -> str | None:
     return None
 
 
+_MESSAGE_KEYS = ("role", "content")
+
+
+def _content_text(content) -> str:
+    """OpenAI 多模态 list-content → 纯文本（只取文本段）；其他形态 str() 兜底。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(p for p in parts if p)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def normalize_message_shapes(messages):
+    """f0.7.5（外审 qwen F-03 / muse L-08）：/add 入口把消息收敛成 {role, content:str}。
+
+    此前三道结构遍历（控制字符清洗、边界中和、原则 7 打码）只认字符串 content：
+    多模态 list-content 与 name / tool_call_id / arguments 等键原样穿过，native
+    内核随后在拼接处 500，而原文柜已落了未打码的原文。入口统一成纯文本后，
+    检测、清洗、打码、落库看到的是同一份字节；非白名单键丢弃（无召回用途）。
+    """
+    if isinstance(messages, list):
+        return [normalize_message_shapes(m) for m in messages]
+    if isinstance(messages, dict):
+        out = {k: messages[k] for k in _MESSAGE_KEYS if k in messages}
+        out["content"] = _content_text(messages.get("content"))
+        if not isinstance(out.get("role", "user"), str):
+            out["role"] = "user"
+        return out
+    return messages
+
+
 def redact_messages_struct(messages) -> tuple[Any, list[str]]:
-    """Structure-preserving redaction for /add messages (str | dict | list)."""
+    """Structure-preserving redaction for /add messages (str | dict | list).
+
+    f0.7.5：dict 的每个字符串值（不止 content）、list-content 里的文本段都打码；
+    role / type 这类枚举键不动。
+    """
     kinds: list[str] = []
     if isinstance(messages, str):
         out, k = redact_forbidden(messages)
         return out, k
     if isinstance(messages, dict):
-        out = dict(messages)
-        if isinstance(out.get("content"), str):
-            out["content"], k = redact_forbidden(out["content"])
+        out = {}
+        for key, val in messages.items():
+            if key in ("role", "type") or not isinstance(val, (str, list, dict)):
+                out[key] = val
+                continue
+            out[key], k = redact_messages_struct(val)
             kinds += k
         return out, kinds
     if isinstance(messages, list):
@@ -248,6 +347,19 @@ def redact_messages_struct(messages) -> tuple[Any, list[str]]:
             kinds += k
         return res, kinds
     return messages, kinds
+
+
+def redact_metadata(value, depth: int = 0):
+    """f0.7.5（结案留账 #3）：metadata 里的字符串值同样过原则 7。键名不动。"""
+    if depth > 8:
+        return value
+    if isinstance(value, str):
+        return redact_forbidden(value)[0]
+    if isinstance(value, dict):
+        return {k: redact_metadata(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_metadata(v, depth + 1) for v in value]
+    return value
 
 
 def message_texts(messages) -> list[tuple[str, str]]:

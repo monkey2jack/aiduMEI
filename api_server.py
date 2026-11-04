@@ -66,7 +66,7 @@ import os
 import threading
 import uuid as _uuid
 import time
-import hmac
+from ducky.security.auth import safe_equal as _safe_equal
 from pathlib import Path
 
 import uvicorn
@@ -132,6 +132,13 @@ async def _lifespan(_app: "FastAPI"):
     **之前** —— 拒绝启动就该在建表、预热、起线程之前发生。
     """
     _enforce_public_binding_policy()
+    # f0.7.5（5 家外审共识）：配了 agent 钥匙却没开强制 / 主 token 未绑定 → 醒目告警。
+    try:
+        from ducky.agent_keys import startup_warnings
+        for _w in startup_warnings():
+            logger.warning("⚠️ [AgentKeys] %s", _w)
+    except (ImportError, OSError, ValueError) as _e:  # 观测不许拖垮启动
+        logger.debug("agent key startup check skipped: %s", _e)
     # v20.3.2-beta（外审 P0-3）：单进程契约与公网熔断同级，**同样在起线程之前**。
     _enforce_single_process_policy()
     from ducky.process_lock import acquire_api_process_lock
@@ -342,7 +349,7 @@ def _request_authorized(request: Request) -> bool:
     supplied = request.headers.get("Authorization", "")
     alt = request.headers.get("X-API-Token", "")
     if token:
-        if supplied and hmac.compare_digest(supplied, f"Bearer {token}"):
+        if supplied and _safe_equal(supplied, f"Bearer {token}"):
             # v20.5.1（T-07）：钥匙 B 通过时把 token 指纹挂进请求上下文，
             # 供联邦层 _require_caller 做 caller↔凭据轻量绑定
             # （AIDUMEI_CALLER_BINDINGS 未配置时该指纹无人读取，零行为变化）。
@@ -352,7 +359,7 @@ def _request_authorized(request: Request) -> bool:
             agent_keys.set_current(None, fingerprint_token(token))
             return True
         # 兼容以 X-API-Token 头传递的调用方
-        if alt and hmac.compare_digest(alt, token):
+        if alt and _safe_equal(alt, token):
             set_request_token_fingerprint(token)
             set_request_auth_kind("bearer")
             agent_keys.set_current(None, fingerprint_token(token))
@@ -801,7 +808,6 @@ async def _payload_too_large_guard(request: Request, call_next):
                 content={"detail": "Client disconnected mid-body", "code": "client_disconnected"},
             )
         request._body = bytes(body_buf)  # 交下游（含空 body——GET 等无体请求也走这）
-    return await call_next(request)
     return await call_next(request)
 
 
