@@ -243,10 +243,10 @@ def sanitize_messages_struct(messages):
     if isinstance(messages, str):
         return sanitize_control_chars(messages)
     if isinstance(messages, dict):
-        out = dict(messages)
-        if isinstance(out.get("content"), str):
-            out["content"] = sanitize_control_chars(out["content"])
-        return out
+        # f0.7.5（外审 qwen F-03）：每个字符串值、list-content 里的文本段都处理，
+        # role / type 枚举键不动——「检测看得见、清洗够不着」的不对称不再存在。
+        return {k: (v if k in ("role", "type") else sanitize_messages_struct(v))
+                for k, v in messages.items()}
     if isinstance(messages, list):
         return [sanitize_messages_struct(m) for m in messages]
     return messages
@@ -263,10 +263,10 @@ def neutralize_messages_struct(messages):
     if isinstance(messages, str):
         return neutralize_boundary_markers(messages)
     if isinstance(messages, dict):
-        out = dict(messages)
-        if isinstance(out.get("content"), str):
-            out["content"] = neutralize_boundary_markers(out["content"])
-        return out
+        # f0.7.5（外审 qwen F-03）：每个字符串值、list-content 里的文本段都处理，
+        # role / type 枚举键不动——「检测看得见、清洗够不着」的不对称不再存在。
+        return {k: (v if k in ("role", "type") else neutralize_messages_struct(v))
+                for k, v in messages.items()}
     if isinstance(messages, list):
         return [neutralize_messages_struct(m) for m in messages]
     return messages

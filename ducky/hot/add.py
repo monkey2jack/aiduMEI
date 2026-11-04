@@ -533,6 +533,11 @@ def register_add_routes(app: FastAPI) -> None:
             req = req.model_copy(update={"metadata": sanitize_memory_structure(req.metadata)})
             # f0.7+ 原则 7：最先屏蔽密钥/证件片段——幂等载荷、变更日志、异步作业都只见屏蔽后的正文。
             from ducky import write_policy
+            # f0.7.5：先把消息收敛成 {role, content:str}（多模态 / 杂键不再绕过清洗），
+            # metadata 字符串值同样过原则 7（结案留账 #3）。
+            req = req.model_copy(update={
+                "messages": write_policy.normalize_message_shapes(req.messages),
+                "metadata": write_policy.redact_metadata(req.metadata)})
             _early_msgs, _early_kinds = write_policy.redact_messages_struct(req.messages)
             if _early_kinds:
                 req = req.model_copy(update={"messages": _early_msgs})

@@ -74,19 +74,27 @@ def register_evolve_routes(app: FastAPI) -> None:
         反馈立即写入 evolve_feedback 表并实时调整 salience。
         进化循环（每 6h）会汇总反馈趋势，做批量调整。
         """
+        # f0.7.5（外审 sesame F5 / deepseek F-08）：query / correction_text 落
+        # evolve_feedback 表，此前不过任何清洗与原则 7 打码，原话里的密钥原样入库。
+        from ducky.scope_auth import sanitize_memory_fields
+        from ducky.write_policy import redact_forbidden
+        _query, _corr = sanitize_memory_fields(req.query or "", req.correction_text or "")
+        _query = redact_forbidden(_query)[0] if _query else req.query
+        _corr = redact_forbidden(_corr)[0] if _corr else req.correction_text
         try:
             result = record_feedback(
                 memory_id=req.memory_id,
                 signal=req.signal,
-                query=req.query,
-                correction_text=req.correction_text,
+                query=_query,
+                correction_text=_corr,
                 user_id=req.user_id,
                 bank_id=req.bank_id,
             )
             return {"status": "ok", **result}
         except Exception as e:
             logger.error(f"evolve_feedback 失败: {e}", exc_info=True)
-            return {"status": "error", "detail": str(e)}
+            from ducky.api_errors import api_error_detail
+            return {"status": "error", "detail": api_error_detail(e)}
 
 
     @app.get("/evolve/report", **system_route("evolve_admin", summary="EvolveMem 进化状态报告"))

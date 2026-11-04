@@ -109,13 +109,20 @@ def configured() -> bool:
     return bool(load().get("keys"))
 
 
+def _safe_eq(a: str, b: str) -> bool:
+    try:
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    except (TypeError, ValueError, UnicodeError, AttributeError):
+        return False
+
+
 def match(token: str) -> dict | None:
     """The agent entry whose sha256 equals sha256(token), else None."""
     if not token:
         return None
     digest = sha256_hex(token)
     for entry in load().get("keys", []):
-        if isinstance(entry, dict) and hmac.compare_digest(str(entry.get("sha256", "")), digest):
+        if isinstance(entry, dict) and _safe_eq(str(entry.get("sha256", "")), digest):
             return entry
     return None
 
@@ -228,6 +235,23 @@ def check_route(resource: str, action: str, data: dict, method: str, path: str) 
     target = str(target or "").strip() or GLOBAL_TARGET
     caller = str(data.get("caller_user_id") or data.get("caller_agent_id") or data.get("caller") or "")
     check_scope(target, caller, action)
+
+
+def startup_warnings() -> list[str]:
+    """f0.7.5：钥匙已发但隔离没真正生效的两种形态，启动时说出来（不改默认值）。"""
+    data = load()
+    keys = [k for k in data.get("keys", []) if isinstance(k, dict)]
+    if not keys:
+        return []
+    out = []
+    if not enforce_on():
+        out.append(f"{len(keys)} agent key(s) configured but AIDUMEI_AGENT_KEY_ENFORCE is off: "
+                   "cross-identity access is only logged (shadow mode), not refused")
+    main = data.get("main")
+    if not (isinstance(main, dict) and main.get("callers")):
+        out.append("agent keys configured but the main token is not bound (scripts/agent_keys.py "
+                   "bind-main): anyone holding it can still act for every identity")
+    return out
 
 
 def new_token() -> str:

@@ -9,6 +9,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 from ducky.utils import DATA_DIR, DEFAULT_USER_ID
+from fastapi import HTTPException
 
 logger = logging.getLogger("aiduMEM.extended")
 AUTO_MEMORY_STATE = os.path.join(DATA_DIR, "auto_memory_state.json")
@@ -78,6 +79,20 @@ def _run_auto_memory():
     for sid, msgs in sessions.items():
         text = _auto_format_conversation(msgs)
         if len(text) > 50:
+            # f0.7.5（外审 qwen F-04）：后台环此前直调内核，绕过 /add 的注入检测、
+            # 控制字符清洗、边界中和与原则 7 打码。现在走同一组闸门；被拒的会话跳过。
+            try:
+                from ducky.scope_auth import sanitize_memory_or_raise
+                from ducky.security.injection_guard import neutralize_boundary_markers
+                from ducky.write_policy import hard_block_reason, redact_forbidden
+                text = neutralize_boundary_markers(sanitize_memory_or_raise(text))
+                text, _kinds = redact_forbidden(text)
+                if hard_block_reason(text, summary=True):
+                    logger.warning("auto_memory: 会话 %s 被原则 7 整段拒收，跳过", sid)
+                    continue
+            except (HTTPException, ValueError, TypeError) as e:
+                logger.warning("auto_memory: 会话 %s 未通过写入闸门，跳过: %s", sid, type(e).__name__)
+                continue
             try:
                 from ducky.gear import should_try_llm
                 _infer = should_try_llm()

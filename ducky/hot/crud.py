@@ -386,6 +386,17 @@ def register_crud_routes(app: FastAPI) -> None:
             from ducky.scope_auth import require_scope_access
             require_scope_access(req.owner, req.caller_user_id,
                                  bank_id=req.bank_id, action="write")
+            # f0.7.5（外审：qwen F-01 / sesame F1c / deepseek F-01 / muse H-01）：
+            # 只核「自报 owner」不够——fact_id 是全局自增整数，必须核该事实
+            # 是否落在 owner 的可见范围内；不可见与不存在同一 404 文案。
+            from ducky.facts_recall import fact_visible_to_tenant
+            from ducky.utils import get_facts_conn
+            _fconn = get_facts_conn()
+            _exists = _fconn.execute("SELECT 1 FROM facts WHERE id=?", (req.fact_id,)).fetchone()
+            _owner = _normalize_user_id(req.owner) if req.owner else DEFAULT_USER_ID
+            if _exists is None or not fact_visible_to_tenant(
+                    _fconn, req.fact_id, _owner, bank_id=req.bank_id):
+                raise HTTPException(404, "fact not found")
             res = set_opinion(req.fact_id, req.stance, confidence=req.confidence,
                               evidence_ids=req.evidence_ids, source=req.source,
                               owner=req.owner)
@@ -511,6 +522,16 @@ def register_crud_routes(app: FastAPI) -> None:
                                  bank_id=scope.bank_id, action="write")
             from ducky.scope_auth import sanitize_memory_or_raise
             content = sanitize_memory_or_raise(content)
+            # f0.7.5（外审 qwen F-05 / 宿主自审 SEC-03）：与 /add 同一字节口径——边界记号中和
+            # + 原则 7 整段拒收（整段邮件 / 超长原文 / 只剩密钥），不再能借 update 绕过。
+            from ducky.security.injection_guard import neutralize_boundary_markers
+            from ducky import write_policy as _wp
+            content = neutralize_boundary_markers(content)
+            _blk = _wp.hard_block_reason(content)
+            if _blk:
+                raise HTTPException(422, {"status": "rejected", "reason": _blk,
+                                          "message": "Not stored: aiduMEI keeps what a document or message "
+                                                     "says, never a raw copy or a credential."})
             if req.memory_id.strip().lower().startswith("verbatim:"):
                 return _update_verbatim_handle(req.memory_id, user_id, scope.bank_id, content)
             # v20.4.0（P1-3）：归属先验，未验证不许动向量。

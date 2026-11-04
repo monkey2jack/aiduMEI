@@ -60,6 +60,26 @@ def _strict_tenant_enabled() -> bool:
     return os.environ.get("AIDUMEM_STRICT_TENANT", "0").strip().lower() in {"1", "true", "yes"}
 
 
+def agent_key_tenant_active() -> bool:
+    """f0.7.5（外审 sesame F1）：agent 钥匙强制下也进入租户模式。
+
+    此前租户模式只认 CALLER_BINDINGS / strict 绑定；纯「一 agent 一钥匙 +
+    AIDUMEI_AGENT_KEY_ENFORCE=1」部署里事实层仍按单主人宽松语义判可见——
+    任何钥匙用自己的 user_id 调 /facts 就能读到主人身份（含「未认领」占位
+    身份）的全部事实。现在：本请求由已绑定钥匙认证且强制开启 → 租户模式。
+    """
+    try:
+        from ducky import agent_keys
+        return agent_keys.enforce_on() and agent_keys.current() is not None
+    except (ImportError, OSError, ValueError):  # pragma: no cover - import/ctx failure → 不放宽
+        return False
+
+
+def _tenant_mode_active() -> bool:
+    from ducky.security.auth import binding_policy_active
+    return binding_policy_active() or agent_key_tenant_active()
+
+
 def fact_visible_to_tenant(conn, fact_id, user_id: str | None, bank_id: str = DEFAULT_BANK_ID) -> bool:
     """该 fact_id 是否在指定租户的可见范围内（严格档下用于路由级校验）。
 
@@ -73,8 +93,7 @@ def fact_visible_to_tenant(conn, fact_id, user_id: str | None, bank_id: str = DE
 
     查询失败按不可见处理；仅无绑定模式的历史缺表/缺列保留兼容放行。
     """
-    from ducky.security.auth import binding_policy_active
-    bound = binding_policy_active()
+    bound = _tenant_mode_active()
     if not bound and not _strict_tenant_enabled():
         return True
     uid = (user_id or "").strip()
@@ -154,6 +173,23 @@ def tenant_clause(
         if not migrated:
             return " AND 1=0", []
         return f" AND {prefix}bank_id=? AND {prefix}user_id=?", [bank, uid or DEFAULT_USER_ID]
+
+    if agent_key_tenant_active():
+        # f0.7.5：钥匙强制下的租户模式。主人身份（DEFAULT_USER_ID 及占位
+        # 「未认领」拼写）保留本人 + 未认领行，但**不再是整库**；其他身份
+        # 只见本人行，不再借渠道标记 / DEFAULT_AGENT_ID 看共享兜底。
+        if not migrated:
+            return " AND 1=0", []
+        owner = uid or DEFAULT_USER_ID
+        placeholder_ids = unclaimed_user_ids()
+        if owner in placeholder_ids and bank == DEFAULT_BANK_ID:
+            ph = " OR ".join(f"{prefix}user_id=?" for _ in placeholder_ids)
+            return (
+                f" AND {prefix}bank_id=? AND ({prefix}user_id IS NULL "
+                f"OR TRIM({prefix}user_id)='' OR {ph})",
+                [bank, *placeholder_ids],
+            )
+        return f" AND {prefix}bank_id=? AND {prefix}user_id=?", [bank, owner]
 
     if migrated:
         if (not uid or uid == DEFAULT_USER_ID) and bank == DEFAULT_BANK_ID:

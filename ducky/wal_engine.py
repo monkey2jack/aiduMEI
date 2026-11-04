@@ -851,6 +851,9 @@ def cascade_delete_memory(
                                  owned_hint=bool(_kernel_text or _content_for_verbatim))
         # 5b. f0.7+ 写入判定影子日志（write_policy.db，无正文，只有 id/哈希/标签）
         _cascade_single_write_policy(memory_id, user_id, bank_id, res, _layer_failed)
+        # 5c. f0.7.5：自编辑历史 / 梦境合并日志里指向这条记忆的全文行
+        _cascade_single_derived_text(memory_id, user_id, res, _layer_failed,
+                                     owned=bool(res.get("facts") or _kernel_text or _content_for_verbatim))
 
         # 9. f0.3 (C1): session summaries derived from this item go too
         #    (right to delete covers derived records; tombstoned, restorable).
@@ -909,6 +912,13 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "hall_grants":      ("exempt", "v21.1 众神殿跨殿借阅凭据（grantor/grantee/actions，无记忆正文）：随殿停用撤销、随借阅生命周期管理——同 federation_grants 语义"),
     "distill_sources":  ("clean",  "f0.3（C1）会话精华来源账本（summary_hash/source_ref，无正文）：(user_id, bank_id) 谓词删除（§17）；单删某条来源时先据此级联删掉引用它的派生精华（走墓碑），再清掉对应行"),
     "idempotency_keys": ("clean",  "f0.3（C2）幂等回执：(user_id, bank_id) 谓词删除（§18）。新回执已脱敏不含正文，旧版回执可能带预览原文；另按 AIDUMEI_IDEMPOTENCY_TTL_DAYS 过期清理"),
+    "reflections":      ("clean",  "f0.7.5（外审 deepseek F-26 / muse H-08）：反思洞察全文，后台持续产生。表无 bank 列：delete_all 清默认域时按 user 轴删（同 refined_memories 口径），具名域只删证据指向本域已删 id 的行（§21）；单删无法定位（证据是提示词里的局部编号），不承诺"),
+    "memory_edits":     ("clean",  "f0.7.5（同上）：自编辑历史 old/new 全文。单删按 (memory_id, user_id) 删；delete_all 默认域按 user 轴删、具名域按本域已删 id 删（§21）"),
+    "autodream_log":    ("clean",  "f0.7.5（同上）：梦境合并日志 new_content 全文，表无租户列。按 target_id / source_ids 关联本域已删 fact id 精确删（§21）"),
+    "opinions":         ("clean",  "f0.7.5 元守卫静态扫描逼出：信念表（stance/source/evidence_ids，挂在 fact_id 上）此前无裁决。按本域已删 fact id 删（§21），单删同理"),
+    "facts_dedup_quarantine": ("clean", "f0.7.5 元守卫静态扫描逼出：联邦迁移去重时隔离的 facts 整行副本（含正文）。delete_all 按 (user_id[, bank_id]) 删（§21）"),
+    "agents":           ("exempt", "联邦 agent 注册表（agent_id/显示名/端点），不含记忆正文，随联邦生命周期管理"),
+    "federation_broadcast": ("exempt", "联邦广播游标（agent_id/last_fact_id/时间），不含记忆正文"),
     "skill_crystals":   ("exempt", "f0.3（C9）技能结晶表：全局表、无 user_id/bank_id 列，内容由 fact_key/类目统计派生（不存记忆正文）；无归属列故 delete_all 无法按域清理，列入 not_cleared 并附现存行数，让调用方看见残留规模"),
     # ── facts.db 之外的存储 ──
     "store:qdrant":     ("clean",  "作用域枚举 + 复筛逐点删（§1，_delete_scoped_vectors）"),
@@ -944,6 +954,24 @@ NATIVE_MEMORY_TABLES: Dict[str, str] = {
     "memory_history": "store:native_memory_history",
     "tombstones": "store:native_tombstones",
     "meta": "store:native_meta",
+}
+
+
+# f0.7.5（外审 deepseek F-27 / muse H-08）：元守卫此前只枚举测试夹具实建的 facts.db 表，
+# 各模块懒建的表（reflections / memory_edits / autodream_log）因此逃逸。守卫改为静态扫描
+# ducky/ 下全部 CREATE TABLE：每张表要么在 DELETE_CHAIN_MATRIX，要么在 NATIVE_MEMORY_TABLES，
+# 要么在下表里指向它所属存储的矩阵裁决（tests/test_f07pp_delete_chain_static.py）。
+STORE_TABLES: Dict[str, str] = {
+    "salience": "store:salience", "daily_metrics": "store:salience",
+    "evolve_feedback": "store:evolve", "evolve_adjustments": "store:evolve",
+    "evolve_episodes": "store:evolve", "evolve_episode_steps": "store:evolve",
+    "evolve_meta": "store:evolve", "evolve_queries": "store:evolve_queries",
+    "verdicts": "store:write_policy", "forget_rules": "store:write_policy",
+    "key_events": "store:write_policy",
+    "verbatim_turns": "store:verbatim", "verbatim_fts": "store:verbatim",
+    "verbatim_fts_map": "store:verbatim",
+    "workspace": "store:workspace", "workspace_v20": "store:workspace",
+    "vectors": "store:qdrant_local",
 }
 
 
@@ -1174,6 +1202,8 @@ def cascade_delete_all(
         _cascade_all_distill_sources(scope, res, _layer_failed)
         _cascade_all_idempotency(scope, res, _layer_failed)
         _cascade_all_write_policy(scope, res, _layer_failed)
+        # 21. f0.7.5：反思 / 自编辑历史 / 梦境合并日志（派生全文，此前不在矩阵）
+        _cascade_all_derived_text(scope, _fact_ids, _tenant_memory_ids, res, _layer_failed)
 
         # 核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。
         # 辅助层残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
@@ -2608,6 +2638,118 @@ def _cascade_all_idempotency(scope: Any, res: Dict[str, Any], layer_failed: Any)
     except (ImportError, sqlite3.Error, OSError) as e:
         logger.warning("idempotency_keys delete_all 清理失败: %s", e)
         layer_failed("idempotency_keys", e)
+
+
+# f0.7.5 §21：reflections / memory_edits 只有 user 轴（无 bank 列），一处片段供三张派生表共用。
+_BY_USER = " WHERE user_id=?"
+
+
+def _table_exists(conn, table: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (table,)).fetchone() is not None
+
+
+def _autodream_rows_for(conn, ids: set) -> list:
+    """autodream_log 无租户列：target_id 或 source_ids(JSON) 命中给定 fact id 的行。"""
+    ids = {str(i) for i in ids if str(i).isdigit()}
+    if not ids:
+        return []
+    hits = []
+    for rid, target, sources in conn.execute("SELECT id, target_id, source_ids FROM autodream_log"):
+        try:
+            src = {str(x) for x in (json.loads(sources) if sources else [])}
+        except (ValueError, TypeError):
+            src = set()
+        if str(target) in ids or (src & ids):
+            hits.append(rid)
+    return hits
+
+
+def _cascade_all_derived_text(scope: Any, fact_ids: set, tenant_ids: set,
+                              res: Dict[str, Any], layer_failed: Any) -> None:
+    """§21 f0.7.5：reflections / memory_edits / autodream_log 三张派生全文表。"""
+    default_bank = scope.bank_id == DEFAULT_BANK_ID
+    ids = {str(i) for i in tenant_ids} | {str(i) for i in fact_ids}
+    for table in ("reflections", "memory_edits", "autodream_log", "opinions",
+                  "facts_dedup_quarantine"):
+        try:
+            conn = get_facts_conn()
+            try:
+                if not _table_exists(conn, table):
+                    continue
+                n = 0
+                if table == "opinions":
+                    for fid in {str(i) for i in fact_ids if str(i).isdigit()}:
+                        n += conn.execute("DELETE FROM opinions WHERE fact_id=?", (int(fid),)).rowcount or 0
+                elif table == "facts_dedup_quarantine":
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(facts_dedup_quarantine)")}
+                    if "bank_id" in cols:
+                        frag, params = scope_clause(scope, flavor="canonical")
+                        n = conn.execute("DELETE FROM facts_dedup_quarantine WHERE 1=1 " + frag,
+                                         params).rowcount or 0
+                    elif "user_id" in cols and default_bank:
+                        n = conn.execute("DELETE FROM facts_dedup_quarantine" + _BY_USER,
+                                         (scope.user_id,)).rowcount or 0
+                elif table == "autodream_log":
+                    rows = _autodream_rows_for(conn, set(fact_ids))
+                    for rid in rows:
+                        n += conn.execute("DELETE FROM autodream_log WHERE id=?", (rid,)).rowcount or 0
+                elif default_bank:
+                    n = conn.execute(f"DELETE FROM {table}" + _BY_USER,  # noqa: S608 - 常量表名
+                                     (scope.user_id,)).rowcount or 0
+                elif table == "memory_edits":
+                    for mid in ids:
+                        n += conn.execute("DELETE FROM memory_edits" + _BY_USER + " AND memory_id=?",
+                                          (scope.user_id, mid)).rowcount or 0
+                else:  # reflections, named bank: evidence 引用本域已删 id 的行
+                    for rid, ev in conn.execute("SELECT id, evidence FROM reflections" + _BY_USER,
+                                                (scope.user_id,)).fetchall():
+                        try:
+                            refs = {str(x) for x in (json.loads(ev) if ev else [])}
+                        except (ValueError, TypeError):
+                            refs = set()
+                        if refs & ids:
+                            n += conn.execute("DELETE FROM reflections WHERE id=?", (rid,)).rowcount or 0
+                conn.commit()
+                res[f"{table}_deleted"] = int(n)
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError) as e:
+            logger.warning("%s delete_all 清理失败: %s", table, e)
+            layer_failed(table, e)
+
+
+def _cascade_single_derived_text(memory_id: str, user_id: str,
+                                 res: Dict[str, Any], layer_failed: Any, *, owned: bool) -> None:
+    """单删：memory_edits 按 (memory_id, user_id)；opinions / autodream_log 无租户列，
+    只在本租户确实认领到这条记忆后才按 fact id 关联删（拿别人的 id 来删，什么都碰不到）。"""
+    mid = str(memory_id)
+    fid = mid.split(":", 1)[1] if mid.startswith("fact:") else mid
+    for table in ("memory_edits", "autodream_log", "opinions"):
+        if table != "memory_edits" and not owned:
+            continue
+        try:
+            conn = get_facts_conn()
+            try:
+                if not _table_exists(conn, table):
+                    continue
+                if table == "opinions":
+                    n = conn.execute("DELETE FROM opinions WHERE fact_id=?",
+                                     (int(fid),)).rowcount or 0 if fid.isdigit() else 0
+                elif table == "memory_edits":
+                    n = conn.execute("DELETE FROM memory_edits" + _BY_USER + " AND memory_id IN (?, ?)",
+                                     (user_id, mid, fid)).rowcount or 0
+                else:
+                    n = 0
+                    for rid in _autodream_rows_for(conn, {fid}):
+                        n += conn.execute("DELETE FROM autodream_log WHERE id=?", (rid,)).rowcount or 0
+                conn.commit()
+                res[f"{table}_deleted"] = int(n)
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError) as e:
+            logger.warning("%s 单删清理失败: %s", table, e)
+            layer_failed(table, e)
 
 
 def _cascade_all_write_policy(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
