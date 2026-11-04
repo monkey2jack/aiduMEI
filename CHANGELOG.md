@@ -1,5 +1,23 @@
 # aiduMEI 版本演进史
 
+## v0.7.5 (f0.7.5 · 2026-11-04 · 第二轮外审 P0 收口 · 大仓 Tag/Release 翻牌 f0.7++)
+
+> **公开翻牌(2026-11-04,纯文档提交,无运行时改动、包版本不变)**:维护者授权把 f0.7.5 公开为 **f0.7++**,大仓 Tag/Release `f0.7++` 指向本版代码(包 `0.7.5`)。`PUBLIC_RELEASE_VERSION` 升至 f0.7++,谱系 0.7.5 行对外列记 f0.7++,`FULL_VERSION` 保持 f0.7.5(`/health` 不变)。
+
+> **用例总数 4007 → 4054**(本版 = 行为 3426 + 脚本/钩子 482 + 守卫 146,`pytest --collect-only` 实测,`scripts/count_test_kinds.py` 可复算)。
+
+f0.7+ 第二轮外部审计(六家,2026-11-03/04)报告的问题里,影响隔离、凭据和删除承诺的部分。
+
+- **钥匙强制下事实层按身份隔离**:租户模式此前只认 `AIDUMEI_CALLER_BINDINGS` / strict 绑定。纯「一 agent 一钥匙 + `AIDUMEI_AGENT_KEY_ENFORCE=1`」 部署里,事实层仍按单主人宽松语义——任何钥匙用自己的 `user_id` 调 `/facts`,就能读到主人身份与「未认领」行的全部事实。现在由已绑定钥匙认证的请求进入租户模式:只见本身份的行;主人身份(`DEFAULT_USER_ID` 与占位拼写)保留本人 + 未认领行,但不再等于整库。未绑定的主 token、控制台会话照旧(单主人部署无变化)。
+- **`/opinions/set` 核事实真实归属**:此前只核请求体自报的 `owner`,`fact_id` 是自增整数,别的身份可以往你的事实上写观点、翻转聚合判定。现在事实不在 owner 可见范围内按 404。
+- **原则 7 补漏**:在去掉零宽/软连字符、全角字母数字转半角的视图上重扫;键名左边界允许下划线前缀(`DB_PASSWORD=`、`XXX_API_KEY=`、`aws_secret_access_key`);口令类键名下纯字母口令(明确用 `:` `=` 赋值、且不是 required/expired 这类状态词)也打码,全大写带数字的值不再当占位符;JSON 形态(`"api_key": "…"`)与「是：」复合分隔;`max_token=4096` 这类纯数字参数不误伤。`/add` 的 metadata 字符串值同样打码。
+- **`/evolve/feedback`**:`query` / `correction_text` 入库前清洗 + 打码。
+- **凭据比较不再被非 ASCII 打崩**:主 token、`X-API-Token`、控制台口令、MCP SSE 改为 UTF-8 字节比较;此前中文口令登录 500、任何带 ≥0x80 字节的鉴权头每请求 500(且发生在登录失败计数之前)。
+- **删除真删**:`reflections`(反思洞察全文)、`memory_edits`(自编辑前后全文)、`autodream_log`(合并全文)、`opinions`、`facts_dedup_quarantine` 进入删除矩阵并补清理腿;此前 delete_all 报 committed 而这些全文留在库里且不在 not_cleared。删除元守卫改为静态扫描 `ducky/` 下全部 `CREATE TABLE`,懒建表不再逃逸。
+- **写入闸门不再被结构绕过**:`/add` 入口把消息收敛成 `{role, content:str}`——多模态 list-content 只取文本段,`name` / `tool_call_id` 等杂键丢弃;此前三道结构遍历只认字符串 content,list-content 原文先落原文柜再 500。后台 `auto_memory` 环改走同一组闸门;`/update` 补边界记号中和与整段拒收。
+- 启动告警:配了 agent 钥匙但 `AIDUMEI_AGENT_KEY_ENFORCE` 未开、或主 token 未绑定。控制台图谱面板调用未定义函数的 bug、中间件重复 return。生产运行态决策模型收编进树。
+- 新增用例 47 条:六家报告的绕过样例逐条入库(修复前全部复现)、误报对照、事实层与观点跨身份、反馈打码、list-content、非 ASCII 凭据、派生表删除与静态元守卫、启动告警。
+
 ## v0.7.4 (f0.7.4 · 2026-11-02 · 过滤词不再误伤本人记忆 + salience 行带真实身份 · 大仓 Tag/Release 翻牌 f0.7+)
 
 > **公开翻牌(2026-11-02,纯文档提交,无运行时改动、包版本不变)**:维护者授权把 f0.7.1–f0.7.4 四个内部补丁合并为公开版本 **f0.7+**,大仓 Tag/Release `f0.7+` 指向本版代码(包 `0.7.4`)。`PUBLIC_RELEASE_VERSION` 升至 f0.7+,LINEAGE 0.7.4 行对外列记 f0.7+(f0.6+ 先例);`FULL_VERSION` 保持 f0.7.4,`/health` 输出不变。

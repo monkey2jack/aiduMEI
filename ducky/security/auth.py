@@ -52,6 +52,24 @@ from typing import Any
 
 logger = logging.getLogger("aiduMEM.security.auth")
 
+
+def safe_equal(a, b) -> bool:
+    """常数时间比较，任意字符都不抛异常（f0.7.5 · 外审 deepseek F-20）。
+
+    ``hmac.compare_digest`` 对含非 ASCII 字符的 str 直接抛 TypeError：中文口令
+    让 /api/login 永远 500、且发生在登录失败计数之前（限速被绕过）；HTTP 头按
+    latin-1 解码，任何 ≥0x80 的字节都能让鉴权中间件 500。统一转 UTF-8 字节比较，
+    任何异常按「不相等」处理。
+    """
+    try:
+        if a is None or b is None:
+            return False
+        ab = a if isinstance(a, bytes) else str(a).encode("utf-8", "surrogatepass")
+        bb = b if isinstance(b, bytes) else str(b).encode("utf-8", "surrogatepass")
+        return hmac.compare_digest(ab, bb)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+
 # ── 口令哈希 ────────────────────────────────────────────────────────────
 
 _PBKDF2_ALGO = "pbkdf2_sha256"
@@ -97,7 +115,7 @@ def verify_password(password: str, stored: str) -> tuple[bool, bool]:
                 "sha256", password.encode("utf-8"),
                 bytes.fromhex(salt_hex), rounds,
             )
-            ok = hmac.compare_digest(dk.hex(), expected)
+            ok = safe_equal(dk.hex(), expected)
             # v22.0（雷霆审计 B10）：旧轮数（200k）验证通过时提示升级——
             # 第二个返回值 True 表示「该用新轮数重哈希」。
             return ok, (ok and rounds < _PBKDF2_ROUNDS)
@@ -105,7 +123,7 @@ def verify_password(password: str, stored: str) -> tuple[bool, bool]:
         if ":" in stored:
             salt, expected = stored.split(":", 1)
             cand = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-            ok = hmac.compare_digest(cand, expected)
+            ok = safe_equal(cand, expected)
             # 旧格式：校验通过则提示调用方升级
             return ok, ok
     except Exception as exc:
@@ -270,7 +288,7 @@ def check_ui_password(password: str) -> bool:
                 logger.info("🔐 控制台口令哈希已自动升级为 PBKDF2（旧单轮 sha256 已淘汰）")
             return True
 
-    if env_pwd and hmac.compare_digest(password, env_pwd):
+    if env_pwd and safe_equal(password, env_pwd):
         return True
     return False
 

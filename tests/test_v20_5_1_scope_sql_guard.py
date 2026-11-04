@@ -43,7 +43,7 @@ _SCOPE_FRAGMENT_RE = re.compile(r"(?:user_id|bank_id|agent_id|source)\s*=\s*\?")
 # 凡「语义与正规谓词不同」的，必须已在该文件内有注释说明分歧原因。
 _BASELINE: dict[str, tuple[int, str]] = {
     "ducky/memory_kernel/impl_native.py": (16, "f0.7 P0 +4:旧库 facts 同键查重(建唯一索引前)与单删清本租户历史两处精确 user_id+bank_id 等值;按 id 定位的租户条件走 _and_tenant 一处拼。f0.6+++ WP3a:翻译 mem0 filters 与派生事实/同文副本级联的精确 user_id+bank_id 匹配;翻译 mem0 filters 契约(等值,默认域不下推 bank)而非 facts 作用域谓词;单库切换(WP3b)时随旧路径一起收敛到 scope_clause"),
-    "ducky/wal_engine.py": (21, "删除链多为 IN(?) 精确匹配；作用域枚举已委托 legacy_fact_scope_predicate；存量片段随 cascade 重构分批收敛"),
+    "ducky/wal_engine.py": (22, "f0.7.5 +1：§21 派生全文表（reflections/memory_edits 无 bank 列）共用一处 user 轴片段 _BY_USER；删除链多为 IN(?) 精确匹配；作用域枚举已委托 legacy_fact_scope_predicate；存量片段随 cascade 重构分批收敛"),
     "ducky/verbatim_vault.py": (18, "全文件一律精确 user_id+bank_id（:665 注释钉死语义）；_delete_turn_ids 已迁 scope_clause（v20.5.1），余量待分批迁移"),
     "ducky/text_fts.py": (12, "FTS 触发器/镜像表 SQL；作用域由调用侧保证，片段为精确匹配；待评估是否改由 scope_clause 统一出口"),
     "ducky/tombstone.py": (12, "墓碑精确删除，user_id 精确匹配；待迁 canonical"),
