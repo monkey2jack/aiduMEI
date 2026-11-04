@@ -1924,7 +1924,7 @@ function renderParams(cfg) {
 async function renderGraphEdgesSection(body, uid, bank) {
   var stats;
   try { stats = await API.get('/graph/stats', { user_id: uid, bank_id: bank }); }
-  catch (e) { body.insertAdjacentHTML('beforeend', '<div class="sec">' + section_failure(e) + '</div>'); return; }
+  catch (e) { body.insertAdjacentHTML('beforeend', '<div class="sec">' + failure(e) + '</div>'); return; }
   var byType = (stats && stats.by_type) || {};
   var total = (stats && stats.total_edges) || 0;
   var parts = Object.keys(byType).map(function (k) {

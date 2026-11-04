@@ -89,7 +89,7 @@ out["S1_reconcile"] = [rep.get("recovered"), rep.get("failed")]
 out["S1_after"] = vsess(T1)
 
 # S-2 去重合并(sA+sB 一条记忆 M1),另一条 M2 改写成同一句;删 M1 → sA、sB 原文都走
-T2 = "S2我家wifi密码是qwe789"
+T2 = "S2我家wifi名称是qwe789"  # f0.7.5：「密码是qwe789」现按原则 7 打码，夹具改成非凭据
 add(T2, "sA")
 add(T2, "sB")
 add("S2无关记忆", "sC")
