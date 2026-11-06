@@ -39,6 +39,7 @@ import os
 import re
 import sqlite3
 import threading
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -74,6 +75,7 @@ def max_raw_chars() -> int:
 REDACT_FMT = "[redacted:{}]"
 
 # Specific, prefixed credential shapes: near-zero false positives.
+# A pattern with a named group ``v`` redacts only that group; otherwise the whole match.
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("private_key", re.compile(
         r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)")),
@@ -89,40 +91,113 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("api_key", re.compile(r"\bcf[a-z]{2}_[A-Za-z0-9]{30,}\b")),
     ("api_key", re.compile(r"\bpypi-[A-Za-z0-9_\-]{50,}")),
     ("api_key", re.compile(r"\bnpm_[A-Za-z0-9]{30,}\b")),
-    ("api_key", re.compile(r"\b(?:hf|r8|pk_live|sk_live|rk_live)_[A-Za-z0-9]{20,}\b")),
+    # f0.7.6（外审 R2-07）：补 sk_test_ / rk_test_。
+    ("api_key", re.compile(r"\b(?:hf|r8|pk_live|sk_live|rk_live|sk_test|rk_test)_[A-Za-z0-9]{20,}\b")),
+    ("api_key", re.compile(r"(?i)\b(?:Shared)?Access?Key\s*=\s*(?P<v>[A-Za-z0-9+/]{20,}={0,2})")),
+    ("bot_token", re.compile(r"\b\d{8,10}:AA[A-Za-z0-9_\-]{30,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
     ("bearer_token", re.compile(r"(?i)\bbearer\s+(?=[A-Za-z0-9._~+/\-]*\d)[A-Za-z0-9._~+/\-]{20,}=*")),
+    ("basic_auth", re.compile(r"\bBasic\s+(?P<v>(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{12,}={0,2})")),
+    ("cookie", re.compile(
+        r"(?i)\b(?:set-)?cookie\s*:\s*(?P<v>[^\s=;,]+=[^\s;]+(?:;\s*[^\s=;]+=?[^\s;]*)*)")),
+    ("private_key", re.compile(
+        r"(?i)(?:私钥|private[\s_\-]?key)[^\n]{0,24}?(?P<v>(?<![0-9A-Fa-f])(?:0x)?[0-9A-Fa-f]{64}(?![0-9A-Fa-f]))")),
+    ("seed_phrase", re.compile(
+        r"(?i)(?:助记词|mnemonic|seed[\s_\-]?phrase|recovery[\s_\-]?phrase)[^\n]{0,12}?"
+        r"(?P<v>(?<![A-Za-z])[a-z]{3,8}(?:[ \t,]+[a-z]{3,8}){11,23}(?![A-Za-z]))")),
     ("embedded_image", re.compile(r"data:image/[A-Za-z0-9.+\-]+;base64,[A-Za-z0-9+/=\s]{200,}")),
     ("url_credentials", re.compile(r"(?<=://)[^\s/:@]{1,64}:[^\s/@]{3,128}(?=@)")),
 )
+# A seed phrase is BIP39-like words, not an English sentence that follows the word "mnemonic".
+_SEED_STOPWORDS = frozenset(
+    "the and is are was were to of in for with that this it you have has when what how can will be not "
+    "but or if my your our on at as from by an do does just very easy hard help helps".split())
 
-# key = value assignments: only the value goes, the sentence stays.
-_ASSIGN_RE = re.compile(
-    # f0.7.5（外审 sesame F3 / muse H-07）：左边界从 \b 改为「前面不是字母数字」——
-    # 下划线是 \w，`DB_PASSWORD=` / `DEEPSEEK_API_KEY=` / `aws_secret_access_key =`
-    # 这类 .env 标准写法此前整句漏打码。右边界仍是 \b（`password_hint:` 不算）。
-    r"(?i)(?P<k>(?<![A-Za-z0-9])(?:api[_\- ]?key|access[_\- ]?key|secret(?:[_\- ]?(?:access[_\- ]?)?key)?|"
-    r"client[_\- ]?secret|app[_\- ]?secret|auth[_\- ]?token|access[_\- ]?token|refresh[_\- ]?token|token|"
-    r"password|passwd|pwd|passphrase)\b|密码|口令|密钥|秘钥|令牌)"
-    # 分隔符：允许 JSON 键名后的引号（`"api_key": "…"`），以及「是：」「为：」「is:」复合写法。
-    r"(?P<sep>[*_`\"']{0,3}\s*(?:(?:is|是|为)\s*[:=：]?|[:=：])\s*[*_]{0,3}\s*)[\"'`]?"
-    r"(?P<v>[A-Za-z0-9_\-+/=.!@#$%^&*~?]{6,200})")
-_PLACEHOLDER_RE = re.compile(r"^(?:[A-Z][A-Z_]+|(?i:x{3,}|\*{3,}|\.{3,}|<.*>|\$\{?\w+\}?|changeme|"
-                             r"redacted.*|your[_\-].*|example.*|placeholder.*|none|null|true|false)|"
-                             r"[a-z]+(?:_[a-z]+)+)$")
-# 口令类键名后、不带数字/大小写/符号的值：只在明确赋值（: = ：）时算口令，
-# 且排除描述状态的常见词（"password: required"、"token: expired"）。
-_PASSWORD_KEY_RE = re.compile(r"(?i)(?:password|passwd|pwd|passphrase|secret|密码|口令|密钥|秘钥)")
+# ── f0.7.6（外审 R2-01..R2-07）：凭据「键 + 分隔 + 值」的识别 ─────────────
+# 键名按 _ - . 空格与驼峰拆词，任一词（或相邻两词）属于下表就是凭据键：
+#   pw     口令类：纯小写字母、中文、≥4 位纯数字都算口令；
+#   pin    PIN / CVV：≥4 位数字或「强」值，纯字母不算；
+#   secret secret / 私钥 / 助记词：纯字母只在显式 : = 下算；
+#   token  token / api key / cookie：纯字母需显式分隔且 ≥16 位。
+_KEY_TIERS: dict[str, str] = {
+    **dict.fromkeys(("password", "passwords", "passwd", "pwd", "passphrase", "passcode"), "pw"),
+    **dict.fromkeys(("pin", "cvv", "cvc"), "pin"),
+    **dict.fromkeys(("secret", "secrets", "privatekey", "secretkey", "mnemonic"), "secret"),
+    **dict.fromkeys(("token", "tokens", "apikey", "accesskey", "credential", "credentials",
+                     "cookie", "authorization"), "token"),
+}
+_KEY_PAIRS: dict[tuple[str, str], str] = {
+    ("api", "key"): "token", ("access", "key"): "token", ("account", "key"): "token",
+    ("private", "key"): "secret", ("secret", "key"): "secret",
+    ("seed", "phrase"): "secret", ("recovery", "phrase"): "secret",
+}
+# 这些词出现在键名里时，键描述的是口令的属性而不是口令本身（password_hint / max_tokens）。
+_KEY_NEG = frozenset({
+    "hint", "hints", "policy", "policies", "length", "len", "reset", "required", "strength", "manager",
+    "field", "prompt", "expiry", "expires", "expired", "limit", "limits", "max", "min", "count", "type",
+    "name", "file", "path", "url", "uri", "endpoint", "header", "usage", "rule", "rules", "format",
+    "regex", "pattern", "id", "ids", "ttl", "timeout", "budget", "size", "economy", "rotation", "env",
+})
+_TIER_RANK = {"pw": 4, "pin": 3, "secret": 2, "token": 1}
+_CJK_KEY_RE = re.compile("密码|口令|安全码|助记词|密钥|秘钥|私钥|令牌")
+_CJK_KEY_TIER = {"密码": "pw", "口令": "pw", "安全码": "pin", "助记词": "secret",
+                 "密钥": "secret", "秘钥": "secret", "私钥": "secret", "令牌": "token"}
+# 中文键后紧跟这些字：说的是口令的属性（密码学、密码提示、密码长度），不是口令本身。
+_CJK_KEY_NEG_RE = re.compile(r"学|提示|策略|规则|长度|强度|管理|错误|重置|找回|保护|输入框|复杂度|位数|格式|要求|框")
+_ASCII_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*")
+_CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+_KEY_STEM_RE = re.compile(r"(?i)pass|pwd|secret|token|key|credential|mnemonic|pin|cvv|cvc|cookie|authoriz|phrase")
+# 分隔：verb 动词（改成/设为…）、nat 自然语言（is/是/为/叫，可再跟 : =）、exp 显式（: = => ->）、
+# weak 弱分隔（, ——）。键名后允许 JSON/markdown 的收尾引号与 `码/号`（PIN码）。
+_SEP_RE = re.compile(
+    "(?:码|号)?[*_`\"'\u201d\u2019\u300d\u300f\u300b]{0,3}[ \t]*"
+    r"(?:(?P<verb>(?:改成|改为|设为|设置为|设置成|设成|换成|换为|更新为|更改为|修改为)了?)"
+    r"|(?P<nat>(?<![A-Za-z])(?:is|was|IS|Is|Was|WAS)(?![A-Za-z])|是|为|叫)(?:[ \t]*(?P<natx>=>|->|[:=]))?"
+    r"|(?P<exp>=>|->|[:=])"
+    r"|(?P<weak>,|——|—))"
+    r"[ \t]*(?:\n[ \t]*)?[*_`]{0,3}[ \t]*")
+# 「the password for my gmail is X」：英文键与分隔之间允许一小段介词短语；此时值必须「强」。
+_GAP_RE = re.compile(
+    r"[ \t]+(?:for|of|to|on|at|in)[ \t]+(?:[\w.@'\-]+[ \t]+){0,3}?[\w.@'\-]+[ \t]*"
+    r"(?=(?:is|was)(?![A-Za-z])|[:=])", re.I)
+_QUOTES = {'"': '"', "'": "'", "`": "`", "\u201c": "\u201d", "\u2018": "\u2019",
+           "\u300c": "\u300d", "\u300e": "\u300f", "\u300a": "\u300b", "<": ">"}
+_VALUE_STOP = set(" \t\r\n,;\u3002\u3001\"'`\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f\u300a\u300b<>")
+_SYMBOLS = set("!@#$%^&*+/=~?:()[]{}|\\")
+_PLACEHOLDER_WORDS = frozenset({"changeme", "example", "placeholder", "redacted", "none", "null",
+                                "true", "false", "nil", "todo", "tbd"})
+_PLACEHOLDER_TOKENS = frozenset({"your", "my", "placeholder", "example", "changeme", "redacted"})
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:[xX]{3,}|\*{3,}|\.{3,}|\u2026+|\$\{\w+\}|\$[A-Z_][A-Z0-9_]*|\{\{\s*[\w.]+\s*\}\}|%[A-Z_][A-Z0-9_]*%)$")
 _STATE_WORDS = frozenset({
     "required", "optional", "invalid", "expired", "missing", "empty", "wrong", "correct",
     "incorrect", "changed", "reset", "needed", "protected", "hidden", "unknown", "default",
     "enabled", "disabled", "masked", "omitted", "removed", "revoked", "rotated", "updated",
     "provided", "supplied", "redacted", "secret", "password", "token", "notset", "unset",
+    "valid", "weak", "strong", "short", "simple", "complex", "secure", "insecure", "same", "different",
+    "saved", "stored", "encrypted", "hashed", "compromised", "leaked", "stolen", "forgotten", "shared",
+    "attached", "below", "above", "here", "there", "case-sensitive", "working", "broken", "blank",
+    "fine", "good", "great", "okay", "accepted", "rejected", "locked", "unlocked",
 })
-# 不带信息量、只用于拆分识别的格式字符（零宽、软连字符、BOM、词连接符等）。
-_INVISIBLE_RE = re.compile("[\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff]")
-# 连续 ≥6 个全角 ASCII 字母数字/连字符/下划线/等号：按半角重扫一遍。
-_FULLWIDTH_RUN_RE = re.compile("[\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\uff0d\uff3f\uff1d]{6,}")
+# 中文值里出现这些字/词，说的是状态（已经改好了、是什么、不对），不是口令本身。
+_CJK_STATE_RE = re.compile(
+    r"[了吗呢吧么啊呀嘛哦不没已改忘错对否请要需该]|什么|怎么|多少|几位|位数|正确|过期|失效|重置|修改|设置|"
+    r"提示|一样|相同|记得|告诉|发给|输入|填写|知道|问题|空的")
+# 识别视图：逐字 NFKC，去掉所有 Cf/Mn 与韩文填充符，拉丁/西里尔/希腊同形字折叠到拉丁。
+_FILLERS = frozenset("\u3164\u115f\u1160\uffa0")
+_CONFUSABLES = str.maketrans({
+    "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0441": "c", "\u0443": "y",
+    "\u0445": "x", "\u0456": "i", "\u0458": "j", "\u0455": "s", "\u0501": "d", "\u04bb": "h",
+    "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041a": "K", "\u041c": "M", "\u041d": "H",
+    "\u041e": "O", "\u0420": "P", "\u0421": "C", "\u0422": "T", "\u0425": "X", "\u0406": "I",
+    "\u0408": "J", "\u0405": "S",
+    "\u03bf": "o", "\u03b1": "a", "\u03b5": "e", "\u03b9": "i", "\u03ba": "k", "\u03c1": "p",
+    "\u03c4": "t", "\u03c5": "u", "\u03c7": "x", "\u03bd": "v",
+    "\u0391": "A", "\u0392": "B", "\u0395": "E", "\u0396": "Z", "\u0397": "H", "\u0399": "I",
+    "\u039a": "K", "\u039c": "M", "\u039d": "N", "\u039f": "O", "\u03a1": "P", "\u03a4": "T",
+    "\u03a5": "Y", "\u03a7": "X",
+})
+
 
 # ID documents: a valid PRC resident ID (region + birth date + checksum).
 _CN_ID_RE = re.compile(r"(?<![0-9A-Za-z])([1-6]\d{5})((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(\d{3}[0-9Xx])(?![0-9A-Za-z])")
@@ -164,33 +239,199 @@ def _luhn(num: str) -> bool:
     return s % 10 == 0
 
 
-def _assignment_is_secret(value: str, key: str = "", sep: str = "") -> bool:
-    v = value.strip().strip("\"'`")
-    if _PLACEHOLDER_RE.match(v) or v.startswith("[redacted"):
+def _is_cjk(c: str) -> bool:
+    return "\u3400" <= c <= "\u9fff" or "\uf900" <= c <= "\ufaff"
+
+
+def _split_ident(word: str) -> list[str]:
+    toks: list[str] = []
+    for part in re.split(r"[_.\-\s]+", word):
+        toks.extend(t.lower() for t in _CAMEL_RE.findall(part))
+    return toks
+
+
+def _key_tier(tokens: list[str]) -> str | None:
+    if not tokens or any(t in _KEY_NEG for t in tokens):
+        return None
+    best = None
+    cands = [_KEY_TIERS.get(t) for t in tokens]
+    cands += [_KEY_PAIRS.get(p) for p in zip(tokens, tokens[1:])]
+    for tier in cands:
+        if tier and (best is None or _TIER_RANK[tier] > _TIER_RANK[best]):
+            best = tier
+    return best
+
+
+def _is_placeholder(v: str) -> bool:
+    if v.lower() in _PLACEHOLDER_WORDS or _PLACEHOLDER_RE.match(v):
+        return True
+    m = re.fullmatch(r"<\s*([A-Za-z_][A-Za-z_ \-]*)\s*>", v)
+    if m:
+        inner = m.group(1)
+        toks = set(_split_ident(inner))
+        return not any(c.islower() for c in inner) or bool(toks & _PLACEHOLDER_TOKENS) or any(
+            t in _KEY_TIERS for t in toks)
+    # an env-var reference that names itself: YOUR_PASSWORD / AIDUMEM_API_TOKEN / placeholder_value_here
+    if "_" in v and re.fullmatch(r"[A-Za-z][A-Za-z_]*", v):
+        toks = _split_ident(v)
+        return bool(set(toks) & _PLACEHOLDER_TOKENS) or _key_tier(
+            [t for t in toks if t not in _KEY_NEG]) is not None
+    return False
+
+
+def _value_ok(v: str, tier: str, mode: str, raw: str | None = None) -> bool:
+    """mode: explicit (: = verb quotes) | natural (is / 是 / 为) | weak (, —— gap no-separator)."""
+    v = v.strip()
+    if not v or v.startswith("[redacted") or _is_placeholder(raw or v) or _is_placeholder(v):
         return False
-    # a path or a URL after "pwd:" / "token=" is a location, not the secret itself
-    # (ops chat is full of `pwd: /srv/...`); embedded URL credentials have their own pattern.
     if v.startswith(("/", "~/", "./", "../", "http://", "https://")):
         return False
-    is_password_key = bool(_PASSWORD_KEY_RE.search(key or ""))
-    # `max_token=4096` 是参数不是凭据；口令类键名下的纯数字（PIN）照打。
-    if v.isdigit() and not is_password_key:
-        return False
+    if any(_is_cjk(c) for c in v):
+        if tier != "pw" or mode == "weak" or len(v) < 4:
+            return False
+        return not _CJK_STATE_RE.search(v)
+    if v.isdigit():
+        return tier in ("pw", "pin") and len(v) >= (6 if mode == "weak" else 4)
+    has_alpha = any(c.isalpha() for c in v)
     has_digit = any(c.isdigit() for c in v)
-    has_mixed = any(c.isupper() for c in v) and any(c.islower() for c in v)
-    has_symbol = any(c in "!@#$%^&*+/=~?" for c in v)
-    if has_digit or has_mixed or has_symbol:
-        return True
-    # f0.7.5（外审 haiku F-02 / deepseek F-07）：`password: letmein` 这类纯字母口令。
-    explicit = any(ch in (sep or "") for ch in ":=：")
-    if not explicit or v.lower() in _STATE_WORDS:
+    has_symbol = any(c in _SYMBOLS for c in v)
+    has_mixed = any(c.isupper() for c in v[1:]) and any(c.islower() for c in v)
+    if mode == "weak":
+        return has_alpha and (has_digit or has_symbol) and len(v) >= 6
+    if has_digit or has_symbol or has_mixed:
+        return len(v) >= (4 if tier in ("pw", "pin") else 6)
+    if v.lower() in _STATE_WORDS or tier == "pin":
         return False
-    # 口令类键名：纯字母也算；token / key 类：≥16 位的纯字母串（`token=abcdefghijklmnop`）。
-    return is_password_key or len(v) >= 16
+    if tier == "pw":
+        return len(v) >= (5 if mode == "natural" else 4)
+    if mode != "explicit":
+        return False
+    return len(v) >= (4 if tier == "secret" else 16)
 
 
-def _fullwidth_to_ascii(m: re.Match) -> str:
-    return "".join(chr(ord(c) - 0xFEE0) for c in m.group(0))
+def _read_value(view: str, p: int, tier: str) -> tuple[int, int, str | None, bool] | None:
+    """Value span after a separator: (start, end, raw-for-placeholder, quoted)."""
+    if p >= len(view):
+        return None
+    close = _QUOTES.get(view[p])
+    if close:
+        end = view.find(close, p + 1, p + 202)
+        nl = view.find("\n", p + 1, end if end > 0 else p + 202)
+        if end > p + 1 and nl < 0:
+            return p + 1, end, view[p:end + 1], True
+        p += 1
+    allow_cjk = tier == "pw"
+    q = p
+    while q < len(view) and q - p < 200:
+        c = view[q]
+        if c in _VALUE_STOP or (_is_cjk(c) and not allow_cjk) or (not _is_cjk(c) and not c.isprintable()):
+            break
+        q += 1
+    # an ASCII password followed by more Chinese (「密码：Hunter2024!x别告诉别人」) ends at the Chinese
+    if q > p and not _is_cjk(view[p]):
+        for k in range(p, q):
+            if _is_cjk(view[k]):
+                q = k
+                break
+    seg = view[p:q]
+    while seg and (seg[-1] == "." or any(seg[-1] == c and seg.count(o) < seg.count(c) for o, c in ("()", "[]", "{}"))):
+        seg, q = seg[:-1], q - 1
+    return (p, q, None, False) if q > p else None
+
+
+def _cjk_nosep_value(view: str, p: int) -> tuple[int, int] | None:
+    if p < len(view) and view[p] in " \t":
+        p += 1
+    q = p
+    while q < len(view) and q - p < 200 and view[q] not in _VALUE_STOP and not _is_cjk(view[q]) \
+            and view[q].isprintable():
+        q += 1
+    return (p, q) if q > p else None
+
+
+def _credential_at(view: str, key_end: int, tier: str, *, ascii_key: bool, cjk_key: bool) -> tuple[int, int] | None:
+    gap = False
+    pos = key_end
+    m = _SEP_RE.match(view, pos)
+    if not m and ascii_key:
+        g = _GAP_RE.match(view, pos)
+        if g:
+            gap, pos = True, g.end()
+            m = _SEP_RE.match(view, pos)
+    if not m:
+        if cjk_key:
+            span = _cjk_nosep_value(view, key_end)
+            if span and _value_ok(view[span[0]:span[1]], tier, "weak"):
+                return span
+        return None
+    if m.group("weak"):
+        mode = "weak"
+    elif m.group("nat") and not m.group("natx"):
+        mode = "natural"
+    else:
+        mode = "explicit"
+    if gap:
+        mode = "weak"
+    got = _read_value(view, m.end(), tier)
+    if not got:
+        return None
+    s, e, raw, quoted = got
+    if quoted and mode == "natural":
+        mode = "explicit"
+    return (s, e) if _value_ok(view[s:e], tier, mode, raw) else None
+
+
+def _credential_spans(view: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    prev_end, prev_last = -2, ""
+    for wm in _ASCII_WORD_RE.finditer(view):
+        word = wm.group(0).rstrip("._-")
+        if not word:
+            continue
+        start, end = wm.start(), wm.start() + len(word)
+        adj = prev_last if prev_end == start - 1 and view[start - 1] == " " else ""
+        toks = _split_ident(word)
+        prev_end, prev_last = end, (toks[-1] if toks else "")
+        if not toks or not _KEY_STEM_RE.search(word):
+            continue
+        tier = _key_tier(toks) or (_key_tier([adj, *toks]) if adj else None)
+        if tier:
+            span = _credential_at(view, end, tier, ascii_key=True, cjk_key=False)
+            if span:
+                spans.append(span)
+    for km in _CJK_KEY_RE.finditer(view):
+        if _CJK_KEY_NEG_RE.match(view, km.end()):
+            continue
+        span = _credential_at(view, km.end(), _CJK_KEY_TIER[km.group(0)], ascii_key=False, cjk_key=True)
+        if span:
+            spans.append(span)
+    return spans
+
+
+_VIEW_CACHE: dict[str, str] = {}
+
+
+def _view_char(ch: str) -> str:
+    rep = _VIEW_CACHE.get(ch)
+    if rep is None:
+        rep = "".join(c.translate(_CONFUSABLES) for c in unicodedata.normalize("NFKC", ch)
+                      if c not in _FILLERS and (c.isascii() or unicodedata.category(c) not in ("Cf", "Mn")))
+        if len(_VIEW_CACHE) < 65536:
+            _VIEW_CACHE[ch] = rep
+    return rep
+
+
+def _detection_view(text: str) -> tuple[str, list[int] | None]:
+    """NFKC per character, drop Cf/Mn/fillers, fold confusables; idx maps view → original
+    (None when the view is the text itself)."""
+    if text.isascii():
+        return text, None
+    reps = [ch if ch.isascii() else _view_char(ch) for ch in text]
+    view = "".join(reps)
+    if view == text:
+        return text, None
+    idx = [i for i, rep in enumerate(reps) for _ in rep]
+    return view, idx
 
 
 def redact_forbidden(text: str) -> tuple[str, list[str]]:
@@ -199,69 +440,78 @@ def redact_forbidden(text: str) -> tuple[str, list[str]]:
     Returns (new_text, kinds).  The rest of the sentence is kept: P7 is about
     never *storing* the secret, not about dropping the user's whole turn.
 
-    f0.7.5（外审 6 家一致：零宽 / 软连字符 / 全角变体可绕过）：先按原文打码；
-    再在「去掉不可见格式字符 + 全角字母数字串转半角」的视图上重扫。视图多抓到
-    东西时采用视图结果——此时落库文本不含零宽字符（它们没有信息量），边界记号
-    中和在视图上重做一遍，避免把 neutralize 插入的零宽打断一并剥掉。
+    f0.7.6（外审 R2-05/R2-06）：识别在「逐字 NFKC + 去掉所有 Cf/Mn 与韩文填充符 +
+    同形字折叠」的视图上做，命中区间再映射回原文替换——原文其余字符原样保留。
+    视图与原文不同且有命中时，边界记号中和在输出上重做一遍。
     """
     if not isinstance(text, str) or not text or not secret_guard_on():
         return text, []
-    out, kinds = _redact_core(text)
-    if _INVISIBLE_RE.search(text) or _FULLWIDTH_RUN_RE.search(text):
-        view = _FULLWIDTH_RUN_RE.sub(_fullwidth_to_ascii, _INVISIBLE_RE.sub("", text))
-        v_out, v_kinds = _redact_core(view)
-        if len(v_kinds) > len(kinds):
-            try:
-                from ducky.security.injection_guard import neutralize_boundary_markers
-                v_out = neutralize_boundary_markers(v_out)
-            except ImportError:  # pragma: no cover
-                pass
-            return v_out, v_kinds
+    view, idx = _detection_view(text)
+    found = _redact_spans(view)
+    if not found:
+        return text, []
+    # view → original coordinates, then coalesce
+    if idx is not None:
+        found = [(idx[s], idx[e - 1] + 1, k) for s, e, k in found if e > s]
+    mapped = sorted(found, key=lambda t: (t[0], -t[1]))
+    merged: list[list] = []
+    for s, e, k in mapped:
+        if merged and s < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e, k])
+    parts: list[str] = []
+    last = 0
+    for s, e, k in merged:
+        parts.append(text[last:s])
+        parts.append(REDACT_FMT.format(k))
+        last = e
+    parts.append(text[last:])
+    out = "".join(parts)
+    kinds = [k for _, _, k in merged]
+    if view != text:
+        try:
+            from ducky.security.injection_guard import neutralize_boundary_markers
+            out = neutralize_boundary_markers(out)
+        except ImportError:  # pragma: no cover
+            pass
     return out, kinds
 
 
-def _redact_core(text: str) -> tuple[str, list[str]]:
-    kinds: list[str] = []
-    out = text
+def _redact_spans(view: str) -> list[tuple[int, int, str]]:
+    """All redaction spans on the detection view, in priority order (earlier wins on overlap)."""
+    raw: list[tuple[int, int, str]] = []
 
-    def _sub(kind: str, pattern: re.Pattern, s: str) -> str:
-        def rep(m: re.Match) -> str:
-            kinds.append(kind)
-            return REDACT_FMT.format(kind)
-        return pattern.sub(rep, s)
+    def _add(kind: str, m: re.Match) -> None:
+        g = "v" if "v" in m.re.groupindex and m.group("v") is not None else 0
+        raw.append((m.start(g), m.end(g), kind))
 
-    out = _sub("signature", _SIGNATURE_RE, out)
+    for m in _SIGNATURE_RE.finditer(view):
+        _add("signature", m)
     for kind, pat in _SECRET_PATTERNS:
-        out = _sub(kind, pat, out)
-
-    def _assign(m: re.Match) -> str:
-        if not _assignment_is_secret(m.group("v"), m.group("k"), m.group("sep")):
-            return m.group(0)
-        kinds.append("credential")
-        return m.group("k") + m.group("sep") + REDACT_FMT.format("credential")
-    out = _ASSIGN_RE.sub(_assign, out)
-
-    def _cnid(m: re.Match) -> str:
-        if not _cn_id_valid(m):
-            return m.group(0)
-        kinds.append("id_number")
-        return REDACT_FMT.format("id_number")
-    out = _CN_ID_RE.sub(_cnid, out)
-
-    def _doc(m: re.Match) -> str:
-        if not any(c.isdigit() for c in m.group("v")):
-            return m.group(0)
-        kinds.append("id_document")
-        return m.group("k") + " " + REDACT_FMT.format("id_document")
-    out = _DOC_CONTEXT_RE.sub(_doc, out)
-
-    def _card(m: re.Match) -> str:
-        if not _luhn(m.group("v")):
-            return m.group(0)
-        kinds.append("card_number")
-        return m.group("k") + " " + REDACT_FMT.format("card_number")
-    out = _CARD_CONTEXT_RE.sub(_card, out)
-    return out, kinds
+        for m in pat.finditer(view):
+            if kind == "seed_phrase" and sum(
+                    w.lower() in _SEED_STOPWORDS for w in re.findall(r"[A-Za-z]+", m.group("v"))) >= 2:
+                continue
+            _add(kind, m)
+    raw.extend((s, e, "credential") for s, e in _credential_spans(view))
+    for m in _CN_ID_RE.finditer(view):
+        if _cn_id_valid(m):
+            _add("id_number", m)
+    for m in _DOC_CONTEXT_RE.finditer(view):
+        if any(c.isdigit() for c in m.group("v")):
+            _add("id_document", m)
+    for m in _CARD_CONTEXT_RE.finditer(view):
+        if _luhn(m.group("v")):
+            _add("card_number", m)
+    accepted: list[list] = []
+    for s, e, k in raw:
+        hit = next((a for a in accepted if s < a[1] and e > a[0]), None)
+        if hit:
+            hit[0], hit[1] = min(hit[0], s), max(hit[1], e)
+        else:
+            accepted.append([s, e, k])
+    return [(s, e, k) for s, e, k in accepted]
 
 
 _MEANINGFUL_RE = re.compile(r"\[redacted:[a-z_]+\]|[\s\W_]+", re.UNICODE)
@@ -282,6 +532,18 @@ def hard_block_reason(text: str, *, summary: bool = False) -> str | None:
 
 
 _MESSAGE_KEYS = ("role", "content")
+# f0.7.6（外审 R2-08）：role / type 是枚举键，不打码——所以必须白名单，否则任意字符串原样落 4 张表。
+_ROLES = frozenset({"user", "assistant", "system", "tool", "function", "developer"})
+_PART_TYPES = frozenset({"text", "input_text", "output_text", "image_url", "input_image",
+                         "image", "audio", "input_audio", "file", "refusal",
+                         "function", "tool_use", "tool_result"})
+
+
+def _enum_value(key: str, val):
+    v = val.strip().lower() if isinstance(val, str) else ""
+    if key == "role":
+        return v if v in _ROLES else "user"
+    return v if v in _PART_TYPES else "text"
 
 
 def _content_text(content) -> str:
@@ -314,8 +576,8 @@ def normalize_message_shapes(messages):
     if isinstance(messages, dict):
         out = {k: messages[k] for k in _MESSAGE_KEYS if k in messages}
         out["content"] = _content_text(messages.get("content"))
-        if not isinstance(out.get("role", "user"), str):
-            out["role"] = "user"
+        if "role" in out:
+            out["role"] = _enum_value("role", out["role"])
         return out
     return messages
 
@@ -333,7 +595,10 @@ def redact_messages_struct(messages) -> tuple[Any, list[str]]:
     if isinstance(messages, dict):
         out = {}
         for key, val in messages.items():
-            if key in ("role", "type") or not isinstance(val, (str, list, dict)):
+            if key in ("role", "type"):
+                out[key] = _enum_value(key, val)
+                continue
+            if not isinstance(val, (str, list, dict)):
                 out[key] = val
                 continue
             out[key], k = redact_messages_struct(val)
@@ -751,6 +1016,7 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA secure_delete=ON")   # f0.7.6（外审 R2-15）
     if path not in _ready:
         with _db_lock:
             conn.execute("PRAGMA journal_mode=WAL")

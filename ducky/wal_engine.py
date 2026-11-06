@@ -726,9 +726,11 @@ def cascade_delete_memory(
         #     （实机：verbatim=0、原文照旧可检索），成为「可检索但删不掉的孤儿」。
         #     因此直接按 id 精确删除原文层并留 tombstone，然后结束。
         if str(memory_id).lower().startswith("verbatim:"):
-            return _cascade_single_verbatim_handle(
+            _vh = _cascade_single_verbatim_handle(
                 memory_id, user_id, bank_id, res, wal, wal_id,
                 _layer_failed, _failed_layers)
+            checkpoint_deleted_text()   # f0.7.6（外审 R2-15）
+            return _vh
 
         # 0a. 🔴P0-4：先把这条记忆的正文抓出来（用于定位原文层对应行）。
         #     必须在物理删除之前做 —— 一旦 facts/FTS 行被删，就再也无从
@@ -851,6 +853,8 @@ def cascade_delete_memory(
                                  owned_hint=bool(_kernel_text or _content_for_verbatim))
         # 5b. f0.7+ 写入判定影子日志（write_policy.db，无正文，只有 id/哈希/标签）
         _cascade_single_write_policy(memory_id, user_id, bank_id, res, _layer_failed)
+        # 5b'. f0.7.6（外审 R2-10）：mem0 腿出身 sidecar（带 origin_session_id/origin_agent）按 memory_ref 删
+        _cascade_single_epistemic(memory_id, scope, res, _layer_failed)
         # 5c. f0.7.5：自编辑历史 / 梦境合并日志里指向这条记忆的全文行
         _cascade_single_derived_text(memory_id, user_id, res, _layer_failed,
                                      owned=bool(res.get("facts") or _kernel_text or _content_for_verbatim))
@@ -867,6 +871,7 @@ def cascade_delete_memory(
         # ── 三态判决 + 命中判定（v20.2.5-b：与 cascade_delete_all 同一套判据）──
         outcome = _single_delete_verdict(wal, wal_id, res, _failed_layers,
                                          user_id, bank_id, memory_id)
+        checkpoint_deleted_text()   # f0.7.6（外审 R2-15）：已删正文不留在 -wal 里
         return {"status": outcome, "details": res,
                 "failed_layers": _failed_layers,
                 "not_cleared": delete_chain_exemptions()}
@@ -907,7 +912,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "memory_lineage":   ("exempt", "记忆谱系账本（memory_id/version/hash/action，无记忆正文——diff_summary 不含 fact_key 明文，v20.5.0 起）：审计与历史版本链的可检测篡改凭据（v20.5.0a）"),
     "reflection_candidates": ("clean", "v21 反思质量门候选表含候选全文（§16，随 F5 同版接线）：(user_id, bank_id) 谓词删除——被拒/待审的认知草稿也是用户数据"),
     "retrieval_weights": ("clean", "v21 检索权重学习表（§16）：(user_id, bank_id) 谓词删除——学出来的偏好画像同样属于租户数据"),
-    "memory_epistemic": ("clean", "v21.0 收口：mem0 腿出身 sidecar（§16）：(user_id, bank_id) 谓词删除——出身标签随记忆同属租户数据"),
+    "memory_epistemic": ("clean", "v21.0 收口：mem0 腿出身 sidecar（§16）：(user_id, bank_id) 谓词删除——出身标签随记忆同属租户数据；f0.7.6（外审 R2-10）起单删按 memory_ref + 本租户作用域删（§16'），不再留带 origin_session_id/origin_agent 的孤儿行"),
     "pantheon_halls":   ("exempt", "v21.1 众神殿殿注册表：行是「殿存在过」的元数据（显示名/描述/启停），不含记忆正文；删殿走软删（active=0，deactivate_hall）不注销殿名——同 memory_banks 语义，避免删后同名殿复用造成审计断代；记忆本身按 (user_id,bank_id) 谓词经上列各表清理"),
     "hall_grants":      ("exempt", "v21.1 众神殿跨殿借阅凭据（grantor/grantee/actions，无记忆正文）：随殿停用撤销、随借阅生命周期管理——同 federation_grants 语义"),
     "distill_sources":  ("clean",  "f0.3（C1）会话精华来源账本（summary_hash/source_ref，无正文）：(user_id, bank_id) 谓词删除（§17）；单删某条来源时先据此级联删掉引用它的派生精华（走墓碑），再清掉对应行"),
@@ -925,7 +930,7 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "store:mem0_history": ("clean", "f0.6 W-18（hark P1-1）：mem0 history.db——此前不在矩阵里，而 mem0 2.2.1 的删除动作本身会**新写一行带原文的 DELETE 历史**（add_history(prev_value, None, 'DELETE')），ADD/UPDATE 历史行同样带原文；删除承诺必须覆盖它（§19）"),
     "store:text_fts":   ("clean",  "(user_id, bank_id) 谓词删除（§2）；verbatim_fts 随 §6 清理"),
     "store:salience":   ("clean",  "按本租户已删 memory_id 集合清理（§4，表无租户列）"),
-    "store:evolve":     ("clean",  "按本租户已删 memory_id 集合清理（§5，检索质量信号）"),
+    "store:evolve":     ("clean",  "按本租户已删 memory_id 集合清理（§5，检索质量信号；episode steps 按 memory_ref 同集合清）；f0.7.6（外审 R2-10）：evolve_episodes 带调用方 session_id，delete_all 按 (user_id, bank_id) 精确删（§5'）"),
     "store:verbatim":   ("clean",  "cascade_delete_verbatim（§6）"),
     "store:workspace":  ("clean",  "ws_clear 内存+SQLite 双清（§7，v20.1 整改轮补齐 —— 外审 z P1-01：此前已删内容以 found/workspace_hit 复活）"),
     "store:qdrant_local": ("clean", "v20.2 自动挡本地向量库（mem0_local，512 维）：(user_id, bank_id) 谓词删除（§14）；单删按同源 id 精确删"),
@@ -1176,6 +1181,8 @@ def cascade_delete_all(
         # 4. salience.db / 5. evolve_mem.db：按「本租户已删除的 memory_id 集合」
         _cascade_all_salience(_tenant_memory_ids, res, _layer_failed)
         _cascade_all_evolve(_tenant_memory_ids, res, _layer_failed)
+        # 5'. f0.7.6（外审 R2-10）：episode 轨迹带调用方 session_id，按 (user_id, bank_id) 清
+        _cascade_all_evolve_episodes(scope, res, _layer_failed)
 
         # 6. Verbatim Vault / 7. Workspace / 8. CoreMemory 正本
         _cascade_all_verbatim(user_id, bank_id, res, _layer_failed)
@@ -1208,6 +1215,7 @@ def cascade_delete_all(
         # 核心层＝承载记忆**正文**的层：它没删干净，内容还能被召回。
         # 辅助层残留的是账本/缓存/派生元信息 —— 后果不同量级，状态因此分级。
         outcome = _cascade_all_verdict(wal, wal_id, res, _failed_layers, user_id)
+        checkpoint_deleted_text()   # f0.7.6（外审 R2-15）
         # v20.2.4（外审 F-23）：**如实告知没清什么**。
         #
         # DELETE_CHAIN_MATRIX 里的 exempt 项各有各的理由（审计履历不许销毁、
@@ -2587,6 +2595,79 @@ def _cascade_derived_stores(table, connectors, predicate, parameters, res, layer
         except Exception as exc:
             logger.warning("%s delete_all store cleanup failed: %s", table, exc)
             layer_failed(table, exc)
+
+
+def _cascade_all_evolve_episodes(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:
+    """§5' f0.7.6（外审 R2-10）：evolve_episodes 带调用方 session_id 与 user_id/bank_id；
+    全删按作用域清掉本租户的 episode 及其 steps（此前全删后整行连同 session_id 留着）。"""
+    try:
+        from ducky.evolve_mem import delete_evolve_episodes_for_scope
+        res["evolve_episodes_deleted"] = delete_evolve_episodes_for_scope(scope.user_id, scope.bank_id)
+    except (ImportError, sqlite3.Error, OSError) as e:
+        logger.warning("evolve_episodes delete_all 清理失败: %s", e)
+        layer_failed("evolve_episodes", e)
+
+
+def _cascade_single_epistemic(memory_id: str, scope: Any, res: Dict[str, Any],
+                              layer_failed: Any) -> None:
+    """§16' f0.7.6（外审 R2-10）：单删时按 memory_ref + 本租户作用域删 memory_epistemic，
+    不再留下带 origin_session_id / origin_agent 的孤儿行。拿别人的 id 来删碰不到别人的行。"""
+    frag, params = scope_clause(scope, flavor="canonical")
+    try:
+        conn = get_facts_conn()
+        try:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_epistemic'"
+                            ).fetchone():
+                cur = conn.execute("DELETE FROM memory_epistemic WHERE memory_ref=?" + frag,
+                                   [str(memory_id), *params])
+                conn.commit()
+                res["memory_epistemic"] = int(cur.rowcount or 0)
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.warning("memory_epistemic 单删清理失败: %s", e)
+        layer_failed("memory_epistemic", e)
+
+
+def _wal_checkpoint_paths() -> List[str]:
+    """删除链会改动的 SQLite 库（存在 -wal 的才处理）。按调用时的路径取，测试切库也跟得上。"""
+    import glob
+    from ducky import utils as _u
+    dirs = {os.path.dirname(os.path.abspath(p)) for p in (
+        _u.FACTS_DB, _u.TEXT_FTS_DB, _u.SALIENCE_DB, _u.OBS_DB, _u.SCENES_DB)}
+    dirs.add(os.path.abspath(_u.DATA_DIR))
+    out = []
+    for d in sorted(dirs):
+        for wal_file in sorted(glob.glob(os.path.join(d, "*-wal"))):
+            main = wal_file[:-4]
+            if os.path.isfile(main) and main not in out:
+                out.append(main)
+    return out
+
+
+def checkpoint_deleted_text(timeout_ms: int = 1000) -> Dict[str, Any]:
+    """f0.7.6（外审 R2-15）：删除后对各库做 best-effort ``wal_checkpoint(TRUNCATE)``，
+    让已删正文不再停留在 ``-wal`` 文件里（各库连接已开 secure_delete，主库空闲页同样清零）。
+
+    绝不抛：库忙（另有长读事务）时 checkpoint 只做到能做的部分并在 busy_timeout 内返回，
+    失败只记 debug。不做 VACUUM（大库上耗时且锁全库）。"""
+    done: Dict[str, Any] = {}
+    try:
+        paths = _wal_checkpoint_paths()
+    except (OSError, AttributeError, ImportError, TypeError, ValueError) as exc:   # best-effort
+        logger.debug("wal checkpoint 路径枚举跳过: %s", exc)
+        return done
+    for path in paths:
+        try:
+            conn = sqlite3.connect(path, timeout=timeout_ms / 1000.0)   # = busy_timeout
+            try:
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                done[os.path.basename(path)] = list(row) if row else None
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError) as exc:   # 库忙/损坏/路径异常：跳过，不影响删除结论
+            logger.debug("wal checkpoint 跳过 %s: %s", path, exc)
+    return done
 
 
 def _cascade_all_v21_governance(scope: Any, res: Dict[str, Any], layer_failed: Any) -> None:

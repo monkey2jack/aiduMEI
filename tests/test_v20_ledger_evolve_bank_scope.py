@@ -328,7 +328,7 @@ def test_evolve_feedback_v19_salience_table_falls_back_default():
 
 def test_evolve_feedback_route_threads_scope_params():
     """POST /evolve/feedback 必须把 user_id/bank_id 递进 record_feedback；
-    越库按路由约定返回 {"status":"error"}，不改任何状态。"""
+    越库返回 404（f0.7.6 外审 R2-12：此前是 200 + {"status":"error"}，文案误导），不改任何状态。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -344,8 +344,7 @@ def test_evolve_feedback_route_threads_scope_params():
         "memory_id": "m5", "signal": "useful",
         "user_id": "user_x", "bank_id": "bank_b",
     })
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "error", "错库声称必须被路由层递进护栏拒绝"
+    assert resp.status_code == 404, "错库声称必须被路由层递进护栏拒绝（与不存在同为 404）"
     assert _salience_row("m5")["salience"] == pytest.approx(0.5)
 
     resp = client.post("/evolve/feedback", json={
