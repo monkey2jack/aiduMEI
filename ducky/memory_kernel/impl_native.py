@@ -172,6 +172,7 @@ def connect(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA secure_delete=ON")   # f0.7.6（外审 R2-15）
     try:
         import sqlite_vec
         conn.enable_load_extension(True)

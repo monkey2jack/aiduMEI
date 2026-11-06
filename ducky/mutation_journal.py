@@ -97,6 +97,27 @@ class MutationForgotten(MutationUncertain):
     pass
 
 
+_REDACT_KEYS = frozenset({'messages', 'metadata', 'original_request', 'text', 'data',
+                          'content', 'memory', 'query', 'correction_text'})
+
+
+def _redact_payload(payload, depth=0):
+    """f0.7.6（外审 R2-09 纵深）：落 input_json 之前，正文类键再过一遍原则 7。
+
+    入口已经打过码；这里兜住将来某条写入路径漏打码的情况。只碰正文类键，
+    id / 指纹 / 作用域键原样保留（重放与对账靠它们）。"""
+    if depth > 6 or not isinstance(payload, dict):
+        return payload
+    from ducky.write_policy import redact_metadata
+    out = {}
+    for key, val in payload.items():
+        if key in _REDACT_KEYS and isinstance(val, (str, list, dict)):
+            out[key] = redact_metadata(val) if key != 'original_request' else _redact_payload(val, depth + 1)
+        else:
+            out[key] = val
+    return out
+
+
 def _json(value):
     # Reject unsupported/non-finite payloads BEFORE the SDK side effect. A str()
     # fallback silently destroys exactly the evidence needed after a crash.
@@ -367,7 +388,7 @@ forgetting_guard = scope_lock
 def _insert(kind, user_id, bank_id, payload, *, state='queued', target_id='',
             mutation_id=None, request_key='', fingerprint=''):
     scope = make_scope(user_id, bank_id)
-    raw = _json(payload)
+    raw = _json(_redact_payload(payload))
     mid = mutation_id or uuid.uuid4().hex
     now = time.time()
     with _db() as conn:
@@ -656,7 +677,7 @@ def attach_job_input(job_id, *, messages, metadata, infer, user_id, bank_id):
         payload = json.loads(row['input_json'])
         payload.update(messages=messages, metadata=metadata, infer=infer)
         conn.execute('UPDATE mutations SET input_json=?,updated_at=? WHERE id=?',
-                     (_json(payload), time.time(), job_id))
+                     (_json(_redact_payload(payload)), time.time(), job_id))
 
 
 def update_job(job_id, **fields):

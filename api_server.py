@@ -995,6 +995,13 @@ def _register_login(route_app: FastAPI) -> None:
             payload = await request.json()
         except Exception:
             payload = {}
+        if not isinstance(payload, dict):
+            # f0.7.6（外审 R2-16）：数组 / 字符串 / null 是合法 JSON 但不是对象——400，并计一次失败
+            record_login_failure(_ip)
+            return JSONResponse(
+                {"success": False, "message": "请求体必须是 JSON 对象 / body must be a JSON object"},
+                status_code=400,
+            )
         given = payload.get("password")
         if not isinstance(given, str) or not given:
             # 空口令也计数：否则攻击者可以拿它当免费的「探测门是否开着」。

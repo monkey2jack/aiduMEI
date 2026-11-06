@@ -80,6 +80,7 @@ MIN_SCORE_TO_PROMOTE = 0.65   # 搜索分数 ≥ 此值才算高质量命中
 def _get_evolve_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(EVOLVE_DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA secure_delete=ON")   # f0.7.6（外审 R2-15）：删掉的行不留在空闲页
     return conn
 
 
@@ -117,10 +118,11 @@ def delete_evolve_by_memory_ids(memory_ids) -> int:
     try:
         conn = _get_evolve_conn()
         placeholders = ",".join("?" for _ in ids)
-        for table in ("evolve_feedback", "evolve_adjustments"):
+        for table, col in (("evolve_feedback", "memory_id"), ("evolve_adjustments", "memory_id"),
+                           ("evolve_episode_steps", "memory_ref")):
             try:
                 deleted += conn.execute(
-                    f"DELETE FROM {table} WHERE memory_id IN ({placeholders})", ids
+                    f"DELETE FROM {table} WHERE {col} IN ({placeholders})", ids
                 ).rowcount or 0
             except Exception as exc:
                 logger.debug("evolve %s 清理跳过: %s", table, exc)
@@ -129,6 +131,34 @@ def delete_evolve_by_memory_ids(memory_ids) -> int:
     except Exception as exc:
         logger.warning("delete_evolve_by_memory_ids 降级: %s", exc)
     return deleted
+
+
+def delete_evolve_episodes_for_scope(user_id: str, bank_id: str) -> int:
+    """f0.7.6（外审 R2-10）：全删时按 (user_id, bank_id) 精确清 evolve_episodes 及其 steps。
+
+    episode 行带调用方传入的 session_id；它有租户列，所以能按作用域删（不像 feedback
+    只能按 memory_id 集合）。精确匹配，不放宽到占位租户。表不存在返回 0。"""
+    conn = _get_evolve_conn()
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "evolve_episodes" not in tables:
+            return 0
+        from ducky.scope_sql import scope_clause
+        from ducky.bank_contract import make_scope
+        _scope_sql, _scope_args = scope_clause(
+            make_scope(user_id, bank_id), flavor="canonical")
+        deleted = 0
+        if "evolve_episode_steps" in tables:
+            deleted += conn.execute(
+                "DELETE FROM evolve_episode_steps WHERE episode_id IN "
+                "(SELECT episode_id FROM evolve_episodes WHERE 1=1" + _scope_sql + ")",
+                tuple(_scope_args)).rowcount or 0
+        deleted += conn.execute("DELETE FROM evolve_episodes WHERE 1=1" + _scope_sql,
+                                tuple(_scope_args)).rowcount or 0
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
 
 
 def ensure_evolve_schema() -> None:

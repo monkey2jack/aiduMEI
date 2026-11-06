@@ -535,6 +535,15 @@ def register_add_routes(app: FastAPI) -> None:
             from ducky import write_policy
             # f0.7.5：先把消息收敛成 {role, content:str}（多模态 / 杂键不再绕过清洗），
             # metadata 字符串值同样过原则 7（结案留账 #3）。
+            # f0.7.6（外审 R2-09）：字符串形态的 JSON messages 先还原成结构再打码——
+            # 按纯文本打码时 `\u0070assword` 这类 JSON 转义认不出，原文会进幂等载荷与变更日志。
+            if isinstance(req.messages, str) and req.messages.strip().startswith(("[", "{")):
+                try:
+                    _parsed = json.loads(req.messages)
+                except ValueError:
+                    _parsed = None
+                if isinstance(_parsed, (list, dict)):
+                    req = req.model_copy(update={"messages": _parsed})
             req = req.model_copy(update={
                 "messages": write_policy.normalize_message_shapes(req.messages),
                 "metadata": write_policy.redact_metadata(req.metadata)})
@@ -667,6 +676,10 @@ def register_add_routes(app: FastAPI) -> None:
             md.setdefault("_origin_agent", _oa)
             md.setdefault("_origin_session_id", _os)
             md.setdefault("_origin_turn", _ot)
+            # f0.7.6（外审 R2-10）：metadata 里自带的溯源键同样过字符集白名单
+            from ducky.origin_context import safe_origin_id
+            for _k in ("_origin_agent", "_origin_session_id"):
+                md[_k] = safe_origin_id(md.get(_k))
 
             # Completed summaries must not be extracted a second time or
             # coalesced with other generations. This also covers older hooks.
@@ -692,8 +705,13 @@ def register_add_routes(app: FastAPI) -> None:
             _event_at = (req.metadata or {}).get("event_at")
             if _event_at is None and isinstance(extra, dict):
                 _event_at = extra.get("event_at")
+            # f0.7.6（外审 R2-10）：event_at 必须能解析成时间，否则丢弃（不透传任意字符串）
+            from ducky.origin_context import safe_event_at
+            _event_at = safe_event_at(_event_at)
             if _event_at is not None:
                 md["event_at"] = _event_at
+            else:
+                md.pop("event_at", None)
             # f0.6.1 出处矩阵灰度开关（hark P1-2 / cue A12 的落点）：
             # on 时客户端自报的 _origin_is_bot 不再采信为"用户亲述"凭证——
             # Bearer 调用方一律按 ai_inferred 处理，user_provided 只留给

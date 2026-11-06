@@ -447,6 +447,7 @@ def _get_thread_conn(db_path: str) -> sqlite3.Connection:
                 raise
             _time.sleep(0.05 * (_attempt + 1))
     real_conn.execute("PRAGMA busy_timeout=10000")
+    real_conn.execute("PRAGMA secure_delete=ON")  # f0.7.6（外审 R2-15）：删掉的正文不留在空闲页
     real_conn.execute("PRAGMA cache_size=-500")  # 500KB/conn (default -2000=2MB)
     # 🔴9：注册 REGEXP 函数。SQLite 不原生支持 REGEXP，conflict_resolver 的
     # `fact_value REGEXP ?` 此前必抛 "no such function" 被吞，热路径空转。

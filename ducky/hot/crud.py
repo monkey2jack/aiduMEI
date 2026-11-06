@@ -35,6 +35,8 @@ from ducky.wal_engine import cascade_delete_memory, replace_stale_copies
 from ducky.failure_ledger import feature_failed
 from ducky.api_errors import api_error_detail
 
+_EVIDENCE_MAX = 100   # f0.7.6（外审 R2-13）：每个证据 id 都要核归属，给个上限
+
 logger = logging.getLogger("aiduMEM.hot")
 
 
@@ -46,6 +48,41 @@ def _update_verbatim_handle(memory_id: str, user_id: str, bank_id: str, content:
         raise HTTPException(404 if status == "not_found" else 500, f"verbatim update failed: {status}")
     failed = replace_stale_copies(user_id, bank_id, "", content, new_is_verbatim=True)
     return {"status": "partial" if failed else "ok", "facts_sync": "not_a_fact", "failed_layers": failed}
+
+
+def _validate_evidence_ids(conn, evidence_ids, owner: str, bank_id: str, verify_ownership) -> list:
+    """f0.7.6（外审 R2-13）：evidence_ids 只收本租户可见的事实 id（整数）或记忆 id（UUID）。
+
+    字符集 / 长度不合格、不存在、不可见，一律 400（同一文案，不泄露别人 id 的存在性）。"""
+    import re as _re
+    from ducky.facts_recall import fact_visible_to_tenant
+    ids = list(evidence_ids or [])
+    if len(ids) > _EVIDENCE_MAX:
+        raise HTTPException(400, f"evidence_ids 至多 {_EVIDENCE_MAX} 个")
+    out: list = []
+    mem = None
+    scope = make_scope(owner, bank_id)
+    for raw in ids:
+        text = str(raw).strip() if isinstance(raw, (str, int)) and not isinstance(raw, bool) else ""
+        ok = False
+        if _re.fullmatch(r"[0-9]{1,18}", text):
+            fid = int(text)
+            ok = (conn.execute("SELECT 1 FROM facts WHERE id=?", (fid,)).fetchone() is not None
+                  and fact_visible_to_tenant(conn, fid, scope.user_id, bank_id=scope.bank_id))
+        elif _re.fullmatch(r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?"
+                           r"[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}", text):
+            if mem is None:
+                mem = get_memory()
+            try:
+                verify_ownership(mem, text, scope.user_id, scope.bank_id)
+                ok = True
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+        if not ok:
+            raise HTTPException(400, "evidence_ids 只接受本租户可见的事实 id 或记忆 id")
+        out.append(text)
+    return out
 
 
 def register_crud_routes(app: FastAPI) -> None:
@@ -397,9 +434,14 @@ def register_crud_routes(app: FastAPI) -> None:
             if _exists is None or not fact_visible_to_tenant(
                     _fconn, req.fact_id, _owner, bank_id=req.bank_id):
                 raise HTTPException(404, "fact not found")
+            _evidence = _validate_evidence_ids(_fconn, req.evidence_ids, _owner, req.bank_id,
+                                               _verify_vector_ownership)
             res = set_opinion(req.fact_id, req.stance, confidence=req.confidence,
-                              evidence_ids=req.evidence_ids, source=req.source,
+                              evidence_ids=_evidence, source=req.source,
                               owner=req.owner)
+            if res.get("conflict"):
+                # f0.7.6（外审 R2-14）：同 source 的行属于别的 owner，不覆盖、不改写 owner
+                raise HTTPException(409, res.get("detail") or "owner_conflict")
             return {"status": "ok" if res.get("ok") else "error", "details": res}
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分

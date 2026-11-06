@@ -142,6 +142,7 @@ def _get_db_conn():
     conn = sqlite3.connect(WORKSPACE_DB, check_same_thread=False, timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA secure_delete=ON")   # f0.7.6（外审 R2-15）
     conn.execute("PRAGMA cache_size=-500")
     conn.row_factory = sqlite3.Row
     return conn

@@ -96,6 +96,7 @@ _schema_ready_for: str = ""
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(_utils.FACTS_DB, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA secure_delete=ON")   # f0.7.6（外审 R2-15）
     _ensure_schema(conn)
     return conn
 

@@ -117,6 +117,7 @@ def _conn() -> sqlite3.Connection:
         if c is None:
             c = sqlite3.connect(path, timeout=10, check_same_thread=False)
             c.execute("PRAGMA busy_timeout=10000")
+            c.execute("PRAGMA secure_delete=ON")   # f0.7.6（外审 R2-15）
             _NATIVE_CONN[path] = c
         return c
     from ducky.core_memory import _get_conn as _cm_conn

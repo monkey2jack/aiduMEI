@@ -38,8 +38,8 @@
   "n": 171,
   "score": 0.9591
  },
- "runtime_s": 15.31,
- "seed_s": 8.76,
+ "runtime_s": 16.92,
+ "seed_s": 10.26,
  "mode": "local-inprocess(hash-embed, verdict_threshold=0.46)",
  "failed": [
   {

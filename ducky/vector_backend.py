@@ -102,6 +102,7 @@ class SQLiteVecBackend:
         try:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA secure_delete=ON")   # f0.7.6（外审 R2-15）
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS vectors (id TEXT PRIMARY KEY, vector TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}')"
             )

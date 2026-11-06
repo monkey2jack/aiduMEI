@@ -238,6 +238,10 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     # 插值只是 "?,?,…" 占位串(长度 = id 个数,id 先经 isdigit 过滤再 int),
     # 租户谓词出自 scope_clause,值全走 ?。人工核对:wal_engine._claimed_verbatim_text。
     ("ducky/wal_engine.py", "','.join('?' * len(ids))"),
+    # f0.7.6（外审 R2-10 / R2-14）：结构性拼接。evolve_mem.delete_evolve_by_memory_ids 的
+    # col 只取自本函数字面量元组（memory_id / memory_ref）；opinion.set_opinion 的 _guard
+    # 是字面量 WHERE 片段 + "?,?" 占位串，owner 值全走 ?。人工核对。
+    ("ducky/evolve_mem.py", "col"), ("ducky/opinion.py", "_guard"),
 }
 
 

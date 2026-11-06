@@ -131,6 +131,35 @@ def _fact_scope(conn, fact_id: int) -> tuple[str, str]:
     return ("default", "default")
 
 
+def _owner_set(fact_user: str) -> list[str] | None:
+    """f0.7.6（外审 R2-14）：哪些 opinions.owner 算「这条事实所属租户」的信念。
+
+    口径同 bank_contract.unclaimed_user_ids / facts_recall.fact_visible_to_tenant：
+      * 具名租户的事实 → 只认该租户自己；
+      * 未认领/默认租户的事实 + 租户模式（绑定 / strict / 钥匙强制）→ 默认身份、
+        旧占位符 'default' 与空串算同一个人；
+      * 未认领事实 + 单主人宽松档 → ``None``（不按 owner 过滤：v19 单租户语义里
+        owner 是 agent 标签，同一个主人的多个 agent 都算本人）。"""
+    from ducky.bank_contract import unclaimed_user_ids
+    unclaimed = unclaimed_user_ids()
+    if fact_user and fact_user not in unclaimed:
+        return [fact_user]
+    try:
+        from ducky.facts_recall import _strict_tenant_enabled, _tenant_mode_active
+        tenant_mode = _tenant_mode_active() or _strict_tenant_enabled()
+    except (ImportError, AttributeError, LookupError, RuntimeError) as exc:   # 判不出来按租户模式（收紧）
+        logger.debug("opinion 租户模式判定失败，按租户模式收紧: %s", exc)
+        tenant_mode = True
+    return [*unclaimed, ""] if tenant_mode else None
+
+
+def _owner_filter(conn, fact_id: int) -> tuple[str, list]:
+    owners = _owner_set(_fact_scope(conn, fact_id)[0])
+    if owners is None:
+        return "", []
+    return f" AND owner IN ({','.join('?' * len(owners))})", owners
+
+
 def set_opinion(fact_id: int, stance: str, confidence: float = 0.5,
                 evidence_ids: list | None = None, source: str = "",
                 owner: str = DEFAULT_USER_ID) -> dict:
@@ -159,8 +188,20 @@ def set_opinion(fact_id: int, stance: str, confidence: float = 0.5,
         # v20 P0-2：同事务内从 facts 行继承作用域戳（事实换不了库，
         # upsert 时也一并刷新，纠正历史上错盖的戳）
         scope_user, scope_bank = _fact_scope(conn, fact_id)
+        # f0.7.6（外审 R2-14）：冲突键 (fact_id, source) 不含 owner——同 source 的别人
+        # 不能覆盖这一行、改写它的 owner；默认租户的几种写法视为同一 owner。
+        _owners = _owner_set(scope_user)
+        if _owners is None:          # 单主人宽松档的未认领事实：沿用 v19 覆盖语义
+            _guard, _same = "", []
+        else:
+            from ducky.bank_contract import unclaimed_user_ids
+            _same = [*unclaimed_user_ids(), ""]
+            _ph = ",".join("?" * len(_same))
+            _guard = (" WHERE opinions.owner = excluded.owner"
+                      f" OR (opinions.owner IN ({_ph}) AND excluded.owner IN ({_ph}))")
+            _same = _same * 2
         cur = conn.execute(
-            """INSERT INTO opinions (fact_id, stance, confidence, evidence_ids,
+            f"""INSERT INTO opinions (fact_id, stance, confidence, evidence_ids,
                                      source, owner, created_at, updated_at,
                                      user_id, bank_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -168,10 +209,15 @@ def set_opinion(fact_id: int, stance: str, confidence: float = 0.5,
                    stance=excluded.stance, confidence=excluded.confidence,
                    evidence_ids=excluded.evidence_ids, owner=excluded.owner,
                    updated_at=excluded.updated_at,
-                   user_id=excluded.user_id, bank_id=excluded.bank_id""",
+                   user_id=excluded.user_id, bank_id=excluded.bank_id{_guard}""",
             (fact_id, stance, confidence, ev_json, source, owner, now, now,
-             scope_user, scope_bank),
+             scope_user, scope_bank, *_same),
         )
+        if not cur.rowcount:
+            conn.rollback()
+            result["detail"] = "owner_conflict: 该 source 的信念属于另一个 owner，拒绝覆盖"
+            result["conflict"] = True
+            return result
         oid = cur.lastrowid
         # 📒 事件账本（B5）：信念写入留痕，同事务
         try:
@@ -198,8 +244,11 @@ def list_opinions(fact_id: int) -> list:
     try:
         ensure_opinion_schema()
         conn = get_facts_conn()
+        # f0.7.6（外审 R2-14）：只列事实所属租户的信念（影子期别人写进来的行不出现）
+        frag, owners = _owner_filter(conn, fact_id)
         rows = conn.execute(
-            "SELECT * FROM opinions WHERE fact_id=? ORDER BY opinion_id", (fact_id,)
+            "SELECT * FROM opinions WHERE fact_id=?" + frag + " ORDER BY opinion_id",
+            (fact_id, *owners),
         ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
@@ -225,8 +274,10 @@ def aggregate_opinion(fact_id: int) -> dict:
     try:
         ensure_opinion_schema()
         conn = get_facts_conn()
+        frag, owners = _owner_filter(conn, fact_id)   # f0.7.6（外审 R2-14）：只算本租户
         rows = conn.execute(
-            "SELECT stance, confidence, source FROM opinions WHERE fact_id=?", (fact_id,)
+            "SELECT stance, confidence, source FROM opinions WHERE fact_id=?" + frag,
+            (fact_id, *owners),
         ).fetchall()
         conn.close()
         sources = {r["source"] for r in rows}

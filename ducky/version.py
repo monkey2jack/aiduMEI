@@ -8,6 +8,19 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.7.6 (内部补丁 f0.7.6 · 2026-11-06 · f0.7++ 外审复审修复:原则 7 识别重写 + 结构与删除收口 · 大仓 Tag/Release 仍为 f0.7++)
+    用例总数 4054 → 4181(本版 = 行为 3553 + 脚本/钩子 482 + 守卫 146)。
+    1. 原则 7 识别重写:逐字 NFKC、去 Cf/Mn 与韩文填充符、常见拉丁/西里尔/希腊同形字归一,在归一化视图定位后映射回原文替换。
+    2. 键名按 _ - . 与驼峰分词判定(userPassword、DB_PASSWORD_PROD、password2);password_hint、max_tokens 不算。
+    3. 口令类键下 是/为/is/改成/设为 等均为分隔,纯小写/全大写/中文/带空格口令与 4 位以上数字 PIN 都打码;中文引号与「password for X is」。
+    4. 占位符白名单只留真模板(${VAR}、<YOUR_KEY>、xxx、***、changeme 等精确词)。
+    5. 新识别:助记词、私钥、Basic 认证、Cookie 头、机器人令牌、AccountKey、sk_test_。
+    6. messages 的 role/type 白名单;JSON 字符串形态的 messages 先解析再打码;变更日志 input_json 落库前再打码;顶层 session_id/agent 字符集校验、event_at 必须是时间。
+    7. 删除链:单删补 memory_epistemic、evolve 步骤;全删补 evolve_episodes;各库 secure_delete=ON,删除后尽力 WAL checkpoint。
+    8. 观点:列表与聚合只计事实租户的观点,upsert 不覆盖他人观点(409);evidence_ids 只收本租户可见 ID。
+    9. /api/login 请求体不是 JSON 对象时 400 并计失败;跨租户反馈 404。
+    10. 新增用例 127 条:复审报告全部样例反向断言、误报对照、结构与删除残留扫描。
+
 v0.7.5 (内部补丁 f0.7.5 · 2026-11-04 · 第二轮外审 P0 收口:事实层按身份隔离 + 原则 7 补漏 + 删除真删 · 大仓 Tag/Release 仍为 f0.7+)
     用例总数 4007 → 4054(本版 = 行为 3426 + 脚本/钩子 482 + 守卫 146)。
     1. 钥匙强制(AIDUMEI_AGENT_KEY_ENFORCE=1)下事实层进入租户模式:/facts、/opinions 只见本身份行;主人身份保留本人 + 未认领行,但不再等于整库。
@@ -735,8 +748,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.7.5"
-FULL_VERSION = "f0.7.5"
+SERVICE_VERSION = "0.7.6"
+FULL_VERSION = "f0.7.6"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -763,7 +776,12 @@ FULL_VERSION = "f0.7.5"
 # 内部补丁，大仓 Tag/Release 与 PUBLIC_RELEASE_VERSION 不动（维护者已定对外名 f0.7++，翻牌另行授权）。
 # f0.7++（2026-11-04）：维护者授权公开翻牌——大仓 Tag/Release 升至 f0.7++，PUBLIC_RELEASE_VERSION 同步；
 # LINEAGE 0.7.5 行对外列记 f0.7++（f0.7+ 先例），FULL_VERSION 保持 f0.7.5（/health 不变）。
-PUBLIC_RELEASE_VERSION = "f0.7++"
+# f0.7.6（2026-11-06）：f0.7++ 外审复审修复——原则 7 识别重写（归一化视图、键名分词、占位符白名单收窄）、role/JSON 字符串/顶层字段不再绕过、
+# 删除链补 memory_epistemic/evolve_episodes、各库 secure_delete + 删除后 WAL checkpoint、观点按事实租户计、登录体非对象 400。
+# 内部补丁，PUBLIC_RELEASE_VERSION 不动（维护者已定对外名 f0.7+++，翻牌另行提交）。
+# f0.7+++（2026-11-06）：维护者授权公开翻牌——大仓 Tag/Release 升至 f0.7+++，PUBLIC_RELEASE_VERSION 同步；
+# LINEAGE 0.7.6 行对外列记 f0.7+++（f0.7++ 先例），FULL_VERSION 保持 f0.7.6（/health 不变）。
+PUBLIC_RELEASE_VERSION = "f0.7+++"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -777,6 +795,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.7.6", "", "f0.7+++", "公开 f0.7+++(2026-11-06 维护者授权翻牌,代码 f0.7.6):f0.7++ 外审复审修复:原则 7 识别重写(逐字 NFKC + 去 Cf/Mn + 同形字;键名按驼峰/下划线分词;是/为/is/改成等分隔;中文与带空格口令;占位符白名单只留真模板;助记词/私钥/Basic/Cookie/机器人令牌/短 PIN);role 白名单、JSON 字符串 messages 先解析再打码、变更日志落库前再打码、顶层 session/agent/event_at 校验;删除链补 memory_epistemic 与 evolve_episodes;各库 secure_delete + 删除后 WAL checkpoint;观点列表/聚合按事实租户计、不覆盖他人观点;evidence_ids 校验;登录体非对象 400 · 2026-11-06"),
     ("0.7.5", "", "f0.7++", "公开 f0.7++(2026-11-04 维护者授权翻牌,代码 f0.7.5):第二轮外审 P0 收口:钥匙强制下事实层按身份隔离、/opinions/set 核事实真实归属;原则 7 补零宽/全角/下划线键名/全大写与纯小写口令/JSON/metadata;/evolve/feedback 打码;非 ASCII 凭据不再 500;删除链补派生全文表 + 元守卫静态扫描;多模态消息与后台自动记忆走同一写入闸门 · 2026-11-04"),
     ("0.7.4", "", "f0.7+", "公开 f0.7+(2026-11-02 维护者授权翻牌,代码 f0.7.4):读线过滤词按身份豁免(AIDUMEI_CC_DROP_TERMS_EXEMPT,默认空=全部过滤),本人记忆不再被自己的人设词挡掉;/search 提权补插的 salience 行带检索作用域,不再落 default;原文句柄删除连 salience 行一起清;scripts/salience_relabel.py 修存量(默认 dry-run) · 2026-11-02"),
     ("0.7.3", "", "f0.7.3", "记忆隔离:钥匙身份在每一条路由上都核(全局路由 /stats /recent /tombstones /metrics 等不再绕过),user_id 为空按全实例处理,agent 钥匙不做全实例操作;CC 钩子按身份读钥匙文件 <AIDUMEI_KEYS_DIR>/<user_id>.key;delete_all 保留「不再保存」规则 · 2026-11-02"),
