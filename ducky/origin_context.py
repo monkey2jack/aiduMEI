@@ -16,6 +16,8 @@ ducky.origin_context — 溯源上下文 (v21 preview · EchoMind 融改 F2)
 from __future__ import annotations
 
 import contextvars
+import re
+from datetime import datetime
 from typing import Any
 
 _ORIGIN: contextvars.ContextVar[tuple[str, str, int]] = contextvars.ContextVar(
@@ -23,6 +25,41 @@ _ORIGIN: contextvars.ContextVar[tuple[str, str, int]] = contextvars.ContextVar(
 )
 
 RESERVED_KEYS = ("_origin_agent", "_origin_session_id", "_origin_turn")
+
+# f0.7.6（外审 R2-10）：顶层 extra 不经过 metadata 打码，会话 / agent 标识只认保守字符集。
+_ORIGIN_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def safe_origin_id(value: Any) -> str:
+    """会话 / agent 标识：先过原则 7 打码，再要求 [A-Za-z0-9._:-]{1,128}；不合格一律丢弃（返回 ""）。"""
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int)):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    from ducky.write_policy import redact_forbidden
+    redacted, kinds = redact_forbidden(text)
+    if kinds or redacted != text or not _ORIGIN_ID_RE.match(text):
+        return ""
+    return text
+
+
+def safe_event_at(value: Any):
+    """event_at 必须能解析成时间（ISO 8601 / 日期，或合理范围内的 epoch 秒）；否则返回 None（丢弃）。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value if 0 <= value < 1e11 else None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > 64:
+        return None
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00") if text.endswith("Z") else text)
+    except ValueError:
+        return None
+    return value
 
 
 def set_origin(agent: str = "", session_id: str = "", turn: int = 0) -> contextvars.Token:
@@ -93,7 +130,7 @@ def extract_origin_fields(extra: Any, metadata: dict | None) -> tuple[str, str, 
             if v is None:
                 v = md.get(n)
             if v:
-                return str(v)
+                return safe_origin_id(v)
         return ""
 
     agent = _pick("agent", "origin_agent", "client", "source_agent")
