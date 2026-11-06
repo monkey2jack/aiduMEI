@@ -76,6 +76,7 @@ def register_evolve_routes(app: FastAPI) -> None:
         """
         # f0.7.5（外审 sesame F5 / deepseek F-08）：query / correction_text 落
         # evolve_feedback 表，此前不过任何清洗与原则 7 打码，原话里的密钥原样入库。
+        from ducky.bank_contract import BankScopeError
         from ducky.scope_auth import sanitize_memory_fields
         from ducky.write_policy import redact_forbidden
         _query, _corr = sanitize_memory_fields(req.query or "", req.correction_text or "")
@@ -91,6 +92,13 @@ def register_evolve_routes(app: FastAPI) -> None:
                 bank_id=req.bank_id,
             )
             return {"status": "ok", **result}
+        except BankScopeError as e:
+            # f0.7.6（外审 R2-12 小瑕疵）：记忆不在调用方作用域内 = 不存在，404（不再 200 + 「服务端处理失败」）；
+            # 作用域值本身非法是调用参数问题，400。
+            from fastapi import HTTPException
+            if "不存在" in str(e):
+                raise HTTPException(404, "memory not found") from None
+            raise HTTPException(400, str(e)[:200]) from None
         except Exception as e:
             logger.error(f"evolve_feedback 失败: {e}", exc_info=True)
             from ducky.api_errors import api_error_detail
