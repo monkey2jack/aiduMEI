@@ -121,8 +121,10 @@ def _declared_in_env_file() -> tuple[str | None, str]:
     状态取值：`present` / `absent`（文件在但没这一行）/ `no_file` / `unreadable`。
     只读不写，任何异常都降级成一个状态字符串，绝不让 /health 因为读配置而挂掉。
     """
-    from ducky.utils import BASE_DIR
-    path = os.path.join(BASE_DIR, _ENV_FILE_NAME)
+    from ducky.utils import BASE_DIR, env_file_path
+    # f0.8.0：与服务启动时读的是同一份文件（AIDUMEM_ENV_FILE 优先），
+    # 之前只看代码目录，`.env` 放在别处的部署会被误报 no_file / overridden。
+    path = env_file_path(BASE_DIR)
     if not os.path.exists(path):
         return None, "no_file"
     try:

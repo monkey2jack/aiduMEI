@@ -4,7 +4,9 @@ Same offline harness as benchmarks/regression.py (in-process app, hash
 embeddings, no network, zero tokens); only the HTTP contract is used:
 /add, /search, /api/facts, /api/forget, /api/write-policy/verdicts.
 
-  noise_not_stored     noise → shadow verdict reject; its paired real statement → not reject
+  noise_not_stored     noise never becomes long-term memory: machine noise is gated into the tombstone
+                       (f0.8, verdict reject), a short reply goes to the daily layer (verdict daily);
+                       its paired real statement → not reject
   inference_not_fact   a session summary comes back marked inferred; a direct statement does not
   forget_no_resurrect  after /api/forget: absent from /search (natural + exact) and /api/facts;
                        writing it again hits the never-store rule
@@ -75,7 +77,7 @@ def judge(h: Harness, c: dict) -> bool:
         mem_rows = [x for x in v if x.get("memory_id")]
         if len(mem_rows) < 2:
             return False
-        return mem_rows[0]["verdict"] == "reject" and mem_rows[1]["verdict"] != "reject"
+        return mem_rows[0]["verdict"] in ("reject", "daily") and mem_rows[1]["verdict"] != "reject"
     if cat == "inference_not_fact":
         h.add(uid, c["summary"], SUMMARY_MD)
         h.add(uid, c["direct"])

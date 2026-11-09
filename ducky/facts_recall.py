@@ -473,7 +473,11 @@ def wrap_inject_frame(block: str) -> str:
         # 退路是**继续包装**、只是不中和，并留一笔。
         logger.warning("边界中和失败，仍照常包装: %s", exc)
         body = block
-    return f"{INJECT_FRAME_TOP}\n<memory>\n{body}\n</memory>"
+    # f0.8（外审 muse M-12）：此前开/闭恒为 <memory>/</memory>，唯一防线是精确字面中和。
+    # 现在每次包装取一次性 nonce，开闭标记都带——正文猜不到本次口令，结构上关不掉数据区。
+    import secrets
+    nonce = secrets.token_hex(16)
+    return f'{INJECT_FRAME_TOP}\n<memory nonce="{nonce}">\n{body}\n</memory nonce="{nonce}">'
 
 
 def inject_context(

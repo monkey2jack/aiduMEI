@@ -163,7 +163,7 @@ def test_degraded_details_prefers_existing_detail_over_no_reason():
     assert by["entity_keywords"]["reason"] == "unset"
     assert by["entity_keywords"]["source"] == "probe_source"
 
-def test_unprobed_vector_backend_is_warming_up_not_degraded():
+def test_unprobed_vector_backend_is_warming_up_not_degraded(monkeypatch):
     """Cold start is not an incident.
 
     `probed=false` means "not inspected yet"; treating it as failure makes the
@@ -173,6 +173,8 @@ def test_unprobed_vector_backend_is_warming_up_not_degraded():
     from fastapi.testclient import TestClient
     from ducky.hot import health as H
 
+    # f0.8：degraded/warming_up 只在完整视图里；本用例看的是聚合列表，不是门禁，固定成门禁关。
+    monkeypatch.setattr(H, "_auth_gate_enabled", lambda: False)
     app = FastAPI()
     H.register_health_routes(app)
     # This route performs many real filesystem probes. The invariant under test
@@ -260,7 +262,8 @@ def test_unauthenticated_health_uses_strict_allowlist(monkeypatch):
     # v20.3.2 正式版（P0-2 · 用户审计 B）：匿名视图**留键说明而不删键** —— 文档配方
     # `.probes.runtime_paths.data_dir_writable` 对未带凭据的 agent 仍可读，其余探针以
     # _redacted 说明代替。顶层键集与嵌套内容都要钉死，侦察面不许悄悄变宽。
-    assert set(body) == {"status", "version", "health_status", "degraded", "warming_up", "probes"}
+    # f0.8：degraded 组件名与 warming_up 也收进完整视图（外审 F-13：侦察面只减不增）。
+    assert set(body) == {"status", "version", "health_status", "probes"}
     assert set(body["probes"]) == {"_redacted", "runtime_paths"}
     assert set(body["probes"]["runtime_paths"]) == {"data_dir_writable", "_redacted"}
     assert isinstance(body["probes"]["runtime_paths"]["data_dir_writable"], bool)
@@ -475,17 +478,36 @@ def test_crontab_dry_run_works_without_repo_venv(tmp_path, monkeypatch):
     assert r.returncode == 0, r.stderr
     assert f"would install {_expected_task_count()}" in r.stdout
 
-def test_crontab_dry_run_does_not_mutate_crontab():
+def test_crontab_dry_run_does_not_mutate_crontab(tmp_path):
+    import os
+    import shutil
     import subprocess
-    before = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    env = dict(os.environ)
+    calls = None
+    if shutil.which("crontab") is None:
+        # 宿主没有 crontab 命令时不跳过：放一个记账用的假 crontab 到 PATH 前面，
+        # `-l` 回一行固定内容，其余任何调用都记下来——dry-run 只许读不许写。
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        calls = tmp_path / "crontab_calls.log"
+        shim = shim_dir / "crontab"
+        shim.write_text('#!/bin/sh\necho "$*" >> "%s"\n'
+                        'if [ "$1" = "-l" ]; then echo "# synthetic crontab"; exit 0; fi\n'
+                        'exit 0\n' % calls)
+        shim.chmod(0o755)
+        env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
+    before = subprocess.run(["crontab", "-l"], capture_output=True, text=True, env=env).stdout
     result = subprocess.run(
         ["bash", str(_ROOT / "scripts" / "update_crontab.sh"), "--dry-run"],
-        check=True, capture_output=True, text=True, timeout=10,
+        check=True, capture_output=True, text=True, timeout=10, env=env,
     )
-    after = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    after = subprocess.run(["crontab", "-l"], capture_output=True, text=True, env=env).stdout
     assert result.returncode == 0
     assert f"would install {_expected_task_count()}" in result.stdout
     assert before == after
+    if calls is not None:
+        writes = [ln for ln in calls.read_text().splitlines() if ln.strip() != "-l"]
+        assert not writes, f"dry-run invoked crontab with write args: {writes}"
 
 def test_backup_gate_verify_resolves_latest(tmp_path):
     """Qwen P1-7：cron 传 `verify latest`，上一版把它当字面目录 → 每周必失败。"""

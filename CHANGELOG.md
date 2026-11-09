@@ -1,5 +1,46 @@
 # aiduMEI 版本演进史
 
+## v0.8.0 (f0.8.0 · 2026-11-09 · 安全加固 + 写入策略按影子周结果开拦截 + Claude Code 记忆桥 · 大仓 Tag/Release 翻牌 f0.8)
+
+> **公开翻牌(2026-11-09,纯文档提交,无运行时改动、包版本不变)**:维护者授权把 f0.8.0 公开为 **f0.8**,大仓 Tag/Release `f0.8` 指向本版代码(包 `0.8.0`)。`PUBLIC_RELEASE_VERSION` 升至 f0.8,谱系 0.8.0 行对外列记 f0.8,`FULL_VERSION` 保持 f0.8.0(`/health` 不变)。
+
+> **用例总数 4181 → 4535**（本版 = 行为 3907 + 脚本/钩子 482 + 守卫 146，`pytest --collect-only` 实测，`scripts/count_test_kinds.py` 可复算）。公开翻牌见上。
+
+影子周（11-02 → 11-09，745 条判定）的结论：机器噪声 68/68 判对，短确认有争议，替换/冲突 8/8 误配，会话精华里漏了 27 条模型思考过程。本版只开判对的部分。
+
+- **原则 1 两类机器噪声拦截**：机器文本（`[SILENT]`、`[Image: original …]` 等）与上下文续接说明（`This session is being continued…`）在 `/add` 任何一层落库前拿出来，进墓碑（与删除同一张表、同一条 `/tombstone/restore` 恢复路径），`AIDUMEI_WRITE_POLICY_GATE_TTL_DAYS`（默认 7）天后擦正文；同一轮里的其他消息照常写。回执 `gated` 列出拦下的条目（原则、理由码、墓碑 id，不含正文），判定日志 `mode=enforce`。
+- **短确认 / 单字不再判拒收**：「好，那走吧」「改」「好」这类改判 daily（当日流水层），不拦。
+- **原则 8 忘记规则拦截**：命中「不再保存」规则的写入整条不写、也不进墓碑；判定日志只留规则 id，不留哈希。
+- **会话精华不收模型思考过程**：`llm_client` 剥掉正文里的 `<think>…</think>`，`reasoning` / `reasoning_content` 字段从不当答案；`/session/distill` 再剥 harmony 分析通道，剩下的仍像英文思考（「We need to output…」「Let me think」「The user wants…」）就走确定性降级摘要，metadata 记 `distill_fallback_reason`；`/add` 收到 LLM 模式的精华仍是思考文本时进墓碑（降级摘要引用本人原话，不判）。
+- **原则 4/5 仍影子，「同一件事」重做**：只共享「是/不是」「既然」「放行/未放行」这类判断词不再配对；要求去掉判断词与虚词后至少 2 个共享实词且重合度 ≥ `AIDUMEI_WP_TOPIC_MIN_OVERLAP`（0.3），或已存向量余弦 ≥ `AIDUMEI_WP_TOPIC_MIN_COSINE`（0.8）；邻居里普遍出现的词（常被称呼的名字）不算。住处/工作地点按锚点比对不变。
+- **每条拦截都能拨回影子**：`AIDUMEI_WRITE_POLICY_P1` / `_P8` / `_THINKING` = `shadow`（默认 `enforce`），不改代码；`AIDUMEI_WRITE_POLICY=off` 全关（原则 7 不受影响）。原则 6 仍关，2/3 只贴标签，9 不变。
+- **同一道拦截挂到其他写路径**：`/update`（归属验过再拦，被拦则原记忆不动）与后台 `auto_memory` 环（逐条拦 + 整段比忘记规则）复用 `write_policy.enforce_messages`，墓碑失败照旧写入；新增 `tests/test_f08_gate_paths.py`。
+- `benchmarks/regression_f07plus` 噪声类口径：daily 也算「没进长期记忆」。
+- 新增用例：影子周反向样例的虚构等价物（68 条机器噪声 → 拦下可恢复；短确认 → daily；8 组替换/冲突误配 → 不提议；思考文本 → 拒收/降级；感情与承诺句 → 保留）、HTTP 端到端（墓碑 7 天、恢复、P8 无残留、环境变量拨回影子）。
+- 安全 · 出站地址校验（SSRF）：DNS 解析后逐地址判私网/回环/元数据，尾点与数字写法 fail-closed，保存、`/config/test`、每次外呼前复检；`AIDUMEI_MODEL_ENDPOINT_ALLOW` 支持 CIDR，`AIDUMEI_EGRESS_ALLOW_LOOPBACK=0` 连本机也拦。
+- 安全 · `/health` 完整视图只给控制台会话与主 token；agent 钥匙与匿名拿最小公开视图。
+- 安全 · MCP SSE 回环绑定也要 Bearer token。
+- 安全 · 控制台改密后 `AIDUMEM_UI_PASSWORD` 失效；空环境变量不再挡 `.env`；空 `AIDUMEM_HOST` = 回环；`0.0.0.0` 不再是可信 Host。
+- 安全 · 召回包装、沙箱记录与治理评估提示的开闭标记带每次一换的 128 位 nonce；边界中和大小写/空白不敏感；伪造围栏的候选转人审。
+- 安全 · 出处服务端裁定：调用方只能降格为 `inferred`；bearer 经 `/update` 改写记为 inferred。
+- 安全 · 列表 `limit`/`top_k`/`k` 钳到 `[1, AIDUMEI_LIST_LIMIT_MAX=500]`，负 offset 归 0，`/facts` 分页带 `truncated`；读请求按钥匙限流 `AIDUMEI_RATE_READ_PER_MIN`（默认 600，0 = 关）。
+- 安全 · 自编辑合并与 instinct 毕业按钥匙绑定身份设硬围栏（不受 `AIDUMEI_AGENT_KEY_ENFORCE` 影响）。
+- 安全 · 多消息 `/add` 逐条清洗/闸门/出处：助手与工具发言记 inferred，纯密钥消息逐条摘除，合批不再把助手发言拍平成用户原话。
+- 安全 · `/forget` 墓碑记 `reason=forget` 并返回 `tombstone_id`（TTL 内可恢复）；墓碑元数据过原则 7；元数据按键名语境打码（值像秘密才打）；`secret` 键后 8 位以上数字打码。
+- **Claude Code 自带记忆桥（f0.8 ①）**:CC 的 auto-memory 把普通 markdown 写进 `~/.claude/projects/<项目>/memory/`(`MEMORY.md` 索引 + 主题文件),每次会话都读,却绕过 aiduMEI 写入闸门——生产上 187 个文件里 14 个存着明文口令/密钥。不关它,接上它:
+  - 新钩子 `integrations/claude-code/aidumem-cc-memory-bridge.sh`(`PostToolUse`,matcher `Write|Edit|MultiEdit`,逻辑在同目录 `cc_memory_bridge.py`,独立集成件、只用标准库,打码器从仓库按单文件加载):被改的文件在**本项目** CC 记忆目录里时,先用原则 7 打码器原地打码(同目录临时文件 + 原子替换,保留权限位与属主),再把主题文件经正常鉴权的 `/add` 写进当前身份(服务端闸门照常生效),metadata 带 `source=cc_auto_memory`、`cc_file`、`cc_sha`。有打码时经 `additionalContext` 提醒模型别把凭据写进记忆文件。
+  - 记忆目录按 CC 的口径找:`autoMemoryDirectory` 设置、`CLAUDE_CODE_PROJECT_DIR_NAME`、git 仓库根(子目录与 worktree 共用一份)、transcript 所在项目目录、cwd。只认这些目录下的普通 `.md`:相对路径、`..`、文件或目录软链跳出、记忆目录本身是软链一律不碰。
+  - 去重:同一身份同一文件内容哈希没变就跳过(哈希只算 name/description/type 与正文,CC 每次写入盖的 `modified` 时间戳不算);状态丢了时服务端已有同哈希或同正文的记忆也跳过;`/add` 带幂等键。文件改了:新内容写入后删掉这个文件早先导入、哈希不同的记忆。闸门整条拒收(422)的内容记下哈希不再重试;服务端出错不记,下次重试。`MEMORY.md` 只打码不入库;存根文件不入库、不触发取代。`AIDUMEI_CC_BRIDGE_INGEST=0` 只打码。
+  - 每日兜底 `scripts/cc_memory_sweep.py`:扫所有项目的记忆目录做同样的事。默认 dry-run;`--apply` 打码 + 入库;`--apply --trim` 再把已导入、未改动、超过 `--days`(默认 14)天的主题文件正文换成一行存根「已存入 aiduMEI：<标题>」(frontmatter 保留),并把 `MEMORY.md` 封顶到 `--index-cap`(默认 80)行——先摘指向存根的条目,再从最早的摘,只摘所指文件已导入的条目。改动前原文备份到 `~/.aidumem/cc-bridge-trash/`。幂等。
+  - `connect_host.py` 给 Claude Code 挂第四条钩子(幂等,matcher 挂错会纠正,`--uninstall` 只摘本仓的),`--check` 单列「自带记忆桥」状态;只有 f0.7 三线的老安装 `--check` 会报红,重跑一次 `connect_host.py` 补上。钩子总超时 30 秒，桥与兜底扫每个 HTTP 请求等 `AIDUMEI_CC_BRIDGE_TIMEOUT`（缺省 12）秒——上线实测生产 `/search`（远端嵌入 + 混合召回）4–6 秒，原先写死 5 秒会让导入超时、只打码不入库。
+  - 新增用例:路径判定(含穿越/软链逃逸、git 子目录/worktree、自定义目录)、走真路由的端到端探针(本地档 + native,零外呼)、原地打码、入库载荷与线上请求、去重/取代/拒收/出错重试、兜底扫 dry-run 与 apply、裁剪存根与索引封顶、connect_host 挂接与 `--check`。
+- **`/health` 实体词来源探针认 `AIDUMEM_ENV_FILE`**：探针以前只读代码目录下的 `.env`，`.env` 放在别处的部署被误报 `no_env_file` / `overridden`。现在与服务启动同一条规则（`ducky/utils.py` 新增 `env_file_path`：`AIDUMEM_ENV_FILE` 优先，否则代码目录）；新增 `tests/test_f08_env_file_probe.py`。
+- **`connect_host.py --claude-test` 要真召回**：f0.7 只看 `claude -p` 退出码 0 且有输出，Claude 回一句「看不到记忆」也判绿。现在先经写线存一条一次性暗号、等服务能搜到，再问 claude 暗号是什么——回答里出现这枚暗号才算过；服务端搜不到就不调用 claude；验完删掉测试记忆。
+- **`connect_host.py` 认 `CLAUDE_CONFIG_DIR` 与项目级配置**：设了 `CLAUDE_CONFIG_DIR` 时接入、`--check`、`--uninstall` 都用 `$CLAUDE_CONFIG_DIR/settings.json`（与记忆桥 `claude_home` 同一规则），以前一律写 `~/.claude`，Claude Code 读不到；新增 `--project-dir PATH` 改写/验收该项目的 `.claude/settings.json`。不设时行为不变。新增 `tests/test_f08_connect_host_claude.py`。
+- **Claude Code 钩子脚本可执行**：`integrations/claude-code/*.sh` 在 git 索引里设为 100755（此前 100644，照文档直接写脚本路径或手工执行会 Permission denied）；新守卫 `tests/test_f08_integration_sh_mode.py` 要求 `integrations/` 下所有 `.sh` 都是 100755。
+- **记忆桥认 Claude Code 2.1.319 frontmatter**：`type` 挪进嵌套 `metadata:` 块后也能读到（`cc_type`）；顶层 `type` 优先，内容哈希只看顶层键，已导入的文件不会重导。
+- **发布前自审补三处**：记忆桥不再从项目共享的 `.claude/settings.json` 读 `autoMemoryDirectory`（随仓库提交的文件能把记忆目录指到 `~/` 或仓库本身，桥会把那里被改的任意 `.md` 改写并导入记忆；CC 自己也不从项目共享设置接受这一项，项目 local 与用户设置照旧）；MCP SSE 认证包装对 websocket 作用域同样要凭据（此前非 http 作用域一律直通，只有 lifespan 该直通）；出站校验识别 NAT64 前缀 `64:ff9b::/96` 内嵌的元数据地址，放行名单也放不过。新增 `tests/test_f08_self_audit.py`。
+
 ## v0.7.6 (f0.7.6 · 2026-11-06 · f0.7++ 外审复审修复 · 原则 7 识别重写 + 结构与删除收口 · 大仓 Tag/Release 翻牌 f0.7+++)
 
 > **公开翻牌(2026-11-06,纯文档提交,无运行时改动、包版本不变)**:维护者授权把 f0.7.6 公开为 **f0.7+++**,大仓 Tag/Release `f0.7+++` 指向本版代码(包 `0.7.6`)。`PUBLIC_RELEASE_VERSION` 升至 f0.7+++,谱系 0.7.6 行对外列记 f0.7+++,`FULL_VERSION` 保持 f0.7.6(`/health` 不变)。

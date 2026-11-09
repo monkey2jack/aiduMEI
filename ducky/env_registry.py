@@ -273,6 +273,14 @@ KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F04PP_CC_OPS_ENV_VARS
 # 召回两个开关默认关；钥匙身份校验默认影子（0 记账 / 1 拒绝）。
 _F07PLUS_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_WRITE_POLICY",
+    # f0.8 ②：开了拦截的原则逐条可拨回影子（enforce|shadow，默认 enforce）+ 拦下条目的墓碑天数
+    "AIDUMEI_WRITE_POLICY_P1",
+    "AIDUMEI_WRITE_POLICY_P8",
+    "AIDUMEI_WRITE_POLICY_THINKING",
+    "AIDUMEI_WRITE_POLICY_GATE_TTL_DAYS",
+    # f0.8 ②：原则 4/5「同一件事」的话题重合门槛（词元重合度 / 向量余弦）
+    "AIDUMEI_WP_TOPIC_MIN_OVERLAP",
+    "AIDUMEI_WP_TOPIC_MIN_COSINE",
     "AIDUMEI_SECRET_GUARD",
     "AIDUMEI_WRITE_MAX_RAW_CHARS",
     "AIDUMEI_RECALL_EXCLUDE_DAILY",
@@ -284,6 +292,26 @@ _F07PLUS_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_KEYS_DIR",          # f0.7.3：钩子侧按身份找钥匙文件的目录（服务端不读）
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F07PLUS_ENV_VARS
+
+# ── f0.8 ①（Claude Code 自带记忆桥 · 兜底扫）────────────────────────────────
+# 宿主侧脚本 scripts/cc_memory_sweep.py 读（服务端不读）；钩子本体在 integrations/
+# 下是独立集成件，它读的 AIDUMEI_CC_* 见 integrations/claude-code/aidumem-cc-memory-bridge.sh 头注释。
+_F08_CC_BRIDGE_ENV_VARS: frozenset[str] = frozenset((
+    "AIDUMEI_CC_BRIDGE_TRASH",   # 裁剪前原文备份目录（缺省 ~/.aidumem/cc-bridge-trash）
+    "AIDUMEI_CC_TRIM_DAYS",      # 主题文件超过多少天才可存根（缺省 14）
+    "AIDUMEI_CC_BRIDGE_TIMEOUT", # 桥/兜底扫每个 HTTP 请求超时秒数（缺省 12）
+    "AIDUMEI_CC_INDEX_CAP",      # MEMORY.md 行数上限（缺省 80）
+))
+KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F08_CC_BRIDGE_ENV_VARS
+
+
+# ── f0.8（安全清单）──────────────────────────────────────────────────────────
+_F08_SEC_ENV_VARS: frozenset[str] = frozenset((
+    "AIDUMEI_EGRESS_ALLOW_LOOPBACK",   # 外呼端点允许字面回环（默认 1；0 = 连本机模型也拦）
+    "AIDUMEI_LIST_LIMIT_MAX",          # 列表/检索 limit 上限（默认 500）
+    "AIDUMEI_RATE_READ_PER_MIN",       # 读路径按钥匙限流（默认 600/min；0 = 关）
+))
+KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F08_SEC_ENV_VARS
 
 
 # ── 前缀学说（v20.4.0-alpha · P1-10，六方外审 Qwen 独见实锤）─────────────────

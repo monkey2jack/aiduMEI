@@ -90,7 +90,8 @@ def extract_vision_caption(media_url_or_base64: str) -> str:
         from ducky.engine_mode import cloud_egress_allowed
         if not cloud_egress_allowed("vision"):
             return None
-        resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=30, allow_redirects=False)  # f0.6 W-12：禁重定向
+        from ducky.security.egress import guard_url
+        resp = requests.post(guard_url(f"{base_url}/chat/completions", "vision"), headers=headers, json=payload, timeout=30, allow_redirects=False)  # f0.6 W-12：禁重定向
         resp.raise_for_status()
         res_json = resp.json()
         caption = res_json["choices"][0]["message"]["content"]

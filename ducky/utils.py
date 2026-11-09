@@ -155,6 +155,16 @@ def _env_file_path(path: str | None = None) -> str:
     return path or os.environ.get("AIDUMEM_ENV_FILE") or os.path.join(_REPO_ROOT, ".env")
 
 
+def env_file_path(base_dir: str | None = None) -> str:
+    """服务实际读的那份 `.env` 的路径 —— 与 api_server._bootstrap_env_file 同一条规则。
+
+    `AIDUMEM_ENV_FILE` 优先；否则是 `base_dir`（缺省为仓库根）下的 `.env`。
+    读 `.env` 的探针（如 /health 的实体词来源）必须走这里，否则部署把 `.env`
+    放在代码目录之外时，探针读的是另一份文件，报出的状态与服务真实所用的不符。
+    """
+    return os.environ.get("AIDUMEM_ENV_FILE") or os.path.join(base_dir or _REPO_ROOT, ".env")
+
+
 def parse_env_file(path: str | None = None) -> dict:
     """解析 .env 为 dict，**不碰 os.environ**。文件不存在或读失败返回 {}。
 
@@ -206,7 +216,8 @@ def load_env_file(path: str | None = None, *, override: bool = False) -> int:
     """
     injected = 0
     for key, value in parse_env_file(path).items():
-        if override or key not in os.environ:
+        # f0.8（外审 deepseek F-21）：空/纯空白的环境值不挡 .env 的非空值（与 api_server 同口径）
+        if override or (not os.environ.get(key, "").strip() and (value or key not in os.environ)):
             os.environ[key] = value
             injected += 1
     return injected

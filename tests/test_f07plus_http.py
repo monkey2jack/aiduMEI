@@ -31,7 +31,7 @@ def test_p7_raw_mail_copy_refused_and_logged_without_text(out):
 
 
 def test_shadow_verdicts_and_inferred_recall(out):
-    assert ["reject", "direct", "daily"] in out["verdicts"]
+    assert ["daily", "direct", "daily"] in out["verdicts"]          # f0.8：「好的」归当日流水
     assert ["keep", "inferred", "profile"] in out["verdicts"]
     assert out["inferred_flag"] == [True, "inferred", "session_distill:3 turns"]
 

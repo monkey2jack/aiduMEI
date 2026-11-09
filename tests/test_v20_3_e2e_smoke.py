@@ -80,6 +80,7 @@ def test_default_api_matches_server_listen_port(monkeypatch, env, expected_port)
         "_api_token": lambda: "test-token",
         "_enforce_public_binding_policy": lambda: None,
         "_enforce_single_process_policy": lambda: None,
+        "_env_bind_host": lambda: "127.0.0.1",   # f0.8：空 AIDUMEM_HOST 统一在这里归回环
         "uvicorn": SimpleNamespace(run=lambda *args, **kwargs: captured.update(kwargs)),
         "app": object(),
     }

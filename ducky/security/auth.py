@@ -277,6 +277,11 @@ def check_ui_password(password: str) -> bool:
     # f0.7.1：设了环境变量口令时，自动生成的口令（source=auto）不再有效。
     if stored and env_pwd and source == _SOURCE_AUTO:
         stored = ""
+    # f0.8（外审 deepseek F-12 / F-25 · muse M-11）：环境变量口令只是**引导口令**——控制台改过密
+    # （source=user 哈希存在）后它不再有效。此前两条通道是「或」：改密并撤销全部会话后，持旧 env
+    # 口令者立即能重新登录。要用 env 口令重置忘掉的控制台口令：删 DATA_DIR/.ui_password_hash 再重启。
+    if stored and source != _SOURCE_AUTO:
+        env_pwd = ""
     if stored:
         ok, needs_upgrade = verify_password(password, stored)
         if ok:
@@ -291,6 +296,14 @@ def check_ui_password(password: str) -> bool:
     if env_pwd and safe_equal(password, env_pwd):
         return True
     return False
+
+
+def env_password_shadowed() -> bool:
+    """设了 AIDUMEM_UI_PASSWORD，但控制台口令（source=user）已存在 → env 口令被忽略。"""
+    if not os.environ.get("AIDUMEM_UI_PASSWORD", "").strip():
+        return False
+    stored, source = _read_hash_file()
+    return bool(stored) and source != _SOURCE_AUTO
 
 
 def retire_auto_password() -> bool:
