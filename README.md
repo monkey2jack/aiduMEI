@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/aidumei-banner.webp" alt="aiduMEI ☤ 爱嘟优忆思 — Memory + Engine + Insight" width="100%">
+  <img src="assets/aidumei-banner.webp" alt="aiduMEI · 爱嘟优忆思 — Memory + Engine + Insight" width="100%">
 </p>
 
 <!-- distribution-policy: github-source-only -->
 
-# aiduMEI ☤ 爱嘟优忆思——给 AI 智能体用的长期记忆引擎
+# aiduMEI · 爱嘟优忆思——给 AI 智能体用的长期记忆引擎
 
 aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
 
@@ -303,5 +303,5 @@ aiduMEI/
 MIT — 详见 [LICENSE](LICENSE)。
 
 <p align="center">
-  <sub>aiduMEI ☤ 爱嘟优忆思（品牌演进 aiduMEM → aiduMEI，曾用名 aiduMEM / duMem 保留在历史版本与文档中）｜Powered by monkey²</sub>
+  <sub>aiduMEI · 爱嘟优忆思（品牌演进 aiduMEM → aiduMEI，曾用名 aiduMEM / duMem 保留在历史版本与文档中）｜Powered by monkey²</sub>
 </p>
