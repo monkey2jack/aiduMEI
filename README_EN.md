@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/aidumei-banner.webp" alt="aiduMEI ☤ 爱嘟优忆思 — Memory + Engine + Insight" width="100%">
+  <img src="assets/aidumei-banner.webp" alt="aiduMEI · 爱嘟优忆思 — Memory + Engine + Insight" width="100%">
 </p>
 
 <!-- distribution-policy: github-source-only -->
 
-# aiduMEI ☤ YouiSi — a long-term memory engine for AI agents
+# aiduMEI · YouiSi — a long-term memory engine for AI agents
 
 aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI and Hermes: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
 
@@ -303,5 +303,5 @@ aiduMEI/
 MIT — see [LICENSE](LICENSE).
 
 <p align="center">
-  <sub>aiduMEI ☤ YouiSi (formerly aiduMEM / duMem, kept in historical versions and docs) ｜ Powered by monkey²</sub>
+  <sub>aiduMEI · YouiSi (formerly aiduMEM / duMem, kept in historical versions and docs) ｜ Powered by monkey²</sub>
 </p>
