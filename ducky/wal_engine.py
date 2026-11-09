@@ -108,6 +108,13 @@ WAL_FILE = os.path.join(WAL_DIR, "mem_mutations.wal")
 _CASCADE_ORIGIN: "contextvars.ContextVar[tuple | None]" = contextvars.ContextVar(
     "aidumei_cascade_origin", default=None)
 
+# f0.8 ③-10: attribution for a *first-level* delete issued by a named API
+# (POST /forget).  Unlike _CASCADE_ORIGIN it does not mean "inside a derived
+# cascade", so derived summaries are still cascaded; only the tombstone's
+# reason/actor change.
+_DELETE_ATTRIBUTION: "contextvars.ContextVar[tuple | None]" = contextvars.ContextVar(
+    "aidumei_delete_attribution", default=None)
+
 # mem0 exposes ``delete_all(user_id=...)`` but has no bank-aware variant.  A
 # v20 caller must therefore enumerate the exact vector scope and delete the
 # returned ids one by one.  Keep the ceiling deliberately high, while still
@@ -1285,7 +1292,7 @@ def _cascade_single_verbatim_handle(
                 conn.close()
     else:
         keys = _derived_source_keys(memory_id, user_id, bank_id, "") or {}
-        reason, actor = _CASCADE_ORIGIN.get() or ("cascade_delete_verbatim", "wal_engine")
+        reason, actor = _CASCADE_ORIGIN.get() or _DELETE_ATTRIBUTION.get() or ("cascade_delete_verbatim", "wal_engine")
         try:
             from ducky.tombstone import snapshot_before_delete
             res["tombstone_id"] = snapshot_before_delete(
@@ -1344,7 +1351,7 @@ def _snapshot_before_cascade_delete(
 
     f0.3 (C1): a delete issued by the derived-summary cascade is attributed
     as ``cascade_delete_derived`` so restore tooling can select it."""
-    reason, actor = _CASCADE_ORIGIN.get() or ("cascade_delete", "wal_engine")
+    reason, actor = _CASCADE_ORIGIN.get() or _DELETE_ATTRIBUTION.get() or ("cascade_delete", "wal_engine")
     try:
         from ducky.tombstone import snapshot_before_delete
         res["tombstone_id"] = snapshot_before_delete(

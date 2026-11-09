@@ -198,6 +198,32 @@ def check_scope(target_user: str, caller: str, action: str) -> None:
     logger.info("agent key %s used for %s/%s (%s) — shadow, allowed", cur.get("agent"), tgt, clr, action)
 
 
+def owner_fence(target_user: str, action: str) -> bool:
+    """f0.8 ③-8: hard owner fence for derived-data machinery (self_edit merges,
+    instinct graduation) — independent of AIDUMEI_AGENT_KEY_ENFORCE.
+
+    These paths rewrite or delete a tenant's *existing* memories, so the shadow
+    mode that lets a mismatched key through for plain reads/writes must not let
+    it reach them.  True = allowed.  Unbound requests (console session, local
+    no-credential, background jobs) and the main token keep full access; an
+    extra agent key only reaches the identities it is bound to.
+    """
+    cur = _CURRENT.get()
+    if not cur or cur.get("main"):
+        return True
+    tgt = str(target_user or "").strip()
+    if tgt and tgt in set(cur.get("callers") or []):
+        return True
+    seen = _SEEN.get()
+    mark = (tgt, "", action, "refused")
+    if seen is None or mark not in seen:
+        _record(cur, tgt, "", action, "refused")
+        if seen is not None:
+            seen.add(mark)
+    logger.warning("agent key %s refused %s on another identity", cur.get("agent"), action)
+    return False
+
+
 GLOBAL_TARGET = "*"
 
 

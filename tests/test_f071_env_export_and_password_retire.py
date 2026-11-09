@@ -88,4 +88,5 @@ def test_env_password_keeps_user_set_hash(_pwfiles, monkeypatch):
     _api()._ensure_ui_password()
     assert hash_file.exists()
     assert auth_mod.check_ui_password("console-pass-1")
-    assert auth_mod.check_ui_password("env-password-123")
+    # f0.8（外审 F-12/F-25）：控制台口令存在时环境变量口令只是被忽略的引导口令，不再并存
+    assert not auth_mod.check_ui_password("env-password-123")

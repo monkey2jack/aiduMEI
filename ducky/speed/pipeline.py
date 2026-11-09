@@ -30,18 +30,39 @@ logger = logging.getLogger("aiduMEM.speed")
 def _gate_injection(text, messages_json, user_id: str):
     """[P0 Gate] 终审注入防护：写入前全量执行清洗与越权拦截。
 
-    拦截直接抛 ValueError；清洗命中时 text 换净化版，且末条消息的
-    content 同步回写（保结构），返回 (text, messages_json)。
+    拦截直接抛 ValueError。f0.8 ③-9：多条消息**逐条**检测、逐条清洗回写（保结构）——
+    此前只把拼接后的净化文本回写进末条，前面几条原样带着控制字符进 memory.add，
+    末条还被换成了全部消息的拼接。拼接文本仍整体检测一次（跨条拆分的注入）。
+    返回 (text, messages_json)。
     """
     is_safe, sanitized_text, threat = validate_and_sanitize_memory_content(text)
+    if is_safe and isinstance(messages_json, list):
+        for m in messages_json:
+            if not (isinstance(m, dict) and isinstance(m.get("content"), str) and m["content"]):
+                continue
+            ok_m, clean_m, threat_m = validate_and_sanitize_memory_content(m["content"])
+            if not ok_m:
+                is_safe, threat = False, threat_m
+                break
+            m["content"] = clean_m
+        if is_safe:
+            sanitized_text = messages_to_text(messages_json)
     if not is_safe:
         logger.warning(f"🛡️ [SpeedPipeline] 拦截注入攻击 user_id={user_id}: {threat}")
         raise ValueError(f"安全风控拦截：检测到非法注入模式 ({threat})")
     if sanitized_text != text:
         text = sanitized_text
-        if isinstance(messages_json, list) and len(messages_json) > 0 and isinstance(messages_json[-1], dict) and "content" in messages_json[-1]:
-            messages_json[-1]["content"] = sanitized_text
     return text, messages_json
+
+
+def _all_user_turns(messages_json) -> bool:
+    """f0.8 ③-9：快路径把文本当「用户原话」写（role=user、direct）——只有全部是用户消息时才成立。"""
+    if isinstance(messages_json, list):
+        return all(isinstance(m, dict) and str(m.get("role") or "user").lower() == "user"
+                   for m in messages_json)
+    if isinstance(messages_json, dict):
+        return str(messages_json.get("role") or "user").lower() == "user"
+    return True
 
 
 def _read_extract_cache(user_id: str, text: str, metadata: dict, bank_id: str,
@@ -139,7 +160,8 @@ def _add_fastpath_or_llm(memory, messages_json, text: str, user_id: str,
 
     t3 = time.time()
     fast_fact = None
-    if speed.get("fastpath_enabled", True) and not metadata.get("no_fastpath"):
+    if speed.get("fastpath_enabled", True) and not metadata.get("no_fastpath") \
+            and _all_user_turns(messages_json):
         fast_fact = try_fastpath_text(text)
 
     if fast_fact:

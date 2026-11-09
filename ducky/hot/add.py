@@ -229,7 +229,9 @@ def _direct_write(mem, uid, msgs, meta, infer_effective, *, bank_id, note=None):
         # 2026-10-21 证明本函数的同名 stamp 是死缝位，生产零日志）。这里只
         # 保留 is_bot 降权判定（v22.1 语义），author_unknown 注记见 layer1。
         _is_bot = bool((meta or {}).get("_origin_is_bot"))
-        _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective or is_session_summary(meta) else "user_provided")
+        _declared_inferred = (meta or {}).get("source_type") == "inferred"
+        _mode = "fuzzy" if _is_bot else ("reasoned" if infer_effective or is_session_summary(meta)
+                                         or _declared_inferred else "user_provided")
         _epi_source = str((meta or {}).get("_origin_agent") or "add")
         stamp_memory_refs([r for r in _refs if r],
                           _mode,
@@ -504,6 +506,7 @@ def register_add_routes(app: FastAPI) -> None:
         # Once work is durable, its repair/replay receipt remains authoritative.
         _idem_claimed: list = []
         durable_owned: list = []
+        _gate_receipts: list = []      # f0.8 ②：被开了拦截的原则拿走的条目（回执，不含正文）
 
         def _release_failed_claim():
             if durable_owned or not _idem_claimed:
@@ -616,6 +619,8 @@ def register_add_routes(app: FastAPI) -> None:
                 Async hand-offs are provisional. The durable job journal
                 remains authoritative even if legacy key settlement fails.
                 """
+                if _gate_receipts and "gated" not in resp:
+                    resp = {**resp, "gated": list(_gate_receipts)}
                 if req.idempotency_key and idempotency_state["action"] != "disabled":
                     from ducky import idempotency
                     resp = {**resp, "request_id": req.idempotency_key}
@@ -667,6 +672,8 @@ def register_add_routes(app: FastAPI) -> None:
             # payloads and for every downstream storage layer.  It is never
             # inferred from a table name or a free-form user string.
             md["bank_id"] = req.bank_id
+            # f0.8：source_type / basis 是服务端保留字段——调用方只能降格为 inferred，不能自封 direct
+            write_policy.neutralize_client_provenance(md)
 
             # 🧬 v21 F2：溯源三件套进 md 保留键（调用方显式传了优先；
             # 缺省留空——如实，不编造）。同步/async job/coalesce 三条
@@ -837,6 +844,9 @@ def register_add_routes(app: FastAPI) -> None:
             # 在一切落库（原文柜、FTS、事实、向量）之前做，所以哪一层都拿不到原值。
             messages_json, _redacted = write_policy.redact_messages_struct(messages_json)
             _redacted = list(_early_kinds) + list(_redacted)
+            messages_json, _dropped = write_policy.drop_secret_only_turns(messages_json)
+            if _dropped:
+                _redacted.append("secret_only_turn")
             _full_text = messages_to_text(messages_json)
             _block = write_policy.hard_block_reason(_full_text, summary=is_session_summary(md))
             if _block:
@@ -849,6 +859,18 @@ def register_add_routes(app: FastAPI) -> None:
                 md["redacted"] = sorted(set(_redacted))
                 logger.warning("🛡️ [WritePolicy] 写入前屏蔽 %d 处敏感片段: %s", len(_redacted),
                                ",".join(sorted(set(_redacted))))
+            # f0.8 ②：开了拦截的原则（P1 机器噪声两类、P8 忘记黑名单、精华里的思考过程）在一切落库
+            # 之前把那几条拿出去——P1/思考过程进墓碑 7 天可恢复，P8 不留任何正文。其余照常写。
+            messages_json, _gated = write_policy.enforce_messages(
+                messages_json, md, user_id=req.user_id, bank_id=req.bank_id)
+            if _gated:
+                _gate_receipts.extend(_gated)
+                logger.info("🛡️ [WritePolicy] 拦下 %d 条: %s", len(_gated),
+                            ",".join(f"{g['principle']}:{g['reason']}" for g in _gated))
+                if write_policy.nothing_left(messages_json):
+                    return _finalize_and({"status": "ok", "action": "gated", "gated": _gated,
+                                          "results": []})
+                _full_text = messages_to_text(messages_json)
             text_preview = _full_text[:120]
 
             mode = _write_mode()
