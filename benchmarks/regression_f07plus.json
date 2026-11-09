@@ -1,7 +1,7 @@
 {
   "schema": "aidumei-regression-f07plus",
   "version": 1,
-  "notes": "Synthetic, public-safe cases for the four f0.7+ categories (no real chat text). noise_not_stored: noise gets verdict reject while its paired real statement does not. inference_not_fact: a session summary comes back from /search marked inferred, a direct statement does not. forget_no_resurrect: after /api/forget the text is gone from /search (natural + exact) and /api/facts, and writing it again hits the never-store rule. supersede_old: a later statement on the same topic is logged as superseding (or pending confirmation of) the earlier one; unrelated statements are not.",
+  "notes": "Synthetic, public-safe cases for the four f0.7+ categories (no real chat text). noise_not_stored: noise never becomes long-term memory (f0.8: machine noise gated into the tombstone, verdict reject; short replies go to the daily layer, verdict daily) while its paired real statement is not rejected. inference_not_fact: a session summary comes back from /search marked inferred, a direct statement does not. forget_no_resurrect: after /api/forget the text is gone from /search (natural + exact) and /api/facts, and writing it again hits the never-store rule. supersede_old: a later statement on the same topic is logged as superseding (or pending confirmation of) the earlier one; unrelated statements are not.",
   "categories": ["noise_not_stored", "inference_not_fact", "forget_no_resurrect", "supersede_old"],
   "cases": [
     {"id": "nz-01", "category": "noise_not_stored", "noise": "好的", "control": "我对花生过敏，点外卖时要避开花生"},

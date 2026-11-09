@@ -62,8 +62,10 @@ class TestMcpSseAuthorizationBehavior:
         直接读磁盘源码而不是 import：这条静态守卫不需要 mcp 依赖，
         不该在基础安装路径上跟着行为用例一起跳过。"""
         src = pathlib.Path(_ROOT, "mcp_server.py").read_text(encoding="utf-8")
-        assert "if not loopback and not _sse_authorization_allowed(args.host):" in src, \
-            "非回环拒绑的判定不在启动路径上"
+        # f0.8：回环也要凭据——判定不再以 `not loopback` 为前提
+        assert "if not _sse_authorization_allowed(args.host):" in src, \
+            "SSE 拒绑的判定不在启动路径上"
+        assert "if not loopback and not _sse_authorization_allowed" not in src
 
 
 class TestMcpAuthDocumented:

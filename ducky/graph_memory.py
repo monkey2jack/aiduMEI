@@ -160,6 +160,7 @@ def neighbors(user_id: str, node_type: str, node_id: str,
     """
     if depth not in _DEPTHS:
         raise ValueError(f"depth 只支持 {_DEPTHS},收到 {depth}")
+    limit = max(1, min(int(limit or 50), 500))   # f0.8（外审 muse M-20）：负数切片语义错乱、SQLite LIMIT -n = 无上限
     ensure_graph_schema()
     conn = _conn()
     nodes: List[Tuple[str, str]] = [(node_type, node_id)]

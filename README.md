@@ -8,9 +8,11 @@
 
 aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
 
-> **当前公开版本 f0.7+++。** 包版本 `0.7.6`，2026-11-06。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
+> **当前公开版本 f0.8。** 包版本 `0.8.0`，2026-11-09。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
 >
-> f0.7+++ = 代码 **f0.7.6**（f0.7++ 之上的补丁：f0.7++ 外审复审修复——原则 7 识别重写、role/JSON 字符串/顶层字段不再绕过、删除后 WAL 不留正文、观点按事实租户计）。内容见 [CHANGELOG](CHANGELOG.md)。
+> f0.8 = 代码 **f0.8.0**（f0.7+++ 之上：安全加固、写入策略按影子周结果开拦截、Claude Code 自带记忆桥）。内容见 [CHANGELOG](CHANGELOG.md)。
+>
+> f0.7+++ = 代码 **f0.7.6**（f0.7++ 之上的补丁：f0.7++ 外审复审修复——原则 7 识别重写、role/JSON 字符串/顶层字段不再绕过、删除后 WAL 不留正文、观点按事实租户计）。上一个公开版本 [f0.7+++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B%2B)（包 `0.7.6`，2026-11-06）。
 >
 > f0.7++ = 代码 **f0.7.5**（f0.7+ 之上的补丁：第二轮外审 P0 收口——钥匙强制下事实层按身份隔离、原则 7 补漏、删除真删、写入闸门不再被结构绕过）。上一个公开版本 [f0.7++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B)（包 `0.7.5`，2026-11-04）。
 >
@@ -161,7 +163,7 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 
 `mcp_server.py` 用官方 SDK `mcp==1.30.0`（已在 `requirements.txt`），stdio / HTTP 双传输，默认端口 8766。工具：`mem_add`、`mem_search`、`mem_health`、`core_memory_list`，以及默认**不注册**的 `mem_update`、`mem_delete`（设 `AIDUMEI_MCP_DANGEROUS_TOOLS=1` 才开）。
 
-鉴权：非回环绑定必须配 `AIDUMEM_API_TOKEN`，否则拒绝启动；确需无凭据公网暴露才设 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1`，且还须设 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<监听地址>`（值必须逐字等于实际监听地址），REST 同理。同一连接对同一工具、同一参数连续失败会被循环保护拦下（`AIDUMEI_MCP_LOOP_GUARD`，默认 5 次/60 秒/冷却 30 秒，单进程内有效）。
+鉴权：HTTP（SSE）传输无论回环还是非回环绑定都必须配 `AIDUMEM_API_TOKEN`，每个请求带 `Authorization: Bearer <token>`，否则拒绝启动 / 401（f0.8 起回环不再免认证；stdio 传输不需要）；确需无凭据公网暴露才设 `AIDUMEM_ALLOW_INSECURE_PUBLIC=1`，且还须设 `AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH=<监听地址>`（值必须逐字等于实际监听地址），REST 同理。同一连接对同一工具、同一参数连续失败会被循环保护拦下（`AIDUMEI_MCP_LOOP_GUARD`，默认 5 次/60 秒/冷却 30 秒，单进程内有效）。
 
 ## 🔐 安全模型
 
@@ -169,6 +171,17 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 - **单主人**：服务只认一个 API token，`caller_user_id` 是客户端自报的。**不支持互不信任的多用户隔离**，一个服务给一个主人（或彼此信任的 agent）用；需要按凭据限制主体时配 `AIDUMEI_CALLER_BINDINGS` + `AIDUMEI_CALLER_BINDING_MODE=strict`。
 - **出站**：模型地址默认只收 https 公网地址或本机，私网与云元数据地址拦截（局域网模型机可用 `AIDUMEI_MODEL_ENDPOINT_ALLOW` 放行），模型外呼不跟随重定向；各云出口发送什么字段见 [docs/OUTBOUND_CHANNELS.md](docs/OUTBOUND_CHANNELS.md)。
 - **注入防护**：召回内容注入宿主前做中和与围栏；破坏性 MCP 工具默认关闭；`delete_all` 必须显式 `confirm=true`。
+- **写入拦截**：密钥/证件只屏蔽那一段，原文拷贝整条拒收（原则 7）；机器噪声进墓碑 7 天可恢复、命中忘记规则的整条不写、会话精华里的模型思考过程不当精华（f0.8）。这三处各有开关 `AIDUMEI_WRITE_POLICY_P1` / `_P8` / `_THINKING`，设 `shadow` 退回只记日志，见 [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md)。
+- **f0.8 收紧（未发布，详见 `SECURITY.md`）**：
+  - **出站（SSRF）**：模型/向量库地址在保存、`/config/test` 与每次外呼前都过同一套判定——先做 DNS 解析，每个解析结果都查私网/回环/链路本地/CGNAT/内嵌 IPv4；尾点、整数/八进制/十六进制写法 fail-closed；云元数据地址永远拒。局域网模型机用 `AIDUMEI_MODEL_ENDPOINT_ALLOW`（主机名、IP 或 CIDR）放行；`AIDUMEI_EGRESS_ALLOW_LOOPBACK=0` 连本机也拦。
+  - **`/health` 两种视图**：控制台会话或主 token 拿完整视图；agent 钥匙与匿名只拿最小公开视图（状态、版本、健康状态、数据目录可写）。
+  - **MCP SSE**：回环也要 Bearer token（见上节）。
+  - **控制台口令**：控制台改过密后，`AIDUMEM_UI_PASSWORD` 环境变量口令不再有效（只作首次引导）；空环境变量不再挡住 `.env` 里的值；`AIDUMEM_HOST` 为空时按回环处理。
+  - **注入围栏**：召回包装与治理评估提示的开、闭标记都带每次一换的 128 位 nonce；边界中和对大小写与标签内空白不敏感。
+  - **出处由服务端裁定**：调用方只能把写入降格为 `source_type=inferred`，不能自封 `direct`；bearer 调用方经 `/update` 改写的记忆记为 inferred；多消息 `/add` 逐条清洗、闸门、打出处，助手/工具发言记为 inferred。
+  - **列表与限流**：`limit`/`top_k`/`k` 钳到 `[1, AIDUMEI_LIST_LIMIT_MAX]`（默认 500），负 offset 归 0，`/facts` 分页并返回 `truncated`；读请求按钥匙限流 `AIDUMEI_RATE_READ_PER_MIN`（默认 600/分钟，0 = 关），超限 429 + `Retry-After`。
+  - **钥匙身份围栏**：绑定身份的 agent 钥匙碰不到其他身份的自编辑合并与 instinct 毕业（不受 `AIDUMEI_AGENT_KEY_ENFORCE` 影响）。
+  - **遗忘与打码**：`/forget` 删除留墓碑、TTL 内可恢复并返回 `tombstone_id`；墓碑元数据快照过原则 7；元数据按键名语境打码（`secret`/`mnemonic`/`*cookie` 等键下的值像秘密才打，`cookie: chocolate chip` 不动）。
 - 外部审计逐条留痕：[docs/SECURITY-AUDIT-LEDGER.md](docs/SECURITY-AUDIT-LEDGER.md)、`SECURITY.md`。
 
 ## 已知例外与本版不覆盖
@@ -192,8 +205,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **4181**（`pytest --collect-only` 实测，2026-11-06，f0.7.6 树）＝ **行为用例 3553 + 脚本/钩子行为 482 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
-| 独立开发机 | 4169 通过 · **12 跳过** —— f0.7 按收集数与缺席轴推导的验收目标（Python 3.12，仅缺 Hermes 宿主源码） |
+| 用例总数 | **4535**（`pytest --collect-only` 实测，2026-11-09，f0.8.0 树）＝ **行为用例 3907 + 脚本/钩子行为 482 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
+| 独立开发机 | 4523 通过 · **12 跳过** —— f0.7 按收集数与缺席轴推导的验收目标（Python 3.12，仅缺 Hermes 宿主源码） |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，旧树）。f0.7 起全量套件同时测 mem0 旧内核，需加装 `requirements-mem0.txt`；只装 `requirements.txt` 的默认 native 路径改由从零安装验收与 CI 裸装冒烟覆盖（2026-10-29 实验机：安装、健康、写入、召回、删除、恢复通过） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（旧树 `de09794`，宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（旧树，工具、extras、宿主、模型缓存与公开 LoCoMo 数据集齐备） |
@@ -206,15 +219,15 @@ pytest tests/                                          # 全量回归
 python -m compileall ducky api_server.py mcp_server.py # 编译检查
 ```
 
-> **为什么要把 4169 和 1967 都写出来**：4169 是本树仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 4523 和 1967 都写出来**：4523 是本树仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条跳过自己就能验**：十四条跳过轴全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：4169 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4181 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4169 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：4523 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4535 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4523 passed, 12 skipped
 > ```
 >
 > 「有宿主」那行要十四条轴同时齐备才拿得到。生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），旧树上实测跑出来是 1967 passed、26 skipped（2026-09-11，`de09794`）。

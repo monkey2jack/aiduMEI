@@ -292,6 +292,7 @@ def distill_session(session_id: str, *, user_id: str = "",
     fenced = fence_lines_for_llm([f"- {r['text']}" for r in rows], label="会话记录")   # f0.7 P1-1
 
     summary, mode = "", "fallback"
+    rejected_reason = ""
     try:
         from ducky.llm_client import call_llm
         out = call_llm(
@@ -303,7 +304,16 @@ def distill_session(session_id: str, *, user_id: str = "",
             system="你在为一个长期记忆系统提炼会话精华。只输出那一两句话本身。" + DATA_ONLY_RULE,
             max_tokens=200, temperature=0.3, timeout=30)
         if out and out.strip():
-            summary, mode = out.strip()[:400], "llm"
+            # f0.8 ②：推理模型的思考过程不是精华。先剥掉 <think>/harmony 包装；剩下的仍像
+            # 英文思考（「We need to output…」）就整条不要，走下面的确定性降级。
+            from ducky.write_policy import looks_like_reasoning, strip_reasoning
+            cand = strip_reasoning(out)
+            why = looks_like_reasoning(cand) if cand else "reasoning_only"
+            if why:
+                rejected_reason = why
+                logger.warning("会话精华 LLM 返回的是思考过程（%s），走确定性降级", why)
+            else:
+                summary, mode = cand[:400], "llm"
     except (ImportError, RuntimeError, OSError, ValueError, TypeError) as exc:
         # 降级是本函数契约的一部分（call_llm 本身失败返 None，这里兜的是
         # 导入不到 / 网络层抛出这类）。仍然收窄，不拿宽捕获当万能垫子。
@@ -350,6 +360,9 @@ def distill_session(session_id: str, *, user_id: str = "",
     }
     if refs_truncated:
         meta["distill_source_refs_truncated"] = True
+    if rejected_reason:
+        meta["distill_fallback_reason"] = f"llm_reasoning_output:{rejected_reason}"
+
     # f0.6++ WP9(用户级审计暗礁2):精华产出后顺手喂核心占位块——只覆写「尚未填写」,
     # 用户手填/auto-draft 已写一律跳过(护栏见 core_memory.autosink_from_distill)。
     try:

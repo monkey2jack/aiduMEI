@@ -105,6 +105,10 @@ def upstream(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(llm_client.requests, "post", fake_post)
+    # f0.8 sec：_post_completion 外呼前会做 DNS 复检；这里测的是并发闸门，不测出站校验——
+    # 解析 llm.invalid 的耗时随宿主解析器抖动，会把线程错开、压低 peak（慢机上 peak 2 ≠ 3）。
+    from ducky.security import egress
+    monkeypatch.setattr(egress, "guard_url", lambda url, purpose="egress": url)
     return tracker
 
 

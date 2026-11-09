@@ -19,6 +19,16 @@ does not prove that the maintenance jobs are running as intended.
 | Log rotation | daily | deployment logrotate policy | rotated logs |
 | SQLite checkpoint/vacuum | scheduled by DB policy | SQLite maintenance procedure | compact DB files |
 
+### Claude Code auto-memory sweep (f0.8, host machine)
+
+On the machine where Claude Code runs (not necessarily the service host), add one daily line to that user's crontab. It is not part of `update_crontab.sh`, which manages the service host:
+
+```cron
+17 4 * * * cd /path/to/aiduMEI && python3 scripts/cc_memory_sweep.py --apply >> ~/.aidumem/logs/cc-memory-sweep.log 2>&1
+```
+
+Add `--trim` once you have checked a dry run (`python3 scripts/cc_memory_sweep.py --trim`).
+
 ## Operational order
 
 1. Take a verified backup.

@@ -41,6 +41,7 @@ def _sandbox(tmp_path, monkeypatch):
     import ducky.utils as utils
     monkeypatch.setattr(utils, "BASE_DIR", str(tmp_path))
     monkeypatch.delenv(_KEY, raising=False)
+    monkeypatch.delenv("AIDUMEM_ENV_FILE", raising=False)
     # 缓存与一次性 warning 标记都要复位，否则用例之间互相污染
     monkeypatch.setattr(gate, "_SELF_REF_CACHE", {"key": None, "pattern": None})
     monkeypatch.setattr(gate, "_ENTITY_WARNED", False)

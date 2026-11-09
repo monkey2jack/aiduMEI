@@ -79,7 +79,8 @@ def test_inject_context_wrapped_with_frame():
     assert res["injected_facts"] == 1
     ctx = res["context"]
     assert ctx.startswith(INJECT_FRAME_TOP), "出口 context 必须以框架文案开头"
-    assert "<memory>" in ctx and "</memory>" in ctx
+    # f0.8：开闭标记都带一次性 nonce（<memory nonce="…"> … </memory nonce="…">）
+    assert '<memory nonce="' in ctx and '</memory nonce="' in ctx
     assert "喜欢喝热拿铁" in ctx
     assert res["wrapped"] is True
 
@@ -118,7 +119,7 @@ def test_wrap_idempotent():
     once = wrap_inject_frame("- [偏好] coffee: 喜欢喝热拿铁")
     twice = wrap_inject_frame(once)
     assert once == twice, "已包装内容不得二次包装"
-    assert once.count("<memory>") == 1
+    assert once.count("<memory nonce=") == 1   # f0.8：开标记带 nonce
 
 
 def test_wrap_empty():

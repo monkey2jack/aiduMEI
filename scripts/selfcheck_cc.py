@@ -147,7 +147,8 @@ def check_hooks(results: list):
     # 宿主是拷贝部署：这里只认 settings.json 声明的命令里含不含真源名。
     expect = {"UserPromptSubmit": "aidumem-cc-inject.sh",
               "Stop": "aidumem-cc-ingest.sh",
-              "SessionEnd": "aidumem-cc-distill.sh"}
+              "SessionEnd": "aidumem-cc-distill.sh",
+              "PostToolUse": "aidumem-cc-memory-bridge.sh"}  # f0.8 ①：CC 自带记忆桥
     for event, script in expect.items():
         cmds = [h.get("command", "") for grp in hooks.get(event, []) for h in grp.get("hooks", [])]
         hit = any(script in c for c in cmds)

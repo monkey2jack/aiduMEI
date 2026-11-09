@@ -21,6 +21,11 @@
     python scripts/connect_host.py --host claude-code --claude-test
     python scripts/connect_host.py --uninstall     # 摘掉本脚本写的钩子
     python scripts/connect_host.py --check         # 不改配置，只验收现状
+    python scripts/connect_host.py --host claude-code --project-dir /path/to/proj  # 写项目级 .claude/settings.json
+
+Claude Code 配置位置（f0.8.0）：设了 ``CLAUDE_CONFIG_DIR`` 就用
+``$CLAUDE_CONFIG_DIR/settings.json``（与 cc_memory_bridge.claude_home 同一规则），否则
+``~/.claude/settings.json``；``--project-dir`` 改写/验收该项目的 ``.claude/settings.json``。
 """
 from __future__ import annotations
 
@@ -41,14 +46,19 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_URL = "http://127.0.0.1:8767"
 MARK = "aidumem-"  # 本仓钩子脚本统一前缀；摘/换只认它
 
-# 宿主 → (事件, 真源脚本, 超时秒)
+# 宿主 → (事件, 真源脚本, 超时秒[, matcher])；matcher 缺省 ""（全部）
+# f0.8 ①：Claude Code 多一条 PostToolUse 自带记忆桥（只认 Write|Edit|MultiEdit），
+# 把 CC 写进 ~/.claude/projects/<项目>/memory/ 的文件打码并导入 aiduMEI。
+# 超时 30 秒：桥里查重 + 写入两次请求，每次最多 AIDUMEI_CC_BRIDGE_TIMEOUT（缺省 12）秒（f0.8.0 上线实测生产 /search 4–6 秒）
+CC_BRIDGE = ("PostToolUse", "aidumem-cc-memory-bridge.sh", 30, "Write|Edit|MultiEdit")
 SHELL_HOSTS = {
     "claude-code": {
         "config": "~/.claude/settings.json",
         "dir": "integrations/claude-code",
         "lines": [("UserPromptSubmit", "aidumem-cc-inject.sh", 8),
                   ("Stop", "aidumem-cc-ingest.sh", 6),
-                  ("SessionEnd", "aidumem-cc-distill.sh", 10)],
+                  ("SessionEnd", "aidumem-cc-distill.sh", 10),
+                  CC_BRIDGE],
     },
     "codex": {
         "config": "~/.codex/hooks.json",
@@ -72,10 +82,25 @@ def _expand(p: str) -> Path:
     return _home() / p[2:] if p.startswith("~/") else Path(p)
 
 
+def claude_home() -> Path:
+    """CC 用户级配置目录：``CLAUDE_CONFIG_DIR`` 优先，否则 ``~/.claude``（同 cc_memory_bridge.claude_home）。"""
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(cfg) if cfg else _home() / ".claude"
+
+
+def host_config_path(host: str, project_dir: str | Path | None = None) -> Path:
+    """宿主配置文件路径。claude-code 认 ``--project-dir`` 与 ``CLAUDE_CONFIG_DIR``；其余宿主不变。"""
+    if host == "claude-code":
+        if project_dir:
+            return Path(project_dir).expanduser() / ".claude" / "settings.json"
+        return claude_home() / "settings.json"
+    return _expand(SHELL_HOSTS[host]["config"])
+
+
 # ── 识别 ────────────────────────────────────────────────────────────────
 def detect_hosts() -> list[str]:
     found = []
-    if (_home() / ".claude").is_dir() or shutil.which("claude"):
+    if claude_home().is_dir() or (_home() / ".claude").is_dir() or shutil.which("claude"):
         found.append("claude-code")
     if (_home() / ".codex").is_dir() or shutil.which("codex"):
         found.append("codex")
@@ -102,12 +127,17 @@ def _ours(cmd: str, script: str) -> bool:
     return script in cmd
 
 
+def _line(spec: tuple) -> tuple[str, str, int, str]:
+    event, script, timeout = spec[:3]
+    return event, script, timeout, (spec[3] if len(spec) > 3 else "")
+
+
 def merge_hooks(cfg: dict, host: str, url: str, env_file: Path, remove: bool = False) -> tuple[dict, list[str]]:
     """返回 (新配置, 改动说明)。只动命令里含本仓脚本名的条目，其余原样。"""
     cfg = json.loads(json.dumps(cfg or {}))
     hooks = cfg.setdefault("hooks", {})
     changes = []
-    for event, script, timeout in SHELL_HOSTS[host]["lines"]:
+    for event, script, timeout, matcher in map(_line, SHELL_HOSTS[host]["lines"]):
         want = hook_command(host, script, url, env_file)
         groups = hooks.get(event) or []
         hit = False
@@ -118,6 +148,9 @@ def merge_hooks(cfg: dict, host: str, url: str, env_file: Path, remove: bool = F
                     if remove or hit:
                         changes.append(f"摘除 {event} → {script}")
                         continue
+                    if (grp.get("matcher") or "") != matcher:  # 挂错 matcher：摘下，下面按正确 matcher 重挂
+                        changes.append(f"更新 {event} → {script}（matcher）")
+                        continue
                     hit = True
                     if h.get("command") != want or h.get("timeout") != timeout:
                         h.update({"type": "command", "command": want, "timeout": timeout})
@@ -126,8 +159,9 @@ def merge_hooks(cfg: dict, host: str, url: str, env_file: Path, remove: bool = F
             grp["hooks"] = kept
         groups = [g for g in groups if g.get("hooks")]
         if not remove and not hit:
-            groups.append({"matcher": "", "hooks": [{"type": "command", "command": want, "timeout": timeout}]})
-            changes.append(f"新增 {event} → {script}")
+            groups.append({"matcher": matcher, "hooks": [{"type": "command", "command": want, "timeout": timeout}]})
+            if not any(c.startswith(f"更新 {event} → {script}") for c in changes):
+                changes.append(f"新增 {event} → {script}")
         if groups:
             hooks[event] = groups
         else:
@@ -140,10 +174,25 @@ def merge_hooks(cfg: dict, host: str, url: str, env_file: Path, remove: bool = F
 def wired_lines(cfg: dict, host: str) -> dict[str, bool]:
     hooks = (cfg or {}).get("hooks") or {}
     out = {}
-    for event, script, _ in SHELL_HOSTS[host]["lines"]:
-        cmds = [str(h.get("command", "")) for g in hooks.get(event, []) for h in g.get("hooks", [])]
+    for event, script, _, matcher in map(_line, SHELL_HOSTS[host]["lines"]):
+        cmds = [str(h.get("command", "")) for g in hooks.get(event, [])
+                if (g.get("matcher") or "") == matcher for h in g.get("hooks", [])]
         out[event] = any(_ours(c, script) for c in cmds)
     return out
+
+
+def cc_bridge_status(cfg: dict) -> dict:
+    """f0.8 ①：CC 自带记忆桥钩子是否挂上（PostToolUse + 正确 matcher + 指向本仓真源）。"""
+    event, script, _, matcher = _line(CC_BRIDGE)
+    src = REPO / SHELL_HOSTS["claude-code"]["dir"] / script
+    wired = wired_lines(cfg, "claude-code").get(event, False)
+    ours = [str(h.get("command", "")) for g in ((cfg or {}).get("hooks") or {}).get(event, [])
+             for h in g.get("hooks", []) if _ours(str(h.get("command", "")), script)]
+    points_here = any(str(src) in c for c in ours)
+    return {"event": event, "matcher": matcher, "wired": bool(wired and points_here),
+            "script_present": src.is_file(),
+            "detail": "已挂上" if wired and points_here else
+                      ("已挂但指向别处或 matcher 不对" if ours else "未挂（重跑 connect_host 即可补上）")}
 
 
 def _write_config(path: Path, cfg: dict) -> Path | None:
@@ -170,8 +219,9 @@ def _load(path: Path) -> dict:
 
 
 # ── 各宿主接入 ──────────────────────────────────────────────────────────
-def connect_shell_host(host: str, url: str, env_file: Path, dry: bool, remove: bool) -> dict:
-    path = _expand(SHELL_HOSTS[host]["config"])
+def connect_shell_host(host: str, url: str, env_file: Path, dry: bool, remove: bool,
+                       project_dir: str | Path | None = None) -> dict:
+    path = host_config_path(host, project_dir)
     try:
         cfg = _load(path)
     except Exception as exc:  # 宿主配置坏了绝不覆盖
@@ -183,6 +233,8 @@ def connect_shell_host(host: str, url: str, env_file: Path, dry: bool, remove: b
     lines = wired_lines(cfg if dry else new, host)
     res = {"host": host, "config": str(path), "changes": changes, "backup": str(bak) if bak else None,
            "lines": lines, "ok": remove or all(lines.values()) or (dry and bool(changes))}
+    if host == "claude-code":
+        res["cc_memory_bridge"] = cc_bridge_status(cfg if dry else new)
     if host == "codex" and not remove:
         res["note"] = "Codex 非 managed 钩子需在 TUI 里 /hooks 审阅信任一次；无头用 --dangerously-bypass-hook-trust"
     return res
@@ -335,17 +387,69 @@ def _cleanup(url: str, env_file: Path, nonce: str) -> int:
     return n
 
 
-def claude_test(timeout: int = 120) -> dict:
+def _ingest_probe(host: str, url: str, env_file: Path, nonce: str) -> None:
+    """用真写线钩子存一条带暗号的合成对话（与 selftest_shell 同一写法）。"""
+    d = REPO / SHELL_HOSTS[host]["dir"]
+    ingest = d / SHELL_HOSTS[host]["lines"][1][1]
+    env = {**os.environ, "AIDUMEI_INSTALL_DIR": str(REPO), "AIDUMEM_ENV_FILE": str(env_file),
+           "AIDUMEI_URL": url.rstrip("/")}
+    with tempfile.TemporaryDirectory(prefix="aidumei-claude-test-") as td:
+        tp = Path(td) / "transcript.jsonl"
+        tp.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in (
+            {"type": "user", "message": {"role": "user", "content": f"请记住，我的接入暗号是 {nonce}。"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": f"好的，记住了：你的接入暗号是 {nonce}。"}},
+        )) + "\n", encoding="utf-8")
+        subprocess.run(["bash", str(ingest)], input=json.dumps({"session_id": f"claude-test-w-{nonce}",
+                       "transcript_path": str(tp)}), env={**env, "AIDUMEM_LOG_DIR": td},
+                       capture_output=True, text=True, timeout=30)
+
+
+def _searchable(url: str, env_file: Path, nonce: str, wait_s: float) -> bool:
+    uid = _env_lookup(env_file, "AIDUMEM_USER_ID") or _env_lookup(env_file, "AIDUMEM_DEFAULT_USER_ID") or "default"
+    bid = _env_lookup(env_file, "AIDUMEI_BANK_ID") or "default"
+    tok = _env_lookup(env_file, "AIDUMEM_API_TOKEN")
+    deadline = time.time() + wait_s
+    while True:
+        try:
+            r = _post(url, "/search", {"query": nonce, "user_id": uid, "caller_user_id": uid, "bank_id": bid,
+                                       "limit": 10}, tok)
+            if any(nonce in str(m.get("memory", "")) for m in r.get("results") or []):
+                return True
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return False
+        time.sleep(3)
+
+
+def claude_test(url: str, env_file: Path, timeout: int = 120, wait_s: float = 60) -> dict:
+    """``claude -p`` 真聊一句，**回答里必须出现刚写进去的暗号**才算过（f0.8.0）。
+
+    f0.7 只看退出码 0 + 有输出：Claude 回一句「看不到任何记忆」也判绿。现在先用写线
+    存一条一次性暗号，等服务能搜到它，再问 claude「我的接入暗号是什么」——暗号出现在
+    回答里，才证明读线钩子真把记忆注入了 Claude。验完删掉测试记忆。
+    """
     exe = shutil.which("claude")
     if not exe:
         return {"ok": False, "detail": "没找到 claude 命令"}
+    nonce = "AIDU-" + secrets.token_hex(3).upper()
     try:
-        p = subprocess.run([exe, "-p", "用一句话回答：你现在能看到 aiduMEI 注入的记忆吗？"],
-                           capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "detail": f"claude -p 超时 {timeout}s"}
-    return {"ok": p.returncode == 0 and bool(p.stdout.strip()),
-            "detail": (p.stdout.strip() or p.stderr.strip())[:200]}
+        _ingest_probe("claude-code", url, env_file, nonce)
+        if not _searchable(url, env_file, nonce, wait_s):
+            return {"ok": False, "nonce": nonce,
+                    "detail": f"{int(wait_s)} 秒内服务端搜不到写入的暗号，未调用 claude -p"}
+        try:
+            p = subprocess.run([exe, "-p", "我的接入暗号是什么？只回答暗号本身。"],
+                               capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "nonce": nonce, "detail": f"claude -p 超时 {timeout}s"}
+        out = p.stdout or ""
+        recalled = p.returncode == 0 and nonce in out
+        why = "" if recalled else (f"退出码 {p.returncode}；" if p.returncode else "") + "回答里没有暗号 —— "
+        return {"ok": recalled, "nonce": nonce,
+                "detail": ("回答里召回了暗号：" if recalled else why) + (out.strip() or p.stderr.strip())[:200]}
+    finally:
+        _cleanup(url, env_file, nonce)
 
 
 # ── 主流程 ──────────────────────────────────────────────────────────────
@@ -359,6 +463,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--check", action="store_true", help="不改配置，只验收")
     ap.add_argument("--no-selftest", action="store_true")
+    ap.add_argument("--project-dir", default=None,
+                    help="Claude Code：写/验收该项目的 .claude/settings.json（缺省用户级配置）")
     ap.add_argument("--claude-test", action="store_true", help="另用 claude -p 真聊一句")
     ap.add_argument("--wait", type=float, default=60, help="验收等待召回的秒数")
     ap.add_argument("--json", action="store_true")
@@ -374,7 +480,8 @@ def main(argv: list[str] | None = None) -> int:
         if h == "hermes":
             report["hosts"].append(connect_hermes(dry=a.dry_run or a.check, remove=a.uninstall))
         else:
-            r = connect_shell_host(h, a.url, env_file, dry=a.dry_run or a.check, remove=a.uninstall)
+            r = connect_shell_host(h, a.url, env_file, dry=a.dry_run or a.check, remove=a.uninstall,
+                                   project_dir=a.project_dir)
             if a.check:
                 r["ok"] = all(r.get("lines", {}).values()) if r.get("lines") else False
             report["hosts"].append(r)
@@ -383,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
     if svc_ok and shell_ok and not (a.dry_run or a.uninstall or a.no_selftest):
         report["selftest"] = selftest_shell(shell_ok[0], a.url, env_file, wait_s=a.wait)
     if a.claude_test and "claude-code" in shell_ok and not (a.dry_run or a.uninstall):
-        report["claude"] = claude_test()
+        report["claude"] = claude_test(a.url, env_file, wait_s=a.wait)
 
     if a.uninstall:
         wired = None
@@ -413,6 +520,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"     · {c}")
             if r.get("backup"):
                 print(f"     · 原配置已备份: {r['backup']}")
+            br = r.get("cc_memory_bridge")
+            if br:
+                print(f"     {'✅' if br['wired'] else '❌'} 自带记忆桥 {br['event']}({br['matcher']}): {br['detail']}")
             for k in ("error", "note"):
                 if r.get(k):
                     print(f"     ! {r[k]}")

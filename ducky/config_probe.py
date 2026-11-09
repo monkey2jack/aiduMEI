@@ -79,16 +79,20 @@ def _models_hint(base: str, key: str) -> str:
     """模型名写错时,顺手列出对方实际挂着的模型(vLLM / OpenAI 兼容都有 /models)。"""
     import requests
     try:
+        from ducky.security.egress import guard_url
+        guard_url(base + "/models", "config_probe")
         headers = {"Authorization": "Bearer " + key} if key else {}
         r = requests.get(base + "/models", headers=headers, timeout=5, allow_redirects=False)
         ids = [str(m.get("id")) for m in (r.json().get("data") or []) if isinstance(m, dict)][:6]
         return (";可用模型: " + ", ".join(ids)) if ids else ""
-    except (requests.RequestException, ValueError, AttributeError, TypeError):
+    except (requests.RequestException, ValueError, AttributeError, TypeError, RuntimeError):
         return ""
 
 
 def _post(url: str, key: str, payload: dict):
     import requests
+    from ducky.security.egress import guard_url
+    guard_url(url, "config_probe")  # f0.8（外审 muse M-09）：/config/test 不再绕过端点校验
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = "Bearer " + key
@@ -177,6 +181,7 @@ def probe(section: str) -> Dict[str, Any]:
     """测一段。永不抛异常;返回 {section, ok, status, detail, ms}。"""
     import requests
     from ducky.engine_mode import cloud_egress_allowed
+    from ducky.security.egress import EgressBlocked
     t0 = time.monotonic()
     raw = _raw_config()
     try:
@@ -195,6 +200,8 @@ def probe(section: str) -> Dict[str, Any]:
             out = _probe_decision()
         else:
             out = {"ok": False, "status": "unknown_section", "detail": section}
+    except EgressBlocked as exc:
+        out = {"ok": False, "status": "blocked_by_egress_policy", "detail": _short(exc)}
     except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError,
             RuntimeError, OSError) as exc:  # 连接拒绝 / 超时 / DNS / 回包不像样
         out = {"ok": False, "status": "error", "detail": _friendly(exc)}

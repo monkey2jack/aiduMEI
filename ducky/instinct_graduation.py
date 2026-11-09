@@ -66,10 +66,18 @@ def _extract_category(memory: dict) -> str:
     return meta.get("category", meta.get("source", "general"))
 
 
+def _require_owner(user_id: str, action: str) -> None:
+    """f0.8 ③-8：毕业会读、写、删本身份的记忆——绑定了别的身份的钥匙一律拒（不受 enforce 开关影响）。"""
+    from ducky.agent_keys import owner_fence
+    if not owner_fence(user_id, action):
+        raise PermissionError(f"agent key is not bound to this identity ({action})")
+
+
 def scan_instincts(memory, user_id: str, bank_id: str = DEFAULT_BANK_ID) -> list[dict]:
     """扫描可毕业的记忆组（v20 P0-2：按 (user_id, bank_id) 圈定，毕业不跨库）"""
     # 非法作用域在取数前就抛，不许静默降级成全库扫描
     scope = make_scope(user_id, bank_id)
+    _require_owner(scope.user_id, "instinct_scan")
     try:
         all_mem = get_all_memories(
             memory,
@@ -131,6 +139,7 @@ def graduate_to_skill(memory, user_id: str, group: dict,
                       bank_id: str = DEFAULT_BANK_ID) -> Optional[str]:
     """将一组记忆蒸馏为 skill（v20 P0-2：蒸馏与删除都锁死在本域内）"""
     scope = make_scope(user_id, bank_id)
+    _require_owner(scope.user_id, "instinct_graduate")
     try:
         # 获取完整记忆
         all_mem = get_all_memories(
@@ -236,6 +245,7 @@ def auto_graduate(memory, user_id: str, min_group_size: int = MIN_GROUP_SIZE,
                   bank_id: str = DEFAULT_BANK_ID) -> dict:
     """自动扫描并毕业所有符合条件的记忆组（v20 P0-2：整条链锁在本域）"""
     scope = make_scope(user_id, bank_id)
+    _require_owner(scope.user_id, "instinct_graduate")
     groups = scan_instincts(memory, scope.user_id, scope.bank_id)
     graduated = []
     deleted_total = 0

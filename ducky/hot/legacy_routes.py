@@ -36,7 +36,7 @@ def register_legacy_routes(app):
     @app.get("/facts")
     def list_facts(category: str = None, key: str = None, level: str = "L2",
                    user_id: str = DEFAULT_USER_ID, bank_id: str = DEFAULT_BANK_ID,
-                   caller_user_id: str = ""):
+                   caller_user_id: str = "", limit: int = 500, offset: int = 0):
         from ducky.scope_auth import require_scope_access
         require_scope_access(user_id, caller_user_id, bank_id=bank_id, action="read")
         level_norm = (level or "L2").upper()
@@ -55,10 +55,16 @@ def register_legacy_routes(app):
         )
         sql += t_clause
         params.extend(t_params)
-        sql += " ORDER BY category, fact_key"
-        cur.execute(sql, params)
+        # f0.8（外审 muse M-19）：此前无 LIMIT，全域一次性回包。钳 [1, AIDUMEI_LIST_LIMIT_MAX]，多取一行判 truncated。
+        from ducky.request_limits import clamp_limit
+        _lim = clamp_limit(limit, default=500)
+        _off = max(0, int(offset or 0))
+        sql += " ORDER BY category, fact_key LIMIT ? OFFSET ?"
+        cur.execute(sql, params + [_lim + 1, _off])
         raw = [dict(r) for r in cur.fetchall()]
         conn.close()
+        truncated = len(raw) > _lim
+        raw = raw[:_lim]
         if level_norm == "L2": rows = raw
         else:
             rows = []
@@ -66,7 +72,8 @@ def register_legacy_routes(app):
                 item = {k:v for k,v in r.items() if k not in ("summary","overview")}
                 item["value"] = r.get("summary") if level_norm=="L0" else (r.get("overview") or r["fact_value"])
                 rows.append(item)
-        return {"status":"ok","count":len(rows),"level":level_norm,"facts":rows}
+        return {"status":"ok","count":len(rows),"level":level_norm,"facts":rows,
+                "limit":_lim,"offset":_off,"truncated":truncated}
 
 
     @app.get("/facts/categories")
@@ -97,6 +104,8 @@ def register_legacy_routes(app):
         # 对的 —— 一个实体如果在本域没有任何事实，它不属于本域的知识。
         # 用模块级已导入的 tenant_clause —— 函数内再 import 一次会把它变成局部名，
         # 整个函数体内该名字都是局部的（P0-2 那次 /add 连炸 13 分钟就是这么来的）。
+        from ducky.request_limits import clamp_limit
+        limit = clamp_limit(limit, default=50)   # f0.8（外审 muse M-20）：负数在 SQLite 里等于无上限
         conn = _get_facts_conn()
         fclause, fparams = tenant_clause(user_id, alias="f", bank_id=bank_id, conn=conn)
         # 整条 SQL 内联在 f-string 里（不用 base + f"..." 拼）是刻意的：

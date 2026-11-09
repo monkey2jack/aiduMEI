@@ -77,14 +77,21 @@ def register_write_policy_routes(app: FastAPI) -> None:
             return {"status": "candidates", "dry_run": True,
                     "candidates": _candidates(req.query, user_id, bank_id),
                     "hint": "review, then call again with memory_ids"}
-        from ducky.wal_engine import cascade_delete_memory
+        from ducky.wal_engine import _DELETE_ATTRIBUTION, cascade_delete_memory
         results, failed = [], 0
-        for mid in dict.fromkeys(str(m).strip() for m in req.memory_ids if str(m).strip()):
-            res = cascade_delete_memory(mid, user_id=user_id, bank_id=bank_id)
-            st = res.get("status", "failed")
-            failed += st not in ("committed", "not_found")
-            results.append({"memory_id": mid, "status": st,
-                            "failed_layers": [f.get("layer") for f in res.get("failed_layers", [])]})
+        # f0.8 ③-10：/forget 与 /delete 同一条级联删除链——删前留墓碑（TTL 内可 /tombstone/restore），
+        # 墓碑理由记为 forget，响应里交回 tombstone_id。
+        _tok = _DELETE_ATTRIBUTION.set(("forget", "forget_api"))
+        try:
+            for mid in dict.fromkeys(str(m).strip() for m in req.memory_ids if str(m).strip()):
+                res = cascade_delete_memory(mid, user_id=user_id, bank_id=bank_id)
+                st = res.get("status", "failed")
+                failed += st not in ("committed", "not_found")
+                results.append({"memory_id": mid, "status": st,
+                                "tombstone_id": (res.get("details") or {}).get("tombstone_id"),
+                                "failed_layers": [f.get("layer") for f in res.get("failed_layers", [])]})
+        finally:
+            _DELETE_ATTRIBUTION.reset(_tok)
         rule_id = None
         if req.never_store.strip():
             try:

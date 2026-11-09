@@ -321,6 +321,29 @@ def test_cc_ingest_hook_resolves_identity_from_env_file(env_file, tmp_path, stub
     assert proc.returncode == 0, f"自检异常退出：{proc.returncode} {proc.stderr[:200]}"
 
 
+def test_cc_memory_bridge_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
+    """`claude-code/cc_memory_bridge.py`（经 aidumem-cc-memory-bridge.sh，cc PostToolUse）——
+    把 CC 自带记忆文件导入 aiduMEI。空环境下身份与凭据都必须从 .env 兜底读到，
+    否则 CC 的记忆会安静地导进 default 租户。"""
+    url, handler = stub_server
+    mem = tmp_path / "ccmem"
+    mem.mkdir()
+    f = mem / "user_prefs.md"
+    f.write_text("---\nname: prefs\n---\nprefers short answers\n", encoding="utf-8")
+    hook = _INTEGRATIONS / "claude-code" / "aidumem-cc-memory-bridge.sh"
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(f)}, "session_id": "s1"}
+    proc = subprocess.run(
+        ["bash", str(hook)], input=json.dumps(payload),
+        env=_empty_env(env_file, tmp_path, AIDUMEM_URL=url, AIDUMEI_CC_MEMORY_DIR=str(mem)),
+        capture_output=True, text=True, timeout=40,
+    )
+    adds = [c for c in handler.captured if c["path"] == "/add"]
+    assert adds, f"记忆桥没有发出 /add：{handler.captured} {proc.stderr[:200]}"
+    assert adds[-1]["user_id"] == _ENV_USER, f"记忆桥在空环境下解析出 {adds[-1]['user_id']!r}"
+    assert all(c["auth"] == "Bearer tok-for-test" for c in handler.captured), "凭据链回归了"
+    assert proc.returncode == 0
+
+
 def test_on_save_hook_resolves_identity_from_env_file(env_file, tmp_path, stub_server):
     """`aidumem-on-save.sh`（编辑器保存钩子）—— 写入侧。
 
@@ -604,6 +627,7 @@ _COVERED = {
     "cursor-hook/claude-code-stop-hook.py",   # v21.2.0 写线（Claude Code Stop）
     "codex/aidumem-codex-inject.sh",          # f0.5 补登记（db32044 引入时漏账）
     "codex/aidumem-codex-ingest.sh",          # f0.5 补登记（db32044 引入时漏账）
+    "claude-code/cc_memory_bridge.py",        # f0.8 ① CC 自带记忆桥（PostToolUse）
     "hermes-plugin/aidumem/__init__.py",
 }
 

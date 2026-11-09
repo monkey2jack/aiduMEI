@@ -40,9 +40,48 @@ _EVIDENCE_MAX = 100   # f0.7.6（外审 R2-13）：每个证据 id 都要核归�
 logger = logging.getLogger("aiduMEM.hot")
 
 
+def _update_provenance() -> dict:
+    """f0.8：/update 改写的正文由谁写就标谁——请求体里的 source_type/basis 一概不认（UpdateRequest
+    放开了额外字段，但 provenance 是服务端保留字段）。控制台会话/本机无凭据 = 主人亲改（direct）；
+    API token 调用方（agent）改写 = inferred。"""
+    from ducky.security.auth import current_request_auth_kind
+    if current_request_auth_kind() == "bearer":
+        return {"source_type": "inferred", "basis": "edited_via_update:bearer"}
+    return {"source_type": "direct", "basis": "edited_via_update:owner"}
+
+
+def _update_hard_block(content: str) -> str:
+    """f0.7.5（外审 qwen F-05 / 宿主自审 SEC-03）：/update 与 /add 同一字节口径——边界记号中和
+    + 原则 7 整段拒收（整段邮件 / 超长原文 / 只剩密钥），不再能借 update 绕过。"""
+    from ducky.security.injection_guard import neutralize_boundary_markers
+    from ducky import write_policy as _wp
+    content = neutralize_boundary_markers(content)
+    _blk = _wp.hard_block_reason(content)
+    if _blk:
+        raise HTTPException(422, {"status": "rejected", "reason": _blk,
+                                  "message": "Not stored: aiduMEI keeps what a document or message "
+                                             "says, never a raw copy or a credential."})
+    return content
+
+
+def _gate_update(content: str, memory_id: str, user_id: str, bank_id: str) -> dict | None:
+    """f0.8 ②：/update 的新正文过 /add 同一道拦截（write_policy.enforce_messages：P1 机器噪声 /
+    P8 忘记规则）。被拦时返回 gated 回执、原记忆不动（P1 进墓碑 7 天可恢复，P8 不留正文）；
+    没拦（或拦截自己出错 → fail-open）返回 None，照旧改写。"""
+    from ducky import write_policy as _wp
+    _kept, gated = _wp.enforce_messages(content, {"source": "update"}, user_id=user_id, bank_id=bank_id)
+    if not gated:
+        return None
+    logger.info("🛡️ [WritePolicy] /update 拦下: %s", ",".join(f"{g['principle']}:{g['reason']}" for g in gated))
+    return {"status": "ok", "action": "gated", "memory_id": memory_id, "gated": gated, "updated": False}
+
+
 def _update_verbatim_handle(memory_id: str, user_id: str, bank_id: str, content: str) -> dict:
     """f0.6+++：/search 交出的 verbatim:N 句柄也能 /update —— 按 /delete 删旧原文
-    （墓碑 / 本地点 / 派生摘要 / 缓存），再落新原文。"""
+    （墓碑 / 本地点 / 派生摘要 / 缓存），再落新原文。f0.8 ②：新正文先过写入拦截，被拦则旧原文不动。"""
+    gated = _gate_update(content, memory_id, user_id, bank_id)
+    if gated:
+        return gated
     status = cascade_delete_memory(memory_id, user_id=user_id, bank_id=bank_id).get("status")
     if status != "committed":
         raise HTTPException(404 if status == "not_found" else 500, f"verbatim update failed: {status}")
@@ -566,18 +605,14 @@ def register_crud_routes(app: FastAPI) -> None:
             content = sanitize_memory_or_raise(content)
             # f0.7.5（外审 qwen F-05 / 宿主自审 SEC-03）：与 /add 同一字节口径——边界记号中和
             # + 原则 7 整段拒收（整段邮件 / 超长原文 / 只剩密钥），不再能借 update 绕过。
-            from ducky.security.injection_guard import neutralize_boundary_markers
-            from ducky import write_policy as _wp
-            content = neutralize_boundary_markers(content)
-            _blk = _wp.hard_block_reason(content)
-            if _blk:
-                raise HTTPException(422, {"status": "rejected", "reason": _blk,
-                                          "message": "Not stored: aiduMEI keeps what a document or message "
-                                                     "says, never a raw copy or a credential."})
+            content = _update_hard_block(content)
             if req.memory_id.strip().lower().startswith("verbatim:"):
                 return _update_verbatim_handle(req.memory_id, user_id, scope.bank_id, content)
             # v20.4.0（P1-3）：归属先验，未验证不许动向量。
             _old = _verify_vector_ownership(mem, req.memory_id, user_id, scope.bank_id)
+            _gated_resp = _gate_update(content, req.memory_id, user_id, scope.bank_id)   # 归属验过再拦
+            if _gated_resp:
+                return _gated_resp
             # /update 会把 bank_id 盖进向量 metadata 并按该域重建 FTS 索引，
             # 也就是说它能把一条记忆搬进一个从没被注册过的域。写路径里只有
             # 这一处漏了注册（add / tombstone / core_memory / conflict_resolver
@@ -588,7 +623,7 @@ def register_crud_routes(app: FastAPI) -> None:
             # 不再具备「搬域」能力，盖写是幂等重申。）
             ensure_bank_registered(scope)
             from ducky.memory_kernel import scope_kwargs
-            mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id},
+            mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id, **_update_provenance()},
                        **scope_kwargs(mem, user_id, scope.bank_id))
             _stale = replace_stale_copies(user_id, scope.bank_id, _old.get("memory"), content,
                                           memory_id=req.memory_id)

@@ -8,6 +8,35 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.8.0 (内部候选 f0.8.0 · 2026-11-09 · 安全加固 + 写入策略按影子周结果开拦截 + Claude Code 记忆桥 · 大仓 Tag/Release 仍为 f0.7+++)
+    用例总数 4181 → 4535(本版 = 行为 3907 + 脚本/钩子 482 + 守卫 146)。
+    1. 原则 1 两类机器噪声(机器文本、上下文续接说明)在 /add 落库前进墓碑,7 天后擦正文,同轮其他消息照写;回执 gated。
+    2. 短确认 / 单字改判 daily,不拦。
+    3. 原则 8:命中「不再保存」规则的写入整条不写、不进墓碑,日志只留规则 id。
+    4. 会话精华不收模型思考过程:剥 <think>、reasoning 字段不当答案、harmony 分析通道剥离,仍像思考则降级摘要;/add 收到思考文本进墓碑。
+    5. 原则 4/5 仍影子,「同一件事」改为至少 2 个共享实词 + 重合度阈值或向量余弦阈值。
+    6. 每条拦截可拨回影子(AIDUMEI_WRITE_POLICY_P1/_P8/_THINKING=shadow),AIDUMEI_WRITE_POLICY=off 全关(原则 7 不受影响)。
+    7. /update 与后台 auto_memory 环复用同一道拦截。
+    8. regression_f07plus 噪声类口径:daily 也算没进长期记忆。
+    9. 新增影子周反向样例的虚构等价物与 HTTP 端到端用例。
+    10. 安全:出站地址校验(SSRF),DNS 解析后逐地址判私网/回环/元数据,外呼前复检。
+    11. 安全:/health 完整视图只给控制台会话与主 token。
+    12. 安全:MCP SSE 回环绑定也要 Bearer token。
+    13. 安全:改密后 AIDUMEM_UI_PASSWORD 失效;空环境变量不挡 .env;空 AIDUMEM_HOST = 回环;0.0.0.0 不再是可信 Host。
+    14. 安全:召回包装等开闭标记带每次一换的 128 位 nonce,伪造围栏转人审。
+    15. 安全:出处服务端裁定,调用方只能降格为 inferred。
+    16. 安全:列表 limit 钳到 [1, 500],负 offset 归 0;读请求按钥匙限流。
+    17. 安全:自编辑合并与 instinct 毕业按钥匙绑定身份设硬围栏。
+    18. 安全:多消息 /add 逐条清洗/闸门/出处。
+    19. 安全:/forget 墓碑可恢复;墓碑元数据过原则 7;元数据按键名语境打码。
+    20. Claude Code 自带记忆桥:PostToolUse 钩子原地打码本项目 CC 记忆文件并经 /add 导入;每日兜底扫描与裁剪;connect_host.py 挂第四条钩子(总超时 30 秒;每个请求 AIDUMEI_CC_BRIDGE_TIMEOUT 缺省 12 秒)。
+    21. /health 实体词来源探针认 AIDUMEM_ENV_FILE(与服务启动同一规则 env_file_path)。
+    22. connect_host.py --claude-test:回答里出现刚写入的一次性暗号才算过,验完删除测试记忆。
+    23. connect_host.py:Claude Code 配置认 CLAUDE_CONFIG_DIR;新增 --project-dir 写/验收项目级配置;不设时行为不变。
+    24. Claude Code 钩子脚本在 git 里设可执行位,新守卫要求 integrations/ 下全部 .sh 为 100755。
+    25. 记忆桥读嵌套 metadata: 块里的 type(Claude Code 2.1.319),顶层优先、内容哈希不变。
+    26. 发布前自审:记忆桥不从项目共享 .claude/settings.json 读 autoMemoryDirectory;MCP SSE 的 websocket 作用域也要凭据;NAT64 内嵌元数据地址放行名单也放不过。
+
 v0.7.6 (内部补丁 f0.7.6 · 2026-11-06 · f0.7++ 外审复审修复:原则 7 识别重写 + 结构与删除收口 · 大仓 Tag/Release 仍为 f0.7++)
     用例总数 4054 → 4181(本版 = 行为 3553 + 脚本/钩子 482 + 守卫 146)。
     1. 原则 7 识别重写:逐字 NFKC、去 Cf/Mn 与韩文填充符、常见拉丁/西里尔/希腊同形字归一,在归一化视图定位后映射回原文替换。
@@ -748,8 +777,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.7.6"
-FULL_VERSION = "f0.7.6"
+SERVICE_VERSION = "0.8.0"
+FULL_VERSION = "f0.8.0"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -781,7 +810,12 @@ FULL_VERSION = "f0.7.6"
 # 内部补丁，PUBLIC_RELEASE_VERSION 不动（维护者已定对外名 f0.7+++，翻牌另行提交）。
 # f0.7+++（2026-11-06）：维护者授权公开翻牌——大仓 Tag/Release 升至 f0.7+++，PUBLIC_RELEASE_VERSION 同步；
 # LINEAGE 0.7.6 行对外列记 f0.7+++（f0.7++ 先例），FULL_VERSION 保持 f0.7.6（/health 不变）。
-PUBLIC_RELEASE_VERSION = "f0.7+++"
+# f0.8.0（2026-11-09）：安全加固（SSRF 出站校验、/health 视图分级、MCP SSE 必须 token、出处服务端裁定、读限流、身份硬围栏）、
+# 写入策略按影子周结果开拦截（原则 1 噪声、原则 8、思考过程）、Claude Code 自带记忆桥。
+# 内部候选，PUBLIC_RELEASE_VERSION 不动（公开翻牌另行决定）。
+# f0.8（2026-11-09）：维护者授权公开翻牌——大仓 Tag/Release 升至 f0.8，PUBLIC_RELEASE_VERSION 同步；
+# LINEAGE 0.8.0 行对外列记 f0.8（f0.7+++ 先例），FULL_VERSION 保持 f0.8.0（/health 不变）。
+PUBLIC_RELEASE_VERSION = "f0.8"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -795,6 +829,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.8.0", "", "f0.8", "公开 f0.8(2026-11-09 维护者授权翻牌,代码 f0.8.0):安全加固:出站地址校验(SSRF)、/health 完整视图只给控制台与主 token、MCP SSE 回环也要 token、开闭标记带 nonce、出处服务端裁定、列表钳制与读限流、自编辑/instinct 身份硬围栏、多消息逐条闸门、/forget 墓碑可恢复;写入策略按影子周结果开拦截(原则 1 机器噪声进墓碑、原则 8 忘记规则、会话精华不收思考过程,均可拨回影子);Claude Code 自带记忆桥(打码 + 导入 + 每日兜底);connect_host 认 CLAUDE_CONFIG_DIR/--project-dir、--claude-test 要真召回暗号;钩子脚本可执行位;探针认 AIDUMEM_ENV_FILE · 2026-11-09"),
     ("0.7.6", "", "f0.7+++", "公开 f0.7+++(2026-11-06 维护者授权翻牌,代码 f0.7.6):f0.7++ 外审复审修复:原则 7 识别重写(逐字 NFKC + 去 Cf/Mn + 同形字;键名按驼峰/下划线分词;是/为/is/改成等分隔;中文与带空格口令;占位符白名单只留真模板;助记词/私钥/Basic/Cookie/机器人令牌/短 PIN);role 白名单、JSON 字符串 messages 先解析再打码、变更日志落库前再打码、顶层 session/agent/event_at 校验;删除链补 memory_epistemic 与 evolve_episodes;各库 secure_delete + 删除后 WAL checkpoint;观点列表/聚合按事实租户计、不覆盖他人观点;evidence_ids 校验;登录体非对象 400 · 2026-11-06"),
     ("0.7.5", "", "f0.7++", "公开 f0.7++(2026-11-04 维护者授权翻牌,代码 f0.7.5):第二轮外审 P0 收口:钥匙强制下事实层按身份隔离、/opinions/set 核事实真实归属;原则 7 补零宽/全角/下划线键名/全大写与纯小写口令/JSON/metadata;/evolve/feedback 打码;非 ASCII 凭据不再 500;删除链补派生全文表 + 元守卫静态扫描;多模态消息与后台自动记忆走同一写入闸门 · 2026-11-04"),
     ("0.7.4", "", "f0.7+", "公开 f0.7+(2026-11-02 维护者授权翻牌,代码 f0.7.4):读线过滤词按身份豁免(AIDUMEI_CC_DROP_TERMS_EXEMPT,默认空=全部过滤),本人记忆不再被自己的人设词挡掉;/search 提权补插的 salience 行带检索作用域,不再落 default;原文句柄删除连 salience 行一起清;scripts/salience_relabel.py 修存量(默认 dry-run) · 2026-11-02"),

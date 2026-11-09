@@ -8,11 +8,13 @@ from ducky.shutdown import sleep as _shutdown_sleep
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from ducky.bank_contract import DEFAULT_BANK_ID
 from ducky.utils import DATA_DIR, DEFAULT_USER_ID
 from fastapi import HTTPException
 
 logger = logging.getLogger("aiduMEM.extended")
 AUTO_MEMORY_STATE = os.path.join(DATA_DIR, "auto_memory_state.json")
+_AUTO_MD = {"source": "auto_memory"}
 
 # 由 register_extended_routes 注入
 _get_db = None
@@ -69,6 +71,26 @@ def _auto_format_conversation(msgs):
         lines.append(f"{role}: {m['content'][:200]}")
     return "\n".join(lines)
 
+def _auto_gate_session(msgs, sid):
+    """f0.8 ②：与 /add 同一道拦截（write_policy.enforce_messages）——每条消息先清洗、中和、
+    打码（与 /add 同序），再交给开了拦截的原则：P1 机器噪声 / 思考过程进墓碑 7 天可恢复，
+    P8 不留正文。返回剩下要总结的消息；拦截失败时 enforce_messages 自己 fail-open。"""
+    from ducky.security.injection_guard import neutralize_messages_struct, sanitize_messages_struct
+    from ducky.write_policy import enforce_messages, redact_messages_struct
+    try:
+        struct = [{"role": "user" if m["role"] == "user" else "assistant", "content": m.get("content") or ""}
+                  for m in msgs]
+        struct, _kinds = redact_messages_struct(neutralize_messages_struct(sanitize_messages_struct(struct)))
+    except (ValueError, TypeError, KeyError, AttributeError) as e:   # fail-open: 整段照旧走后面的闸门
+        logger.warning("auto_memory: 会话 %s 逐条拦截跳过: %s", sid, type(e).__name__)
+        return msgs, []
+    kept, gated = enforce_messages(struct, _AUTO_MD, user_id=DEFAULT_USER_ID, bank_id=DEFAULT_BANK_ID)
+    if gated:
+        logger.info("auto_memory: 会话 %s 拦下 %d 条: %s", sid, len(gated),
+                    ",".join(f"{g['principle']}:{g['reason']}" for g in gated))
+    return list(kept or []), gated
+
+
 def _run_auto_memory():
     if get_memory is None: return {"status":"error","message":"mem0 not initialized"}
     last_id = _auto_read_last_id()
@@ -76,8 +98,16 @@ def _run_auto_memory():
     if not messages: return {"status":"ok","new_messages":0}
     sessions = _auto_group_by_session(messages)
     extracted = 0
+    gated_total = 0
     for sid, msgs in sessions.items():
+        msgs, _gated = _auto_gate_session(msgs, sid)
+        gated_total += len(_gated)
         text = _auto_format_conversation(msgs)
+        if len(text) > 50:
+            # 跨消息的忘记规则（规则的词分在两条里）：整段再过一次同一道闸
+            from ducky.write_policy import enforce_messages
+            text, _g2 = enforce_messages(text, _AUTO_MD, user_id=DEFAULT_USER_ID, bank_id=DEFAULT_BANK_ID)
+            gated_total += len(_g2)
         if len(text) > 50:
             # f0.7.5（外审 qwen F-04）：后台环此前直调内核，绕过 /add 的注入检测、
             # 控制字符清洗、边界中和与原则 7 打码。现在走同一组闸门；被拒的会话跳过。
@@ -101,7 +131,8 @@ def _run_auto_memory():
             except Exception as e:
                 logger.error(f"auto_memory extract 失败: {e}")
     _auto_write_last_id(messages[-1]["id"])
-    return {"status":"ok","new_messages":len(messages),"sessions":len(sessions),"extracted":extracted}
+    return {"status":"ok","new_messages":len(messages),"sessions":len(sessions),"extracted":extracted,
+            "gated":gated_total}
 
 def auto_memory_background_loop():
     while True:

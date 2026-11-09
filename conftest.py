@@ -117,6 +117,10 @@ for _pv in _PROXY_VARS:
 for _pv in ("NO_PROXY", "no_proxy"):
     os.environ.pop(_pv, None)
 
+# f0.8 ③-6：读路径按钥匙限流默认 600/min——整套测试里同一把钥匙远超这个量，
+# 关掉（0）免得无关用例被 429 误伤；限流本身的用例自己 monkeypatch 设小值。
+os.environ["AIDUMEI_RATE_READ_PER_MIN"] = "0"
+
 if REDIRECTED_DATA_DIR and OWNS_REDIRECTED_DIR:
     # 只删自己建的那一个：沿用别人（父进程）目录的进程一律不许碰。
     # 删不掉（还有连接没关）也不许让退出码变红——清理失败是清理的问题，
@@ -314,4 +318,18 @@ def _pin_mem0_kernel_for_legacy_mem0_tests(request, monkeypatch):
     if os.path.basename(str(request.node.fspath)) in _MEM0_KERNEL_LEGACY_TESTS \
             and not os.environ.get("AIDUMEI_MEMORY_KERNEL"):
         monkeypatch.setenv("AIDUMEI_MEMORY_KERNEL", "mem0")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _memory_types_schema_check_per_test():
+    """f0.8 合并：``memory_types._checked`` 是进程级「表已建」标志，而几十个测试文件在
+    import 时就改写 ``utils.FACTS_DB``——标志记的是上一个库，当前库可能根本没建表，
+    于是排在后面、又没自己重置标志的 HTTP 用例 /add 报 ``no such table: memory_types``
+    （顺序相关；基线 d35e2a0 用 v19_1_1 + v19_1 + restore_tombstones 三个文件即可复现）。
+    每条用例开跑前清掉标志：建表本身幂等（CREATE IF NOT EXISTS），等价于新进程。"""
+    import sys as _sys
+    _mt = _sys.modules.get("ducky.memory_types")
+    if _mt is not None:
+        _mt._checked = False
     yield

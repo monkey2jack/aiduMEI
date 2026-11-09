@@ -35,7 +35,10 @@ def _bootstrap_env_file() -> int:
                 # 而钩子/脚本照常带 token 调用，一切看似正常。
                 if _k.startswith("export ") or _k.startswith("export\t"):
                     _k = _k[len("export"):].strip()
-                if _k and _k not in _os.environ:
+                # f0.8（外审 deepseek F-21）：环境里「存在但为空」不算显式给值——此前
+                # `AIDUMEM_API_TOKEN=`（systemd Environment=、compose -e）会把 .env 里的真 token
+                # 顶掉，门禁静默关闭。空/纯空白的环境值让位给 .env 的非空值。
+                if _k and not _os.environ.get(_k, "").strip() and (_v or _k not in _os.environ):
                     _os.environ[_k] = _v
                     _n += 1
     except OSError:
@@ -454,7 +457,9 @@ def _request_via_proxy(headers) -> bool:
 #   ② 浏览器发起的写（有 Origin 或 Sec-Fetch-Site: cross-site）Origin 必须同样受信（否则 403）。
 # 无 Origin 的 CLI / MCP / cron 请求不受 ② 影响；有凭据的实例由鉴权守住写面，这两道不启用；
 # 声明了 AIDUMEI_TRUST_PROXY=1 时 Host 校验交给反代（反代转发的是对外域名）。
-_LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"})
+# f0.8（外审 deepseek F-22 附带）：0.0.0.0 不是回环名——部分浏览器把它当本机发请求（"0.0.0.0 day"），
+# 把它当受信 Host 等于给 DNS rebinding 留了一个口。真绑 0.0.0.0 的部署必须配凭据，不走这条。
+_LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 
 def _trusted_host_names() -> frozenset:
@@ -556,6 +561,14 @@ def _enforce_single_process_policy() -> None:
             continue
 
 
+def _env_bind_host() -> str:
+    """AIDUMEM_HOST 的唯一解析（f0.8 · 外审 deepseek F-22）：空/纯空白 → 127.0.0.1。
+
+    此前 `_detect_bind_host()` 把空值当回环放行门禁，`main()` 却把空串原样交给 uvicorn
+    （空 host = 绑全部网卡）——门禁以为在回环，服务已对外。两处现在都读这一个函数。"""
+    return (os.environ.get("AIDUMEM_HOST") or "").strip() or "127.0.0.1"
+
+
 def _detect_bind_host() -> str:
     """推断**实际**监听地址（v20.2.4 · 外审 F-01）。
 
@@ -567,7 +580,7 @@ def _detect_bind_host() -> str:
     两个来源里**非回环的那个优先**（更严的赢）。argv 也看不到的情况
     （编程式 `uvicorn.Server(config)`）由请求期那道兜底。
     """
-    env_host = os.environ.get("AIDUMEM_HOST", "").strip()
+    env_host = _env_bind_host()
     argv_host = ""
     argv = list(sys.argv or [])
     for i, a in enumerate(argv):
@@ -669,6 +682,17 @@ def _enforce_public_binding_policy() -> None:
     )
 
 
+async def _limited_call(request: Request, call_next):
+    """f0.8 ③-6：放行之后、进路由之前——limit 类参数统一钳制 + 读路径按钥匙限流。"""
+    from ducky.request_limits import apply as _apply_limits
+    retry = _apply_limits(request)
+    if retry is not None:
+        return JSONResponse(status_code=429, headers={"Retry-After": str(retry)},
+                            content={"detail": "read rate limit exceeded (AIDUMEI_RATE_READ_PER_MIN)",
+                                     "code": "read_rate_limited", "retry_after": retry})
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def _require_credentials(request: Request, call_next):
     if not _auth_enabled():
@@ -726,11 +750,11 @@ async def _require_credentials(request: Request, call_next):
                 content={"detail": "Cross-site browser write refused on a credential-less instance.",
                          "code": "cross_site_write_refused"},
             )
-        return await call_next(request)
+        return await _limited_call(request, call_next)
     if _is_public_path(request.url.path):
         return await call_next(request)
     if _request_authorized(request):
-        return await call_next(request)
+        return await _limited_call(request, call_next)
     return JSONResponse(
         {
             "error": "unauthorized",
@@ -922,8 +946,11 @@ def _ensure_ui_password() -> None:
         # 原先两套口令同时有效，用户以为「已换密」，旧的自动口令（明文还躺在
         # data/.ui_initial_password）照样能登录。只动 source=auto 的哈希；控制台改过的
         # （source=user）不碰。
-        from ducky.security.auth import retire_auto_password
+        from ducky.security.auth import env_password_shadowed, retire_auto_password
         retire_auto_password()
+        if env_password_shadowed():
+            logger.warning("🔐 已设置 AIDUMEM_UI_PASSWORD，但控制台改过口令：环境变量口令不再有效（f0.8）。"
+                           "要用它重置，删掉 %s 再重启", hash_file)
         return
     if not os.path.exists(hash_file):
         gen_pwd = secrets.token_urlsafe(12)
@@ -1164,7 +1191,7 @@ def main():
     # 一个最终会因公网绑定/多 worker 被拒绝启动的进程，退出前已经建表、预热、
     # 起了线程。lifespan 是后台生命周期的唯一负责人（且有 _background_started
     # 幂等标志）；main() 只做纯配置校验，然后把进程交给 uvicorn。
-    host = os.environ.get("AIDUMEM_HOST", "127.0.0.1")
+    host = _env_bind_host()
     # v20.2.3（外审 M-2）：端口曾是裸 int() —— 写错一个字符服务直接起不来，
     # 且报错是 ValueError 而非「端口配置无效」。回退默认 + 点名出声。
     # or 链保留原语义（新键优先、空串落到旧键），但错误要点名到**真正

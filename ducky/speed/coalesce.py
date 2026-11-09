@@ -56,10 +56,15 @@ def _coalesce_key(user_id: str, metadata: Optional[dict] = None, profile: str = 
     origin_agent = str(md.get("_origin_agent") or "").strip()
     prof = (profile or "default").strip() or "default"
     bank = (bank_id or "default").strip() or "default"
+    # f0.8 ③-9：调用方降格声明（source_type=inferred）的句子不与原话合批——合并后 metadata 先到先得，
+    # 会把一方的出处套到另一方头上。
+    prov = "inferred" if str(md.get("source_type") or "").lower() == "inferred" else ""
     # Scope IDs are opaque and may contain @ or ::. Delimiter concatenation
     # can collapse different owners into one queue, so encode each axis.
-    return json.dumps([user_id or DEFAULT_USER_ID, bank, sid, origin_sid,
-                       origin_agent, prof, bool(infer)],
+    parts = [user_id or DEFAULT_USER_ID, bank, sid, origin_sid, origin_agent, prof, bool(infer)]
+    if prov:
+        parts.append(prov)       # 只在降格时追加：原有键形不变（在途缓冲不受升级影响）
+    return json.dumps(parts,
                       ensure_ascii=False, separators=(",", ":"))
 
 
@@ -200,6 +205,24 @@ def _should_flush_locked(buf: dict, now: float, cfg: Optional[dict] = None) -> O
     return None
 
 
+def _merge_part_metadata(buf: dict, md: dict, profile: str) -> None:
+    """同 key 已锁定 profile；后写 metadata 只补充缺失字段，不覆盖先写的值。"""
+    for k, v in md.items():
+        if k not in buf["metadata"]:
+            buf["metadata"][k] = v
+    # f0.8 ③-9：每段的打码记录取并集（先到先得会丢掉后来者的屏蔽类别）
+    if md.get("redacted"):
+        buf["metadata"]["redacted"] = sorted(set(buf["metadata"].get("redacted") or [])
+                                             | set(md.get("redacted") or []))
+    buf["metadata"]["coalesce_profile"] = buf.get("profile") or profile
+
+
+def _has_non_user_turn(messages_json) -> bool:
+    items = messages_json if isinstance(messages_json, list) else (
+        [messages_json] if isinstance(messages_json, dict) else [])
+    return any(isinstance(m, dict) and str(m.get("role") or "user").lower() != "user" for m in items)
+
+
 def coalesce_should_buffer(
     user_id: str,
     messages_json,
@@ -216,6 +239,10 @@ def coalesce_should_buffer(
         return False, "sync_path"
     if md.get("no_coalesce") or md.get("force_sync") or md.get("coalesce") is False:
         return False, "opt_out"
+    # f0.8 ③-9：合批会把各段拍平成一条 role=user 消息——助手/工具发言混进来就被记成「用户原话」。
+    # 带非用户角色的多消息载荷不合批，原样单独走管线（逐条打出处）。
+    if _has_non_user_turn(messages_json):
+        return False, "non_user_turn"
     text = messages_to_text(messages_json)
     if not text:
         return False, "empty"
@@ -305,11 +332,7 @@ def coalesce_enqueue(
             buf["parts"].append(text)
             buf["last_ts"] = now
             if md:
-                # 只补充 buf["metadata"] 中还不存在的 key，不覆盖已有的
-                for k, v in md.items():
-                    if k not in buf["metadata"]:
-                        buf["metadata"][k] = v
-                buf["metadata"]["coalesce_profile"] = buf.get("profile") or profile
+                _merge_part_metadata(buf, md, profile)
             if job_id:
                 buf.setdefault("job_ids", []).append(job_id)
             count = len(buf["parts"])

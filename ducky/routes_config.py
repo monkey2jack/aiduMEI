@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import tempfile
 import threading
 from typing import Optional
@@ -45,65 +44,16 @@ _URL_FIELDS = {"openai_base_url", "host"}
 # f0.6 W-12：外呼四段（decision 段走自己的 validate，不在此列）
 _EGRESS_SECTIONS = {"llm", "embedder", "rerank", "vision"}
 
-def _host_as_ip(host: str):
-    """主机名若是 IP 的任一写法就返回 ip_address，否则 None（域名）。
-
-    f0.7 P1-4（外审 muse P1-06）：ipaddress 只认点分十进制，而 HTTP 客户端经 inet_aton 也认
-    十进制整数（2130706433）、十六进制（0x7f000001 / 0x7f.0.0.1）、八进制（0177.0.0.1）——
-    这些写法此前被当成「域名」放行，私网拦截形同虚设。"""
-    import ipaddress
-    import socket
-    h = host.strip("[]")
-    try:
-        return ipaddress.ip_address(h)
-    except ValueError:
-        pass
-    if re.fullmatch(r"[0-9a-fx.]+", h) and any(c.isdigit() for c in h):
-        try:
-            return ipaddress.ip_address(socket.inet_aton(h))
-        except OSError:
-            return None
-    return None
-
-
-def _model_endpoint_allow() -> set:
-    raw = os.environ.get("AIDUMEI_MODEL_ENDPOINT_ALLOW", "")
-    return {h.strip().lower() for h in raw.split(",") if h.strip()}
-
-
 def _reject_private_endpoint(url: str) -> str | None:
-    """拦截私网/链路本地/元数据地址与明文 http（muse S-1：169.254.169.254
-    与内网端点此前全放行，是把凭据+记忆原文转投内网/云元数据的通道）。"""
-    from urllib.parse import urlparse
+    """拦截私网/链路本地/元数据地址与明文 http（muse S-1）。
+
+    f0.8：判定下沉到 ducky.security.egress（域名解析、尾点、数字写法 fail-closed、
+    IPv6 内嵌 IPv4、CIDR 放行名单），保存配置、/config/test、运行时外呼共用一套。"""
+    from ducky.security.egress import check_url
     try:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").strip().lower()
-        if not host:
-            return "无法解析主机名"
-        # 元数据/内部地址最先拦——它们以 https 出现也不放行
-        if host == "169.254.169.254" or host.endswith(".internal"):
-            return "云元数据/内部地址禁止作为模型端点"
-        # f0.7：自家内网/tailnet 上的 vLLM 等模型机——部署方在 .env 显式点名才放行
-        # (AIDUMEI_MODEL_ENDPOINT_ALLOW=gpu-box,192.168.1.50,100.64.0.20)。
-        # 元数据地址已在上面先拦,名单也放不过。
-        if host in _model_endpoint_allow():
-            return None
-        if parsed.scheme == "http" and host not in ("127.0.0.1", "localhost"):
-            return "明文 http 仅允许 loopback（127.0.0.1/localhost）；远程端点必须 https"
-        ip = _host_as_ip(host)
-        if ip is not None:
-            import ipaddress
-            _loopback_ok = ip.is_loopback and host in ("127.0.0.1",)
-            # f0.7 P1-4（外审 muse P1-06）：补 CGNAT 100.64/10（tailnet 地址段）与 IPv4 映射的 IPv6
-            _cgnat = ip.version == 4 and ip in ipaddress.ip_network("100.64.0.0/10")
-            if ip.version == 6 and ip.ipv4_mapped is not None:
-                ip = ip.ipv4_mapped
-            if not _loopback_ok and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                                     or ip.is_unspecified or ip.is_multicast or _cgnat):
-                return f"私网/保留地址禁止作为模型端点: {host}"
-        return None
-    except Exception as exc:
-        return f"端点校验失败: {exc}"
+        return check_url(url, require_https=True)
+    except Exception as exc:  # noqa: BLE001 —— 校验器自身异常一律按拒绝处理（fail-closed）
+        return f"端点校验失败: {type(exc).__name__}"
 
 
 def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, old_section: dict | None = None) -> str | None:
@@ -132,8 +82,18 @@ def _validate_config_fields(section: str, cfg: dict, body: dict | None = None, o
         if err:
             return err
     if section == "vector_store":
-        return _validate_vector_store_path(cfg)
+        return _validate_vector_store_host(cfg) or _validate_vector_store_path(cfg)
     return None
+
+
+def _validate_vector_store_host(cfg: dict) -> str | None:
+    """f0.8（外审 muse L-05）：Qdrant host 与模型端点同口径——私网要显式放行，元数据永远拦。"""
+    host = str(cfg.get("host") or "").strip()
+    if not host:
+        return None
+    from ducky.security.egress import check_url
+    err = check_url(host, require_https=False)
+    return f"vector_store.host: {err}" if err else None
 
 
 def _validate_decision_section(cfg: dict, body: dict, old_section: dict) -> str | None:
@@ -631,6 +591,10 @@ def register_config_routes(app: FastAPI) -> None:
             "sessions_revoked": revoked,
             "restart_required": False,
         }
+        # f0.8：改密后环境变量口令立即失效（auth.check_ui_password），这里明说，免得以为两把都能用。
+        if os.environ.get("AIDUMEM_UI_PASSWORD", "").strip():
+            resp["env_password"] = ("AIDUMEM_UI_PASSWORD 不再有效，可从环境中删除 / "
+                                    "AIDUMEM_UI_PASSWORD no longer works and can be removed")
         # f0.7.1：控制台改过的口令（source=user）会开启 API 门禁。没配 token 的回环部署，
         # 钩子 / MCP / cron 从此会 401 —— 明确告诉主人，而不是让接入方静默失联。
         if not os.environ.get("AIDUMEM_API_TOKEN", "").strip():

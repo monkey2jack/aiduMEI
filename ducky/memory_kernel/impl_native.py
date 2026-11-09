@@ -218,10 +218,12 @@ class HttpEmbedder:
         if not cloud_egress_allowed("embedding"):        # local 档:不外呼,调用方降级为 FTS-only
             raise RuntimeError("blocked_by_engine_mode")
         if self._client is None:
-            self._client = httpx.Client(timeout=5)    # CC 钩子预算短:嵌入挂了 5 秒内退 FTS-only
+            self._client = httpx.Client(timeout=5, follow_redirects=False)    # CC 钩子预算短:嵌入挂了 5 秒内退 FTS-only
         body = {"input": [str(text).replace("\n", " ")], "model": self.model, "encoding_format": "float"}
         if self.dims:
             body["dimensions"] = self.dims
+        from ducky.security.egress import guard_url
+        guard_url(self.base + "/embeddings", "embedding")   # EgressBlocked 是 RuntimeError,调用方照常降级
         try:
             r = self._client.post(self.base + "/embeddings", json=body,
                                   headers={"Authorization": f"Bearer {self._key}"})

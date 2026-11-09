@@ -247,7 +247,8 @@ def _systemone(cfg: dict, state: dict, questions: dict) -> dict:
     if not cloud_egress_allowed("decision"):
         return {"model": cfg["model"], "answers": {}}
     import requests
-    response = requests.post(cfg["openai_base_url"].rstrip("/") + "/systemone",
+    from ducky.security.egress import guard_url
+    response = requests.post(guard_url(cfg["openai_base_url"].rstrip("/") + "/systemone", "decision"),
                              headers={"Authorization": "Bearer " + cfg["api_key"]},
                              json={"model": cfg["model"], "state": state, "questions": questions},
                              timeout=(min(2, cfg["timeout_ms"] / 1000), cfg["timeout_ms"] / 1000), allow_redirects=False)
@@ -273,6 +274,8 @@ def _cloudflare(cfg: dict, state: dict, questions: dict) -> dict:
     model = cfg["model"]
     endpoint = (cfg.get("openai_base_url") or DEFAULTS["cloudflare"][1]).rstrip("/")
     url = f"{endpoint}/accounts/{account_id}/ai/run/@cf/cloudflare/{model}"
+    from ducky.security.egress import guard_url
+    guard_url(url, "decision")
     response = requests.post(
         url,
         headers={"Authorization": "Bearer " + cfg["api_key"], "Content-Type": "application/json"},

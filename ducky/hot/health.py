@@ -302,11 +302,46 @@ def _resolve_authz(request: Request) -> tuple[bool, bool]:
         from api_server import _request_authorized
         authz = bool(_request_authorized(request))
     except Exception:
-        authz = validate_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
+        authz = validate_session(request.cookies.get(SESSION_COOKIE_NAME, "")) or _main_token_presented(request)
     return gate, authz
 
 
+def _main_token_presented(request) -> bool:
+    """请求头是否带着主 token（AIDUMEM_API_TOKEN）——不依赖 api_server 是否可导入。"""
+    from ducky.security.auth import safe_equal
+    token = os.environ.get("AIDUMEM_API_TOKEN", "").strip()
+    if not token or request is None:
+        return False
+    try:
+        supplied = request.headers.get("Authorization", "") or ""
+        alt = request.headers.get("X-API-Token", "") or ""
+    except AttributeError:
+        return False
+    return bool((supplied and safe_equal(supplied, f"Bearer {token}")) or (alt and safe_equal(alt, token)))
+
+
+def _full_view_allowed(gate: bool, authz: bool, request=None) -> bool:
+    """f0.8（外审 deepseek F-13 / F-15）：完整 /health（git_sha、绝对路径、计数、内核）只给管理面。
+
+    门禁关（本机零配置）→ 完整；控制台会话 → 完整；主 token（AIDUMEM_API_TOKEN，绑没绑身份都算）
+    → 完整；agent 钥匙 → 与匿名同一份公开视图（它对 /api/stats 等实例面本来就是 403）。"""
+    if not gate:
+        return True
+    if not authz:
+        return False
+    if _main_token_presented(request):
+        return True
+    from ducky.security.auth import current_request_auth_kind
+    if current_request_auth_kind() == "session":
+        return True
+    from ducky import agent_keys
+    cur = agent_keys._CURRENT.get()
+    return bool(cur and cur.get("main"))
+
+
 def _public_view(full: dict) -> dict:
+    """f0.8：公开视图只留 status / version / health_status 与 data_dir_writable 布尔
+    （安装提示词第 7 步与负载均衡器要用）；degraded 组件名、warming_up 不再外露。"""
     rp = (full.get("probes") or {}).get("runtime_paths") or {}
     # 匿名 /health 是探针，不是侦察报告：顶层键集被
     # test_first_run_experience.py::test_unauthenticated_health_uses_strict_allowlist
@@ -317,10 +352,9 @@ def _public_view(full: dict) -> dict:
         "status": full.get("status"),
         "version": full.get("version"),
         "health_status": full.get("health_status"),
-        "degraded": full.get("degraded", []),
-        "warming_up": full.get("warming_up", []),
         "probes": {
-            "_redacted": "authenticate (Authorization: Bearer <AIDUMEM_API_TOKEN>) to view runtime probes",
+            "_redacted": "authenticate with the main token (Authorization: Bearer <AIDUMEM_API_TOKEN>) "
+                         "or a console session to view runtime probes",
             "runtime_paths": {
                 "data_dir_writable": rp.get("data_dir_writable"),
                 "_redacted": "paths hidden for unauthenticated callers",
@@ -1428,7 +1462,7 @@ def register_health_routes(app: FastAPI) -> None:
     def health(request: Request):
         """对外契约端点：授权拿完整探针；匿名拿留键公开视图（30s TTL 缓存）。"""
         _gate, _authz = _resolve_authz(request)
-        _anonymous = _gate and not _authz
+        _anonymous = not _full_view_allowed(_gate, _authz, request)
         if _anonymous and _PUBLIC_CACHE["full"] is not None \
                 and time.time() - _PUBLIC_CACHE["ts"] < _PUBLIC_TTL_SECONDS:
             # 匿名 + 30s 内已有全量结果：不重跑探针（Codex F-12）。
