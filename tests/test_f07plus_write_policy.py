@@ -71,8 +71,8 @@ def test_secret_guard_off_is_an_explicit_escape_hatch(monkeypatch):
 
 
 @pytest.mark.parametrize("text,reason", [
-    ("好的", "noise:ack"), ("继续", "noise:ack"), ("[SILENT]", "noise:host_machine_text"),
-    ("Say OK", "noise:test_ping"), ("只回复：OK", "noise:test_ping"), ("x", "noise:too_short"),
+    ("[SILENT]", "noise:host_machine_text"),
+    ("Say OK", "noise:test_ping"), ("只回复：OK", "noise:test_ping"),
     ("[Image: original 2472x1314, displayed at 2000x1063.]", "noise:host_machine_text"),
     ("This session is being continued from a previous conversation that ran out of context.",
      "noise:host_compaction_copy"),
@@ -80,6 +80,14 @@ def test_secret_guard_off_is_an_explicit_escape_hatch(monkeypatch):
 def test_noise_is_rejected_in_shadow(text, reason):
     v = wp.classify(text)
     assert v["verdict"] == "reject" and reason in v["reasons"]
+
+
+@pytest.mark.parametrize("text,reason", [("好的", "short_reply:ack"), ("继续", "short_reply:ack"),
+                                         ("x", "short_reply:too_short")])
+def test_short_replies_go_to_daily_not_rejected(text, reason):
+    """f0.8 ②：短确认 / 单字不再判拒收，归当日流水。"""
+    v = wp.classify(text)
+    assert v["verdict"] == "daily" and v["layer"] == "daily" and reason in v["reasons"]
 
 
 @pytest.mark.parametrize("text", ["批准，做起来", "同意，开工", "授权好啦", "LGTM"])
@@ -113,7 +121,9 @@ def test_source_direct_vs_inferred():
     assert wp.source_of({"source": "reflect"})[0] == "inferred"
     assert wp.source_of({"_origin_is_bot": 1})[0] == "inferred"
     assert wp.source_of({}, infer_used=True)[0] == "inferred"
-    assert wp.source_of({"source_type": "direct", "basis": "x"}) == ("direct", "x")
+    # f0.8：存量/调用方的 direct 不再被采信，按服务端信号重推（无派生信号 → verbatim_turn）
+    assert wp.source_of({"source_type": "direct", "basis": "x"}) == ("direct", "verbatim_turn")
+    assert wp.source_of({"source_type": "inferred", "basis": "x"}) == ("inferred", "x")
     v = wp.classify("用户总是在晚上写代码", "user", summary)
     assert "generalization_in_inference" in v["reasons"]
 

@@ -363,6 +363,25 @@ def _capture_raw_vectors(memory_id, scope):
     return out
 
 
+def _p7_meta(md: dict) -> dict:
+    try:
+        from ducky.write_policy import redact_metadata
+    except ImportError:
+        return md
+    return redact_metadata(md)
+
+
+def _p7_vector_snapshots(vector_payload: dict, raw_vectors: dict) -> tuple[dict, dict]:
+    """f0.8 ③-10：快照里的元数据同样过 P7（旧版本写入、早于元数据打码的行不许借墓碑留住明文）；
+    正文 data/hash 不动——恢复要按它重建。"""
+    vector_meta = _p7_meta({k: v for k, v in (vector_payload or {}).items()
+                            if k not in _VECTOR_REBUILT_KEYS})
+    raw = {pid: {**_p7_meta({k: v for k, v in (pl or {}).items() if k not in ("data", "hash")}),
+                 **{k: v for k, v in (pl or {}).items() if k in ("data", "hash")}}
+           for pid, pl in (raw_vectors or {}).items()}
+    return vector_meta, raw
+
+
 def snapshot_before_delete(
     memory_id: str,
     user_id: str = DEFAULT_USER_ID,
@@ -417,8 +436,7 @@ def snapshot_before_delete(
         from ducky.env_config import int_env
         _ttl_days = int_env("AIDUMEI_TOMBSTONE_TTL_DAYS", 30, minimum=0)
         _snapshot_expires = int(time.time() + _ttl_days * 86400) if _ttl_days > 0 else None
-        vector_meta = {k: v for k, v in vector_payload.items()
-                       if k not in _VECTOR_REBUILT_KEYS}
+        vector_meta, raw_vectors = _p7_vector_snapshots(vector_payload, raw_vectors)
         conn = get_facts_conn()
         cur = conn.execute(
             """INSERT INTO tombstones
@@ -462,6 +480,54 @@ def snapshot_before_delete(
         if strict:
             raise SnapshotIncomplete(str(exc)) from exc
         return None
+
+
+def tombstone_gated_write(
+    content: str,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    bank_id: str = DEFAULT_BANK_ID,
+    reason: str = "",
+    metadata: dict | None = None,
+    role: str = "user",
+    ttl_days: int = 7,
+) -> tuple[int, str]:
+    """f0.8 ②：写入策略拦下的一条（机器噪声 / 精华里的思考过程）不进活记忆，直接落墓碑。
+
+    与删除快照同一张表、同一条恢复路径（/tombstone/restore 按原 id 回插正文、FTS、向量）；
+    快照 ``ttl_days`` 天后由 erase_expired_snapshots 擦掉正文。返回 (tombstone_id, target_id)。
+    失败抛异常——调用方据此 fail-open（照常写入）。"""
+    import uuid
+    scope = make_scope(user_id, bank_id)
+    ensure_tombstone_schema()
+    ensure_bank_registered(scope)
+    target_id = str(uuid.uuid4())
+    payload = {k: v for k, v in (metadata or {}).items()
+               if k not in _VECTOR_REBUILT_KEYS and isinstance(k, str)}
+    payload.update(user_id=scope.user_id, bank_id=scope.bank_id, gated_by=reason or "write_policy")
+    if role and role != "user":
+        payload["role"] = role
+    expires = int(time.time() + max(1, int(ttl_days)) * 86400)
+    conn = get_facts_conn()
+    cur = conn.execute(
+        """INSERT INTO tombstones
+           (target_id, target_type, user_id, bank_id, content_snapshot, facts_snapshot,
+            reason, actor, tombstoned_at, vector_snapshot, layer_snapshot, snapshot_expires_at)
+           VALUES (?, 'memory', ?, ?, ?, '', ?, 'write_policy', ?, ?, ?, ?)""",
+        (target_id, scope.user_id, scope.bank_id, content, reason or "write_policy", _now_iso(),
+         json.dumps(payload, ensure_ascii=False, default=str),
+         json.dumps({"version": 2, "gated": True, "vector_content": content}, ensure_ascii=False),
+         expires),
+    )
+    try:
+        from ducky.event_ledger import content_hash, record_event
+        record_event(conn, actor="write_policy", action="tombstone", target_id=target_id,
+                     reason=reason or "", after_hash=content_hash(content),
+                     user_id=scope.user_id, bank_id=scope.bank_id)
+    except (ImportError, sqlite3.Error, ValueError, TypeError) as le:
+        logger.debug("ledger 记录跳过: %s", le)
+    conn.commit()
+    return int(cur.lastrowid), target_id
 
 
 def _load_vector_snapshot(row) -> dict:

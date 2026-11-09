@@ -313,6 +313,10 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
     _check_scope(user_id, bank_id)
     if not SELF_EDIT_ENABLED or memory is None:
         return None
+    # f0.8 ③-8：自编辑会改写本身份的旧记忆——绑定了别的身份的钥匙一律不许碰（不受 enforce 开关影响）。
+    from ducky.agent_keys import owner_fence
+    if not owner_fence(user_id, "self_edit"):
+        return None
 
     new_text = _extract_text(messages_json)
     if not new_text:

@@ -147,7 +147,8 @@ def test_verify_and_restore_reject_unlisted_members(snapshot, tmp_path, extra):
 def test_ambiguous_file_types_are_rejected_before_restore(snapshot, tmp_path, kind):
     _, backup = snapshot
     member = backup / '.ui-state'; member.unlink()
-    external = tmp_path / 'external'; external.write_text('keep outside untouched')
+    # same filesystem as the backup, so os.link works when TMPDIR and the snapshot live on different devices
+    external = backup.parent / f'external-{kind}'; external.write_text('keep outside untouched')
     if kind == 'symlink':
         member.symlink_to(external)
     elif kind == 'hardlink':

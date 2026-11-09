@@ -14,6 +14,7 @@ from scripts import connect_host as C
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     for k in ("AIDUMEM_API_TOKEN", "AIDUMEM_USER_ID", "AIDUMEM_DEFAULT_USER_ID", "AIDUMEI_BANK_ID", "AIDUMEM_URL", "AIDUMEI_URL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path / "data"))
@@ -78,7 +79,7 @@ def test_merge_is_idempotent_and_keeps_foreign_hooks(home):
     cfg = {"env": {"X": "1"}, "hooks": {"UserPromptSubmit": [{"matcher": "", "hooks": [foreign]}]}}
     env = home / ".env"
     new, ch = C.merge_hooks(cfg, "claude-code", C.DEFAULT_URL, env)
-    assert len(ch) == 3 and all(C.wired_lines(new, "claude-code").values())
+    assert len(ch) == len(C.SHELL_HOSTS["claude-code"]["lines"]) == 4 and all(C.wired_lines(new, "claude-code").values())
     assert foreign in new["hooks"]["UserPromptSubmit"][0]["hooks"] and new["env"] == {"X": "1"}
     again, ch2 = C.merge_hooks(new, "claude-code", C.DEFAULT_URL, env)
     assert ch2 == [] and again == new                                   # 幂等

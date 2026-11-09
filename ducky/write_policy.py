@@ -38,6 +38,7 @@ import logging
 import os
 import re
 import sqlite3
+import struct
 import threading
 import unicodedata
 from datetime import datetime, timezone
@@ -58,6 +59,33 @@ def policy_mode() -> str:
     """AIDUMEI_WRITE_POLICY: shadow (default) | off.  Shadow never blocks."""
     val = os.environ.get("AIDUMEI_WRITE_POLICY", "shadow").strip().lower()
     return "off" if val in ("off", "0", "false", "no") else "shadow"
+
+
+# f0.8 ②：影子周之后按条开拦截。每条被开的原则都能用环境变量拨回影子，不改代码：
+#   AIDUMEI_WRITE_POLICY_P1=enforce|shadow       机器噪声两类（机器文本 / 上下文续接说明）
+#   AIDUMEI_WRITE_POLICY_P8=enforce|shadow       忘记黑名单（本人要求忘记的）
+#   AIDUMEI_WRITE_POLICY_THINKING=enforce|shadow 会话精华里的模型思考过程
+# AIDUMEI_WRITE_POLICY=off 时全部不生效（P7 打码除外，它有自己的开关）。
+# 环境变量名必须是字面量（ducky.env_registry 按 AST 字符串常量登记）。
+_ENFORCE_ENV = {"P1": "AIDUMEI_WRITE_POLICY_P1", "P8": "AIDUMEI_WRITE_POLICY_P8",
+                "THINKING": "AIDUMEI_WRITE_POLICY_THINKING"}
+
+
+def principle_mode(name: str) -> str:
+    """enforce | shadow | off for one enforceable principle (P1 / P8 / THINKING); default enforce."""
+    if policy_mode() == "off":
+        return "off"
+    env = _ENFORCE_ENV.get(name.upper())
+    if env is None:
+        return "shadow"
+    val = os.environ.get(env, "enforce").strip().lower()
+    return "enforce" if val in ("enforce", "on", "1", "true", "yes") else "shadow"
+
+
+def gate_ttl_days() -> int:
+    """Gated writes stay restorable in the tombstone table this many days (default 7)."""
+    from ducky.env_config import int_env
+    return int_env("AIDUMEI_WRITE_POLICY_GATE_TTL_DAYS", 7, minimum=1)
 
 
 def secret_guard_on() -> bool:
@@ -279,6 +307,13 @@ def _is_placeholder(v: str) -> bool:
     return False
 
 
+def _digits_ok(v: str, tier: str, mode: str) -> bool:
+    # f0.8 ③-10：secret / 助记词 键后的长数字串（≥8 位）同样算秘密；「the secret is 42」不算
+    if tier == "secret" and mode != "weak":
+        return len(v) >= 8
+    return tier in ("pw", "pin") and len(v) >= (6 if mode == "weak" else 4)
+
+
 def _value_ok(v: str, tier: str, mode: str, raw: str | None = None) -> bool:
     """mode: explicit (: = verb quotes) | natural (is / 是 / 为) | weak (, —— gap no-separator)."""
     v = v.strip()
@@ -291,7 +326,7 @@ def _value_ok(v: str, tier: str, mode: str, raw: str | None = None) -> bool:
             return False
         return not _CJK_STATE_RE.search(v)
     if v.isdigit():
-        return tier in ("pw", "pin") and len(v) >= (6 if mode == "weak" else 4)
+        return _digits_ok(v, tier, mode)
     has_alpha = any(c.isalpha() for c in v)
     has_digit = any(c.isdigit() for c in v)
     has_symbol = any(c in _SYMBOLS for c in v)
@@ -531,6 +566,22 @@ def hard_block_reason(text: str, *, summary: bool = False) -> str | None:
     return None
 
 
+def drop_secret_only_turns(messages):
+    """f0.8 ③-9：多消息载荷逐条过 P7 闸门。
+
+    hard_block_reason 只看拼接文本：一条「只有密钥」的消息夹在正常对话里，拼起来就不再是
+    secret_only，于是它以 `[redacted:…]` 空壳落库。这里把这类消息逐条摘掉（原值早已打码），
+    只剩它们时原样返回，交给整体闸门按 secret_only 拒收。返回 (messages, 摘掉条数)。"""
+    if not isinstance(messages, list) or len(messages) < 2:
+        return messages, 0
+    keep = [m for m in messages
+            if not (isinstance(m, dict) and hard_block_reason(_content_text(m.get("content")), summary=True)
+                    == "secret_only")]
+    if not keep or len(keep) == len(messages):
+        return messages, 0
+    return keep, len(messages) - len(keep)
+
+
 _MESSAGE_KEYS = ("role", "content")
 # f0.7.6（外审 R2-08）：role / type 是枚举键，不打码——所以必须白名单，否则任意字符串原样落 4 张表。
 _ROLES = frozenset({"user", "assistant", "system", "tool", "function", "developer"})
@@ -614,6 +665,17 @@ def redact_messages_struct(messages) -> tuple[Any, list[str]]:
     return messages, kinds
 
 
+def _redact_meta_entry(key, val, depth: int):
+    """f0.8 ③-10：键名本身就是凭据语境（{"secret": "…"} / {"mnemonic": "…"} / {"session_cookie": "…"}）。
+    按「键: 值」整体判一次——值像秘密才打码（{"cookie": "chocolate chip"} 不动），否则照旧只看值。"""
+    if isinstance(key, str) and isinstance(val, str) and val and _KEY_STEM_RE.search(key):
+        prefix = f"{key}: "
+        out, kinds = redact_forbidden(prefix + val)
+        if kinds and out.startswith(prefix):
+            return out[len(prefix):]
+    return redact_metadata(val, depth + 1)
+
+
 def redact_metadata(value, depth: int = 0):
     """f0.7.5（结案留账 #3）：metadata 里的字符串值同样过原则 7。键名不动。"""
     if depth > 8:
@@ -621,7 +683,7 @@ def redact_metadata(value, depth: int = 0):
     if isinstance(value, str):
         return redact_forbidden(value)[0]
     if isinstance(value, dict):
-        return {k: redact_metadata(v, depth + 1) for k, v in value.items()}
+        return {k: _redact_meta_entry(k, v, depth) for k, v in value.items()}
     if isinstance(value, list):
         return [redact_metadata(v, depth + 1) for v in value]
     return value
@@ -716,6 +778,71 @@ def is_noise(text: str) -> str | None:
     return None
 
 
+# f0.8 ②：只有这两类噪声开拦截（影子周 68/68 判对）；其余噪声码仍只是影子判定。
+ENFORCED_NOISE = frozenset({"host_machine_text", "host_compaction_copy"})
+# 短确认 / 单字：不拒，归当日流水（classify 里处理）。
+SHORT_REPLY_NOISE = frozenset({"ack", "too_short"})
+
+
+# ── f0.8 ②：模型思考过程（会话精华路径） ─────────────────────────────────
+# 推理模型把思考写进正文时的三种形态：<think>…</think>、harmony 通道串
+# （analysis…assistantfinal / <|channel|>final<|message|>）、以及干脆只有英文思考。
+_THINK_BLOCK_RE = re.compile(r"(?is)<(think|thinking|reasoning)>.*?(?:</\1>|\Z)")
+_HARMONY_FINAL_RE = re.compile(
+    r"(?is)(?:<\|channel\|>\s*final\s*<\|message\|>|<\|start\|>assistant<\|channel\|>final<\|message\|>|"
+    r"\bassistantfinal\b|^\s*analysis.*?\bfinal\s*:)")
+_HARMONY_TOKEN_RE = re.compile(r"<\|[a-z_]+\|>")
+_HARMONY_ANALYSIS_RE = re.compile(
+    r"(?is)(?:<\|start\|>assistant)?(?:<\|channel\|>)?\s*\banalysis\s*<\|message\|>.*?(?:<\|end\|>|\Z)")
+_REASONING_START_RE = re.compile(
+    r"(?i)^\s*[\"'*`]*(?:we need to|we have to|we should|we must|we are asked|we're asked|let me|let's|let us|"
+    r"i need to|i should|i must|i will now|i'll (?:now|start|write|output)|okay[,.]? (?:so|let|we|i|the)|"
+    r"ok[,.]? (?:so|let|we|i)|alright[,.]|hmm\b|first[,]? (?:i|we|let)|so we need|now (?:we|i) (?:need|should|must)|"
+    r"the user (?:wants|asks|asked|is asking|requests|requested|wants us)|the task (?:is|asks)|"
+    r"the instruction|analysis\b)")
+_REASONING_MARKERS = (
+    "we need to", "need to output", "should output", "must output", "let me", "let's", "the user wants",
+    "the user asks", "the user is", "the instruction", "the prompt", "in chinese", "one or two sentences",
+    "1-2 sentences", "two sentences", "under 80", "80 characters", "80 chars", "no more than",
+    "the summary should", "we should", "i should", "the answer", "maybe", "wait,", "so the summary",
+)
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove reasoning wrappers a model may put around its answer; returns what is left."""
+    t = text or ""
+    t = _THINK_BLOCK_RE.sub("", t)
+    t = _HARMONY_ANALYSIS_RE.sub(" ", t)
+    m = None
+    for m in _HARMONY_FINAL_RE.finditer(t):
+        pass
+    if m is not None and m.end() < len(t):
+        t = t[m.end():]
+    t = _HARMONY_TOKEN_RE.sub("", t)
+    return t.strip()
+
+
+def looks_like_reasoning(text: str) -> str | None:
+    """Reason code when ``text`` is a model's chain-of-thought rather than an answer, else None.
+
+    Only applied to model-produced text (session summaries), never to what a user said."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if _THINK_BLOCK_RE.search(raw) or _HARMONY_TOKEN_RE.search(raw) or re.search(r"(?i)\bassistantfinal\b", raw):
+        return "reasoning_wrapper"
+    letters = [c for c in raw if c.isalpha()]
+    cjk = sum(1 for c in letters if _is_cjk(c))
+    mostly_latin = not letters or cjk / len(letters) < 0.3
+    if _REASONING_START_RE.match(raw) and mostly_latin:
+        return "reasoning_preamble"
+    low = raw.lower()
+    hits = sum(1 for k in _REASONING_MARKERS if k in low)
+    if mostly_latin and hits >= 3:
+        return "reasoning_markers"
+    return None
+
+
 def classify_layer(text: str) -> tuple[str, list[str]]:
     reasons: list[str] = []
     t = text or ""
@@ -770,13 +897,33 @@ def extract_condition(text: str) -> dict:
 
 
 # ══ P3 — direct vs inferred ═══════════════════════════════════════════════
+_BASIS_SAFE_RE = re.compile(r"[^\w:.\- ]")
+
+
+def neutralize_client_provenance(md: dict) -> dict:
+    """f0.8（外审 muse M-14 / deepseek F-10）：provenance 是服务端裁定的保留字段。
+
+    调用方只能把自己**降格**为 inferred（「这条是我推断的」），不能自封 direct（「用户原话」）。
+    其余写法（direct、user_said、乱码）一律丢掉，交给 source_of() 按服务端信号推导。原地修改并返回。"""
+    if not isinstance(md, dict):
+        return md
+    st = str(md.pop("source_type", "") or "").strip().lower()
+    basis = md.pop("basis", None)
+    if st == "inferred":
+        tail = _BASIS_SAFE_RE.sub("", str(basis or ""))[:80].strip()
+        md["source_type"] = "inferred"
+        md["basis"] = f"caller_declared:{tail}" if tail else "caller_declared"
+    return md
+
+
 def source_of(md: dict | None, *, infer_used: bool = False) -> tuple[str, str]:
-    """(source_type, basis).  An explicit caller value wins; otherwise any
-    derived record (session summary, LLM extraction, reflection, bot relay)
-    is inferred and everything else is what was said, verbatim."""
+    """(source_type, basis).  An explicit *inferred* marker wins (callers may
+    only downgrade themselves); a stored ``direct`` is re-derived rather than
+    trusted (f0.8): any derived record (session summary, LLM extraction,
+    reflection, bot relay) is inferred and everything else is what was said."""
     md = md or {}
     st = str(md.get("source_type") or "").strip().lower()
-    if st in ("direct", "inferred"):
+    if st == "inferred":
         return st, str(md.get("basis") or ("caller_declared"))[:200]
     from ducky.origin_context import is_session_summary
     if is_session_summary(md) or md.get("kind") == "session_distill" or md.get("lane") == "distill":
@@ -795,10 +942,7 @@ def source_of(md: dict | None, *, infer_used: bool = False) -> tuple[str, str]:
 
 
 def legacy_inferred(md: dict | None) -> bool:
-    md = md or {}
-    if md.get("source_type") in ("direct", "inferred"):
-        return md.get("source_type") == "inferred"
-    return source_of(md)[0] == "inferred"
+    return source_of(md or {})[0] == "inferred"
 
 
 # ══ classification entry points ═══════════════════════════════════════════
@@ -811,6 +955,10 @@ def classify(text: str, role: str = "user", md: dict | None = None, *, infer_use
     if noise == "confirmation":
         layer, verdict, worth = "daily", "daily", 0.2
         reasons.append("confirmation")
+    elif noise in SHORT_REPLY_NOISE:
+        # f0.8 ②：影子周里「好，那走吧」「改」是在回答上一句，不该当噪声扔——归当日流水。
+        layer, verdict, worth = "daily", "daily", 0.1
+        reasons.append(f"short_reply:{noise}")
     elif noise:
         layer, verdict, worth = "daily", "reject", 0.05
         reasons.append(f"noise:{noise}")
@@ -821,6 +969,9 @@ def classify(text: str, role: str = "user", md: dict | None = None, *, infer_use
         verdict = "daily" if layer == "daily" else "keep"
     if role and role != "user":
         reasons.append(f"role:{role}")
+        # f0.8 ③-9：多消息 /add 逐条打出处——助手/工具的发言不是用户原话，不许落成 direct。
+        if source_type == "direct":
+            source_type, basis = "inferred", f"turn_role:{str(role)[:20]}"
     if source_type == "inferred" and _GENERALIZE_RE.search(text or ""):
         reasons.append("generalization_in_inference")
     try:
@@ -846,8 +997,9 @@ def enrich_metadata(text: str, role: str, md: dict | None, *, infer_used: bool =
     except Exception as exc:     # fail-open: the write goes ahead untagged
         logger.warning("write_policy classify failed: %s", type(exc).__name__)
         return out
-    out.setdefault("source_type", c["source_type"])
-    out.setdefault("basis", c["basis"])
+    # f0.8：provenance 服务端裁定——只有 inferred（降格）能保留调用方的值
+    if out.get("source_type") != "inferred" or c["source_type"] == "inferred":
+        out["source_type"], out["basis"] = c["source_type"], c["basis"]
     out.setdefault("layer", c["layer"])
     if c["condition"] and "condition" not in out:
         out["condition"] = c["condition"]
@@ -916,14 +1068,69 @@ def _polarity_flip(a: str, b: str) -> bool:
     return len(pa) >= 3 and pa == pb and (pa == ca) != (pb == cb)
 
 
-def same_topic_change(new_text: str, old_text: str) -> dict | None:
+# ── f0.8 ②：「同一件事」先看话题重合 ─────────────────────────────────────
+# 影子周 8/8 误配：两条只共享「是/不是」「既然」「放行/未放行」这类判断词就被当成同一件事改口。
+# 现在先剥掉判断词与虚词，再比实词：至少 2 个共享词元且重合度够，或向量余弦够高，才算同一件事。
+_TOPIC_FILLER_RE = re.compile(
+    "是不是|不是|未放行|放行|既然|就是|还是|可是|但是|而是|不过|所以|因为|如果|然后|而且|是|"
+    "没有|没|不|别|也|就|都|还|又|再|了|的|吗|呢|吧|啊|呀|哦|嘛|啦|"
+    "我们|你们|他们|咱们|大家|我|你|您|他|她|它|这个|那个|这些|那些|这样|那样|这里|那里|这|那|"
+    "可能|应该|现在|已经|用户|一下|一个|什么|怎么|为什么|可以")
+_LATIN_STOP = frozenset(
+    "the a an is are was were be been not no yes and or but so to of in on at for with it this that these "
+    "those we you i he she they my your our its as by do does did can will just very if then than".split())
+
+
+def topic_grams(text: str) -> frozenset:
+    """Content-word grams: CJK bigrams and Latin words, judgement/filler words removed."""
+    t = _TOPIC_FILLER_RE.sub(" ", (text or "").lower())
+    grams: set[str] = set()
+    for run in re.findall(r"[\u3400-\u9fff\uf900-\ufaff]+", t):
+        if len(run) == 1:
+            continue
+        grams.update(run[i:i + 2] for i in range(len(run) - 1))
+    for w in re.findall(r"[a-z][a-z0-9_.\-]*[a-z0-9]|[a-z]{2,}", t):
+        if w not in _LATIN_STOP:
+            grams.add(w)
+    return frozenset(grams)
+
+
+def topic_overlap_min() -> float:
+    from ducky.env_config import float_env
+    return float_env("AIDUMEI_WP_TOPIC_MIN_OVERLAP", 0.3, minimum=0.0, maximum=1.0)
+
+
+def topic_min_cosine() -> float:
+    from ducky.env_config import float_env
+    return float_env("AIDUMEI_WP_TOPIC_MIN_COSINE", 0.8, minimum=0.0, maximum=1.0)
+
+
+def topical_overlap(new_text: str, old_text: str, *, vec_sim: float | None = None,
+                    common: frozenset | set = frozenset()) -> bool:
+    """Are two memories about the same thing at all?  ``common`` = grams that appear in most
+    neighbouring memories (a name the user keeps addressing) and so say nothing about the topic."""
+    if vec_sim is not None and vec_sim >= topic_min_cosine():
+        return True
+    ga, gb = topic_grams(new_text) - common, topic_grams(old_text) - common
+    if not ga or not gb:
+        return False
+    shared = ga & gb
+    return len(shared) >= 2 and len(shared) / min(len(ga), len(gb)) >= topic_overlap_min()
+
+
+def same_topic_change(new_text: str, old_text: str, *, vec_sim: float | None = None,
+                      common: frozenset | set = frozenset()) -> dict | None:
     """Does ``new_text`` restate a topic of ``old_text`` with another value?"""
     nk, ok = topic_keys(new_text), topic_keys(old_text)
     for k, v in nk.items():
         if k in ok and ok[k] != v and v not in ok[k] and ok[k] not in v:
-            return {"kind": "value_change", "key": k}
+            # 住处/工作地点：锚点（住在/搬到/在…上班）本身就是话题，值换了词面自然对不上
+            if k in _PLACE_ANCHORS or topical_overlap(new_text, old_text, vec_sim=vec_sim, common=common):
+                return {"kind": "value_change", "key": k}
     if _polarity_flip(new_text, old_text):
         return {"kind": "negation", "key": _NEG_RE.sub("", _core_clause(new_text), count=1)[:24]}
+    if not topical_overlap(new_text, old_text, vec_sim=vec_sim, common=common):
+        return None
     try:
         from ducky.salience.conflict import judge_pair
         j = judge_pair(new_text, old_text)
@@ -949,21 +1156,25 @@ def resolve_conflict(new_source: str, old_source: str, new_at: str = "", old_at:
 def supersede_candidates(new_text: str, new_md: dict, rows: Iterable[dict]) -> list[dict]:
     """rows: older memories of the same scope {id, content, metadata, created_at}."""
     out: list[dict] = []
-    new_src = new_md.get("source_type") or source_of(new_md)[0]
+    new_src = source_of(new_md)[0]
     rows = list(rows)
     # A "key" found in most neighbouring memories is a subject (a name the
     # user keeps addressing), not a property whose value can change.
     common = {k for k in topic_keys(new_text)
               if sum(1 for r in rows if k in (r.get("content") or "").lower()) > max(3, len(rows) // 3)}
+    # f0.8 ②：同理，几乎每条邻居都有的词元（常被称呼的名字）不算话题重合
+    row_grams = [topic_grams(r.get("content") or "") for r in rows]
+    common_grams = frozenset(g for g in topic_grams(new_text)
+                             if sum(1 for rg in row_grams if g in rg) > max(3, len(rows) // 3))
     for r in rows:
         old = r.get("content") or ""
         if not old or old == new_text or is_noise(old):
             continue
-        hit = same_topic_change(new_text, old)
+        hit = same_topic_change(new_text, old, vec_sim=r.get("_vec_sim"), common=common_grams)
         if not hit or (hit["kind"] == "value_change" and hit["key"] in common):
             continue
         omd = r.get("metadata") or {}
-        old_src = omd.get("source_type") or source_of(omd)[0]
+        old_src = source_of(omd)[0]
         decision = resolve_conflict(new_src, old_src, new_md.get("_created_at", ""), r.get("created_at") or "")
         out.append({"old_id": r.get("id"), "decision": decision, **hit,
                     "new_source": new_src, "old_source": old_src})
@@ -1055,7 +1266,7 @@ def _scope_sql(user_id: str, bank_id: str, alias: str = "") -> tuple[str, list]:
 
 def log_verdict(*, user_id: str, bank_id: str, memory_id: str | None, text: str, verdict: dict,
                 md: dict | None = None, hard_block: str | None = None, blacklist_rule: int | None = None,
-                supersede: list | None = None) -> None:
+                supersede: list | None = None, mode: str = "shadow") -> None:
     md = md or {}
     uid, bid = _scope(user_id, bank_id)
     conn = connect()
@@ -1072,7 +1283,8 @@ def log_verdict(*, user_id: str, bank_id: str, memory_id: str | None, text: str,
              json.dumps(verdict.get("reasons") or [], ensure_ascii=False),
              json.dumps(verdict.get("condition") or {}, ensure_ascii=False),
              json.dumps(list(md.get("redacted") or []), ensure_ascii=False),
-             hard_block, blacklist_rule, json.dumps(supersede or [], ensure_ascii=False), "shadow"))
+             hard_block, blacklist_rule, json.dumps(supersede or [], ensure_ascii=False),
+             mode if mode in ("shadow", "enforce") else "shadow"))
         conn.commit()
     finally:
         conn.close()
@@ -1177,6 +1389,109 @@ def purge_scope(user_id: str, bank_id: str) -> int:
         conn.close()
 
 
+# ── f0.8 ② enforced gate (called by /add before anything is stored) ───────
+def gate_decision(text: str, role: str = "user", md: dict | None = None, *,
+                  user_id: str = "default", bank_id: str = "default") -> dict | None:
+    """What an ENFORCED principle does with one stored text, or None (= store as before).
+
+    P8 forget rule → drop (the text is kept nowhere); session-summary thinking text and
+    P1 machine noise → tombstone (restorable for ``gate_ttl_days``).  Shadow-mode
+    principles return None here; their verdict is still logged by observe_written."""
+    if policy_mode() == "off" or not isinstance(text, str) or not text.strip():
+        return None
+    md = md or {}
+    if principle_mode("P8") == "enforce" and os.path.exists(db_path()):
+        rule = blacklist_hit(text, user_id, bank_id)
+        if rule is not None:
+            return {"action": "drop", "principle": "P8", "reason": "forget_rule", "rule": rule}
+    from ducky.origin_context import is_session_summary
+    # a fallback summary quotes the user's own turns: only model-written summaries are checked
+    if (is_session_summary(md) and md.get("distill_mode") != "fallback"
+            and principle_mode("THINKING") == "enforce"):
+        why = looks_like_reasoning(text)
+        if why:
+            return {"action": "tombstone", "principle": "THINKING", "reason": why}
+    if principle_mode("P1") == "enforce":
+        noise = is_noise(text)
+        if noise in ENFORCED_NOISE:
+            return {"action": "tombstone", "principle": "P1", "reason": noise}
+    return None
+
+
+def _apply_gate(text: str, role: str, md: dict, decision: dict, user_id: str, bank_id: str) -> dict:
+    """Carry out one gate decision; returns the receipt.  Raises on storage failure."""
+    receipt = {k: decision[k] for k in ("action", "principle", "reason")}
+    verdict = {"verdict": "reject", "worth": 0.0, "layer": "daily", "role": role or "user",
+               "reasons": [f"enforced:{decision['principle']}:{decision['reason']}"]}
+    if decision["action"] == "drop":
+        # P8: forgotten means forgotten — no tombstone, no hash, only the rule id.
+        receipt["rule"] = decision.get("rule")
+        log_verdict(user_id=user_id, bank_id=bank_id, memory_id=None, text="", verdict=verdict,
+                    md=md, blacklist_rule=decision.get("rule"), mode="enforce")
+        return receipt
+    from ducky.tombstone import tombstone_gated_write
+    tid, target = tombstone_gated_write(
+        text, user_id=user_id, bank_id=bank_id, role=role, metadata=md, ttl_days=gate_ttl_days(),
+        reason=f"write_policy:{decision['principle']}:{decision['reason']}")
+    receipt.update(tombstone_id=tid, memory_id=target, restorable_days=gate_ttl_days())
+    log_verdict(user_id=user_id, bank_id=bank_id, memory_id=target, text=text, verdict=verdict,
+                md=md, mode="enforce")
+    return receipt
+
+
+def enforce_messages(messages, md: dict | None, *, user_id: str, bank_id: str) -> tuple[Any, list[dict]]:
+    """f0.8 ②: split an /add payload into what is stored and what an enforced principle took.
+
+    Returns (messages_to_store, receipts).  ``messages_to_store`` keeps the input shape;
+    it is "" / [] / None when nothing is left.  Fail-open per item: if a decision or the
+    tombstone write fails, that item is stored exactly as before."""
+    md = md or {}
+
+    def _one(role: str, text: str) -> dict | None:
+        try:
+            d = gate_decision(text, role, md, user_id=user_id, bank_id=bank_id)
+            return _apply_gate(text, role, md, d, user_id, bank_id) if d else None
+        except (sqlite3.Error, OSError, ValueError, TypeError, KeyError, AttributeError,
+                ImportError, RuntimeError) as exc:     # fail-open: store it as before
+            logger.warning("write_policy gate failed (stored as before): %s", type(exc).__name__)
+            return None
+
+    receipts: list[dict] = []
+    if isinstance(messages, str):
+        r = _one("user", messages) if messages.strip() else None
+        return ("", [r]) if r else (messages, [])
+    if isinstance(messages, dict):
+        kept, receipts = enforce_messages([messages], md, user_id=user_id, bank_id=bank_id)
+        return (kept[0] if kept else None), receipts
+    if not isinstance(messages, list):
+        return messages, []
+    kept: list = []
+    for m in messages:
+        if isinstance(m, dict) and isinstance(m.get("content"), str) and m.get("role") != "system":
+            r = _one(str(m.get("role") or "user"), m["content"])
+        elif isinstance(m, str):
+            r = _one("user", m)
+        else:
+            r = None
+        if r:
+            receipts.append(r)
+        else:
+            kept.append(m)
+    if receipts and not any(not (isinstance(m, dict) and m.get("role") == "system") for m in kept):
+        kept = []           # only system prompts left: nothing to store
+    return kept, receipts
+
+
+def nothing_left(messages) -> bool:
+    if messages is None:
+        return True
+    if isinstance(messages, str):
+        return not messages.strip()
+    if isinstance(messages, (list, dict)):
+        return not messages
+    return False
+
+
 # ── write observer (called by the native kernel after a committed add) ─────
 def observe_written(kernel: Any, written: list[tuple[str, str, str, dict]], user_id: str, bank_id: str) -> None:
     """written: [(memory_id, role, text, metadata)].  Shadow only; never raises."""
@@ -1185,8 +1500,7 @@ def observe_written(kernel: Any, written: list[tuple[str, str, str, dict]], user
     for mem_id, role, text, md in written:
         try:
             v = classify(text, role, md)
-            v["source_type"] = md.get("source_type") or v["source_type"]
-            v["basis"] = md.get("basis") or v["basis"]
+            # f0.8：classify 已按 source_of 服务端裁定（md 里只有 inferred 会被采信）
             v["layer"] = md.get("layer") or v["layer"]
             rule = blacklist_hit(text, user_id, bank_id)
             if rule is not None:
@@ -1220,8 +1534,9 @@ def _older_rows(kernel: Any, mem_id: str, text: str, user_id: str, bank_id: str,
             mids += [r[0] for r in kernel.conn.execute(
                 "SELECT m.mid FROM memories m WHERE " + where + " AND m.content LIKE ? ORDER BY m.mid DESC LIMIT 6",
                 (*args, f"%{a}%")) if r[0] not in mids]
-        rows = [kernel.conn.execute("SELECT id, content, metadata, created_at FROM memories WHERE mid=?",
+        rows = [kernel.conn.execute("SELECT id, content, metadata, created_at, mid FROM memories WHERE mid=?",
                                     (m,)).fetchone() for m in dict.fromkeys(mids)]
+        sims = _vector_sims(kernel, mem_id, [r["mid"] for r in rows if r is not None], user_id, bank_id)
     rows = [r for r in rows if r is not None]
     out = []
     for r in rows:
@@ -1230,8 +1545,32 @@ def _older_rows(kernel: Any, mem_id: str, text: str, user_id: str, bank_id: str,
         except ValueError:
             md = {}
         out.append({"id": r["id"], "content": r["content"], "metadata": md if isinstance(md, dict) else {},
-                    "created_at": r["created_at"]})
+                    "created_at": r["created_at"], "_vec_sim": sims.get(r["mid"])})
     return out
+
+
+def _vector_sims(kernel: Any, mem_id: str, mids: list, user_id: str, bank_id: str) -> dict:
+    """Cosine of the new memory's stored vector against each candidate's (caller holds the lock).
+    Missing vectors (FTS-only write, local gear) simply give no similarity."""
+    if not mids or not hasattr(kernel, "conn"):
+        return {}
+    try:
+        pred, params = _scope_sql(user_id, bank_id, alias="m")
+        q = kernel.conn.execute(
+            "SELECT v.embedding FROM memory_vectors v JOIN memories m ON m.mid=v.mid"
+            " WHERE m.id=?" + pred, [mem_id, *params]).fetchone()
+        if q is None:
+            return {}
+        from ducky.memory_kernel.impl_native import _cosines
+        qv = struct.unpack(f"<{len(q[0]) // 4}f", q[0])
+        got = [(m, b) for m in mids for (b,) in kernel.conn.execute(
+            "SELECT embedding FROM memory_vectors WHERE mid=?", (m,)) if len(b) == len(q[0])]
+        if not got:
+            return {}
+        return {m: c for (m, _b), c in zip(got, _cosines([b for _m, b in got], qv)) if c is not None}
+    except (sqlite3.Error, ImportError, ValueError, TypeError, struct.error) as exc:
+        logger.debug("write_policy vector similarity skipped: %s", type(exc).__name__)
+        return {}
 
 
 # ── queries for the misjudgment report ─────────────────────────────────────
@@ -1308,7 +1647,7 @@ def annotate_results(results: list) -> None:
             inferred = legacy_inferred(md)
         except (ImportError, AttributeError, TypeError, ValueError):
             inferred = False
-        it["source_type"] = "inferred" if inferred else (md.get("source_type") or "direct")
+        it["source_type"] = "inferred" if inferred else "direct"
         it["inferred"] = inferred
         if inferred:
             it["basis"] = md.get("basis") or source_of(md)[1]

@@ -435,6 +435,9 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     telem["model"] = cfg.get("model", "")
     t0 = time.time()
     try:
+        if needs_base_url:
+            from ducky.security.egress import guard_url
+            guard_url(base_url, "rerank")  # f0.8：外呼前复检目的地址
         out = handler(cfg, query, documents, top_n)
         telem["latency_ms"] = round((time.time() - t0) * 1000, 1)
         telem["status"] = "ok" if out else "empty"
@@ -870,6 +873,18 @@ def get_memory():
     return _kernel_get_memory()
 
 
+def _warn_stored_endpoints(cfg: dict) -> None:
+    """f0.8（外审 muse M-08）：手改文件/备份还原进来的端点从不经 PUT 校验。mem0 SDK 内部的
+    openai 客户端不经 guard_url，这里在初始化时对存量配置做一次同口径校验并大声告警（不拒启动：
+    改错了让服务起不来比告警更伤；运行时自家外呼点各自复检）。"""
+    try:
+        from ducky.security.egress import audit_config_endpoints
+        for line in audit_config_endpoints(cfg):
+            logger.warning("⚠️ 出站端点校验未通过（存量配置）：%s", line)
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        logger.debug("stored endpoint audit skipped: %s", exc)
+
+
 def _get_mem0_memory():
     """延迟初始化 mem0 单例，绑定到 sys 命名空间防止跨模块双重导入。"""
     global m
@@ -887,6 +902,7 @@ def _get_mem0_memory():
             if _load_mem0_sdk() is None:
                 raise RuntimeError("mem0 SDK 未安装：mem0 内核需要 pip install '.[mem0]'（默认 native 内核不需要）")
             _assert_vector_store_inside_sandbox(cfg)
+            _warn_stored_endpoints(cfg)
             # 启动时清理 Qdrant 锁（与生产环境对齐：先读配置再清理）
             _clear_qdrant_lock()
             m = Memory.from_config(cfg)

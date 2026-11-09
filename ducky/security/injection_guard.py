@@ -336,6 +336,18 @@ _BOUNDARY_MARKERS = (
 _ZWNJ = "\u200c"
 
 
+# f0.8（外审 muse M-12 / M-13）：精确字面中和只认 `</memory>`，`</MEMORY>`、`</memory >`、
+# `< /memory>`、`[end of data context` 原样穿过——与 CC/Codex 钩子的大小写不敏感实现不一致。
+# 补一层大小写不敏感、容忍标签内空白的正则；_BOUNDARY_MARKERS 词表本身不动（插件侧逐字同步守卫）。
+_BOUNDARY_RES = tuple(re.compile(p, re.I) for p in (
+    r"<\s*/?\s*memory\b",
+    r"<\s*/?\s*candidate_data\b",
+    r"<<<\s*record_(?:start|end)",
+    r"\[\s*end of data context",
+    r"\[\s*data\s*:",
+))
+
+
 def neutralize_boundary_markers(text: str) -> str:
     """中和正文里一切能伪装成边界的记号。
 
@@ -349,13 +361,20 @@ def neutralize_boundary_markers(text: str) -> str:
     for m in _BOUNDARY_MARKERS:
         if m in out:
             out = out.replace(m, m[0] + _ZWNJ + m[1:])
+    for rx in _BOUNDARY_RES:
+        out = rx.sub(lambda mm: mm.group(0)[0] + _ZWNJ + mm.group(0)[1:], out)
     return out
+
+
+def boundary_nonce() -> str:
+    """一次性边界口令（f0.8：48 bit → 128 bit，外审 muse M-13）。每次包装/每次请求各取一个。"""
+    import secrets
+    return secrets.token_hex(16)
 
 
 def _record_nonce() -> str:
     """本次包装的一次性闭合口令。攻击者不知道它，就伪造不出闭合标记。"""
-    import secrets
-    return secrets.token_hex(6)
+    return boundary_nonce()
 
 
 def wrap_memory_context_sandbox(

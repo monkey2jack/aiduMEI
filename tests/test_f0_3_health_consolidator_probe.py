@@ -90,7 +90,7 @@ def test_bad_consolidator_state_does_not_change_the_public_verdict(data_dir):
            deletion={"deleted": 0, "already_gone": 0, "partial": 0, "failed": 5})
     health_mod._PUBLIC_CACHE.update({"full": None, "ts": 0.0})
     public_after = _client().get("/health").json()
-    for key in ("status", "health_status", "degraded", "warming_up"):
+    for key in ("status", "health_status"):   # f0.8：公开视图不再带 degraded / warming_up
         assert public_after[key] == public_before[key], key
     # ... while the authorized view does warn (the probe is not dead)
     assert len(_consolidator_warnings(_client().get("/health", headers=_AUTH).json())) >= 3

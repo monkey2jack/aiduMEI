@@ -128,16 +128,20 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool, host: str | None = None
 
     现在：非回环绑定时，外层 ASGI 中间件对每个 HTTP 请求校验
     `Authorization: Bearer <AIDUMEM_API_TOKEN>`（与 API 门禁同一把钥匙，
-    constant-time 比较）；缺失/错误 → 401，不进 MCP 会话。回环绑定保持
-    免认证（与 api_server 的回环信任模型同一口径）。显式
+    constant-time 比较）；缺失/错误 → 401，不进 MCP 会话。f0.8 起回环绑定
+    同样逐请求认证（见下方注释）；websocket 作用域同样要凭据，只有 lifespan 直通。显式
     AIDUMEM_ALLOW_INSECURE_PUBLIC=1 且 AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH 逐字
     等于监听地址时，按部署方声明放行（f0.3：与 REST 公网门禁同一确认口径）。
     """
     from ducky.security.auth import safe_equal as _safe_equal
 
+    # f0.8（外审 P1「MCP SSE 回环认证」）：回环绑定不再免认证。SSE 工具由服务端带主 token 打 API，
+    # 本机任何进程（以及经 DNS rebinding 摸到 127.0.0.1 的浏览器页面）连上 SSE 就继承主 token 的
+    # 全部权限——这比 REST 的回环信任宽得多。现在无论绑定哪里，每个 HTTP 请求（/sse 与
+    # /messages/ 都算）都要 Authorization: Bearer <AIDUMEM_API_TOKEN>。`loopback` 参数保留只为
+    # 兼容旧调用签名，不再影响认证。
+    del loopback
     inner = mcp_obj.sse_app(mount_path="/sse")
-    if loopback:
-        return inner
 
     def _expected_token() -> str:
         auth = api_auth_headers().get("Authorization", "")
@@ -146,7 +150,8 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool, host: str | None = None
     insecure_ok = _insecure_public_confirmed(host)
 
     async def _auth_wrapped(scope, receive, send):
-        if scope.get("type") != "http" or insecure_ok:
+        kind = scope.get("type")
+        if kind not in ("http", "websocket") or insecure_ok:   # lifespan 等非请求作用域直通
             await inner(scope, receive, send)
             return
         expected = _expected_token()
@@ -156,6 +161,9 @@ def _build_sse_app_with_auth(mcp_obj, *, loopback: bool, host: str | None = None
                 presented = v.decode("latin-1").removeprefix("Bearer ").strip()
                 break
         if not expected or not presented or not _safe_equal(presented, expected):
+            if kind == "websocket":   # f0.8.0 自审：此前非 http 作用域一律直通
+                await send({"type": "websocket.close", "code": 1008})
+                return
             body = (b'{"detail":"MCP SSE requires Authorization: Bearer <AIDUMEM_API_TOKEN>"}')
             await send({"type": "http.response.start", "status": 401,
                         "headers": [(b"content-type", b"application/json"),
@@ -627,14 +635,15 @@ if __name__ == "__main__":
     if args.sse:
         logger.info(f"🌐 SSE 模式，监听 {args.host}:{args.port}")
         loopback = args.host in {"127.0.0.1", "localhost", "::1"}
-        if not loopback and not _sse_authorization_allowed(args.host):
+        # f0.8：回环也必须有凭据（SSE 传输层逐请求认证，见 _build_sse_app_with_auth）
+        if not _sse_authorization_allowed(args.host):
             raise RuntimeError(
-                "MCP SSE refuses to bind a non-loopback host without AIDUMEM_API_TOKEN "
+                "MCP SSE refuses to start without AIDUMEM_API_TOKEN, loopback included "
                 "(or explicit AIDUMEM_ALLOW_INSECURE_PUBLIC=1 plus "
-                f"AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH='{args.host}')."
+                f"AIDUMEI_I_CONFIRM_PUBLIC_NO_AUTH='{args.host}'). stdio mode needs no token."
             )
         import uvicorn
-        # v20.4.0（P1-7）：非回环绑定时逐请求认证包住 sse_app
+        # v20.4.0（P1-7）→ f0.8：任何绑定都逐请求认证包住 sse_app
         app = _build_sse_app_with_auth(mcp, loopback=loopback, host=args.host)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     else:

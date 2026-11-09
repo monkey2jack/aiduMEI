@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -285,6 +286,9 @@ def _resolve_key(api_key: str, purpose: str) -> str:
     return api_key if api_key not in placeholders else ""
 
 
+_THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)>.*?(?:</\1>|\Z)")
+
+
 def _extract_content(data: dict) -> Optional[str]:
     """从一个 chat/completions 响应对象里提取 assistant 文本。
 
@@ -297,7 +301,12 @@ def _extract_content(data: dict) -> Optional[str]:
     message = choice.get("message") or choice.get("delta") or {}
     content = message.get("content") if isinstance(message, dict) else None
     if content:
-        return str(content).strip()
+        text = str(content)
+        # f0.8 ②：推理模型把思考写进正文（<think>…</think>）时只取答案；reasoning /
+        # reasoning_content 字段本来就不读——思考过程从不当成答案返回。
+        if "<think" in text or "<reasoning" in text:
+            text = _THINK_RE.sub("", text)
+        return text.strip() or None
     return None
 
 
@@ -358,6 +367,8 @@ def _post_completion(endpoint: str, api_key: str, model: str, messages: list,
     推理截断 = HTTP 200 但 content 为空、finish_reason=length 且响应带
     reasoning_content——推理模型把全部预算耗在思考上，没来得及输出正文。
     """
+    from ducky.security.egress import guard_url
+    guard_url(endpoint, "llm")  # f0.8：外呼前一刻复检目的地址（含 DNS 解析）
     r = requests.post(
         endpoint,
         # f0.6 W-12（muse S-1 链条环节）：禁重定向——端点被改后 3xx 跳转
