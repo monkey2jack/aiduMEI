@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aidumei-banner.webp" alt="aiduMEI · 爱嘟优忆思 — Memory + Engine + Insight" width="100%">
+  <img src="https://raw.githubusercontent.com/monkey2jack/monkey2jack/main/assets/aidu-human-connection-20261113.png" alt="aidu 人机连接" width="100%">
 </p>
 
 <!-- distribution-policy: github-source-only -->
