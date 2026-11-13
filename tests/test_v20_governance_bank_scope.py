@@ -35,9 +35,6 @@ _TEST_DB = os.path.join(_tmp_dir, "facts.db")
 
 import ducky.utils as utils  # noqa: E402
 
-utils.FACTS_DB = _TEST_DB
-utils.TEXT_FTS_DB = os.path.join(_tmp_dir, "text_fts.db")
-
 LOCAL_AGENT = utils.DEFAULT_AGENT_ID
 
 # 生产 facts 表最小必要结构（含 archived_at，reject 归档要用；
@@ -88,24 +85,28 @@ CREATE TABLE candidate_facts (
 
 @pytest.fixture(scope="module", autouse=True)
 def _bootstrap_db():
-    utils.FACTS_DB = _TEST_DB
-    conn = sqlite3.connect(_TEST_DB)
-    conn.executescript(_FACTS_DDL)
-    conn.commit()
-    conn.close()
+    # Bind only while this module runs. Binding at collection time let an
+    # earlier HTTP restore test bootstrap its schema in our not-yet-owned DB.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(utils, "FACTS_DB", _TEST_DB)
+        patch.setattr(utils, "TEXT_FTS_DB", os.path.join(_tmp_dir, "text_fts.db"))
+        conn = sqlite3.connect(_TEST_DB)
+        conn.executescript(_FACTS_DDL)
+        conn.commit()
+        conn.close()
 
-    from ducky.event_ledger import ensure_ledger_schema
-    from ducky.federation.schema import ensure_federation_schema
+        from ducky.event_ledger import ensure_ledger_schema
+        from ducky.federation.schema import ensure_federation_schema
 
-    ensure_ledger_schema()
-    ensure_federation_schema(force=True)
-    yield
+        ensure_ledger_schema()
+        ensure_federation_schema(force=True)
+        yield
 
 
 @pytest.fixture(autouse=True)
-def _bind_test_db():
-    utils.FACTS_DB = _TEST_DB
-    yield
+def _bind_test_db(monkeypatch):
+    monkeypatch.setattr(utils, "FACTS_DB", _TEST_DB)
+    monkeypatch.setattr(utils, "TEXT_FTS_DB", os.path.join(_tmp_dir, "text_fts.db"))
 
 
 def _rows(sql: str, params=()):

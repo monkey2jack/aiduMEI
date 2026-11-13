@@ -292,6 +292,10 @@ def get_dream_report() -> dict:
 
 def autodream_background_loop():
     """后台线程：智能调度 7 天周期蒸馏"""
+    from ducky.consolidate import replaces_legacy_loops
+    if replaces_legacy_loops():   # f0.8+：夜间归并（mode=on）取代每周 autodream
+        logger.info("🌙 AutoDream 由夜间归并接管（AIDUMEI_CONSOLIDATE_MODE=on）")
+        return
     logger.info("🌙 AutoDream 后台线程启动（检查间隔 10 分钟）")
 
     while True:

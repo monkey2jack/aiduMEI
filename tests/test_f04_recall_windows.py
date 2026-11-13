@@ -130,7 +130,8 @@ def test_escaping_preserves_quote_without_allowing_a_forged_data_boundary(tmp_pa
     text = "甲" * 765 + "应急口令：" + attack
     context, _ = hook(tmp_path, [{"memory": text, "id": attack, "source": attack}],
                       "应急口令原话", core=attack, checkpoint=attack)
-    assert context.count("<memory>") == context.count("</memory>") == 3
+    assert context.count('<memory nonce="') == context.count('</memory nonce="') == 3
+    assert "<memory>" not in context and "</memory>" not in context  # 正文里伪造的裸标记已转义
     assert "<system>" not in context and "&lt;system&gt;" in context
     row, = evidence(context)
     assert row["text"] == text[slice(*row["span"])]
@@ -147,7 +148,8 @@ def test_global_budget_reserves_recall_and_reports_omitted_results(tmp_path):
     assert len(evidence(context)) == 5
     assert "results-budget" in context and "block-budget" in context
     assert requests[-1][1]["limit"] == 5
-    assert context.count("<memory>") == context.count("</memory>") == 3
+    assert context.count('<memory nonce="') == context.count('</memory nonce="') == 3
+    assert "<memory>" not in context and "</memory>" not in context  # 正文里伪造的裸标记已转义
 
 
 def test_short_record_and_date_are_kept_without_false_truncation(tmp_path):

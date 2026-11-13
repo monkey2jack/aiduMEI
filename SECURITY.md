@@ -74,12 +74,25 @@ documented mitigation decision within 14 days, severity permitting.
   are redacted by principle 7. Metadata values are redacted with their key as
   context; values that do not look secret (`cookie: chocolate chip`) are kept.
 
-Known limits: DNS resolution failures are not blocked (the call fails anyway);
-there is no pinned resolution between check and connect, so DNS rebinding is
-narrowed to the re-check right before each call, not closed; the openai client
-inside the optional mem0 SDK does not pass through the egress check (the stored
-configuration is checked once at start-up with a warning). The read rate limit
-is per process and per fixed minute window.
+- **Pinned resolution (f0.8+).** The re-check right before each outbound call
+  pins the addresses it validated to the calling thread for 30 seconds; the
+  HTTP client's own lookup of that host returns only those addresses, so a DNS
+  answer that changes between check and connect (rebinding) cannot redirect the
+  call. A host that did not resolve at check time is pinned to nothing (the call
+  fails). TLS still verifies the original host name. The openai clients inside
+  the optional mem0 SDK get the same check through an httpx request hook.
+- **Console-session writes and API docs (f0.8+).** Writes authenticated by the
+  console cookie must come from the console's own origin (`Sec-Fetch-Site`
+  same-origin/none, or an `Origin` equal to the Host); `/docs` and
+  `/openapi.json` are served to the console session and the main token only,
+  not to per-agent keys.
+
+Known limits: DNS resolution failures are not blocked at check time (the call
+then fails on the empty pin); pinning covers synchronous clients that check and
+connect in the same thread (all built-in outbound calls are); if the mem0 SDK
+hook cannot be attached (SDK internals changed) a warning is logged and only the
+start-up configuration check applies. The read rate limit is per process and
+per fixed minute window.
 
 ## 中文摘要
 
@@ -92,4 +105,6 @@ f0.8（未发布）收紧：出站地址 DNS 解析后逐地址校验（SSRF）�
 控制台与主 token；MCP SSE 回环也要 token；控制台改密后环境变量口令失效；注入围栏开闭
 标记带 128 位 nonce；出处由服务端裁定（调用方只能降格为 inferred）；列表 limit 钳制与
 读路径按钥匙限流（`AIDUMEI_RATE_READ_PER_MIN`，0 = 关）；钥匙身份围栏覆盖自编辑与
-instinct；`/forget` 留墓碑可恢复，元数据按键名语境打码。详见上文英文段。
+instinct；`/forget` 留墓碑可恢复，元数据按键名语境打码。f0.8+：外呼复检钉住首次解析（防 DNS
+重绑定），mem0 SDK 外呼也过同一道校验；控制台会话的写请求必须同源；`/docs` 只给控制台与主 token。
+详见上文英文段。

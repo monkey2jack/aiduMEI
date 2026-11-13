@@ -41,6 +41,7 @@ def test_add_search_update_delete_roundtrip(mem):
     assert not any("8777" in t for t in _texts(mem.search("8777 端口", filters={"user_id": "u"})))
     c = mem.conn
     assert c.execute("SELECT COUNT(*) FROM tombstones WHERE target_id=?", (a,)).fetchone()[0] == 1
+    assert c.execute("SELECT reason FROM tombstones WHERE target_id=?", (a,)).fetchone()[0] == "memory_delete"
     assert c.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0] == 1          # CASCADE 跟删
     assert c.execute("SELECT COUNT(*) FROM graph_edges WHERE src_id=? OR dst_id=?", (a, a)).fetchone()[0] == 0
     # f0.7 P0-3:删除即擦除——只剩一行不含正文的 DELETE 标记,原文只在(受 TTL 约束的)墓碑里

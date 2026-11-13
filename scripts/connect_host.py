@@ -22,6 +22,12 @@
     python scripts/connect_host.py --uninstall     # 摘掉本脚本写的钩子
     python scripts/connect_host.py --check         # 不改配置，只验收现状
     python scripts/connect_host.py --host claude-code --project-dir /path/to/proj  # 写项目级 .claude/settings.json
+    python scripts/connect_host.py --user-id alice --allow-dir /work/alice     # 身份写死 + 写入白名单
+
+f0.8+（外审 R3-01 / P0-1）：钩子命令里**显式写上** ``AIDUMEM_USER_ID``（--user-id；缺省取环境变量或
+--env-file 里的 AIDUMEM_USER_ID / AIDUMEM_DEFAULT_USER_ID），钩子不再靠项目目录的 .env 决定身份；
+--allow-dir（可多次）写 ``AIDUMEI_CC_ALLOW_DIRS``：会话目录不在其下时 Claude Code 钩子不写入。
+--check 会提示：身份没写死的老钩子、白名单没设、.env 里误留了测试开关。
 
 Claude Code 配置位置（f0.8.0）：设了 ``CLAUDE_CONFIG_DIR`` 就用
 ``$CLAUDE_CONFIG_DIR/settings.json``（与 cc_memory_bridge.claude_home 同一规则），否则
@@ -50,7 +56,13 @@ MARK = "aidumem-"  # 本仓钩子脚本统一前缀；摘/换只认它
 # f0.8 ①：Claude Code 多一条 PostToolUse 自带记忆桥（只认 Write|Edit|MultiEdit），
 # 把 CC 写进 ~/.claude/projects/<项目>/memory/ 的文件打码并导入 aiduMEI。
 # 超时 30 秒：桥里查重 + 写入两次请求，每次最多 AIDUMEI_CC_BRIDGE_TIMEOUT（缺省 12）秒（f0.8.0 上线实测生产 /search 4–6 秒）
-CC_BRIDGE = ("PostToolUse", "aidumem-cc-memory-bridge.sh", 30, "Write|Edit|MultiEdit")
+# f0.8+：matcher 去掉 MultiEdit（新版 CC 已无此工具；桥本身仍认 MultiEdit 载荷）。老安装的
+# "Write|Edit|MultiEdit" 在 --check 里照样算挂上，重跑安装会换成新 matcher。
+CC_BRIDGE = ("PostToolUse", "aidumem-cc-memory-bridge.sh", 30, "Write|Edit")
+LEGACY_MATCHERS = {"Write|Edit": ("Write|Edit|MultiEdit",)}
+# P0-1：钩子读的开关（--check 报告它们在 --env-file 里设没设；不打印值）
+HOOK_SWITCHES = ("AIDUMEI_CC_ALLOW_DIRS", "AIDUMEI_CC_MEMORY_ROOTS", "AIDUMEI_HOOKS",
+                 "AIDUMEI_TEST_URL", "AIDUMEI_TEST_TOKEN")
 SHELL_HOSTS = {
     "claude-code": {
         "config": "~/.claude/settings.json",
@@ -110,8 +122,13 @@ def detect_hosts() -> list[str]:
 
 
 # ── 钩子命令与配置合并（纯函数，便于测试）──────────────────────────────────
-def hook_command(host: str, script: str, url: str, env_file: Path) -> str:
+def hook_command(host: str, script: str, url: str, env_file: Path, user_id: str = "",
+                 allow_dirs: str = "") -> str:
     parts = [f"AIDUMEI_INSTALL_DIR={_q(str(REPO))}", f"AIDUMEM_ENV_FILE={_q(str(env_file))}"]
+    if user_id:  # R3-01：身份写死在用户级配置里，不留给项目目录的 .env 决定
+        parts.append(f"AIDUMEM_USER_ID={_q(user_id)}")
+    if allow_dirs and host == "claude-code":  # P0-1：写入白名单
+        parts.append(f"AIDUMEI_CC_ALLOW_DIRS={_q(allow_dirs)}")
     if url and url.rstrip("/") != DEFAULT_URL:
         parts.append(f"AIDUMEI_URL={_q(url.rstrip('/'))}")
     parts.append(f"bash {_q(str(REPO / SHELL_HOSTS[host]['dir'] / script))}")
@@ -132,13 +149,18 @@ def _line(spec: tuple) -> tuple[str, str, int, str]:
     return event, script, timeout, (spec[3] if len(spec) > 3 else "")
 
 
-def merge_hooks(cfg: dict, host: str, url: str, env_file: Path, remove: bool = False) -> tuple[dict, list[str]]:
+def _matcher_ok(have: str, want: str) -> bool:
+    return have == want or have in LEGACY_MATCHERS.get(want, ())
+
+
+def merge_hooks(cfg: dict, host: str, url: str, env_file: Path, remove: bool = False,
+                user_id: str = "", allow_dirs: str = "") -> tuple[dict, list[str]]:
     """返回 (新配置, 改动说明)。只动命令里含本仓脚本名的条目，其余原样。"""
     cfg = json.loads(json.dumps(cfg or {}))
     hooks = cfg.setdefault("hooks", {})
     changes = []
     for event, script, timeout, matcher in map(_line, SHELL_HOSTS[host]["lines"]):
-        want = hook_command(host, script, url, env_file)
+        want = hook_command(host, script, url, env_file, user_id=user_id, allow_dirs=allow_dirs)
         groups = hooks.get(event) or []
         hit = False
         for grp in groups:
@@ -176,7 +198,7 @@ def wired_lines(cfg: dict, host: str) -> dict[str, bool]:
     out = {}
     for event, script, _, matcher in map(_line, SHELL_HOSTS[host]["lines"]):
         cmds = [str(h.get("command", "")) for g in hooks.get(event, [])
-                if (g.get("matcher") or "") == matcher for h in g.get("hooks", [])]
+                if _matcher_ok(g.get("matcher") or "", matcher) for h in g.get("hooks", [])]
         out[event] = any(_ours(c, script) for c in cmds)
     return out
 
@@ -187,12 +209,25 @@ def cc_bridge_status(cfg: dict) -> dict:
     src = REPO / SHELL_HOSTS["claude-code"]["dir"] / script
     wired = wired_lines(cfg, "claude-code").get(event, False)
     ours = [str(h.get("command", "")) for g in ((cfg or {}).get("hooks") or {}).get(event, [])
-             for h in g.get("hooks", []) if _ours(str(h.get("command", "")), script)]
+            if _matcher_ok(g.get("matcher") or "", matcher)
+            for h in g.get("hooks", []) if _ours(str(h.get("command", "")), script)]
     points_here = any(str(src) in c for c in ours)
     return {"event": event, "matcher": matcher, "wired": bool(wired and points_here),
             "script_present": src.is_file(),
             "detail": "已挂上" if wired and points_here else
                       ("已挂但指向别处或 matcher 不对" if ours else "未挂（重跑 connect_host 即可补上）")}
+
+
+def identity_pinned(cfg: dict, host: str) -> dict[str, bool]:
+    """R3-01：本仓每条钩子命令是否显式写了 AIDUMEM_USER_ID（没写 = 身份靠 .env 兜底）。"""
+    hooks = (cfg or {}).get("hooks") or {}
+    out = {}
+    for event, script, _, _m in map(_line, SHELL_HOSTS[host]["lines"]):
+        cmds = [str(h.get("command", "")) for g in hooks.get(event, []) for h in g.get("hooks", [])
+                if _ours(str(h.get("command", "")), script)]
+        if cmds:
+            out[event] = all("AIDUMEM_USER_ID=" in c for c in cmds)
+    return out
 
 
 def _write_config(path: Path, cfg: dict) -> Path | None:
@@ -219,20 +254,55 @@ def _load(path: Path) -> dict:
 
 
 # ── 各宿主接入 ──────────────────────────────────────────────────────────
+def _existing_assign(cfg: dict, host: str, key: str) -> str:
+    """本仓钩子命令里已写的 ``KEY=值``（重跑安装不给参数时沿用，不悄悄换身份、丢白名单）。"""
+    import shlex
+    scripts = [script for _e, script, _t, _m in map(_line, SHELL_HOSTS[host]["lines"])]
+    for groups in ((cfg or {}).get("hooks") or {}).values():
+        for g in groups or []:
+            for h in g.get("hooks", []):
+                cmd = str(h.get("command", ""))
+                if not any(_ours(cmd, sc) for sc in scripts):
+                    continue
+                try:
+                    toks = shlex.split(cmd)
+                except ValueError:
+                    continue
+                # 只认命令开头的 KEY=值 前缀（手改成 case/if 的命令不猜），值也得是安全字符
+                for t in toks:
+                    k, eq, v = t.partition("=")
+                    if not eq or not k.replace("_", "").isalnum() or not k.isupper():
+                        break
+                    if k == key and v and all(_safe_id(x) or x.startswith("/") for x in v.split(":")):
+                        return v
+    return ""
+
+
 def connect_shell_host(host: str, url: str, env_file: Path, dry: bool, remove: bool,
-                       project_dir: str | Path | None = None) -> dict:
+                       project_dir: str | Path | None = None, user_id: str = "",
+                       allow_dirs: str | None = None, default_user_id: str = "") -> dict:
+    """user_id：显式给的身份；没给就沿用已装命令里的，再没有用 default_user_id。
+    allow_dirs：None = 沿用已装命令里的白名单（没有就不写）；字符串 = 用它。"""
     path = host_config_path(host, project_dir)
     try:
         cfg = _load(path)
     except Exception as exc:  # 宿主配置坏了绝不覆盖
         return {"host": host, "ok": False, "config": str(path), "error": f"配置解析失败，未改动: {exc}"}
-    new, changes = merge_hooks(cfg, host, url, env_file, remove=remove)
+    user_id = user_id or _existing_assign(cfg, host, "AIDUMEM_USER_ID") or default_user_id
+    if allow_dirs is None:
+        allow_dirs = _existing_assign(cfg, host, "AIDUMEI_CC_ALLOW_DIRS") if host == "claude-code" else ""
+    new, changes = merge_hooks(cfg, host, url, env_file, remove=remove, user_id=user_id,
+                               allow_dirs=allow_dirs)
     bak = None
     if changes and not dry:
         bak = _write_config(path, new)
     lines = wired_lines(cfg if dry else new, host)
     res = {"host": host, "config": str(path), "changes": changes, "backup": str(bak) if bak else None,
            "lines": lines, "ok": remove or all(lines.values()) or (dry and bool(changes))}
+    res["user_id"], res["allow_dirs"] = user_id, allow_dirs
+    if not remove:
+        pinned = identity_pinned(cfg if dry else new, host)
+        res["identity_pinned"] = bool(pinned) and all(pinned.values())
     if host == "claude-code":
         res["cc_memory_bridge"] = cc_bridge_status(cfg if dry else new)
     if host == "codex" and not remove:
@@ -317,14 +387,42 @@ def check_service(url: str, token: str) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def selftest_shell(host: str, url: str, env_file: Path, wait_s: float = 60) -> dict:
+def _hook_env(env_file: Path, url: str, user_id: str = "", allow_dirs: str = "") -> dict:
+    """验收时调钩子用的环境：与写进宿主配置的命令同一套（身份写死、白名单同值）。"""
+    env = {**os.environ, "AIDUMEI_INSTALL_DIR": str(REPO), "AIDUMEM_ENV_FILE": str(env_file),
+           "AIDUMEM_URL": url.rstrip("/"), "AIDUMEI_URL": url.rstrip("/")}
+    if user_id:
+        env["AIDUMEM_USER_ID"] = user_id
+    if allow_dirs:
+        env["AIDUMEI_CC_ALLOW_DIRS"] = allow_dirs
+    return env
+
+
+def _probe_cwd(allow_dirs: str) -> str:
+    """验收载荷里的会话目录：白名单第一个存在的目录（不在白名单里写线会按设计跳过）。"""
+    for d in (allow_dirs or "").split(":"):
+        if d and Path(d).expanduser().is_dir():
+            return str(Path(d).expanduser())
+    return os.getcwd()
+
+
+def _run_ingest(ingest: Path, payload: dict, env: dict) -> None:
+    """跑写线钩子并等它写完：CC 写线平时读完 stdin 就把活交给后台（f0.8+），验收要的是
+    「写完再查」，所以直接走它的后台入口（AIDUMEI_CC_HOOK_BG=1，载荷经 AIDUMEI_HOOK_INPUT）。"""
+    raw = json.dumps(payload)
+    subprocess.run(["bash", str(ingest)], input=raw, capture_output=True, text=True, timeout=60,
+                   env={**env, "AIDUMEI_CC_HOOK_BG": "1", "AIDUMEI_HOOK_INPUT": raw})
+
+
+def selftest_shell(host: str, url: str, env_file: Path, wait_s: float = 60, user_id: str = "",
+                   allow_dirs: str = "") -> dict:
     """走刚接好的真钩子脚本：写线存暗号 → 新会话读线召回 → 删掉测试记忆。"""
     d = REPO / SHELL_HOSTS[host]["dir"]
     ingest = d / SHELL_HOSTS[host]["lines"][1][1]
     inject = d / SHELL_HOSTS[host]["lines"][0][1]
     nonce = "AIDU-" + secrets.token_hex(3).upper()
-    env = {**os.environ, "AIDUMEI_INSTALL_DIR": str(REPO), "AIDUMEM_ENV_FILE": str(env_file),
-           "AIDUMEI_URL": url.rstrip("/")}
+    env = _hook_env(env_file, url, user_id, allow_dirs)
+    cwd = _probe_cwd(allow_dirs)
     with tempfile.TemporaryDirectory(prefix="aidumei-connect-") as td:
         tp = Path(td) / "transcript.jsonl"
         tp.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in (
@@ -332,14 +430,14 @@ def selftest_shell(host: str, url: str, env_file: Path, wait_s: float = 60) -> d
             {"type": "assistant", "message": {"role": "assistant", "content": f"好的，记住了：你的接入暗号是 {nonce}。"}},
         )) + "\n", encoding="utf-8")
         env_log = {**env, "AIDUMEM_LOG_DIR": td}
-        subprocess.run(["bash", str(ingest)], input=json.dumps({"session_id": f"selftest-w-{nonce}",
-                       "transcript_path": str(tp)}), env=env_log, capture_output=True, text=True, timeout=30)
+        _run_ingest(ingest, {"session_id": f"selftest-w-{nonce}", "transcript_path": str(tp), "cwd": cwd},
+                    env_log)
         deadline, out = time.time() + wait_s, ""
         while time.time() < deadline:
             time.sleep(3)
             p = subprocess.run(["bash", str(inject)], input=json.dumps({"session_id": f"selftest-r-{nonce}",
-                               "prompt": "我的接入暗号是什么？"}), env=env_log, capture_output=True, text=True,
-                               timeout=30)
+                               "prompt": "我的接入暗号是什么？", "cwd": cwd}), env=env_log,
+                               capture_output=True, text=True, timeout=30)
             out = p.stdout
             if nonce in out:
                 break
@@ -347,16 +445,21 @@ def selftest_shell(host: str, url: str, env_file: Path, wait_s: float = 60) -> d
         err = log.read_text(errors="replace")[-300:] if log.exists() else ""
     recalled = nonce in out
     if not recalled and "add_failed" in err:
-        err += "；" + _probe_add_reason(url, env_file)
-    cleaned = _cleanup(url, env_file, nonce)
+        err += "；" + _probe_add_reason(url, env_file, user_id)
+    cleaned = _cleanup(url, env_file, nonce, user_id)
     return {"ok": recalled, "nonce": nonce, "cleaned": cleaned,
             "detail": "写线存入、新会话读线召回成功" if recalled else
                       f"{int(wait_s)} 秒内读线没召回暗号（写线日志: {err.strip() or '无'}）"}
 
 
-def _probe_add_reason(url: str, env_file: Path) -> str:
+def _uid(env_file: Path, user_id: str = "") -> str:
+    return user_id or _env_lookup(env_file, "AIDUMEM_USER_ID") or _env_lookup(env_file, "AIDUMEM_DEFAULT_USER_ID") \
+        or "default"
+
+
+def _probe_add_reason(url: str, env_file: Path, user_id: str = "") -> str:
     """写线失败时，用一次空 messages 的 /add 探服务端拒绝原因（不写入任何内容）。"""
-    uid = _env_lookup(env_file, "AIDUMEM_USER_ID") or "default"
+    uid = _uid(env_file, user_id)
     try:
         _post(url, "/add", {"messages": [], "user_id": uid, "caller_user_id": uid}, _env_lookup(env_file, "AIDUMEM_API_TOKEN"))
         return "服务端未拒绝空写入"
@@ -369,8 +472,8 @@ def _probe_add_reason(url: str, env_file: Path) -> str:
         return type(exc).__name__
 
 
-def _cleanup(url: str, env_file: Path, nonce: str) -> int:
-    uid = _env_lookup(env_file, "AIDUMEM_USER_ID") or _env_lookup(env_file, "AIDUMEM_DEFAULT_USER_ID") or "default"
+def _cleanup(url: str, env_file: Path, nonce: str, user_id: str = "") -> int:
+    uid = _uid(env_file, user_id)
     bid = _env_lookup(env_file, "AIDUMEI_BANK_ID") or "default"
     tok = _env_lookup(env_file, "AIDUMEM_API_TOKEN")
     n = 0
@@ -387,25 +490,25 @@ def _cleanup(url: str, env_file: Path, nonce: str) -> int:
     return n
 
 
-def _ingest_probe(host: str, url: str, env_file: Path, nonce: str) -> None:
+def _ingest_probe(host: str, url: str, env_file: Path, nonce: str, user_id: str = "",
+                  allow_dirs: str = "", *, lookup_id: str = "") -> None:
     """用真写线钩子存一条带暗号的合成对话（与 selftest_shell 同一写法）。"""
     d = REPO / SHELL_HOSTS[host]["dir"]
     ingest = d / SHELL_HOSTS[host]["lines"][1][1]
-    env = {**os.environ, "AIDUMEI_INSTALL_DIR": str(REPO), "AIDUMEM_ENV_FILE": str(env_file),
-           "AIDUMEI_URL": url.rstrip("/")}
+    env = _hook_env(env_file, url, user_id, allow_dirs)
     with tempfile.TemporaryDirectory(prefix="aidumei-claude-test-") as td:
         tp = Path(td) / "transcript.jsonl"
+        prefix = f"验收项目 {lookup_id}。" if lookup_id else ""
         tp.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in (
-            {"type": "user", "message": {"role": "user", "content": f"请记住，我的接入暗号是 {nonce}。"}},
-            {"type": "assistant", "message": {"role": "assistant", "content": f"好的，记住了：你的接入暗号是 {nonce}。"}},
+            {"type": "user", "message": {"role": "user", "content": prefix + f"请记住，我的接入暗号是 {nonce}。"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": prefix + f"好的，记住了：你的接入暗号是 {nonce}。"}},
         )) + "\n", encoding="utf-8")
-        subprocess.run(["bash", str(ingest)], input=json.dumps({"session_id": f"claude-test-w-{nonce}",
-                       "transcript_path": str(tp)}), env={**env, "AIDUMEM_LOG_DIR": td},
-                       capture_output=True, text=True, timeout=30)
+        _run_ingest(ingest, {"session_id": f"claude-test-w-{nonce}", "transcript_path": str(tp),
+                             "cwd": _probe_cwd(allow_dirs)}, {**env, "AIDUMEM_LOG_DIR": td})
 
 
-def _searchable(url: str, env_file: Path, nonce: str, wait_s: float) -> bool:
-    uid = _env_lookup(env_file, "AIDUMEM_USER_ID") or _env_lookup(env_file, "AIDUMEM_DEFAULT_USER_ID") or "default"
+def _searchable(url: str, env_file: Path, nonce: str, wait_s: float, user_id: str = "") -> bool:
+    uid = _uid(env_file, user_id)
     bid = _env_lookup(env_file, "AIDUMEI_BANK_ID") or "default"
     tok = _env_lookup(env_file, "AIDUMEM_API_TOKEN")
     deadline = time.time() + wait_s
@@ -422,7 +525,8 @@ def _searchable(url: str, env_file: Path, nonce: str, wait_s: float) -> bool:
         time.sleep(3)
 
 
-def claude_test(url: str, env_file: Path, timeout: int = 120, wait_s: float = 60) -> dict:
+def claude_test(url: str, env_file: Path, timeout: int = 120, wait_s: float = 60, user_id: str = "",
+                allow_dirs: str = "", model: str = "") -> dict:
     """``claude -p`` 真聊一句，**回答里必须出现刚写进去的暗号**才算过（f0.8.0）。
 
     f0.7 只看退出码 0 + 有输出：Claude 回一句「看不到任何记忆」也判绿。现在先用写线
@@ -433,23 +537,57 @@ def claude_test(url: str, env_file: Path, timeout: int = 120, wait_s: float = 60
     if not exe:
         return {"ok": False, "detail": "没找到 claude 命令"}
     nonce = "AIDU-" + secrets.token_hex(3).upper()
+    lookup_id = "PROBE-" + secrets.token_hex(8)
     try:
-        _ingest_probe("claude-code", url, env_file, nonce)
-        if not _searchable(url, env_file, nonce, wait_s):
+        _ingest_probe("claude-code", url, env_file, nonce, user_id, allow_dirs, lookup_id=lookup_id)
+        if not _searchable(url, env_file, nonce, wait_s, user_id):
             return {"ok": False, "nonce": nonce,
                     "detail": f"{int(wait_s)} 秒内服务端搜不到写入的暗号，未调用 claude -p"}
+        # The probe writer and the actual CLI must use the same endpoint and
+        # identity.  An inherited AIDUMEM_URL takes precedence over its alias
+        # inside the hooks, so _hook_env pins both names.
+        # Put the positional prompt before variadic tool flags, and also deny
+        # MCP tools: --tools alone controls only Claude's built-in tools.
+        # Ask about this probe's independent lookup label, never its answer;
+        # old retained probes must not compete under one generic question.
+        prompt = f"验收项目 {lookup_id} 的接入暗号是什么？只回答暗号本身。"
+        args = [exe, "-p", prompt,
+                "--tools", "", "--disallowedTools", "mcp__*"]
+        if model:
+            args += ["--model", model]
         try:
-            p = subprocess.run([exe, "-p", "我的接入暗号是什么？只回答暗号本身。"],
-                               capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run(args, env=_hook_env(env_file, url, user_id, allow_dirs),
+                               capture_output=True, text=True, timeout=timeout,
+                               cwd=_probe_cwd(allow_dirs))
         except subprocess.TimeoutExpired:
             return {"ok": False, "nonce": nonce, "detail": f"claude -p 超时 {timeout}s"}
         out = p.stdout or ""
         recalled = p.returncode == 0 and nonce in out
-        why = "" if recalled else (f"退出码 {p.returncode}；" if p.returncode else "") + "回答里没有暗号 —— "
+        why = (f"退出码 {p.returncode}；" if p.returncode else "") + "回答里没有本次验收标记"
         return {"ok": recalled, "nonce": nonce,
-                "detail": ("回答里召回了暗号：" if recalled else why) + (out.strip() or p.stderr.strip())[:200]}
+                "detail": "回答里召回了本次验收标记" if recalled else why}
     finally:
-        _cleanup(url, env_file, nonce)
+        _cleanup(url, env_file, nonce, user_id)
+
+
+def _safe_id(uid: str) -> bool:
+    import re
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]{1,128}", uid or "")) and not uid.startswith(".")
+
+
+def switch_report(env_file: Path, allow_dirs: str) -> dict:
+    """P0-1：钩子开关现状（只报设没设，不打印值）。测试开关留在常驻配置里 = 生产钩子被导走，记警告。"""
+    seen = {k: bool(_env_lookup(env_file, k)) for k in HOOK_SWITCHES}
+    seen["AIDUMEI_CC_ALLOW_DIRS"] = bool(allow_dirs)
+    warnings = []
+    if not allow_dirs:
+        warnings.append("没设写入白名单（AIDUMEI_CC_ALLOW_DIRS / --allow-dir）：任何目录里的 Claude Code 会话都会写入")
+    for k in ("AIDUMEI_TEST_URL", "AIDUMEI_TEST_TOKEN"):
+        if seen[k]:
+            warnings.append(f"{k} 出现在常驻配置里：测试开关只该在跑测试的那条命令里临时设")
+    if _env_lookup(env_file, "AIDUMEI_HOOKS").strip().lower() in ("off", "0", "false", "no"):
+        warnings.append("AIDUMEI_HOOKS=off：全部钩子停用中")
+    return {"set": seen, "warnings": warnings}
 
 
 # ── 主流程 ──────────────────────────────────────────────────────────────
@@ -465,13 +603,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-selftest", action="store_true")
     ap.add_argument("--project-dir", default=None,
                     help="Claude Code：写/验收该项目的 .claude/settings.json（缺省用户级配置）")
+    ap.add_argument("--user-id", default=None,
+                    help="写进钩子命令的身份（AIDUMEM_USER_ID）；缺省取环境变量或 --env-file 里的值")
+    ap.add_argument("--allow-dir", action="append", default=None,
+                    help="Claude Code 写入白名单目录（可多次；写进 AIDUMEI_CC_ALLOW_DIRS）")
     ap.add_argument("--claude-test", action="store_true", help="另用 claude -p 真聊一句")
+    ap.add_argument("--claude-model", default="", help="CLI 验收使用的模型；不指定时沿用宿主配置")
     ap.add_argument("--wait", type=float, default=60, help="验收等待召回的秒数")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
     env_file = Path(a.env_file)
     token = _env_lookup(env_file, "AIDUMEM_API_TOKEN")
+    explicit_uid = (a.user_id or "").strip()
+    default_uid = _uid(env_file)
+    for u in (explicit_uid, default_uid):
+        if u and not _safe_id(u):
+            print(f"身份只许字母数字和 ._-：{u!r}", file=sys.stderr)
+            return 2
+    # --allow-dir 没给：None = 沿用已装命令里的白名单（钩子另从 --env-file 读 AIDUMEI_CC_ALLOW_DIRS）
+    allow_arg = None if a.allow_dir is None else ":".join(
+        str(Path(d).expanduser().resolve()) for d in a.allow_dir if d.strip())
     svc_ok, svc_detail = check_service(a.url, token)
     hosts = a.host or detect_hosts()
     report = {"service": {"ok": svc_ok, "detail": svc_detail}, "hosts": [], "selftest": None, "claude": None}
@@ -481,16 +633,28 @@ def main(argv: list[str] | None = None) -> int:
             report["hosts"].append(connect_hermes(dry=a.dry_run or a.check, remove=a.uninstall))
         else:
             r = connect_shell_host(h, a.url, env_file, dry=a.dry_run or a.check, remove=a.uninstall,
-                                   project_dir=a.project_dir)
+                                   project_dir=a.project_dir, user_id=explicit_uid, allow_dirs=allow_arg,
+                                   default_user_id=default_uid)
             if a.check:
                 r["ok"] = all(r.get("lines", {}).values()) if r.get("lines") else False
+                if h == "claude-code" and all(r.get("lines", {}).get(event) for event in
+                                               ("UserPromptSubmit", "Stop", "SessionEnd")):
+                    r["ok"] = True
+                    if not r.get("cc_memory_bridge", {}).get("wired"):
+                        r["warnings"] = ["自带记忆桥未接好：备份配置后补装；原有读、写、萃取三线仍可用"]
             report["hosts"].append(r)
 
     shell_ok = [r["host"] for r in report["hosts"] if r.get("ok") and r["host"] in SHELL_HOSTS]
+    first = next((r for r in report["hosts"] if r["host"] in SHELL_HOSTS), {})
+    user_id = first.get("user_id") or explicit_uid or default_uid
+    allow_dirs = next((r.get("allow_dirs") for r in report["hosts"] if r["host"] == "claude-code"
+                       and r.get("allow_dirs")), "") or _env_lookup(env_file, "AIDUMEI_CC_ALLOW_DIRS")
     if svc_ok and shell_ok and not (a.dry_run or a.uninstall or a.no_selftest):
-        report["selftest"] = selftest_shell(shell_ok[0], a.url, env_file, wait_s=a.wait)
+        report["selftest"] = selftest_shell(shell_ok[0], a.url, env_file, wait_s=a.wait, user_id=user_id,
+                                            allow_dirs=allow_dirs)
     if a.claude_test and "claude-code" in shell_ok and not (a.dry_run or a.uninstall):
-        report["claude"] = claude_test(a.url, env_file, wait_s=a.wait)
+        report["claude"] = claude_test(a.url, env_file, wait_s=a.wait, user_id=user_id,
+                                      allow_dirs=allow_dirs, model=a.claude_model)
 
     if a.uninstall:
         wired = None
@@ -502,6 +666,8 @@ def main(argv: list[str] | None = None) -> int:
         wired = svc_ok and bool(report["hosts"]) and all(r.get("ok") for r in report["hosts"]) \
             and st_ok and (report["claude"] is None or report["claude"]["ok"])
     report["wired"] = wired
+    report["switches"] = switch_report(env_file, allow_dirs)
+    report["warnings"] = [w for r in report["hosts"] for w in r.get("warnings", [])]
     head = f"服务 {'✅' if svc_ok else '❌'} · 宿主接入 " + (
         "—（仅预览）" if a.dry_run else "—（已卸载）" if a.uninstall else ("✅" if wired else "❌"))
     report["headline"] = head
@@ -522,10 +688,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"     · 原配置已备份: {r['backup']}")
             br = r.get("cc_memory_bridge")
             if br:
-                print(f"     {'✅' if br['wired'] else '❌'} 自带记忆桥 {br['event']}({br['matcher']}): {br['detail']}")
+                print(f"     {'✅' if br['wired'] else '⚠'} 自带记忆桥 {br['event']}({br['matcher']}): {br['detail']}")
+            for warning in r.get("warnings", []):
+                print(f"     ⚠ {warning}")
+            if r.get("identity_pinned") is False and r["host"] in SHELL_HOSTS:
+                print(f"     ⚠ 钩子命令没写死身份（AIDUMEM_USER_ID）；重跑本脚本（可加 --user-id {user_id}）即可补上")
             for k in ("error", "note"):
                 if r.get(k):
                     print(f"     ! {r[k]}")
+        for w in report["switches"]["warnings"]:
+            print(f"  ⚠ {w}")
         if report["selftest"]:
             s = report["selftest"]
             print(f"  {'✅' if s['ok'] else '❌'} 当场验收（{s['nonce']}）: {s['detail']}；清理测试记忆 {s['cleaned']} 条")

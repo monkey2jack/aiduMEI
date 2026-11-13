@@ -333,8 +333,17 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
         return None
 
     memory_id = relation["memory_id"]
+    # f0.8+（计划 ⑤）：LLM 合并出的新正文过 /add 同一道写入门（注入 / 原则 7 打码 / P1 / P8）。
+    # 被拦就不合并（旧记忆原样不动），返回 None 让本次写入按正常流程新增——新正文本身在 /add 已过过门。
+    from ducky.write_policy import gate_derived_write
+    _gate_md = {"source": "self_edit", "_origin_agent": "self-edit"}
+    merged, _gated = gate_derived_write(relation["merged_content"], _gate_md, user_id=user_id,
+                                        bank_id=bank_id, role="assistant")
+    if merged is None:
+        logger.info("self-edit 合并正文被写入门拦下（%s），不合并",
+                    ",".join(f"{g.get('principle')}:{g.get('reason')}" for g in _gated) or "empty")
+        return None
     old_content = _snapshot_old(memory, memory_id)
-    merged = relation["merged_content"]
 
     # 合并更新时剥离 recorded_at：add.py 为「新增」路径统一 stamp 的
     # 当前时间戳不能覆盖旧记忆的原始时间，否则 before/after 时间推理
@@ -343,6 +352,8 @@ def self_edit_on_add(memory, user_id: str, messages_json: Any, metadata: dict,
     # 不盖就把一条命名域记忆的 bank_id 字段抹掉，它当场退回默认域。
     merge_metadata = stamp_bank_metadata(metadata, bank_id)
     merge_metadata.pop("recorded_at", None)
+    if _gate_md.get("redacted"):
+        merge_metadata["redacted"] = sorted(set(_gate_md["redacted"]) | set(merge_metadata.get("redacted") or []))
 
     before = sdk_attempt_count(user_id, bank_id)
     try:

@@ -44,8 +44,14 @@ def test_thinking_summary_is_gated(out):
     assert out["thinking"] == [200, "gated", ["THINKING"], 0]
 
 
-def test_p8_forget_rule_drops_without_any_residue(out):
+def test_p8_forget_rule_keeps_text_out_of_live_layers(out):
+    # f0.8+（外审 R3-04）：只在墓碑里（7 天后擦掉正文），其余各层零残留
     assert out["p8"] == [True, 200, "gated", ["P8"], {}]
+    assert out["p8_tomb"] == [True, "write_policy", True, True]
+
+
+def test_p8_gated_write_is_restorable(out):
+    assert out["p8_restore"] == ["ok", 1]
 
 
 def test_env_turns_enforcement_back_to_shadow(out):
