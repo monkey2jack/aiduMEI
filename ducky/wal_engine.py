@@ -929,6 +929,8 @@ DELETE_CHAIN_MATRIX: Dict[str, tuple] = {
     "autodream_log":    ("clean",  "f0.7.5（同上）：梦境合并日志 new_content 全文，表无租户列。按 target_id / source_ids 关联本域已删 fact id 精确删（§21）"),
     "opinions":         ("clean",  "f0.7.5 元守卫静态扫描逼出：信念表（stance/source/evidence_ids，挂在 fact_id 上）此前无裁决。按本域已删 fact id 删（§21），单删同理"),
     "facts_dedup_quarantine": ("clean", "f0.7.5 元守卫静态扫描逼出：联邦迁移去重时隔离的 facts 整行副本（含正文）。delete_all 按 (user_id[, bank_id]) 删（§21）"),
+    "consolidation_links": ("exempt", "f0.8+ 夜间归并的取代关系（superseded_id/current_id/kind/state，只有 id 与固定代码，无记忆正文）：被引用的记忆删掉后，召回只认 current 仍存在的链接（旧版本自动重新可见），下一轮归并把悬空链接清掉"),
+    "consolidation_runs": ("exempt", "f0.8+ 夜间归并运行账本（计数与水位线，无记忆正文）"),
     "agents":           ("exempt", "联邦 agent 注册表（agent_id/显示名/端点），不含记忆正文，随联邦生命周期管理"),
     "federation_broadcast": ("exempt", "联邦广播游标（agent_id/last_fact_id/时间），不含记忆正文"),
     "skill_crystals":   ("exempt", "f0.3（C9）技能结晶表：全局表、无 user_id/bank_id 列，内容由 fact_key/类目统计派生（不存记忆正文）；无归属列故 delete_all 无法按域清理，列入 not_cleared 并附现存行数，让调用方看见残留规模"),

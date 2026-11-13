@@ -74,7 +74,7 @@ def _auto_format_conversation(msgs):
 def _auto_gate_session(msgs, sid):
     """f0.8 ②：与 /add 同一道拦截（write_policy.enforce_messages）——每条消息先清洗、中和、
     打码（与 /add 同序），再交给开了拦截的原则：P1 机器噪声 / 思考过程进墓碑 7 天可恢复，
-    P8 不留正文。返回剩下要总结的消息；拦截失败时 enforce_messages 自己 fail-open。"""
+    P8 同样进墓碑可恢复（f0.8+ R3-04）。返回剩下要总结的消息；拦截失败时 enforce_messages 自己 fail-open。"""
     from ducky.security.injection_guard import neutralize_messages_struct, sanitize_messages_struct
     from ducky.write_policy import enforce_messages, redact_messages_struct
     try:

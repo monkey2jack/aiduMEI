@@ -8,10 +8,11 @@
 
 aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI and Hermes: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
 
-> The current public release is **f0.8** (package `0.8.0`, 2026-11-09). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
+> The current public release is **f0.8+** (package `0.8.1`, 2026-11-14). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
 >
 > f0.8 = code **f0.8.0** (on top of f0.7+++: security hardening, write policy enforcing what the shadow week proved, and the Claude Code auto-memory bridge). See the [CHANGELOG](CHANGELOG.md).
 >
+> Current code **f0.8.1** is published as **f0.8+**. Consolidation defaults to off; the full 20-question real-data A/B evaluation remains incomplete.
 > f0.7+++ = code **f0.7.6** (the patch on top of f0.7++: fixes from the f0.7++ outside re-audit — principle 7 detection rewritten, role / JSON-string messages / top-level fields no longer bypass redaction, deleted text no longer lingers in WAL files, opinions counted per fact tenant). Previous public release: [f0.7+++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B%2B) (package `0.7.6`, 2026-11-06).
 >
 > f0.7++ = code **f0.7.5** (the patch on top of f0.7+: second outside-audit P0 fixes — facts isolated per identity under key enforcement, write-policy principle 7 gaps closed, delete chain completed, write gate no longer bypassed by message shape). Previous public release: [f0.7++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B) (package `0.7.5`, 2026-11-04).
@@ -171,7 +172,7 @@ Auth: the HTTP (SSE) transport requires `AIDUMEM_API_TOKEN` on every bind, loopb
 - **Single owner**: the service accepts one API token and `caller_user_id` is self-declared by the client. **Isolation between mutually untrusted users is not supported**; one service per owner (or agents that trust each other). To restrict principals per credential, configure `AIDUMEI_CALLER_BINDINGS` + `AIDUMEI_CALLER_BINDING_MODE=strict`.
 - **Outbound**: model URLs accept public https or localhost by default; private and cloud-metadata addresses are blocked (LAN model hosts can be allowed with `AIDUMEI_MODEL_ENDPOINT_ALLOW`), and model calls do not follow redirects. What each cloud channel sends is listed in [docs/OUTBOUND_CHANNELS.md](docs/OUTBOUND_CHANNELS.md).
 - **Injection defence**: recalled content is neutralised and fenced before injection; destructive MCP tools are off by default; `delete_all` needs explicit `confirm=true`.
-- **Write gate**: secrets and ID numbers are redacted span-by-span, raw document copies are refused (principle 7); machine noise goes to the tombstone (restorable for 7 days), writes matching a forget rule are not stored, and a model's chain-of-thought is never kept as a session summary (f0.8). Each of the three has a switch — `AIDUMEI_WRITE_POLICY_P1` / `_P8` / `_THINKING` = `shadow` turns it back to log-only; see [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md).
+- **Write gate**: secrets and ID numbers are redacted span-by-span, raw document copies are refused (principle 7); machine noise goes to the tombstone (restorable for 7 days), writes matching a forget rule enter a tombstone, restorable for 7 days, and a model's chain-of-thought is never kept as a session summary (f0.8+ candidate). Each of the three has a switch — `AIDUMEI_WRITE_POLICY_P1` / `_P8` / `_THINKING` = `shadow` turns it back to log-only; see [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md).
 - **f0.8 hardening (unreleased; details in `SECURITY.md`)**:
   - **Outbound (SSRF)**: model / vector-store URLs go through one check on save, on `/config/test` and before every outbound call — the host is DNS-resolved and every resolved address is checked for private / loopback / link-local / CGNAT / embedded IPv4; trailing dots and integer / octal / hex host forms fail closed; cloud metadata addresses are always refused. Allow LAN model hosts with `AIDUMEI_MODEL_ENDPOINT_ALLOW` (hostname, IP or CIDR); `AIDUMEI_EGRESS_ALLOW_LOOPBACK=0` also blocks localhost.
   - **Two `/health` views**: a console session or the main token gets the full view; agent keys and anonymous callers get the minimal public view (status, version, health status, data dir writable).
@@ -205,8 +206,8 @@ Auth: the HTTP (SSE) transport requires `AIDUMEM_API_TOKEN` on every bind, loopb
 
 | Dimension | Current |
 |------|------|
-| Total cases | **4535** (measured via `pytest --collect-only`, 2026-11-09, f0.8.0 tree) = **3907 behavior + 482 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
-| Clean dev machine | 4523 passed · **12 skipped** — f0.7 acceptance target derived from the collection and the missing axes (Python 3.12, only the Hermes host source absent) |
+| Total cases | **4806** (measured via `pytest --collect-only`, 2026-11-13, f0.8.1 candidate tree) = **4174 behavior + 486 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
+| Clean dev machine | 4794 passed · **12 skipped** — f0.7 acceptance target derived from the collection and the missing axes (Python 3.12, only the Hermes host source absent) |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only (**measured 2026-09-09 on the production box**, clean venv, older tree). From f0.7 the full suite also tests the legacy mem0 kernel and needs `requirements-mem0.txt`; the default native path with only `requirements.txt` is covered by a from-scratch install acceptance and the CI bare-install smoke (2026-10-29 lab box: install, health, write, recall, delete, restore passed) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (older tree `de09794`, host source present, no `.env`, no ruff/mcp/fastembed) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (older tree; tools, extras, host, model cache and the public LoCoMo dataset present) |
@@ -219,15 +220,15 @@ pytest tests/                                          # full regression
 python -m compileall ducky api_server.py mcp_server.py # compile check
 ```
 
-> **Why report both 4523 and 1821**: the first is this tree's expected pass count with only the 12 Hermes cases skipped, not a measured result; the second is the 2026-09-09 clean-venv measurement of the basic install path on an older tree. A number only means something with its environment, date and tree attached.
+> **Why report both 4794 and 1821**: the first is this tree's expected pass count with only the 12 Hermes cases skipped, not a measured result; the second is the 2026-09-09 clean-venv measurement of the basic install path on an older tree. A number only means something with its environment, date and tree attached.
 
 > **You can verify those 12 skips yourself**: all fourteen skip axes are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 4523 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # target once the host and all other optional axes are present — with host: 4535 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4523 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 4794 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # target once the host and all other optional axes are present — with host: 4806 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4794 passed, 12 skipped
 > ```
 >
 > The "with host" line needs all fourteen axes at once. On the production box in an isolated sandbox (host source present, no `.env`), the bare command on an older tree actually prints 1967 passed, 26 skipped (2026-09-11, `de09794`).

@@ -435,6 +435,30 @@ def _try_workspace_route(req, uid: str, bank_id: str, effective_limit: int,
     }
 
 
+def _annotate_rerank_degradation(resp, rerank_telem):
+    _rr_deg = [t.get("status") for t in (rerank_telem, rerank_telem.get("verbatim"))
+               if isinstance(t, dict) and t.get("status") in ("timeout", "budget_exhausted", "circuit_open")]
+    if _rr_deg:
+        resp["_rerank_degraded"] = _rr_deg[0]
+
+
+def _effective_limit(req):
+    return min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
+
+
+def _cached_search(req, uid, bank_id, limit, started_at):
+    from ducky import search_cache
+    key = search_cache.make_key(
+        user_id=uid, bank_id=bank_id,
+        caller=str(getattr(req, "caller_user_id", "") or ""),
+        query=req.query, limit=limit,
+        before=req.before, after=req.after, session_id=_req_session_id(req))
+    cached = search_cache.get(key, uid)
+    if cached is not None:
+        _log_search_result(req, cached.get("results") or [], started_at)
+    return key, cached
+
+
 def register_search_routes(app: FastAPI) -> None:
 
     @app.post("/search", response_model=SearchResponse)
@@ -463,8 +487,10 @@ def register_search_routes(app: FastAPI) -> None:
             # 注意：/search 是显式搜索 API，不走 relevance gate（gate 用于对话上下文注入）
             # v20 P0-4：每请求重置 rerank 遥测——线程复用时上一请求的残留
             # 会被误读成本次的重排序结局。
-            from ducky.mem0_runtime import last_rerank_telemetry, reset_rerank_telemetry
+            from ducky.mem0_runtime import last_rerank_telemetry, reset_rerank_telemetry, start_rerank_budget
             reset_rerank_telemetry()
+            # f0.8+ C：本请求所有 rerank 外呼共用一个时间预算（AIDUMEI_RERANK_BUDGET_MS）。
+            start_rerank_budget()
             # f0.6.3：workspace_hits 随快路拆进 _try_workspace_route，这里只留遥测两件。
             from ducky.decision import reset_telemetry, telemetry as decision_telemetry
             reset_telemetry()
@@ -499,7 +525,15 @@ def register_search_routes(app: FastAPI) -> None:
             uid = _normalize_user_id(scope.user_id)
             bank_id = scope.bank_id
             ensure_bank_registered(make_scope(uid, bank_id))
-            effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
+            effective_limit = _effective_limit(req)
+
+            # f0.8+ C：同一用户同一问题短时间内重复来（宿主预取 + 回合开头召回、
+            # 客户端超时重试）直接回放上一份干净答案。鉴权已在上面做完；该用户
+            # 有写入就整份作废（见 ducky/search_cache.py）。
+            from ducky import search_cache
+            _cache_key, _cached = _cached_search(req, uid, bank_id, effective_limit, _search_t0)
+            if _cached is not None:
+                return _cached
 
             try:
                 # f0.6.3：workspace 快路拆为模块级函数（行为逐字不变）。命中
@@ -507,6 +541,7 @@ def register_search_routes(app: FastAPI) -> None:
                 from ducky.memory_workspace import ws_feed_from_results  # noqa: F401  (沿用原导入探针语义)
                 _ws_resp = _try_workspace_route(req, uid, bank_id, effective_limit, _search_t0)
                 if _ws_resp is not None:
+                    search_cache.put(_cache_key, uid, _ws_resp)
                     return _ws_resp
             except ImportError:
                 pass
@@ -648,6 +683,8 @@ def register_search_routes(app: FastAPI) -> None:
             if _this_mode == "lite":
                 resp["engine_mode_reason"] = _gs.get("last_shift_reason")
                 resp["confidence_scale"] = "local-bge-small-zh"
+            # f0.8+ C：rerank 超时 / 预算用完 / 熔断时结果是未重排的，顶层明示一个标记。
+            _annotate_rerank_degradation(resp, rerank_telem)
 
             # v21.2.0：检索埋点必须落在**主路径**上。
             # 此前 log_search_quality 只在 recall_funnel 里调用，而主 /search
@@ -657,6 +694,7 @@ def register_search_routes(app: FastAPI) -> None:
             # （同一课第三次：挂钩要落在真实缝位上，不是看着像的那个地方。）
             # 失败静默：观测不该拖垮被观测的东西。
             _log_search_result(req, results, _search_t0)
+            search_cache.put(_cache_key, uid, resp)
             return resp
         except HTTPException:
             # P1-4 教训：HTTPException 必须先放行 —— 否则上面跨殿借阅拒绝
@@ -666,6 +704,10 @@ def register_search_routes(app: FastAPI) -> None:
         except Exception as e:
             logger.error(f"search 失败: {e}")
             return {"status": "error", "results": [], **error_envelope(e)}
+        finally:
+            # 线程会被复用：预算不许漏给同线程的下一个非 /search 调用方。
+            from ducky.mem0_runtime import clear_rerank_budget
+            clear_rerank_budget()
 
     @app.post("/search_trace")
     def search_trace(req: SearchRequest):
@@ -680,7 +722,7 @@ def register_search_routes(app: FastAPI) -> None:
             except HallError as _hall_err:
                 raise HTTPException(status_code=403, detail=str(_hall_err))
             mem = get_memory()
-            effective_limit = min(req.top_k if req.top_k and req.top_k > 0 else req.limit, 100)
+            effective_limit = _effective_limit(req)
             scope = make_scope(req.user_id, req.bank_id)
             result = lazy_import_funnel()(mem, req.query, _normalize_user_id(scope.user_id), effective_limit, bank_id=scope.bank_id, session_id=_req_session_id(req))
             # P0-4：与 /search 保持一致的时间窗口过滤。funnel 若返回

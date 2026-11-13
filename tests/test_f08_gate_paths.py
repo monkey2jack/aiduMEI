@@ -49,8 +49,11 @@ def test_update_checks_ownership_before_gating(out):
     assert out["upd_missing_id"] == [404, 2]
 
 
-def test_update_p8_drops_without_residue(out):
-    assert out["upd_p8"] == [True, 200, "gated", ["P8"], {}, 1]
+def test_update_p8_keeps_text_out_of_live_layers(out):
+    # f0.8+（外审 R3-04）：P8 拦下的正文只在墓碑里（可恢复，7 天后擦掉），其余各层零残留
+    st = out["upd_p8"]
+    assert st[:6] == [True, 200, "gated", ["P8"], {}, 1]
+    assert len(st[6]) == 1 and st[6][0][0].startswith("write_policy:P8:forget_rule")
 
 
 def test_update_env_switches_back_to_shadow_or_off(out):
@@ -75,7 +78,7 @@ def test_auto_memory_all_noise_session_is_skipped(out):
 
 
 def test_auto_memory_p8_rule_split_across_messages(out):
-    assert out["am_p8_cross"] == [1, 0, {}, {}]
+    assert out["am_p8_cross"] == [1, 0, {}, {}, 1]
 
 
 def test_auto_memory_p1_shadow(out):

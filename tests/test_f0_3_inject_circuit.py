@@ -168,7 +168,7 @@ def test_injected_source_and_quote_budget_reach_the_model(tmp_path, query, kind,
     assert f"[{kind}]" in context
     assert (marker in context) == visible
     assert ("[excerpt]" in context) == (not visible)
-    assert "<memory>" in context
+    assert '<memory nonce="' in context
 
 
 # ---------------------------------------------------------------------------

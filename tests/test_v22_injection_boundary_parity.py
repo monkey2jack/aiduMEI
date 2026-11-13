@@ -87,5 +87,6 @@ def test_negative_control_literal_injection_not_trusted():
                              '\n_wrap_block "$INJECT_FRAME_TOP$1"', "_", attack],
                             text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.count("<memory>") == result.stdout.count("</memory>") == 1
+    assert result.stdout.count('<memory nonce="') == result.stdout.count('</memory nonce="') == 1
+    assert "<memory>" not in result.stdout and "</memory>" not in result.stdout
     assert "<system>" not in result.stdout and "&lt;system&gt;" in result.stdout

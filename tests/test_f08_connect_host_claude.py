@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -31,7 +34,7 @@ def probe(home, stub, monkeypatch):  # noqa: F811
     """固定暗号；写线直接往桩里存一条（真钩子写线另有用例覆盖）。"""
     monkeypatch.setattr(C.secrets, "token_hex", lambda n=3: "abc123")
 
-    def fake_ingest(host, url, env_file, nonce):
+    def fake_ingest(host, url, env_file, nonce, *_a, **_k):
         C._post(url, "/add", {"messages": [{"role": "user", "content": f"我的接入暗号是 {nonce}。"}]}, "")
     monkeypatch.setattr(C, "_ingest_probe", fake_ingest, raising=False)
     return stub
@@ -76,6 +79,92 @@ def test_cli_claude_test_wires_url_and_env(probe, home, monkeypatch, capsys):  #
                  "--json"])
     rep = json.loads(capsys.readouterr().out)
     assert rep["claude"]["ok"] is False and rc == 1
+
+
+def test_claude_process_real_hook_uses_selected_service_and_identity(home, monkeypatch):  # noqa: F811
+    """A stale process URL/identity must not send the CLI's real hook elsewhere."""
+    selected_calls, other_calls = [], []
+
+    def handler(calls, selected):
+        class Service(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def reply(self, obj):
+                raw = json.dumps(obj).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self):  # noqa: N802
+                calls.append((self.path, {}))
+                self.reply({"blocks": {}})
+
+            def do_POST(self):  # noqa: N802
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                calls.append((self.path, body))
+                allowed = selected and body.get("user_id") == body.get("caller_user_id") == "cli-user"
+                self.reply({"results": [{"memory": _NONCE}] if allowed and self.path == "/search" else []})
+        return Service
+
+    selected = HTTPServer(("127.0.0.1", 0), handler(selected_calls, True))
+    other = HTTPServer(("127.0.0.1", 0), handler(other_calls, False))
+    for server in (selected, other):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{selected.server_port}"
+    monkeypatch.setenv("AIDUMEM_URL", f"http://127.0.0.1:{other.server_port}")
+    monkeypatch.setenv("AIDUMEM_USER_ID", "other-user")
+    monkeypatch.setattr(C.secrets, "token_hex", lambda n=3: "abc123")
+    monkeypatch.setattr(C, "_ingest_probe", lambda *_a, **_k: None)
+    bindir = home / "real-hook-bin"
+    bindir.mkdir()
+    exe = bindir / "claude"
+    inject = C.REPO / "integrations/claude-code/aidumem-cc-inject.sh"
+    exe.write_text(f"#!{sys.executable}\n" +
+                   "import json,os,subprocess,sys\n" +
+                   "payload=json.dumps({'session_id':'cli-scope','prompt':'我的接入暗号是什么？','cwd':os.getcwd()})\n" +
+                   f"r=subprocess.run(['bash',{str(inject)!r}],input=payload,text=True,capture_output=True)\n" +
+                   "print(r.stdout);sys.exit(r.returncode)\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    try:
+        report = C.claude_test(url, home / ".env", wait_s=0, user_id="cli-user")
+        assert report["ok"], report
+        assert not other_calls, "CLI hook contacted the inherited service"
+        assert any(body.get("query") == "我的接入暗号是什么？" and body.get("user_id") == "cli-user"
+                   for path, body in selected_calls if path == "/search")
+    finally:
+        for server in (selected, other):
+            server.shutdown()
+            server.server_close()
+
+
+def test_cli_model_selection_disables_tools_and_does_not_echo_other_context(probe, home, monkeypatch, capsys):  # noqa: F811
+    """Use the operator-selected model and prevent native-memory writes in the probe."""
+    exe = _fake_claude(home, monkeypatch, _NONCE)
+    captured = home / "cli-arguments.json"
+    exe.write_text(f"#!{sys.executable}\nimport json,sys\n" +
+                   f"open({str(captured)!r},'w').write(json.dumps(sys.argv[1:]))\n" +
+                   f"print({_NONCE!r}+' PRIVATE_UNRELATED_REPLY')\n")
+    rc = C.main(["--host", "claude-code", "--url", probe, "--no-selftest", "--claude-test",
+                 "--claude-model", "configured-model", "--wait", "3", "--json"])
+    report = json.loads(capsys.readouterr().out)
+    assert rc == 0 and report["claude"]["ok"]
+    args = json.loads(captured.read_text())
+    assert args[args.index("--model") + 1] == "configured-model"
+    assert args[args.index("--tools") + 1] == ""
+    assert args[args.index("--disallowedTools") + 1] == "mcp__*"
+    prompt = args[args.index("-p") + 1]
+    assert "PROBE-" in prompt and _NONCE not in prompt
+    assert args.index(prompt) < args.index("--tools")
+    assert "PRIVATE_UNRELATED_REPLY" not in json.dumps(report)
+
+
+def test_probe_stores_lookup_label_with_answer_through_real_ingest_hook(home, stub):  # noqa: F811
+    C._ingest_probe("claude-code", stub, home / ".env", _NONCE,
+                    user_id="cli-user", lookup_id="PROBE-lookup-only")
+    assert any("PROBE-lookup-only" in row["memory"] and _NONCE in row["memory"] for row in _Mem.store)
 
 
 # ═══════════════ bug 4：CLAUDE_CONFIG_DIR 与 --project-dir ═══════════════

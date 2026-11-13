@@ -13,7 +13,7 @@ aiduMEI 每轮都存原话。f0.7+ 在写入时给每一条记忆做一次判定
 | 5 | 冲突听新的、听本人的 | 本人直说 > 推断；新 > 旧；推断要推翻本人说过的、或同一秒 → `pending_confirm` | 影子 |
 | 6 | 三层分开 | 元数据 `layer = profile / topic / daily`；`AIDUMEI_RECALL_EXCLUDE_DAILY=1` 时召回不带 daily | 打标签；过滤默认关 |
 | 7 | 永远不记 | 密钥、令牌、私钥、证件号、卡号、签名图：只把那一段换成 `[redacted:类型]`；整段邮件原文 / 超长原文拷贝 / 只有一把钥匙的写入：整条 422 拒收 | **直接生效** |
-| 8 | 说忘就彻底忘 | `POST /api/forget`：按 id 走与 `/delete` 同一条级联（向量、全文、事实、原文、派生精华、判定日志）；`never_store` 规则写入时比对，命中的那条不落任何一层（判定日志只留规则 id，不留哈希） | 删除生效；规则**拦截**（f0.8） |
+| 8 | 说忘就彻底忘 | `POST /api/forget`：按 id 走与 `/delete` 同一条级联（向量、全文、事实、原文、派生精华、判定日志）；`never_store` 规则写入时比对，命中的那条不落任何活的一层，只进墓碑（可恢复，到期擦正文；判定日志只留规则 id，不留哈希）。f0.8+：规则与正文先归一（全角、西里尔/希腊形近字、零宽、重音），拉丁词按词边界比（「Tom」不再误拦 tomorrow / atom） | 删除生效；规则**拦截**（f0.8） |
 | 9 | 召回少而准 | `AIDUMEI_RECALL_PRECISE=1`：最多 K 条、分数不到最高分的一半的不要 | 默认关 |
 
 ## f0.8 开了哪些拦截
@@ -21,11 +21,28 @@ aiduMEI 每轮都存原话。f0.7+ 在写入时给每一条记忆做一次判定
 | 拦什么 | 怎么拦 | 拨回影子 |
 |---|---|---|
 | 原则 1：机器文本（`[SILENT]`、`[Image: original …]` 等）、上下文续接说明（`This session is being continued…`） | `/add` 在任何一层落库前拿出来，进墓碑（与删除同一张表），`AIDUMEI_WRITE_POLICY_GATE_TTL_DAYS`（默认 7）天内可用 `/tombstone/restore` 恢复，到期擦正文；同一轮里的其他消息照常写 | `AIDUMEI_WRITE_POLICY_P1=shadow` |
-| 原则 8：命中「不再保存」规则的写入 | 整条不写，也不进墓碑 | `AIDUMEI_WRITE_POLICY_P8=shadow` |
+| 原则 8：命中「不再保存」规则的写入 | 整条不进活记忆；f0.8+ 起与原则 1 一样进墓碑，误拦可用 `/tombstone/restore` 恢复，到期擦正文 | `AIDUMEI_WRITE_POLICY_P8=shadow` |
 | 会话精华里的模型思考过程（「We need to output…」、`<think>…</think>`、harmony 分析通道） | `/session/distill` 先剥包装，剩下的仍像思考就走确定性降级摘要（metadata `distill_fallback_reason`）；`/add` 收到 LLM 模式精华仍是思考文本时进墓碑。降级摘要（引用本人原话）不判 | `AIDUMEI_WRITE_POLICY_THINKING=shadow` |
 
-`/add` 回执里的 `gated` 列出拦下的条目（原则、理由码、墓碑 id），不含正文；判定日志里这些行 `mode=enforce`。
-同一道拦截（`write_policy.enforce_messages`）也挂在其他写路径：`/update` 的新正文（先验归属，被拦则原记忆不动，回执 `action=gated`）、后台 `auto_memory` 环（逐条拦后再总结，整段再比一次忘记规则）；MCP `mem_add` 与宿主 `run_auto_memory` 本就走 `/add`，`/session/distill` 只提炼不落库；墓碑写失败时照旧写入。
+`/add` 回执里的 `gated` 列出拦下的条目（原则、理由码、墓碑 id、原则 8 的规则 id），不含正文；判定日志里这些行 `mode=enforce`。
+同一道拦截（`write_policy.enforce_messages`）也挂在其他写路径：`/update` 的新正文（先验归属，被拦则原记忆不动，回执 `action=gated`；f0.8+ 起密钥片段就地打码后照常改写，回执带 `redacted`）、后台 `auto_memory` 环（逐条拦后再总结，整段再比一次忘记规则）、f0.8+ 起服务端自己生成的正文（instinct 毕业的技能、self_edit 的合并结果，经 `write_policy.gate_derived_write`：注入拦截 + 原则 7 + 上面三处拦截；被拦则不毕业 / 不合并，原记忆不动）；MCP `mem_add` 与宿主 `run_auto_memory` 本就走 `/add`，`/session/distill` 只提炼不落库；墓碑写失败时照旧写入。
+三个开关只认显式的 `shadow / off / 0 / false / no` 降级；空值或拼错一律按拦截处理（f0.8+，外审 R3-06）。
+
+### 会话精华的身份由服务端裁定（f0.8+，外审 R3-05 / R3-08）
+
+`/session/distill` 返回的 metadata 带一枚服务端签名 `distill_seal`（HMAC，钥匙是数据目录里的 `distill_seal.key`，首次使用时生成，0600）。
+`/add` 只在签名对得上（同一身份、同一域、同一段精华正文、同一来源指纹）时才把它当会话精华：长度上限 4000 字、不再做 LLM 抽取、挂来源级联。
+没签名或签名不符的「精华」标记（`kind` / `lane` / `_origin_agent` / `distill_*`）一律剥掉，按普通写入处理并标 `inferred`。签名本身不落库。
+每条写入的 metadata 另有服务端填的 `role_asserted_by`（`ui_session` / `token` / `agent_key:<agent>` / `local`），调用方自填的不认；
+每 agent 一把的钥匙代填的「用户原话」记为 `inferred`（`basis=asserted_by:agent_key:<agent>`）。
+
+### 原则 7 识别补充（f0.8+）
+
+- 助记词：关键词与词串之间放宽到 40 字；没有关键词时，连续 12/15/18/21/24 个 BIP39 英文词、空白或编号分隔、且 BIP39 校验和成立才打码（词表随包 `ducky/bip39_english.py`）。逗号分隔的清单不算。中文 BIP39 词表未收。
+- metadata 里凭据键下的数字值（`{"pin": 4821}`、`{"cvv": 731}`）打码；普通键下的数字不动。
+- Unicode 连字符变体（‐ ‑ ‒ – − ﹣ －）折叠成 `-` 再识别；em dash（—）不折，它是中文分隔符。
+- 尽力而为：长 base64 / hex / URL 编码串、倒序串、`"sk-ant-" + "…"` 这类引号拼接，解开后是前缀明确的密钥就整串打成 `encoded_secret`。空格或换行把一把钥匙拆成几段、逐字加空格的写法仍认不出——正则打码的固有局限。
+- 减少误伤：口令键后跟的若是一句英文（「the password is printed on the back」「my wifi password is pretty long」），不当口令；值后面是句末、标点或 and / but 这类分句词时照旧打码。
 短确认与单字（「好，那走吧」「改」）**不拦**，判 daily。`AIDUMEI_WRITE_POLICY=off` 时以上全部不生效（原则 7 不受影响）。
 原则 4/5 的话题重合门槛：`AIDUMEI_WP_TOPIC_MIN_OVERLAP`（默认 0.3）、`AIDUMEI_WP_TOPIC_MIN_COSINE`（默认 0.8）。
 

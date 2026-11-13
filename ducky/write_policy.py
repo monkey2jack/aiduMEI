@@ -78,8 +78,10 @@ def principle_mode(name: str) -> str:
     env = _ENFORCE_ENV.get(name.upper())
     if env is None:
         return "shadow"
-    val = os.environ.get(env, "enforce").strip().lower()
-    return "enforce" if val in ("enforce", "on", "1", "true", "yes") else "shadow"
+    # f0.8+（外审 R3-06）：只认显式的降级值；空值 / 拼错一律按 enforce（fail-closed）——
+    # systemd EnvironmentFile / compose 里留一行 `KEY=` 不许悄悄把拦截降成影子。
+    val = (os.environ.get(env) or "").strip().lower()
+    return "shadow" if val in ("shadow", "off", "0", "false", "no") else "enforce"
 
 
 def gate_ttl_days() -> int:
@@ -94,6 +96,11 @@ def secret_guard_on() -> bool:
     return os.environ.get("AIDUMEI_SECRET_GUARD", "on").strip().lower() not in ("off", "0", "false", "no")
 
 
+# f0.8+（外审 R3-05）：会话精华的长度上限。真实精华 ≤400 字（llm）或两段 ≤120 字的引文（fallback），
+# 4000 字足够宽；即便服务端验过签名，也不许借「精华」身份存整篇原文。
+SUMMARY_MAX_CHARS = 4000
+
+
 def max_raw_chars() -> int:
     from ducky.env_config import int_env
     return int_env("AIDUMEI_WRITE_MAX_RAW_CHARS", 20000, minimum=1000)
@@ -105,6 +112,9 @@ REDACT_FMT = "[redacted:{}]"
 # Specific, prefixed credential shapes: near-zero false positives.
 # A pattern with a named group ``v`` redacts only that group; otherwise the whole match.
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("webhook", re.compile(
+        r"https?://(?:open\.)?(?:feishu\.cn|larksuite\.com)/open-apis/bot/(?:v2/)?hook/"
+        r"[A-Za-z0-9_\-]{8,}(?:\?[^\s<>\"']*)?", re.I)),
     ("private_key", re.compile(
         r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)")),
     ("api_key", re.compile(r"\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_\-]{20,}")),
@@ -131,7 +141,8 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("private_key", re.compile(
         r"(?i)(?:私钥|private[\s_\-]?key)[^\n]{0,24}?(?P<v>(?<![0-9A-Fa-f])(?:0x)?[0-9A-Fa-f]{64}(?![0-9A-Fa-f]))")),
     ("seed_phrase", re.compile(
-        r"(?i)(?:助记词|mnemonic|seed[\s_\-]?phrase|recovery[\s_\-]?phrase)[^\n]{0,12}?"
+        # f0.8+（外审 R3-10）：关键词与词串之间放宽到 40 字（「这是我钱包的助记词，千万别告诉任何人，内容如下：…」）
+        r"(?i)(?:助记词|mnemonic|seed[\s_\-]?phrase|recovery[\s_\-]?phrase)[^\n]{0,40}?"
         r"(?P<v>(?<![A-Za-z])[a-z]{3,8}(?:[ \t,]+[a-z]{3,8}){11,23}(?![A-Za-z]))")),
     ("embedded_image", re.compile(r"data:image/[A-Za-z0-9.+\-]+;base64,[A-Za-z0-9+/=\s]{200,}")),
     ("url_credentials", re.compile(r"(?<=://)[^\s/:@]{1,64}:[^\s/@]{3,128}(?=@)")),
@@ -224,6 +235,10 @@ _CONFUSABLES = str.maketrans({
     "\u0391": "A", "\u0392": "B", "\u0395": "E", "\u0396": "Z", "\u0397": "H", "\u0399": "I",
     "\u039a": "K", "\u039c": "M", "\u039d": "N", "\u039f": "O", "\u03a1": "P", "\u03a4": "T",
     "\u03a5": "Y", "\u03a7": "X",
+    # f0.8+（外审 R3-11）：连字符变体折叠成 ASCII `-`（sk\u2013ant-… 不再漏）。em dash（\u2014）不在内：
+    # 它是中文「——」分隔符，_SEP_RE 要认它。
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2043": "-", "\u2212": "-",
+    "\ufe63": "-",
 })
 
 
@@ -384,6 +399,40 @@ def _cjk_nosep_value(view: str, p: int) -> tuple[int, int] | None:
     return (p, q) if q > p else None
 
 
+# ── f0.8+（计划 ⑫ 打码误伤）：口令键后跟的是一句英文，不是口令 ───────────────────────
+# 「the password is printed on the back」「my wifi password is pretty long」：纯字母值后面还接着
+# 英文词（句子没完），或值本身是常见副词 / 形容词 / 代词，就不是口令。值后面是句末、标点、
+# 或 and / but / lol 这类分句词时照旧打码（「password is sunshine」「password is hunter but…」）。
+_PROSE_WORDS = frozenset("""
+something anything nothing everything somewhere anywhere nowhere everywhere elsewhere whatever
+pretty quite really very rather fairly kinda sorta still already again also actually basically
+literally probably definitely usually always never often sometimes mostly totally super
+easy hard long obvious complicated ridiculous terrible awful horrible impossible annoying weird
+random unique personal private important sensitive confidential similar written printed listed
+shown known visible inside under behind mine yours theirs their these those where which being
+getting going becoming starting expiring changing stuck somewhat almost exactly honestly seriously
+simply clearly apparently currently recently finally only nearly mainly completely extremely likely
+unlikely easily typically
+""".split())
+_CLAUSE_WORDS = frozenset("""
+and but so or because lol haha ok okay btw please pls dont don't now then yet though right
+thanks thx just
+""".split())
+_NEXT_WORD_RE = re.compile(r"[ \t]+([A-Za-z][A-Za-z']*)")
+
+
+def _reads_as_prose(view: str, s: int, e: int) -> bool:
+    """A pure-letter value that is really the start of an English sentence."""
+    v = view[s:e]
+    if not v.isascii() or not v.isalpha():
+        return False
+    low = v.lower()
+    if low in _PROSE_WORDS:
+        return True
+    nxt = _NEXT_WORD_RE.match(view, e)
+    return bool(nxt) and nxt.group(1).lower() not in _CLAUSE_WORDS
+
+
 def _credential_at(view: str, key_end: int, tier: str, *, ascii_key: bool, cjk_key: bool) -> tuple[int, int] | None:
     gap = False
     pos = key_end
@@ -413,6 +462,8 @@ def _credential_at(view: str, key_end: int, tier: str, *, ascii_key: bool, cjk_k
     s, e, raw, quoted = got
     if quoted and mode == "natural":
         mode = "explicit"
+    if not quoted and mode != "weak" and _reads_as_prose(view, s, e):
+        return None
     return (s, e) if _value_ok(view[s:e], tier, mode, raw) else None
 
 
@@ -529,6 +580,8 @@ def _redact_spans(view: str) -> list[tuple[int, int, str]]:
                     w.lower() in _SEED_STOPWORDS for w in re.findall(r"[A-Za-z]+", m.group("v"))) >= 2:
                 continue
             _add(kind, m)
+    raw.extend((s, e, "seed_phrase") for s, e in _bip39_spans(view))
+    raw.extend((s, e, "encoded_secret") for s, e in _encoded_secret_spans(view))
     raw.extend((s, e, "credential") for s, e in _credential_spans(view))
     for m in _CN_ID_RE.finditer(view):
         if _cn_id_valid(m):
@@ -549,6 +602,121 @@ def _redact_spans(view: str) -> list[tuple[int, int, str]]:
     return [(s, e, k) for s, e, k in accepted]
 
 
+# ── f0.8+（外审 R3-10 / 计划 ⑫）：没有关键词的助记词——BIP39 英文词表 + 校验和 ─────────
+# 连续 12/15/18/21/24 个 BIP39 词、且 BIP39 校验和成立，才算助记词：随手列的 12 个常用词
+# （购物清单）只有 1/16 的机会碰上校验和，24 词是 1/256。没有关键词时词间只允许空白、换行与编号——
+# 逗号分隔的是清单，不是钱包导出（带「助记词 / mnemonic」关键词时逗号照认，见 _SECRET_PATTERNS）。
+_BIP39_TOKEN_RE = re.compile(r"[A-Za-z]+")
+_BIP39_GAP_RE = re.compile(r"(?:[ \t\r\n]|\(?\d{1,2}[.):\u3001]?)+")
+_BIP39_LENGTHS = (24, 21, 18, 15, 12)
+
+
+def _bip39_checksum_ok(words: list[str]) -> bool:
+    index = _bip39_index()
+    n = len(words)
+    if n not in _BIP39_LENGTHS:
+        return False
+    bits = "".join(format(index[w], "011b") for w in words)
+    cs = n // 3
+    ent, chk = bits[:-cs], bits[-cs:]
+    digest = hashlib.sha256(int(ent, 2).to_bytes(len(ent) // 8, "big")).digest()
+    return format(digest[0], "08b")[:cs] == chk
+
+
+_BIP39_INDEX: dict[str, int] = {}
+
+
+def _bip39_index() -> dict[str, int]:
+    if not _BIP39_INDEX:
+        from ducky.bip39_english import WORDS
+        _BIP39_INDEX.update({w: i for i, w in enumerate(WORDS)})
+    return _BIP39_INDEX
+
+
+def _bip39_spans(view: str) -> list[tuple[int, int]]:
+    """Runs of ≥12 BIP39 words whose some 12–24-word window carries a valid BIP39 checksum."""
+    if len(view) < 12 * 4:
+        return []
+    index = _bip39_index()
+    spans: list[tuple[int, int]] = []
+    run: list[re.Match] = []
+
+    def _flush() -> None:
+        if len(run) < 12:
+            return
+        words = [m.group(0).lower() for m in run]
+        for n in _BIP39_LENGTHS:
+            for i in range(0, len(words) - n + 1):
+                if _bip39_checksum_ok(words[i:i + n]):
+                    spans.append((run[i].start(), run[i + n - 1].end()))
+                    return
+
+    for m in _BIP39_TOKEN_RE.finditer(view):
+        w = m.group(0)
+        ok = w.lower() in index and (w.islower() or w.istitle() or w.isupper())
+        if ok and run and m.start() - run[-1].end() <= 8 \
+                and _BIP39_GAP_RE.fullmatch(view, run[-1].end(), m.start()):
+            run.append(m)
+            continue
+        _flush()
+        run = [m] if ok else []
+    _flush()
+    return spans
+
+
+# ── f0.8+（外审 R3-11，尽力而为）：编码、倒序或字符串拼接后的密钥 ───────────────────────
+# 长 base64 / hex / URL 编码串解一次码、长串倒过来、`"sk-ant-" + "…"` 拼起来，再用前缀明确的
+# 密钥形态（_SECRET_PATTERNS 里的 api_key 一类）认一次；认出来就把整串打成 encoded_secret。
+# 空格或换行把一把钥匙拆成几段、逐字加空格这类写法仍认不出——正则打码的固有局限，文档里写明。
+_ENCODED_KINDS = frozenset({"api_key", "private_key", "bot_token", "jwt", "webhook"})
+_LONG_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{28,}={0,2}(?![A-Za-z0-9+/=_\-])")
+_PCT_RUN_RE = re.compile(r"[A-Za-z0-9_.~\-]*(?:%[0-9A-Fa-f]{2}[A-Za-z0-9_.~\-]*)+")
+_CONCAT_RE = re.compile(r"""(["'])[^"'\n]{1,120}\1(?:[ \t]*\+[ \t]*(["'])[^"'\n]{1,120}\2){1,8}""")
+_QUOTED_RE = re.compile(r"""(["'])([^"'\n]*)\1""")
+
+
+def _plain_secret(text: str) -> bool:
+    if not text or len(text) < 16 or not text.isprintable():
+        return False
+    return any(kind in _ENCODED_KINDS and pat.search(text) for kind, pat in _SECRET_PATTERNS)
+
+
+def _decodings(run: str) -> list[str]:
+    import base64
+    import binascii
+    out = [run[::-1]]
+    core = run.rstrip("=")
+    if len(core) % 2 == 0 and re.fullmatch(r"[0-9A-Fa-f]+", core):
+        try:
+            out.append(bytes.fromhex(core).decode("ascii"))
+        except (ValueError, UnicodeDecodeError):
+            pass
+    pad = "=" * (-len(core) % 4)
+    for dec in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            out.append(dec(core + pad).decode("ascii"))
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            continue
+    return out
+
+
+def _encoded_secret_spans(view: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for m in _LONG_RUN_RE.finditer(view):
+        if any(_plain_secret(d) for d in _decodings(m.group(0))):
+            spans.append((m.start(), m.end()))
+    if "%" in view:
+        from urllib.parse import unquote
+        for m in _PCT_RUN_RE.finditer(view):
+            if len(m.group(0)) >= 20 and _plain_secret(unquote(m.group(0))):
+                spans.append((m.start(), m.end()))
+    if "+" in view:
+        for m in _CONCAT_RE.finditer(view):
+            if _plain_secret("".join(q[1] for q in _QUOTED_RE.findall(m.group(0)))):
+                spans.append((m.start(), m.end()))
+    return spans
+
+
 _MEANINGFUL_RE = re.compile(r"\[redacted:[a-z_]+\]|[\s\W_]+", re.UNICODE)
 
 
@@ -559,7 +727,8 @@ def hard_block_reason(text: str, *, summary: bool = False) -> str | None:
         return None
     if len(_EMAIL_HEADER_RE.findall(text)) >= 3:
         return "raw_email_copy"
-    if not summary and len(text) > max_raw_chars():
+    # f0.8+（R3-05）：摘要身份不再免掉长度上限，只换一个更紧的上限
+    if len(text) > (min(max_raw_chars(), SUMMARY_MAX_CHARS) if summary else max_raw_chars()):
         return "oversized_raw_copy"
     if "[redacted:" in text and len(_MEANINGFUL_RE.sub("", text)) <= 4:
         return "secret_only"
@@ -668,6 +837,19 @@ def redact_messages_struct(messages) -> tuple[Any, list[str]]:
 def _redact_meta_entry(key, val, depth: int):
     """f0.8 ③-10：键名本身就是凭据语境（{"secret": "…"} / {"mnemonic": "…"} / {"session_cookie": "…"}）。
     按「键: 值」整体判一次——值像秘密才打码（{"cookie": "chocolate chip"} 不动），否则照旧只看值。"""
+    # f0.8+（外审 R3-09）：凭据键下的数字值（{"pin": 4821} / {"password": 12345678}）按字符串同样判一次；
+    # 普通键下的数字（{"count": 4821}）不动。
+    if isinstance(val, (int, float)) and not isinstance(val, bool) and isinstance(key, str) \
+            and _KEY_STEM_RE.search(key):
+        # a card security code is 3 digits; in metadata the key alone says what it is
+        if isinstance(val, int) and 100 <= abs(val) <= 9999 and _key_tier(_split_ident(key)) == "pin" \
+                and {"cvv", "cvc"} & set(_split_ident(key)):
+            return REDACT_FMT.format("credential")
+        prefix = f"{key}: "
+        out, kinds = redact_forbidden(prefix + str(val))
+        if kinds and out.startswith(prefix):
+            return out[len(prefix):]
+        return val
     if isinstance(key, str) and isinstance(val, str) and val and _KEY_STEM_RE.search(key):
         prefix = f"{key}: "
         out, kinds = redact_forbidden(prefix + val)
@@ -822,6 +1004,55 @@ def strip_reasoning(text: str) -> str:
     return t.strip()
 
 
+_FINAL_MARKER_RE = re.compile(
+    r"(?im)(?:^|\n)\s*(?:\*\*)?(?:final answer|final|answer|summary|最终答案|最终输出|答案|输出)(?:\*\*)?\s*[:：]\s*")
+_JSON_OBJ_RE = re.compile(r"\{[^{}]*\}", re.S)
+_ANSWER_KEYS = ("summary", "answer", "final", "output", "精华", "答案")
+
+
+def _answer_ok(text: str) -> bool:
+    t = (text or "").strip()
+    return len(t) >= 4 and looks_like_reasoning(t) is None
+
+
+def extract_final_answer(text: str) -> tuple[str, str | None]:
+    """Model output → (answer, reason).  reason is None when an answer was found.
+
+    f0.8+ C: a reasoning model (GPT-OSS-20B on an OpenAI-compatible gateway)
+    may put its thinking in front of the answer.  Order: strip known wrappers
+    (<think>, harmony channels); then a JSON object carrying an answer key;
+    then text after an explicit "Final answer:" marker; then the last paragraph
+    when it is a clean answer.  The reasoning itself is never returned."""
+    cand = strip_reasoning(text)
+    if not cand:
+        return "", "reasoning_only"
+    why = looks_like_reasoning(cand)
+    if not why:
+        return cand, None
+    for m in reversed(list(_JSON_OBJ_RE.finditer(cand))):
+        try:
+            obj = json.loads(m.group(0))
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            for key in _ANSWER_KEYS:
+                val = obj.get(key)
+                if isinstance(val, str) and _answer_ok(val):
+                    return val.strip(), None
+    markers = list(_FINAL_MARKER_RE.finditer(cand))
+    if markers:
+        tail = cand[markers[-1].end():].strip().strip("\"'“”「」")
+        if _answer_ok(tail):
+            return tail, None
+    paras = [p.strip() for p in re.split(r"\n\s*\n|\n", cand) if p.strip()]
+    if len(paras) >= 2:
+        last = paras[-1].strip("\"'“”「」")
+        letters = [c for c in last if c.isalpha()]
+        if letters and sum(1 for c in letters if _is_cjk(c)) / len(letters) >= 0.5 and _answer_ok(last):
+            return last, None
+    return "", why
+
+
 def looks_like_reasoning(text: str) -> str | None:
     """Reason code when ``text`` is a model's chain-of-thought rather than an answer, else None.
 
@@ -907,6 +1138,7 @@ def neutralize_client_provenance(md: dict) -> dict:
     其余写法（direct、user_said、乱码）一律丢掉，交给 source_of() 按服务端信号推导。原地修改并返回。"""
     if not isinstance(md, dict):
         return md
+    md.pop("role_asserted_by", None)       # f0.8+（R3-08）：服务端按凭据填，调用方填的不认
     st = str(md.pop("source_type", "") or "").strip().lower()
     basis = md.pop("basis", None)
     if st == "inferred":
@@ -914,6 +1146,31 @@ def neutralize_client_provenance(md: dict) -> dict:
         md["source_type"] = "inferred"
         md["basis"] = f"caller_declared:{tail}" if tail else "caller_declared"
     return md
+
+
+def caller_assertion() -> str:
+    """f0.8+（外审 R3-08）：这次写入里「用户说的」由谁断言——服务端按本请求的凭据裁定。
+
+    ui_session（控制台登录）/ token（主钥匙）/ agent_key:<agent>（每 agent 一把的钥匙）/
+    local（门禁关闭的本机直连）。写进 metadata 的 ``role_asserted_by``；调用方自填的值入口处已丢弃。"""
+    try:
+        from ducky.security.auth import current_request_auth_kind
+        kind = current_request_auth_kind()
+    except ImportError:          # pragma: no cover
+        kind = ""
+    if kind == "session":
+        return "ui_session"
+    if kind != "bearer":
+        return "local"
+    try:
+        from ducky.agent_keys import current
+        cur = current()
+    except ImportError:          # pragma: no cover
+        cur = None
+    if cur and not cur.get("main") and cur.get("agent"):
+        from ducky.origin_context import safe_origin_id
+        return f"agent_key:{safe_origin_id(cur['agent'])[:60]}"
+    return "token"
 
 
 def source_of(md: dict | None, *, infer_used: bool = False) -> tuple[str, str]:
@@ -933,6 +1190,11 @@ def source_of(md: dict | None, *, infer_used: bool = False) -> tuple[str, str]:
         return "inferred", "llm_extraction"
     if md.get("_origin_is_bot"):
         return "inferred", "relayed_by_bot"
+    # f0.8+（外审 R3-08）：每 agent 一把的钥匙代填的「用户原话」只算 inferred——那是另一个 agent
+    # 的转述，服务端核实不了；主钥匙 / 控制台 / 本机写入照旧按消息角色判。
+    asserted = str(md.get("role_asserted_by") or "")
+    if asserted.startswith("agent_key:"):
+        return "inferred", f"asserted_by:{asserted[:80]}"
     src = str(md.get("source") or "")
     if src:
         from ducky.epistemic import EPISTEMIC_REASONED, resolve_epistemic
@@ -1301,8 +1563,17 @@ def log_hard_block(*, user_id: str, bank_id: str, reason: str, text: str, md: di
 
 
 # ── P8 forget rules ───────────────────────────────────────────────────────
+def _fold(s: str) -> str:
+    """f0.8+（外审 R3-03）：与打码识别视图同口径——NFKC（全角→半角）+ 同形字折叠（西里尔 / 希腊 → 拉丁，
+    含连字符变体）+ casefold + 去掉 Cf/Mn（零宽、组合附加符）与韩文填充符。只用于忘记规则匹配，不改存储内容。"""
+    # NFKD first so precomposed accents split off and drop with the other Mn marks (é → e, Tomás → tomas)
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(ch for ch in s if ch not in _FILLERS and unicodedata.category(ch) not in ("Cf", "Mn"))
+    return unicodedata.normalize("NFKC", s).translate(_CONFUSABLES).casefold()
+
+
 def _norm_phrase(s: str) -> str:
-    return _PUNCT_RE.sub("", (s or "")).lower()
+    return _PUNCT_RE.sub("", _fold(s))
 
 
 def add_rule(user_id: str, bank_id: str, phrase: str, created_by: str = "") -> int:
@@ -1344,15 +1615,49 @@ def delete_rule(user_id: str, bank_id: str, rule_id: int) -> int:
         conn.close()
 
 
+_P8_WORD_RE = re.compile(r"[0-9a-z]+")
+
+
+def _part_in(part: str, spaced: str, tight: str) -> bool:
+    """One word of a forget rule against the folded text.  Latin/digit words match on word
+    boundaries (「Tom」 hits 「Tom called」「和Tom吵架」, not tomorrow / customs / atom);
+    anything with CJK keeps substring matching (Chinese has no spaces)."""
+    if _P8_WORD_RE.fullmatch(part):
+        return re.search(rf"(?<![0-9a-z]){re.escape(part)}(?![0-9a-z])", spaced) is not None
+    return part in tight
+
+
+def rule_matches(phrase: str, text: str) -> bool:
+    """Pure: does one forget-rule phrase match the text (all of its words present)?
+
+    f0.8+（外审 R3-03 / R3-04）：两边先过 _fold（全角 / 西里尔 / 零宽都归一）；拉丁词按词边界匹配。
+    多词规则仍按全文匹配（规则跨消息拆开也要命中，test_auto_memory_p8_rule_split_across_messages）；
+    全是拉丁词的多词规则，连写（wangxiaohua）也算命中。"""
+    if not text or not phrase:
+        return False
+    parts = [_norm_phrase(w) for w in re.split(r"[\s,，;；]+", phrase) if _norm_phrase(w)]
+    if not parts:
+        return False
+    f = _fold(text)
+    spaced, tight = _PUNCT_RE.sub(" ", f), _PUNCT_RE.sub("", f)
+    hit = [_part_in(p, spaced, tight) for p in parts]
+    # neighbouring Latin words of the rule may be written as one word (wang xiaohua → wangxiaohua)
+    for i in range(len(parts)):
+        for j in range(i + 1, len(parts)):
+            if all(hit[i:j + 1]):
+                continue
+            joined = "".join(parts[i:j + 1])
+            if _P8_WORD_RE.fullmatch(joined) and _part_in(joined, spaced, tight):
+                hit[i:j + 1] = [True] * (j + 1 - i)
+    return all(hit)
+
+
 def blacklist_hit(text: str, user_id: str, bank_id: str) -> int | None:
-    """Id of the first forget rule the text matches (all of the rule's words
-    present, punctuation/case-insensitive), else None."""
+    """Id of the first forget rule the text matches (see rule_matches), else None."""
     if not text:
         return None
-    norm = _norm_phrase(text)
     for r in list_rules(user_id, bank_id):
-        parts = [_norm_phrase(w) for w in re.split(r"[\s,，;；]+", r["phrase"]) if _norm_phrase(w)]
-        if parts and all(p in norm for p in parts):
+        if rule_matches(r["phrase"], text):
             return int(r["id"])
     return None
 
@@ -1394,16 +1699,17 @@ def gate_decision(text: str, role: str = "user", md: dict | None = None, *,
                   user_id: str = "default", bank_id: str = "default") -> dict | None:
     """What an ENFORCED principle does with one stored text, or None (= store as before).
 
-    P8 forget rule → drop (the text is kept nowhere); session-summary thinking text and
-    P1 machine noise → tombstone (restorable for ``gate_ttl_days``).  Shadow-mode
-    principles return None here; their verdict is still logged by observe_written."""
+    P8 forget rule, session-summary thinking text and P1 machine noise → tombstone (restorable
+    for ``gate_ttl_days`` through /tombstone/restore, then the text is erased).  f0.8+（外审 R3-04）：
+    P8 不再直接丢弃——误拦时用户能在墓碑里看到并恢复。Shadow-mode principles return None here;
+    their verdict is still logged by observe_written."""
     if policy_mode() == "off" or not isinstance(text, str) or not text.strip():
         return None
     md = md or {}
     if principle_mode("P8") == "enforce" and os.path.exists(db_path()):
         rule = blacklist_hit(text, user_id, bank_id)
         if rule is not None:
-            return {"action": "drop", "principle": "P8", "reason": "forget_rule", "rule": rule}
+            return {"action": "tombstone", "principle": "P8", "reason": "forget_rule", "rule": rule}
     from ducky.origin_context import is_session_summary
     # a fallback summary quotes the user's own turns: only model-written summaries are checked
     if (is_session_summary(md) and md.get("distill_mode") != "fallback"
@@ -1423,19 +1729,22 @@ def _apply_gate(text: str, role: str, md: dict, decision: dict, user_id: str, ba
     receipt = {k: decision[k] for k in ("action", "principle", "reason")}
     verdict = {"verdict": "reject", "worth": 0.0, "layer": "daily", "role": role or "user",
                "reasons": [f"enforced:{decision['principle']}:{decision['reason']}"]}
-    if decision["action"] == "drop":
-        # P8: forgotten means forgotten — no tombstone, no hash, only the rule id.
-        receipt["rule"] = decision.get("rule")
+    rule = decision.get("rule")
+    if decision["action"] == "drop":     # no principle drops today; kept for a future hard rule
         log_verdict(user_id=user_id, bank_id=bank_id, memory_id=None, text="", verdict=verdict,
-                    md=md, blacklist_rule=decision.get("rule"), mode="enforce")
+                    md=md, blacklist_rule=rule, mode="enforce")
         return receipt
     from ducky.tombstone import tombstone_gated_write
     tid, target = tombstone_gated_write(
         text, user_id=user_id, bank_id=bank_id, role=role, metadata=md, ttl_days=gate_ttl_days(),
-        reason=f"write_policy:{decision['principle']}:{decision['reason']}")
+        reason=f"write_policy:{decision['principle']}:{decision['reason']}"
+               + (f":rule{int(rule)}" if rule is not None else ""))
     receipt.update(tombstone_id=tid, memory_id=target, restorable_days=gate_ttl_days())
-    log_verdict(user_id=user_id, bank_id=bank_id, memory_id=target, text=text, verdict=verdict,
-                md=md, mode="enforce")
+    if rule is not None:
+        receipt["rule"] = rule
+    # a P8 verdict row keeps the rule id but not the text hash (the tombstone holds the text until it expires)
+    log_verdict(user_id=user_id, bank_id=bank_id, memory_id=target, text="" if rule is not None else text,
+                verdict=verdict, md=md, blacklist_rule=rule, mode="enforce")
     return receipt
 
 
@@ -1480,6 +1789,35 @@ def enforce_messages(messages, md: dict | None, *, user_id: str, bank_id: str) -
     if receipts and not any(not (isinstance(m, dict) and m.get("role") == "system") for m in kept):
         kept = []           # only system prompts left: nothing to store
     return kept, receipts
+
+
+def gate_derived_write(text: str, md: dict | None, *, user_id: str, bank_id: str,
+                       role: str = "assistant") -> tuple[str | None, list[dict]]:
+    """f0.8+（计划 ⑤ 写入门漏口）：服务端自己生成、要写进活记忆的正文（instinct 毕业的技能、self_edit
+    的合并结果）过 /add 同一道门——注入拦截 + 控制字符清洗 + 原则 7 打码、边界记号中和、原则 7 整段
+    拒收、enforce_messages（P1 / P8 / THINKING，拦下的进墓碑可恢复）。
+
+    Returns (clean_text, receipts).  clean_text is None when nothing may be written; the caller then
+    skips its write and keeps whatever it was about to replace.  ``md['redacted']`` gets the P7 kinds."""
+    if not isinstance(text, str) or not text.strip():
+        return None, []
+    from ducky.security.injection_guard import neutralize_boundary_markers, validate_and_sanitize_memory_content
+    kinds = redact_forbidden(text)[1]
+    ok, clean, rejection = validate_and_sanitize_memory_content(text)
+    if not ok:
+        return None, [{"action": "reject", "principle": "INJECTION", "reason": str(rejection or "rejected")[:60]}]
+    clean = neutralize_boundary_markers(clean)
+    block = hard_block_reason(clean)
+    if block:
+        log_hard_block(user_id=user_id, bank_id=bank_id, reason=block, text=clean, md=md)
+        return None, [{"action": "reject", "principle": "P7", "reason": block}]
+    if kinds and isinstance(md, dict):
+        md["redacted"] = sorted(set(kinds) | set(md.get("redacted") or []))
+    kept, receipts = enforce_messages([{"role": role or "assistant", "content": clean}], md,
+                                      user_id=user_id, bank_id=bank_id)
+    if receipts:
+        return None, receipts
+    return clean, []
 
 
 def nothing_left(messages) -> bool:

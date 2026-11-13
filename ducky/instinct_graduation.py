@@ -186,7 +186,6 @@ def graduate_to_skill(memory, user_id: str, group: dict,
             return None
 
         # 写入新记忆
-        messages = [{"role": "assistant", "content": distilled}]
         metadata = stamp_bank_metadata({
             "level": "skill",
             "category": cat,
@@ -194,6 +193,17 @@ def graduate_to_skill(memory, user_id: str, group: dict,
             "source_ids": source_ids,
             "graduated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }, scope.bank_id)
+        # f0.8+（计划 ⑤）：蒸馏出的技能过 /add 同一道写入门（注入 / 原则 7 打码 / P1 / P8）。
+        # 被拦就不毕业——原始记忆一条不删。
+        from ducky.write_policy import gate_derived_write
+        distilled, _gated = gate_derived_write(distilled, metadata, user_id=scope.user_id,
+                                               bank_id=scope.bank_id, role="assistant")
+        if distilled is None:
+            logger.warning(
+                "Instinct 毕业中止：技能正文被写入门拦下（category=%s, %s）——原始记忆一条不删",
+                cat, ",".join(f"{g.get('principle')}:{g.get('reason')}" for g in _gated) or "empty")
+            return None
+        messages = [{"role": "assistant", "content": distilled}]
         from ducky.gear import should_try_llm
         add_result = memory.add(messages, user_id=scope.user_id, metadata=metadata,
                                 infer=should_try_llm())

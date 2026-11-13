@@ -162,7 +162,9 @@ def test_hook_wrap_block_escapes_previously_wrapped_data():
     proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     plain_out, wrapped_out = proc.stdout.split("---\n", 1)
-    assert "<memory>" in plain_out, "未包装内容应被包装"
-    assert wrapped_out.count("<memory>") == 1, "出口仅有一组有效边界"
+    # f0.8+：开闭标记带 nonce（<memory nonce="…">），与服务端同形
+    assert '<memory nonce="' in plain_out, "未包装内容应被包装"
+    assert wrapped_out.count('<memory nonce="') == 1, "出口仅有一组有效边界"
+    assert "<memory>" not in wrapped_out
     assert wrapped_out.startswith("[以下为召回的记忆数据")
     assert "&lt;memory&gt;" in wrapped_out, "已有边界也作为数据转义"

@@ -122,8 +122,8 @@ def _lookup(key: str) -> str:
                  os.path.join(os.environ["AIDUMEM_HOME"], ".env")
                  if os.environ.get("AIDUMEM_HOME") else "",
                  os.path.expanduser("~/.aidumem/.env"),
-                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"),
-                 ".env"):
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")):
+        # f0.8+（外审 R3-01）：不读 cwd 的 .env——钩子的 cwd 是项目目录，克隆来的仓库能借它改身份
         if cand and os.path.isfile(cand):
             got = _read_env_key(cand, key)
             if got:

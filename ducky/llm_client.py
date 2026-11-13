@@ -289,6 +289,30 @@ def _resolve_key(api_key: str, purpose: str) -> str:
 _THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)>.*?(?:</\1>|\Z)")
 
 
+def _reasoning_text(message) -> str:
+    """推理模型的思考字段（不同网关叫法不同）；没有就返回空串。"""
+    if not isinstance(message, dict):
+        return ""
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _content_echoes_reasoning(content: str, message) -> bool:
+    """content 是不是思考字段的回声（整段相同，或一方是另一方的前缀）。"""
+    reasoning = _reasoning_text(message)
+    if not reasoning:
+        return False
+    a = " ".join(str(content).split())
+    b = " ".join(reasoning.split())
+    if not a or not b:
+        return False
+    probe = min(len(a), len(b), 160)
+    return a[:probe] == b[:probe]
+
+
 def _extract_content(data: dict) -> Optional[str]:
     """从一个 chat/completions 响应对象里提取 assistant 文本。
 
@@ -302,6 +326,11 @@ def _extract_content(data: dict) -> Optional[str]:
     content = message.get("content") if isinstance(message, dict) else None
     if content:
         text = str(content)
+        # f0.8+ C：部分网关（实测 GPT-OSS-20B 经 OpenAI 兼容网关）在推理把预算
+        # 耗光、正文为空时，把 `reasoning` 字段原样抄进 content。抄来的思考
+        # 不是答案：判为「没有正文」，交给上层的截断重试 / 确定性降级。
+        if _content_echoes_reasoning(text, message):
+            return None
         # f0.8 ②：推理模型把思考写进正文（<think>…</think>）时只取答案；reasoning /
         # reasoning_content 字段本来就不读——思考过程从不当成答案返回。
         if "<think" in text or "<reasoning" in text:
@@ -361,7 +390,8 @@ def _parse_completion_body(text: str) -> Optional[str]:
 
 
 def _post_completion(endpoint: str, api_key: str, model: str, messages: list,
-                     max_tokens: int, temperature: float, timeout: int) -> tuple[Optional[str], bool]:
+                     max_tokens: int, temperature: float, timeout: int,
+                     reasoning_effort: Optional[str] = None) -> tuple[Optional[str], bool]:
     """发一次 chat/completions，返回 (content, 推理截断标志)。
 
     推理截断 = HTTP 200 但 content 为空、finish_reason=length 且响应带
@@ -369,27 +399,39 @@ def _post_completion(endpoint: str, api_key: str, model: str, messages: list,
     """
     from ducky.security.egress import guard_url
     guard_url(endpoint, "llm")  # f0.8：外呼前一刻复检目的地址（含 DNS 解析）
-    r = requests.post(
-        endpoint,
-        # f0.6 W-12（muse S-1 链条环节）：禁重定向——端点被改后 3xx 跳转
-        # 会带着 Authorization 头落进攻击者域。decision 段既有此规则，
-        # 本轮推广到全部外呼。
-        allow_redirects=False,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            # 🔴-B：显式要求非流式。部分网关无视该字段仍回 SSE，
-            # 响应体交给 _parse_completion_body 兜底解析。
-            "stream": False,
-        },
-        timeout=timeout,
-    )
+    body = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        # 🔴-B：显式要求非流式。部分网关无视该字段仍回 SSE，
+        # 响应体交给 _parse_completion_body 兜底解析。
+        "stream": False,
+    }
+    if reasoning_effort:
+        # f0.8+ C：推理模型（GPT-OSS 等）少想一点，答案才不会被思考挤出预算。
+        body["reasoning_effort"] = reasoning_effort
+
+    def _send(payload):
+        return requests.post(
+            endpoint,
+            # f0.6 W-12（muse S-1 链条环节）：禁重定向——端点被改后 3xx 跳转
+            # 会带着 Authorization 头落进攻击者域。decision 段既有此规则，
+            # 本轮推广到全部外呼。
+            allow_redirects=False,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=timeout,
+        )
+
+    r = _send(body)
+    if r.status_code in (400, 422) and "reasoning_effort" in body:
+        # 不认识这个参数的模型/网关会直接 400：去掉它再试一次，不让可选优化变成故障。
+        body.pop("reasoning_effort", None)
+        r = _send(body)
     if r.status_code != 200:
         logger.warning(f"LLM 直接调用失败: HTTP {r.status_code} {r.text[:200]}")
         return None, False
@@ -401,11 +443,12 @@ def _post_completion(endpoint: str, api_key: str, model: str, messages: list,
         data = json.loads(r.text.strip().splitlines()[0].removeprefix("data:").strip())
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
-        if choice.get("finish_reason") == "length" and msg.get("reasoning_content"):
+        if choice.get("finish_reason") == "length" and _reasoning_text(msg):
             return None, True
     except Exception:
         pass
-    logger.warning("LLM 直接调用: HTTP 200 但响应体解析不出内容: %s", r.text[:200])
+    # 只记长度不记正文：正文可能是模型的思考过程或回显的用户数据。
+    logger.warning("LLM 直接调用: HTTP 200 但响应体解析不出内容（%d 字节）", len(r.text or ""))
     return None, False
 
 
@@ -416,6 +459,7 @@ def call_llm(
     max_tokens: int = 1024,
     temperature: float = 0.3,
     timeout: int = 45,
+    reasoning_effort: Optional[str] = None,
 ) -> Optional[str]:
     """
     直接调用配置好的 LLM，返回 assistant 文本；失败返回 None（调用方降级）。
@@ -426,6 +470,7 @@ def call_llm(
         max_tokens: 输出上限
         temperature: 采样温度（认知类任务用低温度求稳定）
         timeout: 请求超时秒数
+        reasoning_effort: 推理模型的思考力度（low/medium/high）；None 不发送。网关拒收时自动去掉重试
 
     🔴-B 根治（v19.4.0 生产实测补强）：上游网关的推理模型，
     请求级 reasoning_effort/enable_thinking 均被网关无视；小预算下思考耗尽
@@ -466,7 +511,7 @@ def call_llm(
         with llm_slot("call_llm"):
             content, reasoning_truncated = _post_completion(
                 endpoint, cfg["api_key"], cfg["model"], messages,
-                max_tokens, temperature, timeout)
+                max_tokens, temperature, timeout, reasoning_effort=reasoning_effort)
         if content:
             outcome = "ok"
             return content
@@ -477,7 +522,7 @@ def call_llm(
             with llm_slot("call_llm"):
                 content, _ = _post_completion(
                     endpoint, cfg["api_key"], cfg["model"], messages,
-                    retry_budget, temperature, timeout)
+                    retry_budget, temperature, timeout, reasoning_effort=reasoning_effort)
             if content:
                 outcome = "ok"
                 return content

@@ -1,4 +1,4 @@
-"""f0.8 ①：connect_host 挂 / 查 CC 自带记忆桥（PostToolUse, Write|Edit|MultiEdit）。"""
+"""f0.8 ①：connect_host 挂 / 查 CC 自带记忆桥（PostToolUse, Write|Edit；f0.8+ 起去掉 MultiEdit，老 matcher 仍认）。"""
 from __future__ import annotations
 
 import json
@@ -20,7 +20,7 @@ def test_merge_adds_bridge_with_matcher_and_keeps_foreign(home):  # noqa: F811
     new, ch = C.merge_hooks(cfg, "claude-code", C.DEFAULT_URL, home / ".env")
     assert f"新增 PostToolUse → {BRIDGE}" in ch
     g = _bridge_groups(new)
-    assert len(g) == 1 and g[0]["matcher"] == "Write|Edit|MultiEdit"
+    assert len(g) == 1 and g[0]["matcher"] == "Write|Edit"
     assert g[0]["hooks"][0]["timeout"] == 30
     assert str(C.REPO / "integrations/claude-code" / BRIDGE) in g[0]["hooks"][0]["command"]
     assert foreign in new["hooks"]["PostToolUse"]
@@ -36,7 +36,7 @@ def test_wrong_matcher_is_repaired_once(home):  # noqa: F811
     assert C.wired_lines(new, "claude-code")["PostToolUse"] is False
     fixed, ch = C.merge_hooks(new, "claude-code", C.DEFAULT_URL, home / ".env")
     assert any("matcher" in c for c in ch) and not any(c.startswith("新增") for c in ch)
-    assert [g["matcher"] for g in _bridge_groups(fixed)] == ["Write|Edit|MultiEdit"]
+    assert [g["matcher"] for g in _bridge_groups(fixed)] == ["Write|Edit"]
     assert C.merge_hooks(fixed, "claude-code", C.DEFAULT_URL, home / ".env")[1] == []
 
 
@@ -58,20 +58,32 @@ def test_uninstall_removes_bridge_only(home):  # noqa: F811
 
 def test_check_reports_bridge_status(home, stub, capsys):  # noqa: F811
     (home / ".claude").mkdir()
-    # 只有 f0.7 的三线（老安装）：--check 报桥未挂、整体红
+    # 只有旧安装的三线：--check 报桥未挂并警告，不把正常的三线接入判成失败。
     old, _ = C.merge_hooks({}, "claude-code", stub, home / ".env")
     old["hooks"].pop("PostToolUse")
     _cc(home).write_text(json.dumps(old), encoding="utf-8")
     rc = C.main(["--host", "claude-code", "--url", stub, "--check", "--no-selftest", "--json"])
     rep = json.loads(capsys.readouterr().out)
     br = rep["hosts"][0]["cc_memory_bridge"]
-    assert rc == 1 and br["wired"] is False and "未挂" in br["detail"] and br["script_present"]
+    assert rc == 0 and br["wired"] is False and "未挂" in br["detail"] and br["script_present"]
+    assert rep["warnings"] and rep["hosts"][0]["warnings"]
     assert json.loads(_cc(home).read_text()) == old  # --check 不改配置
     # 重跑 connect_host 补上后 --check 绿，文本报告里有桥那一行
     assert C.main(["--host", "claude-code", "--url", stub, "--no-selftest"]) == 0
     capsys.readouterr()
     rc = C.main(["--host", "claude-code", "--url", stub, "--check", "--no-selftest"])
     out = capsys.readouterr().out
-    assert rc == 0 and "✅ 自带记忆桥 PostToolUse(Write|Edit|MultiEdit): 已挂上" in out
+    assert rc == 0 and "✅ 自带记忆桥 PostToolUse(Write|Edit): 已挂上" in out
     cfg = json.loads(_cc(home).read_text())
     assert set(cfg["hooks"]) == {"UserPromptSubmit", "Stop", "SessionEnd", "PostToolUse"}
+
+
+def test_legacy_multiedit_matcher_still_counts_as_wired_and_is_upgraded(home):  # noqa: F811
+    """f0.8+：老安装的 Write|Edit|MultiEdit 在 --check 里照样算挂上；重跑安装换成 Write|Edit。"""
+    new, _ = C.merge_hooks({}, "claude-code", C.DEFAULT_URL, home / ".env")
+    _bridge_groups(new)[0]["matcher"] = "Write|Edit|MultiEdit"
+    assert C.cc_bridge_status(new)["wired"] is True
+    assert C.wired_lines(new, "claude-code")["PostToolUse"] is True
+    fixed, ch = C.merge_hooks(new, "claude-code", C.DEFAULT_URL, home / ".env")
+    assert [g["matcher"] for g in _bridge_groups(fixed)] == ["Write|Edit"]
+    assert not any(c.startswith("新增") for c in ch)

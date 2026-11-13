@@ -939,18 +939,32 @@ def _apply_rerank(query: str, scored: List[dict], limit: int) -> bool:
         item.pop("_rerank_score", None)
         item.pop("_rerank_original_verified", None)
     try:
-        from ducky.mem0_runtime import rerank as do_rerank
-        docs = [_candidate_content_text(it) for it in scored]
+        from ducky.mem0_runtime import rerank as do_rerank, rerank_limits
+        # f0.8+ C：只送原分数最高的 max_docs 条（耗时随条数线性涨）。按原分数
+        # 降序排好再送，回来的 index 映射回 scored 的位置。
+        order = sorted(range(len(scored)),
+                       key=lambda i: scored[i].get("_hybrid_score", 0) or 0, reverse=True)
+        cap = rerank_limits()["max_docs"] or len(order)
+        sent, tail = order[:cap], order[cap:]
+        docs = [_candidate_content_text(scored[i]) for i in sent]
         # Every candidate competes on the same scale. Unreturned candidates
         # otherwise retain their full old score and can outrank reranked hits.
         rr = do_rerank(query, docs, top_n=len(docs))
         if rr:
             from ducky.recall_evidence import valid_rerank_scores, filter_rerank_relevance
-            scores = valid_rerank_scores(rr, len(scored))
+            local = valid_rerank_scores(rr, len(sent))
+            scores = {sent[j]: v for j, v in local.items()}
             for idx, rr_score in scores.items():
                 old = scored[idx].get("_hybrid_score", 0) or 0
                 scored[idx]["_hybrid_score"] = round(old * (1 - RERANK_WEIGHT) + rr_score * RERANK_WEIGHT, 4)
                 scored[idx]["_rerank_score"] = round(rr_score, 4)
+            if scores and tail:
+                # 没送审的尾部（原分数本就更低）按「不比送审里最弱的那条更相关」
+                # 同口径融合，免得它们带着满额旧分压过重排过的条目。
+                floor_rr = min(scores.values())
+                for idx in tail:
+                    old = scored[idx].get("_hybrid_score", 0) or 0
+                    scored[idx]["_hybrid_score"] = round(old * (1 - RERANK_WEIGHT) + floor_rr * RERANK_WEIGHT, 4)
             rerank_applied = bool(scores)
             scored[:], gate = filter_rerank_relevance(scored, scores)
             _set_gate_telemetry(rerank_relevance=gate)

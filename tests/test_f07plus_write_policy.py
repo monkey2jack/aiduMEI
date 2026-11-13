@@ -59,7 +59,9 @@ def test_hard_block_shapes():
     mail = "From: a@b.com\nTo: c@d.com\nSubject: hi\nDate: Mon\n\nbody"
     assert wp.hard_block_reason(mail) == "raw_email_copy"
     assert wp.hard_block_reason("x" * 20001) == "oversized_raw_copy"
-    assert wp.hard_block_reason("x" * 20001, summary=True) is None
+    # f0.8+（外审 R3-05）：自报的摘要身份不再免掉长度上限；真实精华体量（≤4000 字）照常放行
+    assert wp.hard_block_reason("x" * 20001, summary=True) == "oversized_raw_copy"
+    assert wp.hard_block_reason("x" * 3000, summary=True) is None
     assert wp.hard_block_reason("[redacted:api_key]") == "secret_only"
     assert wp.hard_block_reason("我的 key 是 [redacted:api_key] 记一下") is None
     assert wp.hard_block_reason("From: 张三 的消息说明天开会") is None

@@ -272,6 +272,15 @@ def _wp_observe(kernel, written: list, user_id: str, bank_id: str) -> None:
         logger.warning("write_policy observe unavailable: %s", type(exc).__name__)
 
 
+def _search_cache_stale(user_id=None) -> None:
+    """f0.8+ C：内核落了写，作废该用户的 /search 短缓存（后台写不经过 HTTP 中间件）。"""
+    try:
+        from ducky.search_cache import invalidate_user
+        invalidate_user(user_id)
+    except (ImportError, OSError, ValueError, TypeError, RuntimeError):
+        pass
+
+
 class NativeMemory:
     """mem0 Memory 形状的单库内核句柄。"""
 
@@ -536,6 +545,7 @@ class NativeMemory:
             for mem_id, role, text, vec, md_i in todo:
                 self._write(mem_id, text, vec, user_id=user_id, metadata=md_i, agent_id=agent_id, run_id=run_id,
                             role=role)
+        _search_cache_stale(user_id)
         _wp_observe(self, [(i, r, t, m) for i, r, t, _v, m in todo], user_id, str(md.get("bank_id") or "default"))
         return {"results": [{"id": i, "memory": t, "event": "ADD"} for i, _r, t, _v, _m in todo]}
 
@@ -576,6 +586,7 @@ class NativeMemory:
             md.update({k: v for k, v in (metadata or {}).items() if k not in _CORE_KEYS})
             with self.conn as c:
                 gone = self._apply_update(c, r, text if text is not None else r["content"], md, vec)
+        _search_cache_stale(r["user_id"])
         return {"message": "Memory updated successfully!", "collateral_deleted": gone}
 
     def delete(self, memory_id, *, reason: str = "", actor: str = "system", user_id=None, bank_id=None):
@@ -584,7 +595,8 @@ class NativeMemory:
             raise ValueError(f"Memory with id {memory_id} not found")
         with self.conn as c:
             gone = self._drop_copies(c, r, f"copy of deleted {r['id']}")
-            self._remove(c, r, reason, actor)
+            self._remove(c, r, reason or "memory_delete", actor)
+        _search_cache_stale(r["user_id"])
         return {"message": "Memory deleted successfully!", "collateral_deleted": gone}
 
     def delete_all(self, user_id=None, agent_id=None, run_id=None, **_kw):
@@ -600,6 +612,7 @@ class NativeMemory:
                 self._drop_copies(c, r, f"copy of deleted {r['id']}")
                 self._remove(c, r, "delete_all", "system")
                 n += 1
+        _search_cache_stale(user_id)
         return {"message": "Memories deleted successfully!", "deleted": n}
 
     # ── 读路径 ────────────────────────────────────────────────────

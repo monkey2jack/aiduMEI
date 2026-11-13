@@ -95,7 +95,7 @@ except Exception:                                     # pragma: no cover - 拷�
             os.environ.get("AIDUMEM_ENV_FILE", ""),
             os.path.join(home, ".env") if home else "",
             os.path.expanduser("~/.aidumem/.env"),
-            ".env",
+            # f0.8+（外审 R3-01）：不读 cwd 的 .env——钩子的 cwd 是项目目录，克隆来的仓库能借它改身份
         ):
             if not cand or not os.path.isfile(cand):
                 continue

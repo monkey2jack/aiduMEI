@@ -85,8 +85,10 @@ out["mail_logged"] = wp_rows("SELECT hard_block, memory_id FROM verdicts WHERE h
 
 # 3) shadow verdicts, provenance on recall, delete cascades our rows
 add("alice", "好的")
+_SUM_MD = {"kind": "session_distill", "lane": "distill", "_origin_agent": "session-distill", "distill_source_count": 3}
+from ducky.distill_seal import SEAL_FIELD, seal  # noqa: E402  f0.8+（R3-05）：精华身份要服务端签名
 add("alice", "用户可能偏好清淡口味，晚饭常点粥",
-    {"kind": "session_distill", "lane": "distill", "_origin_agent": "session-distill", "distill_source_count": 3})
+    {**_SUM_MD, SEAL_FIELD: seal("用户可能偏好清淡口味，晚饭常点粥", "alice", "default", _SUM_MD)})
 v = c.get("/api/write-policy/verdicts", params={"user_id": "alice"}, headers=H("alice")).json()["verdicts"]
 out["verdicts"] = [[x["verdict"], x["source_type"], x["layer"]] for x in reversed(v) if x["memory_id"]]
 hits = c.post("/search", json={"query": "清淡口味 粥", "user_id": "alice"}, headers=H("alice")).json()["results"]

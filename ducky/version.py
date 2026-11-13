@@ -8,6 +8,23 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.8.1 (f0.8+ · 2026-11-14 · 四路整合与交接加固)
+    用例总数 4535 → 4806(本版 = 行为 4174 + 脚本/钩子 486 + 守卫 146)。
+    1. 合并四路 f0.8+ 开发，归并实验默认 off；公开版本仍为 f0.8，本候选尚未部署或发布。
+    2. 出处与会话精华使用服务端签章；派生写入复用安全闸门，剥离思考文本，推理努力默认 medium。
+    3. 原则 7 就地打码补飞书/Lark 机器人 webhook（含编码形态）；原则 8 命中记录进入可恢复墓碑。
+    4. 出站校验将 DNS 检查结果钉到实际连接，并给 SDK 客户端挂校验；缓存解析仍逐地址校验。
+    5. CC/Codex 写钩子后台执行，15 秒超时最多重试一次；同一调用复用幂等键，独立回合各用新键。
+    6. 召回缓存绑定租户、借阅者、时间窗、会话及写入世代，避免并发写入后旧答案重新入缓存。
+    7. rerank 限文档数/字符数/耗时/总预算，带短缓存及熔断；降级状态随响应返回。
+    8. 夜间归并保留原行并可恢复；作用域统一走 SQL 构建器；裁判失败不推进下次增量检查点。
+    9. 补升级续跑 journal：成功步骤不重跑，失败或中断要求检查，不自动重启或回滚。
+    10. 补只读巡检：同时检查完整健康、数据库、日志、Git、进程号及启动时间，NRestarts=0 不再单独证明稳定。
+    11. 旧 CC 三条核心钩子接通但缺桥时给警告；新安装仍接四线；无 LLM 客户端的离线档日志降为 debug。
+    12. 原生删除墓碑 reason 缺省 memory_delete；排序基准使用真实服务端精华签章，并保证长原话样本超过既有阈值（原来三条不足 160 字）；保留关闭降权必红的反向对照。
+    13. 异常捕获收窄、热点拆分，保持既有复杂度/异常/隔离棘轮；新增 logger 保持采集前缀；治理测试数据库不再在收集期污染前序用例，正反顺序均通过。
+    14. 20 题真实跨会话 A/B、真实供应商和宿主实机验收、外审及上线审批尚待完成；归并不得据单元测试开启。
+
 v0.8.0 (内部候选 f0.8.0 · 2026-11-09 · 安全加固 + 写入策略按影子周结果开拦截 + Claude Code 记忆桥 · 大仓 Tag/Release 仍为 f0.7+++)
     用例总数 4181 → 4535(本版 = 行为 3907 + 脚本/钩子 482 + 守卫 146)。
     1. 原则 1 两类机器噪声(机器文本、上下文续接说明)在 /add 落库前进墓碑,7 天后擦正文,同轮其他消息照写;回执 gated。
@@ -777,8 +794,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.8.0"
-FULL_VERSION = "f0.8.0"
+SERVICE_VERSION = "0.8.1"
+FULL_VERSION = "f0.8.1"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -815,7 +832,7 @@ FULL_VERSION = "f0.8.0"
 # 内部候选，PUBLIC_RELEASE_VERSION 不动（公开翻牌另行决定）。
 # f0.8（2026-11-09）：维护者授权公开翻牌——大仓 Tag/Release 升至 f0.8，PUBLIC_RELEASE_VERSION 同步；
 # LINEAGE 0.8.0 行对外列记 f0.8（f0.7+++ 先例），FULL_VERSION 保持 f0.8.0（/health 不变）。
-PUBLIC_RELEASE_VERSION = "f0.8"
+PUBLIC_RELEASE_VERSION = "f0.8+"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -829,6 +846,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.8.1", "f0.8+", "f0.8.1", "f0.8+：四路整合、安全修复、重试幂等、缓存世代与运维加固；归并默认关闭 · 2026-11-14"),
     ("0.8.0", "", "f0.8", "公开 f0.8(2026-11-09 维护者授权翻牌,代码 f0.8.0):安全加固:出站地址校验(SSRF)、/health 完整视图只给控制台与主 token、MCP SSE 回环也要 token、开闭标记带 nonce、出处服务端裁定、列表钳制与读限流、自编辑/instinct 身份硬围栏、多消息逐条闸门、/forget 墓碑可恢复;写入策略按影子周结果开拦截(原则 1 机器噪声进墓碑、原则 8 忘记规则、会话精华不收思考过程,均可拨回影子);Claude Code 自带记忆桥(打码 + 导入 + 每日兜底);connect_host 认 CLAUDE_CONFIG_DIR/--project-dir、--claude-test 要真召回暗号;钩子脚本可执行位;探针认 AIDUMEM_ENV_FILE · 2026-11-09"),
     ("0.7.6", "", "f0.7+++", "公开 f0.7+++(2026-11-06 维护者授权翻牌,代码 f0.7.6):f0.7++ 外审复审修复:原则 7 识别重写(逐字 NFKC + 去 Cf/Mn + 同形字;键名按驼峰/下划线分词;是/为/is/改成等分隔;中文与带空格口令;占位符白名单只留真模板;助记词/私钥/Basic/Cookie/机器人令牌/短 PIN);role 白名单、JSON 字符串 messages 先解析再打码、变更日志落库前再打码、顶层 session/agent/event_at 校验;删除链补 memory_epistemic 与 evolve_episodes;各库 secure_delete + 删除后 WAL checkpoint;观点列表/聚合按事实租户计、不覆盖他人观点;evidence_ids 校验;登录体非对象 400 · 2026-11-06"),
     ("0.7.5", "", "f0.7++", "公开 f0.7++(2026-11-04 维护者授权翻牌,代码 f0.7.5):第二轮外审 P0 收口:钥匙强制下事实层按身份隔离、/opinions/set 核事实真实归属;原则 7 补零宽/全角/下划线键名/全大写与纯小写口令/JSON/metadata;/evolve/feedback 打码;非 ASCII 凭据不再 500;删除链补派生全文表 + 元守卫静态扫描;多模态消息与后台自动记忆走同一写入闸门 · 2026-11-04"),

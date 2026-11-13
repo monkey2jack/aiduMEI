@@ -91,6 +91,7 @@ from ducky.hot.legacy import (
 )
 from ducky.mem0_runtime import get_memory
 from ducky.reflect import reflect_background_loop
+from ducky.consolidate import consolidate_background_loop
 from ducky.routes_registry import UI_ROUTES, register_all_routes
 from ducky.schema_bootstrap import ensure_core_schema
 from ducky.text_fts import _init_text_fts
@@ -142,6 +143,12 @@ async def _lifespan(_app: "FastAPI"):
             logger.warning("⚠️ [AgentKeys] %s", _w)
     except (ImportError, OSError, ValueError) as _e:  # 观测不许拖垮启动
         logger.debug("agent key startup check skipped: %s", _e)
+    # f0.8+ C：启动时读一次 git HEAD，/health 的 git_sha 随代码走，不随 .env 漂移。
+    try:
+        from ducky.hot.health import _git_sha
+        logger.info("build git_sha=%s", _git_sha()[:12])
+    except (ImportError, OSError, ValueError) as _e:  # 观测不许拖垮启动
+        logger.debug("git_sha warm-up skipped: %s", _e)
     # v20.3.2-beta（外审 P0-3）：单进程契约与公网熔断同级，**同样在起线程之前**。
     _enforce_single_process_policy()
     from ducky.process_lock import acquire_api_process_lock
@@ -502,6 +509,65 @@ def _browser_cross_site_write(request: "Request") -> bool:
     return _host_without_port(urlsplit(origin).netloc) not in _trusted_host_names()
 
 
+def _cookie_write_not_same_origin(request: "Request") -> bool:
+    """f0.8+（外审 R3-13）：UI 会话（cookie）认证的写请求必须来自同源页面。
+
+    SameSite=Lax 挡得住跨站 POST，挡不住**同站**的其他子域（同一域名下的别的服务）。
+    判据：浏览器自带的 Sec-Fetch-Site 有就以它为准（页面伪造不了），只认 same-origin / none；
+    没有时看 Origin：null 拒，有值就必须与 Host（可信反代时也认 X-Forwarded-Host）同 host:port。
+    两个头都没有的（非浏览器客户端）不受影响。"""
+    if request.method.upper() not in ("POST", "PUT", "PATCH", "DELETE"):
+        return False
+    sfs = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if sfs:
+        return sfs not in ("same-origin", "none")
+    origin = (request.headers.get("origin") or "").strip().lower()
+    if not origin:
+        return False
+    if origin == "null":
+        return True
+    from urllib.parse import urlsplit
+    parts = urlsplit(origin)
+    netloc = parts.netloc
+    default_port = {"http": ":80", "https": ":443"}.get(parts.scheme, "")
+    if default_port and netloc.endswith(default_port):
+        netloc = netloc[: -len(default_port)]
+    hosts = {(request.headers.get("host") or "").strip().lower()}
+    if _trust_proxy_enabled():
+        hosts |= {h.strip().lower() for h in (request.headers.get("x-forwarded-host") or "").split(",") if h.strip()}
+    hosts = {h[: -len(default_port)] if default_port and h.endswith(default_port) else h for h in hosts if h}
+    return netloc not in hosts
+
+
+def _is_admin_request() -> bool:
+    """主人直连：UI 会话，或主令牌（不是按 agent 发的钥匙）。"""
+    from ducky import agent_keys
+    from ducky.security.auth import current_request_auth_kind
+    kind = current_request_auth_kind()
+    if kind == "session":
+        return True
+    cur = agent_keys._CURRENT.get()
+    return kind == "bearer" and bool(cur) and bool(cur.get("main"))
+
+
+def _post_auth_refusal(request: "Request"):
+    """已认证之后的两道附加拒绝（f0.8+）：R3-13 cookie 写的同源校验；R3-14 文档只给主人。"""
+    from ducky.security.auth import current_request_auth_kind
+    if current_request_auth_kind() == "session" and _cookie_write_not_same_origin(request):
+        logger.warning("🛑 [Security] 拒绝非同源的 UI 会话写请求：Origin=%s Sec-Fetch-Site=%s 路径=%s",
+                       request.headers.get("origin", "-"), request.headers.get("sec-fetch-site", "-"),
+                       request.url.path)
+        return JSONResponse(status_code=403, content={
+            "detail": "Console-session writes must come from the console's own origin.",
+            "code": "cross_origin_session_write_refused"})
+    if request.url.path in _DOC_PATHS and not _is_admin_request():
+        # R3-14：接口清单（/docs /openapi.json）只给 UI 会话与主令牌；agent 钥匙看不到
+        return JSONResponse(status_code=403, content={
+            "detail": "API docs are available to the console session and the main token only.",
+            "code": "docs_admin_only"})
+    return None
+
+
 def _trust_proxy_enabled() -> bool:
     """部署方是否显式声明「本实例在可信反代之后」。"""
     return os.environ.get("AIDUMEI_TRUST_PROXY", "").strip().lower() in {
@@ -754,6 +820,9 @@ async def _require_credentials(request: Request, call_next):
     if _is_public_path(request.url.path):
         return await call_next(request)
     if _request_authorized(request):
+        refused = _post_auth_refusal(request)
+        if refused is not None:
+            return refused
         return await _limited_call(request, call_next)
     return JSONResponse(
         {
@@ -916,6 +985,19 @@ async def _record_http_outcome(request: Request, call_next):
         # 下一次借出时回滚。
         _tx_janitor(_BORROW_CONTEXT.get())
         _BORROW_CONTEXT.reset(_ctx_token)
+        # f0.8+ C：任何写请求（成败都算，失败也可能半写）作废写入者的 /search 缓存。
+        try:
+            from ducky import search_cache as _search_cache
+            _search_cache.invalidate_for_http(
+                request.method, request.url.path, request.query_params.get("user_id"),
+                getattr(request, "_body", None))
+        except (ImportError, OSError, ValueError, TypeError, RuntimeError) as _sc_exc:
+            logger.debug("search cache invalidation fell back to clear: %s", _sc_exc)
+            try:
+                from ducky import search_cache as _search_cache
+                _search_cache.clear()
+            except (ImportError, OSError, ValueError, TypeError, RuntimeError):
+                pass
     http_metrics.record(response.status_code)
     return response
 
@@ -1103,6 +1185,7 @@ _BACKGROUND_LOOPS = {
     "autodream": autodream_background_loop,
     "evolve_mem": evolve_background_loop,
     "reflect": reflect_background_loop,
+    "consolidate_nightly": consolidate_background_loop,
 }
 
 

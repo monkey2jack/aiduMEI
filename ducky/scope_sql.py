@@ -32,7 +32,7 @@ from ducky.bank_contract import (
     scope_predicate,
 )
 
-__all__ = ["KNOWN_SCOPE_KEYS", "scope_clause", "scope_from_mapping"]
+__all__ = ["KNOWN_SCOPE_KEYS", "scope_clause", "scope_from_mapping", "user_clause"]
 
 # 已知作用域维度全集。请求面传入的 scope 映射里出现任何其它键，
 # 一律拒绝 —— 「未知维度静默放行」在 v20.2.4（🟡-4）真实发生过：
@@ -104,3 +104,14 @@ def scope_from_mapping(raw: dict[str, Any], *, who: str = "") -> BankScope:
             f"（已知维度：{sorted(KNOWN_SCOPE_KEYS)}）——拒绝放行"
         )
     return make_scope(user_id=raw.get("user_id"), bank_id=raw.get("bank_id"))
+
+
+def user_clause(user_id: str, *, alias: str = "") -> tuple[str, list[str]]:
+    """Legacy user-only tables (e.g. reflections) have no bank column.
+
+    Keep this explicit instead of silently dropping bank isolation in
+    scope_clause. Callers must only use it for tables with user-only ownership.
+    """
+    _check_alias(alias)
+    pfx = f"{alias}." if alias else ""
+    return f" AND {pfx}user_id=?", [user_id]

@@ -54,6 +54,7 @@ _GUARD_FILES: dict[str, str] = {
 
 # ── 脚本/钩子行为名单（不 import 产品包，但真执行脚本/钩子/产物）────────
 _SCRIPT_BEHAVIOR_FILES: dict[str, str] = {
+    "test_f08p_upgrade_checkpoint.py": "真实子进程验证升级中断与重复执行边界",
     "test_f04_probe_guard.py": "真实子进程验证 SQLite URI 与文件写入隔离边界",
     "test_f04_recall_windows.py": "真实宿主 shell 读钩子的有界证据窗口行为",
     "test_f0_4_durability_http.py": "隔离子进程执行实际 API、mem0 与持久账本故障场景",

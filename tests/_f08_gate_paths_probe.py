@@ -56,7 +56,8 @@ def tombs(uid, reason_like="write_policy:%"):
              (uid, reason_like))
 
 
-def residue(needle):
+def residue(needle, skip=("tombstones",)):
+    """Every copy of needle outside the tombstone table (f0.8+ R3-04: P8 waits there, restorable)."""
     hits = {}
     for root, _dirs, files in os.walk(d):
         for name in sorted(files):
@@ -72,6 +73,8 @@ def residue(needle):
                 con = sqlite3.connect(path)
                 try:
                     for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                        if t in skip:
+                            continue
                         for col in [x[1] for x in con.execute(f'PRAGMA table_info("{t}")')]:
                             n = con.execute(f'SELECT COUNT(*) FROM "{t}" WHERE CAST("{col}" AS TEXT) LIKE ?',
                                             (f"%{needle}%",)).fetchone()[0]
@@ -122,7 +125,7 @@ out["upd_missing_id"] = [st, len(tombs("ivy"))]           # ownership first: 404
 rid = forget_rule("ivy", "青石巷 九号")
 st, body = update("ivy", mid, "我的旧住址是青石巷九号二单元")
 out["upd_p8"] = [rid is not None, st, body.get("action"), [g["principle"] for g in body.get("gated", [])],
-                 residue("九号二单元"), live("ivy", "跑步十公里")]
+                 residue("九号二单元"), live("ivy", "跑步十公里"), tombs("ivy", "write_policy:P8:%")]
 
 os.environ["AIDUMEI_WRITE_POLICY_P1"] = "shadow"
 st, body = update("ivy", mid, "[SILENT]")
@@ -185,7 +188,8 @@ forget_rule(DU, "梧桐里 七号")
 host_session("s3", [("user", "我以前住在梧桐里，那边的早点铺子很好吃，想起来就想回去看看"),
                     ("assistant", "记下了，你提过的是七号三单元那一栋老楼，楼下就是早点铺子")])
 r = am._run_auto_memory()
-out["am_p8_cross"] = [r.get("gated"), r.get("extracted"), residue("七号三单元"), residue("早点铺子")]
+out["am_p8_cross"] = [r.get("gated"), r.get("extracted"), residue("七号三单元"), residue("早点铺子"),
+                      len(tombs(DU, "write_policy:P8:%"))]
 
 os.environ["AIDUMEI_WRITE_POLICY_P1"] = "shadow"
 host_session("s4", [("user", "我每天下班后会去公园散步半小时，这个习惯已经坚持了整整两年，风雨无阻"),

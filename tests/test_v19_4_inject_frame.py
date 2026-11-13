@@ -39,8 +39,9 @@ def test_wrap_block_defined():
 def test_memory_boundary_tags():
     """<memory> 标签给模型清晰的数据边界"""
     src = _read_hook()
-    assert "<memory>" in src, "<memory> 开标签丢失"
-    assert "</memory>" in src, "</memory> 闭标签丢失"
+    # f0.8+：开闭标记带 nonce，与服务端 wrap_inject_frame 同形
+    assert '<memory nonce=' in src, "<memory nonce=…> 开标签丢失"
+    assert '</memory nonce=' in src, "</memory nonce=…> 闭标签丢失"
 
 
 def test_all_three_blocks_wrapped():

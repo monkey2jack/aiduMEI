@@ -121,6 +121,13 @@ for _pv in ("NO_PROXY", "no_proxy"):
 # 关掉（0）免得无关用例被 429 误伤；限流本身的用例自己 monkeypatch 设小值。
 os.environ["AIDUMEI_RATE_READ_PER_MIN"] = "0"
 
+# f0.8+ C：/search 短缓存、rerank 结果缓存与熔断都是进程级状态 —— 用例之间同 user 同 query
+# 会互相串（A 用例 patch 的召回结果回放给 B）。整套默认关掉，专测这些机制的用例
+# 自己 monkeypatch 打开（子进程起的服务继承同一环境，行为与旧版一致）。
+os.environ["AIDUMEI_SEARCH_CACHE_TTL_S"] = "0"
+os.environ["AIDUMEI_RERANK_CACHE_TTL_S"] = "0"
+os.environ["AIDUMEI_RERANK_BREAKER_FAILS"] = "0"
+
 if REDIRECTED_DATA_DIR and OWNS_REDIRECTED_DIR:
     # 只删自己建的那一个：沿用别人（父进程）目录的进程一律不许碰。
     # 删不掉（还有连接没关）也不许让退出码变红——清理失败是清理的问题，

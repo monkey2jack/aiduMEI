@@ -24,6 +24,16 @@ Claude Code（CC）有自己的 auto-memory：把普通 markdown 写进
 （不执行 ``ducky/__init__``，那会拉起整个引擎）；加载不到时不入库，只记一行日志。
 凭据兜底链与读线/写线一致：环境变量 → AIDUMEM_ENV_FILE → AIDUMEM_HOME/.env →
 ~/.aidumem/.env → 仓库 .env；``<钥匙目录>/<身份>.key`` 在就用它。
+f0.8+（外审 R3-01）：**不读当前目录的 .env**——钩子的 cwd 是项目目录，克隆来的仓库能借它改身份。
+
+f0.8+（P0-1）三个开关（与 aidumem-cc-*.sh 同口径）：
+  AIDUMEI_HOOKS=off          全部钩子静默跳过（桥照常打码，不连服务）
+  AIDUMEI_TEST_URL=<url>     测试开关：只连这个隔离实例；token 只用 AIDUMEI_TEST_TOKEN，
+                             不读 .env 里的 token、不读钥匙文件；目录白名单不适用
+  AIDUMEI_CC_ALLOW_DIRS=a:b  写入白名单（冒号分隔目录）：会话目录不在其中任一目录下时不入库；
+                             未设 = 不限制（老行为）
+（外审 R3-02）项目级 ``.claude/settings.local.json`` 的 ``autoMemoryDirectory`` 只在落进
+``AIDUMEI_CC_MEMORY_ROOTS``（冒号分隔）白名单时才采信；任何来源都不许指向家目录、根目录或罩住项目。
 """
 from __future__ import annotations
 
@@ -32,6 +42,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -111,22 +122,137 @@ def _expand_user_path(v: str) -> Path | None:
 def auto_memory_setting(cwd: str = "") -> Path | None:
     """``autoMemoryDirectory``（CC 设置项，绝对路径或 ``~/`` 开头）：项目 local → 用户。
 
-    f0.8.0 自审：**不读项目共享的 ``.claude/settings.json``**。那份文件随仓库提交，克隆来的仓库
-    能借它把「记忆目录」指到 ``~/`` 或仓库本身——桥就会把 CC 在那里改的任意 .md 原地改写并导入
-    记忆、注入以后所有会话。CC 自己也不从项目共享设置接受这一项（防共享仓库重定向记忆写入）。
+    f0.8.0 自审：**不读项目共享的 ``.claude/settings.json``**（随仓库提交，克隆来的仓库能借它重定向）。
+    f0.8+（外审 R3-02）：项目级 ``settings.local.json`` 同样可能是仓库自带的（被 git 跟踪、``.claude``
+    是软链，或干脆是克隆来的未跟踪文件），桥分不清，所以**只在它指向白名单
+    ``AIDUMEI_CC_MEMORY_ROOTS`` 之内时才采信**；用户级 ``settings.json`` 是本人的文件，照常采信。
+    两种来源都过 ``_memory_root_ok``：不许是家目录、根目录或它们的上级，也不许罩住当前项目。
     """
-    files = []
+    cands: list[tuple[Path, bool]] = []
     if cwd.startswith("/"):
-        files.append(Path(cwd) / ".claude" / "settings.local.json")
-    files.append(claude_home() / "settings.json")
-    for f in files:
+        local = _project_local_settings(cwd)
+        if local is not None:
+            cands.append((local, True))
+    cands.append((claude_home() / "settings.json", False))
+    for f, project_level in cands:
         try:
             v = json.loads(f.read_text(encoding="utf-8")).get("autoMemoryDirectory")
         except (OSError, ValueError, AttributeError):
             continue
-        if isinstance(v, str) and _expand_user_path(v) is not None:
-            return _expand_user_path(v)
+        p = _expand_user_path(v) if isinstance(v, str) else None
+        if p is None or not _memory_root_ok(p, cwd):
+            continue
+        if project_level and not _in_roots(p, memory_roots()):
+            continue
+        return p
     return None
+
+
+def _project_local_settings(cwd: str) -> Path | None:
+    """R3-02：与 CC 同口径——``.claude`` 是软链、或 settings.local.json 被 git 跟踪时，它是
+    「仓库提供的」而不是本人的文件，桥不采信（CC 也要等文件夹受信后才用）。"""
+    root = git_root(cwd) or Path(cwd)
+    d = root / ".claude"
+    f = d / "settings.local.json"
+    try:
+        if d.is_symlink() or f.is_symlink() or not f.is_file():
+            return None
+    except OSError:
+        return None
+    try:
+        r = subprocess.run(["git", "-C", str(root), "ls-files", "--error-unmatch", "--", str(f)],
+                           capture_output=True, timeout=3)
+        if r.returncode == 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return f
+
+
+def _real(p: str | os.PathLike) -> Path | None:
+    try:
+        return Path(p).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _memory_root_ok(p: Path, cwd: str) -> bool:
+    """R3-02：记忆目录不许是家目录、根目录或它们的上级，也不许罩住当前项目——
+    否则 CC 在那下面改的任意 .md 都会被原地改写并导入记忆。"""
+    rp = _real(p)
+    home = _real(os.environ.get("HOME") or Path.home())
+    if rp is None or home is None:
+        return False
+    if any(rp == g or rp in g.parents for g in (home, Path("/"))):
+        return False
+    if cwd.startswith("/"):
+        proj = _real(git_root(cwd) or Path(cwd))
+        if proj is None or rp == proj or rp in proj.parents or proj in rp.parents:
+            return False
+    return True
+
+
+def _path_list(raw: str) -> list[Path]:
+    out = []
+    for part in (raw or "").split(":"):
+        part = part.strip()
+        if not part:
+            continue
+        p = _expand_user_path(part)
+        rp = _real(p) if p is not None else None
+        if rp is not None and rp != Path("/"):
+            out.append(rp)
+    return out
+
+
+def _in_roots(p: str | os.PathLike, roots: list[Path]) -> bool:
+    rp = _real(p)
+    return rp is not None and any(rp == r or r in rp.parents for r in roots)
+
+
+def memory_roots() -> list[Path]:
+    """R3-02：项目级 autoMemoryDirectory 的白名单（``AIDUMEI_CC_MEMORY_ROOTS``，冒号分隔）。"""
+    return _path_list(env_lookup("AIDUMEI_CC_MEMORY_ROOTS"))
+
+
+# ── P0-1：测试隔离与目录白名单（与 aidumem-cc-*.sh 同口径）────────────────────
+def hooks_off() -> bool:
+    return env_lookup("AIDUMEI_HOOKS").strip().lower() in ("off", "0", "false", "no")
+
+
+def test_url() -> str:
+    """测试开关只认进程环境变量（不从 .env 读：生产 .env 里误留一行就会把生产钩子导走）。"""
+    return (os.environ.get("AIDUMEI_TEST_URL") or "").strip().rstrip("/")
+
+
+def allow_dirs() -> list[Path] | None:
+    """写入白名单；未设返回 None（不限制）。设了但一个有效目录都没有 → 空列表 = 全不许写。"""
+    raw = env_lookup("AIDUMEI_CC_ALLOW_DIRS")
+    return _path_list(raw) if raw.strip() else None
+
+
+def dir_allowed(cwd: str) -> bool:
+    """会话目录可以写入吗。测试模式（连隔离实例）不受白名单限制。"""
+    if test_url():
+        return True
+    roots = allow_dirs()
+    if roots is None:
+        return True
+    return bool(cwd.startswith("/")) and _in_roots(cwd, roots)
+
+
+def project_slug_allowed(project_dir_name: str) -> bool:
+    """兜底扫用：``~/.claude/projects/<slug>`` 是否对应白名单里的目录（slug 有损，按前缀判）。"""
+    if test_url():
+        return True
+    roots = allow_dirs()
+    if roots is None:
+        return True
+    for r in roots:
+        s = project_slug(str(r))
+        if project_dir_name == s or project_dir_name.startswith(s + "-"):
+            return True
+    return False
 
 
 def git_root(cwd: str) -> Path | None:
@@ -351,11 +477,13 @@ def content_sha(text: str) -> str:
 
 # ── 身份与凭据（与 aidumem-cc-*.sh 三线同源）───────────────────────────────
 def _env_candidates() -> list[Path]:
+    # R3-01：不读当前目录的 .env。CC 以项目目录为 cwd 跑钩子，克隆来的仓库能借 ./.env 改写
+    # AIDUMEM_USER_ID，进而决定桥用哪个身份写入、读哪把 ~/.aidumei-keys/<id>.key。
     out = []
     for c in (os.environ.get("AIDUMEM_ENV_FILE"),
               (os.environ.get("AIDUMEM_HOME") or "") and os.path.join(os.environ["AIDUMEM_HOME"], ".env"),
               os.environ.get("HOME") and os.path.join(os.environ["HOME"], ".aidumem/.env"),
-              str(REPO / ".env"), ".env"):
+              str(REPO / ".env")):
         if c:
             out.append(Path(c))
     return out
@@ -381,10 +509,18 @@ def env_lookup(key: str) -> str:
 
 
 def identity() -> dict:
-    url = (os.environ.get("AIDUMEM_URL") or os.environ.get("AIDUMEI_URL") or DEFAULT_URL).rstrip("/")
+    """身份与凭据。``explicit``：身份来自显式配置（环境变量或用户级 .env），不是兜底的 default。
+    测试模式（``AIDUMEI_TEST_URL``）：只连隔离实例，token 只用 ``AIDUMEI_TEST_TOKEN``，不碰生产凭据。"""
+    test = test_url()
+    url = test or (os.environ.get("AIDUMEM_URL") or os.environ.get("AIDUMEI_URL") or DEFAULT_URL).rstrip("/")
     uid = (os.environ.get("AIDUMEM_USER_ID") or os.environ.get("AIDUMEM_DEFAULT_USER_ID")
-           or env_lookup("AIDUMEM_USER_ID") or env_lookup("AIDUMEM_DEFAULT_USER_ID") or "default")
+           or env_lookup("AIDUMEM_USER_ID") or env_lookup("AIDUMEM_DEFAULT_USER_ID") or "")
+    explicit = bool(uid)
+    uid = uid or "default"
     bid = os.environ.get("AIDUMEI_BANK_ID") or env_lookup("AIDUMEI_BANK_ID") or "default"
+    if test:
+        return {"url": url, "user_id": uid, "bank_id": bid, "explicit": explicit, "test": True,
+                "token": (os.environ.get("AIDUMEI_TEST_TOKEN") or "").strip()}
     token = env_lookup("AIDUMEM_API_TOKEN")
     # f0.7.3：一个 agent 一把钥匙；身份名只认安全字符，防「../」读到别的文件
     kdir = os.environ.get("AIDUMEI_KEYS_DIR") or (
@@ -397,7 +533,7 @@ def identity() -> dict:
                 token = k
         except (OSError, IndexError):
             pass
-    return {"url": url, "user_id": uid, "bank_id": bid, "token": token}
+    return {"url": url, "user_id": uid, "bank_id": bid, "token": token, "explicit": explicit, "test": False}
 
 
 class Client:
@@ -592,6 +728,13 @@ def run_hook(payload: dict, client: Client | None = None) -> dict:
     out = {"redacted": kinds}
     if os.environ.get("AIDUMEI_CC_BRIDGE_INGEST", "1").strip().lower() in ("0", "off", "false", "no"):
         out.update(action="redact_only", file=path.name)
+        return out
+    # P0-1：总开关关了 / 会话目录不在写入白名单里 → 只打码，不连服务
+    if hooks_off():
+        out.update(action="redact_only", reason="hooks_off", file=path.name)
+        return out
+    if not dir_allowed(str(payload.get("cwd") or "")):
+        out.update(action="redact_only", reason="dir_not_allowed", file=path.name)
         return out
     client = client or Client(identity())
     sid = str(payload.get("session_id") or "")

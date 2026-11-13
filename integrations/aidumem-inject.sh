@@ -166,7 +166,8 @@ AIDUMEM_NEW_SESSION_MAX="${AIDUMEM_NEW_SESSION_MAX:-8}"
 # 查找顺序（**不硬编码任何绝对家目录**，仓库要对所有部署方成立）：
 #   1. 已有的环境变量               2. $AIDUMEM_ENV_FILE
 #   3. $AIDUMEM_HOME/.env          4. ~/.aidumem/.env
-#   5. hook 自身所在目录的 ../.env  6. ./.env
+#   5. hook 自身所在目录的 ../.env
+#   （f0.8+ R3-01：不再读 ./.env——cwd 可能是克隆来的项目目录）
 # 解析容忍：`export ` 前缀、引号包裹、CRLF 行尾、# 注释。
 # 每个键独立取「最先定义它的那个文件」的值。
 _read_env_key() {
@@ -185,8 +186,8 @@ _env_candidates() {
     printf '%s\n' "${AIDUMEM_ENV_FILE:-}" \
                   "${AIDUMEM_HOME:+${AIDUMEM_HOME}/.env}" \
                   "${HOME:+${HOME}/.aidumem/.env}" \
-                  "${_hook_dir:+${_hook_dir}/../.env}" \
-                  "./.env"
+                  "${_hook_dir:+${_hook_dir}/../.env}"
+    # f0.8+（外审 R3-01）：不读 ./.env——钩子的 cwd 可能是克隆来的项目目录，能借它改身份、选别人的钥匙
 }
 
 # 从 .env 链里取某个键的第一个定义；全链未定义则返回非 0。
@@ -534,9 +535,10 @@ _wrap_block() {
     # Never trust a remembered frame prefix or closing tag. Escape data before
     # adding our own boundary; budget includes entity expansion. Quotes/newlines
     # in recall JSON are reversible, and spans locate the original exact text.
-    local escaped
-    escaped=$(printf '%s' "$block" | python3 -c '
-import html, sys
+    # f0.8+（计划 P0-6）：开闭标记带每块一换的 128 位 nonce，与服务端 wrap_inject_frame 同形——
+    #   <memory nonce="…"> … </memory nonce="…">；正文已 html 转义，猜不到口令也就关不掉数据区。
+    printf '%s' "$block" | AIDUMEI_HOOK_FRAME_TOP="$INJECT_FRAME_TOP" python3 -c '
+import html, os, secrets, sys
 raw = sys.stdin.read()
 budget = int(sys.argv[1])
 escaped = html.escape(raw, quote=False)
@@ -550,9 +552,10 @@ if len(escaped) > budget:
         else:
             hi = mid - 1
     escaped = html.escape(raw[:lo], quote=False) + marker
-print(escaped, end="")
-' "$budget")
-    printf '%s\n<memory>\n%s\n</memory>' "$INJECT_FRAME_TOP" "$escaped"
+n = secrets.token_hex(16)
+print("%s\n<memory nonce=\"%s\">\n%s\n</memory nonce=\"%s\">"
+      % (os.environ.get("AIDUMEI_HOOK_FRAME_TOP", ""), n, escaped, n), end="")
+' "$budget"
 }
 
 # CoreMemory/Checkpoint 从 query 取域；POST body 里的同名字段会被忽略。

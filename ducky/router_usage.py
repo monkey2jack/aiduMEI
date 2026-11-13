@@ -121,7 +121,17 @@ def fetch_router_llm_usage() -> Dict[str, Any]:
         f"exec(base64.b64decode('{b64_script}').decode())\""
     )
 
+    # f0.8+（外审 R3-12）：StrictHostKeyChecking 只认 ssh 的合法取值，其余回落 accept-new
+    strict = os.environ.get("AIDUMEM_ROUTER_SSH_STRICT", "accept-new").strip().lower()
+    if strict not in ("yes", "no", "accept-new", "ask", "off"):
+        logger.warning("AIDUMEM_ROUTER_SSH_STRICT 取值非法，按 accept-new 处理")
+        strict = "accept-new"
+
     for host in hosts:
+        # f0.8+（外审 R3-12）：主机名来自环境变量，以 - 开头会被 ssh 当成选项（-oProxyCommand=…）
+        if not host or host.startswith("-") or any(c.isspace() for c in host):
+            logger.warning("跳过非法的 AIDUMEM_ROUTER_SSH_HOSTS 条目")
+            continue
         cmd = [
             # accept-new 会在首次连接时接受任意主机密钥（TOFU）。
             # 生产环境建议预置 known_hosts 后改为 StrictHostKeyChecking=yes，
@@ -130,9 +140,10 @@ def fetch_router_llm_usage() -> Dict[str, Any]:
             # **生产部署验收线：置 AIDUMEM_ROUTER_SSH_STRICT=yes**（先手工
             # 完成一次 known_hosts 录入），否则首连即中间人窗口。
             "ssh",
-            "-o", f"StrictHostKeyChecking={os.environ.get('AIDUMEM_ROUTER_SSH_STRICT', 'accept-new')}",
+            "-o", f"StrictHostKeyChecking={strict}",
             "-o", "ConnectTimeout=3",
             "-i", ssh_key,
+            "--",  # 之后只有位置参数：主机名不许被解析成选项
             host,
             remote_cmd,
         ]

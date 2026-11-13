@@ -580,6 +580,7 @@ _TARGETS_THIS_SERVICE = r"8767|8777|AIDUMEM_API_BASE|AIDUMEM_URL|AIDUMEM_UPSTREA
 #    新增一个「打本服务、但地址靠参数/配置/环境注入」的文件，就往这里加一行；
 #    test_v19_4_2_auth_coverage.py 有一条完备性断言会强制你登记，删不掉也绕不开。
 _INJECTED_ADDRESS_CALLERS = {
+    "scripts/f08p_data_cleanup.py",  # --api 注入本服务 /delete，使用运行时 API token。
     "benchmarks/adapter.py",
     # f0.6+++ WP1 回归集 v3：--url 注入远端测试实例，带 AIDUMEI/AIDUMEM_API_TOKEN。
     "benchmarks/regression.py",
@@ -638,7 +639,13 @@ def _is_standalone_integration(path) -> bool:
     这类文件跑在宿主 Agent / 编辑器进程里，仓库代码不在它的 sys.path 上，
     所以不能要求它 import ducky —— 但凭据行为必须与仓库一致。
     """
-    return "integrations" in path.parts
+    import pathlib
+
+    # Read-only inspection is also copied to stdin on a service host. Importing
+    # ducky.utils creates data/log directories, so this one standard-library
+    # probe must retain the independent fallback chain (behavior-tested).
+    return "integrations" in path.parts or path.resolve() == pathlib.Path(
+        _REPO_ROOT, "scripts", "inspect_runtime.py").resolve()
 
 
 def _module_level_actions(path) -> list[str]:

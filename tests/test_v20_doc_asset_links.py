@@ -39,7 +39,7 @@ _SKIP_PARTS = frozenset({
 
 # 射程地板。当前实测：16 个 md、3 处本地引用。留出余量，但收窄到 0 必红。
 _MD_FLOOR = 10
-_REF_FLOOR = 2
+_REF_FLOOR = 1  # README 中文横幅改为远程图；两种语法另有合成正反样本验证。
 
 # 两种写法都要认：HTML 的 <img src>，和 markdown 的 ![alt](path)。
 # 少认一种，那一种就是下一个坏链的藏身处。

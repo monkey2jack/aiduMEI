@@ -151,6 +151,36 @@ def _identity_ids(user_id: str) -> list[str]:
     return [user_id]
 
 
+
+def _memory_source_fields(item: dict, content: str) -> dict:
+    """Carry recorded session and local event day for independent-source checks."""
+    from ducky.consolidate import _day, _ts, event_ts
+    md = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    session = item.get("session_id") or md.get("_origin_session_id") or md.get("session_id") or ""
+    owner = item.get("user_id")
+    if not isinstance(session, str):
+        session = ""
+    if not isinstance(owner, str):
+        owner = ""
+    try:
+        day = _day(event_ts(content, md, _ts(item.get("created_at"))))
+    except (ValueError, TypeError, OSError, OverflowError):
+        day = ""  # an unknown time cannot prove independence
+    return {"session": session, "day": day, "source_user": owner}
+
+
+
+def _scope_experimental_sources(memories: list[dict], user_id: str, bank_id: str) -> list[dict]:
+    """On mode requires an explicit matching owner before any source reaches the LLM."""
+    from ducky.consolidate import consolidate_mode
+    if consolidate_mode() != "on":
+        return memories
+    from ducky.bank_contract import make_scope
+    from ducky.mem0_runtime import _normalize_user_id
+    owner = _normalize_user_id(make_scope(user_id, bank_id).user_id)
+    return [m for m in memories if m.get("source_user") == owner]
+
+
 def _gather_recent_memories(memory, user_id: str, top_k: int, bank_id: str = "") -> list[dict]:
     """收集最近记忆（mem0 全量最近的 top_k 条），编号 m1..mN。"""
     try:
@@ -190,6 +220,7 @@ def _gather_recent_memories(memory, user_id: str, top_k: int, bank_id: str = "")
                 "id": item.get("id", ""),
                 "text": content[:240],
                 "created_at": item.get("created_at", ""),
+                **_memory_source_fields(item, content),
             })
             if len(snippets) >= top_k:
                 break
@@ -229,6 +260,7 @@ def _gather_topic_memories(memory, user_id: str, topic: str, top_k: int, bank_id
                 "id": item.get("id", ""),
                 "text": content[:240],
                 "created_at": item.get("created_at", ""),
+                **_memory_source_fields(item, content),
             })
             if len(snippets) >= top_k:
                 break
@@ -370,6 +402,55 @@ def _parse_insights(raw: str) -> list[dict]:
         if ins_type and rest:
             insights.append({"type": ins_type, "content": rest, "confidence": 0.5, "evidence": []})
     return insights
+
+
+
+def _stable_evidence_refs(insights: list[dict], memories: list[dict], facts: list[dict]) -> None:
+    """Resolve only references in this scoped prompt; do not trust model-invented IDs.
+
+    Facts use a separate namespace because fact row IDs and memory IDs are not
+    interchangeable. Unknown and duplicate references do not become evidence.
+    """
+    refs = {m["ref"]: str(m["id"]) for m in memories if m.get("ref") and m.get("id")}
+    refs.update({f["ref"]: f"fact:{f['id']}" for f in facts if f.get("ref") and f.get("id") is not None})
+    fact_keys = [f.get("key") for f in facts if isinstance(f.get("key"), str) and f.get("key")]
+    for fact in facts:
+        key = fact.get("key")
+        if key and fact.get("id") is not None and fact_keys.count(key) == 1:
+            refs.setdefault(key, f"fact:{fact['id']}")
+    for insight in insights:
+        raw = insight.get("evidence")
+        evidence = raw if isinstance(raw, list) else []
+        resolved = []
+        for item in evidence:
+            ref = refs.get(item) if isinstance(item, str) else None
+            if ref and ref not in resolved:
+                resolved.append(ref)
+        insight["evidence"] = resolved
+
+
+
+
+def _independent_sources_available(memories: list[dict]) -> bool:
+    """Avoid calling the model when this scoped input cannot possibly pass the gate."""
+    from ducky.consolidate import consolidate_mode, insight_eligible
+    if consolidate_mode() != "on":
+        return True
+    rows = {str(m["id"]): m for m in memories if m.get("id")}
+    return insight_eligible(list(rows), rows)
+
+
+def _apply_independent_source_gate(insights: list[dict], memories: list[dict]) -> tuple[list[dict], dict | None]:
+    """On mode only: keep insights with independently recorded sources on separate days."""
+    from ducky.consolidate import consolidate_mode, insight_eligible
+    if consolidate_mode() != "on":
+        return insights, None
+    rows = {str(m["id"]): m for m in memories if m.get("id")}
+    accepted = [ins for ins in insights if insight_eligible(ins.get("evidence"), rows)]
+    stats = {"checked": len(insights), "accepted": len(accepted), "blocked": len(insights) - len(accepted)}
+    logger.info("independent insight source gate: checked=%d accepted=%d blocked=%d",
+                stats["checked"], stats["accepted"], stats["blocked"])
+    return accepted, stats
 
 
 def _split_typed_line(line: str) -> tuple[Optional[str], str]:
@@ -527,10 +608,15 @@ def run_reflect(
             memories = _gather_topic_memories(mem, user_id, topic, top_k, bank_id=bank)
         else:
             memories = _gather_recent_memories(mem, user_id, top_k, bank_id=bank) if mem is not None else []
+        memories = _scope_experimental_sources(memories, user_id, bank)
         facts = _gather_recent_facts(max(10, top_k // 2), user_id=user_id, bank_id=bank)
 
         if not memories and not facts:
             return {"status": "ok", "insights": [], "saved": 0, "source": source, "llm_used": False}
+        if not _independent_sources_available(memories):
+            return {"status": "ok", "insights": [], "saved": 0, "source": source, "llm_used": False,
+                    "source_gate": {"checked": 0, "accepted": 0, "blocked": 0,
+                                    "reason": "insufficient_independent_sources"}}
 
         raw = call_llm(
             _build_prompt(memories, facts),
@@ -539,19 +625,24 @@ def run_reflect(
             temperature=0.3,
         )
         insights = _parse_insights(raw)
+        _stable_evidence_refs(insights, memories, facts)
+        insights, source_gate = _apply_independent_source_gate(insights, memories)
         saved = save_insights(insights, user_id, source, bank_id=bank) if (save and insights) else 0
 
         logger.info(
             "🧠 Reflect 完成: user=%s source=%s 提炼=%d 落库=%d",
             user_id, source, len(insights), saved,
         )
-        return {
+        result = {
             "status": "ok",
             "insights": insights,
             "saved": saved,
             "source": source,
             "llm_used": raw is not None,
         }
+        if source_gate is not None:
+            result["source_gate"] = source_gate
+        return result
     finally:
         reset_origin(_origin_token)
 
@@ -560,6 +651,10 @@ def reflect_background_loop() -> None:
     """后台线程：每 REFLECT_INTERVAL_HOURS 小时主动反思一次。"""
     if not REFLECT_ENABLED:
         logger.info("🧠 Reflect 后台主动反思已禁用（AIDUMEM_REFLECT_ENABLED=false）")
+        return
+    from ducky.consolidate import replaces_legacy_loops
+    if replaces_legacy_loops():   # f0.8+：夜间归并（mode=on）取代后台反思
+        logger.info("🧠 Reflect 后台反思由夜间归并接管（AIDUMEI_CONSOLIDATE_MODE=on）")
         return
     logger.info(f"🧠 Reflect 后台反思线程启动（间隔 {REFLECT_INTERVAL_HOURS}h）")
     # 先睡一个间隔再反思：避免服务每次重启都立刻消耗一次 LLM 调用。

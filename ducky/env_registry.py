@@ -152,6 +152,7 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEM_DEFAULT_AGENT_NAME",
     "AIDUMEM_DEFAULT_USER_ID",
     "AIDUMEM_USER_ID",
+    "AIDUMEM_URL",  # Existing shell-hook URL, also pinned by CLI acceptance.
     "AIDUMEM_ENTITY_KEYWORDS",
     "AIDUMEM_ENV_FILE",
     "AIDUMEM_HOME",
@@ -216,6 +217,11 @@ _F03_CONSOLIDATOR_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CONSOLIDATOR_EVICT",
     # ducky/salience/conflict.py：矛盾处置档位 off | warn（默认）| apply；每组比对上限
     "AIDUMEI_CONFLICT_PENALTY_MODE",
+    # f0.8+：夜间归并（off/shadow/on）与阈值、每晚上限、运行小时
+    "AIDUMEI_CONSOLIDATE_MODE",
+    "AIDUMEI_CONSOLIDATE_MIN_COSINE",
+    "AIDUMEI_CONSOLIDATE_MAX_NEW",
+    "AIDUMEI_CONSOLIDATE_HOUR",
     "AIDUMEI_CONFLICT_MAX_PAIRS_PER_LANE",
     # ducky/llm_client.py：进程级 LLM 并发上限与等位超时（call_llm 与 mem0 抽取共用）
     "AIDUMEI_LLM_MAX_CONCURRENCY",
@@ -226,8 +232,23 @@ _F03_CONSOLIDATOR_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CLOUD_PROBE_BUDGET_SEC",
     # scripts/report.py：24h LLM 降级率告警阈值
     "AIDUMEI_LLM_DEGRADED_WARN_RATIO",
-    # ducky/hot/health.py：授权 /health 的 git_sha 来源（部署时写入）
+    # ducky/hot/health.py：授权 /health 的 git_sha 兜底来源（非 git 检出时才用；git HEAD 优先）
     "AIDUMEI_BUILD_SHA",
+    # ducky/session_distill.py：会话精华推理力度（f0.8+ C；默认 medium，off 不发送）
+    "AIDUMEI_DISTILL_REASONING_EFFORT",
+    # ducky/mem0_runtime.py：rerank 延迟治理（f0.8+ C）——送审裁剪、单次超时、每请求总预算、
+    # 结果缓存 TTL、熔断阈值与冷却
+    "AIDUMEI_RERANK_DOC_CHARS",
+    "AIDUMEI_RERANK_MAX_DOCS",
+    "AIDUMEI_RERANK_TIMEOUT_MS",
+    "AIDUMEI_RERANK_BUDGET_MS",
+    "AIDUMEI_RERANK_CACHE_TTL_S",
+    "AIDUMEI_RERANK_BREAKER_FAILS",
+    "AIDUMEI_RERANK_BREAKER_COOLDOWN_S",
+    # ducky/search_cache.py：/search 重复查询短缓存 TTL 秒（f0.8+ C；0 关）
+    "AIDUMEI_SEARCH_CACHE_TTL_S",
+    # ducky/security/egress.py：外呼复检的 DNS 解析结果复用秒数（f0.8+ C；默认 60，0 关）
+    "AIDUMEI_EGRESS_DNS_CACHE_S",
     # scripts/decision_compare.py: evaluation-only credentials and model
     # selector. These are never service configuration and are not persisted.
     "AIDUMEI_EVAL_DREX_API_KEY",
@@ -301,6 +322,7 @@ _F08_CC_BRIDGE_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CC_TRIM_DAYS",      # 主题文件超过多少天才可存根（缺省 14）
     "AIDUMEI_CC_BRIDGE_TIMEOUT", # 桥/兜底扫每个 HTTP 请求超时秒数（缺省 12）
     "AIDUMEI_CC_INDEX_CAP",      # MEMORY.md 行数上限（缺省 80）
+    "AIDUMEI_CC_MEMORY_ROOTS",   # f0.8+（R3-02）：项目级 autoMemoryDirectory 的白名单（冒号分隔）
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | _F08_CC_BRIDGE_ENV_VARS
 
@@ -335,6 +357,8 @@ FROZEN_LEGACY_AIDUMEM: frozenset[str] = frozenset((
     "AIDUMEM_DEFAULT_USER_ID",
     # Existing shell-hook identity, now also read by MCP (not a new variable).
     "AIDUMEM_USER_ID",
+    # Existing shell-hook URL, now also passed by CLI acceptance (not a new variable).
+    "AIDUMEM_URL",
     "AIDUMEM_ENTITY_KEYWORDS",
     "AIDUMEM_ENV_FILE",
     "AIDUMEM_HOME",
@@ -399,6 +423,13 @@ DYNAMIC_ENV_PREFIXES: frozenset[str] = frozenset((
 HOOK_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_CC_DROP_TERMS",
     "AIDUMEI_CC_DROP_TERMS_EXEMPT",   # f0.7.4：不做过滤词过滤的身份
+    # f0.8+ P0-1：Claude Code 钩子的总开关 / 测试隔离 / 写入白名单（服务端不读）
+    "AIDUMEI_HOOKS",                  # off = 全部钩子静默跳过
+    "AIDUMEI_TEST_URL",               # 测试开关：只连这个隔离实例，不用生产凭据
+    "AIDUMEI_TEST_TOKEN",             # 测试实例的 token（可空）
+    "AIDUMEI_CC_ALLOW_DIRS",          # 写入白名单（冒号分隔目录）
+    "AIDUMEI_CC_HOOK_BG",             # 写线后台入口（钩子内部用；验收时前台跑）
+    "AIDUMEI_HOOK_INPUT",             # 钩子把载荷经环境变量交给 python / 后台进程（零拼接）
 ))
 KNOWN_ENV_VARS = KNOWN_ENV_VARS | HOOK_ENV_VARS
 

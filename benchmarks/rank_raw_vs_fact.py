@@ -86,11 +86,22 @@ def run(min_pass: int = 10, min_first: int = 8) -> dict:
             ad._post("/add", {"messages": n, "infer": False, "metadata": {"source": "cc-ingest"}})
         for i, (_q, fact, raws) in enumerate(TOPICS):
             for j, r in enumerate(raws + ["，".join(raws)]):   # 逐轮原话:ingest 钩子同形(长),3 条
-                ad._post("/add", {"messages": r + PAD, "infer": False,
+                raw = r + PAD
+                # This fixture exercises LONG raw-turn weighting. Three old
+                # examples were 154–158 chars, below the production threshold.
+                from ducky.scoring import RAW_TURN_LONG_CHARS
+                while len(raw) <= RAW_TURN_LONG_CHARS:
+                    raw += "，过程还在排查"
+                ad._post("/add", {"messages": raw, "infer": False,
                                   "metadata": {"source": "cc-ingest", "_origin_session_id": f"cc-rk-{i}-{j}"}})
-            ad._post("/add", {"messages": fact, "infer": False,   # 蒸馏事实:SessionEnd 蒸馏同形
-                              "metadata": {"kind": "session_distill", "lane": "distill",
-                                           "_origin_session_id": f"cc-rk-{i}-0"}})
+            # Exercise a genuine service-signed summary. Unsigned client flags
+            # are deliberately stripped by the f0.8+ provenance guard.
+            from ducky.distill_seal import seal
+            from benchmarks.regression import USER, BANK
+            md = {"kind": "session_distill", "lane": "distill", "_origin_agent": "session-distill",
+                  "_origin_session_id": f"cc-rk-{i}-0"}
+            md["distill_seal"] = seal(fact, USER, BANK, md)
+            ad._post("/add", {"messages": fact, "infer": False, "metadata": md})
         rows = []
         for q, fact, _r in TOPICS:
             top = ad.search(q, 3)[0]

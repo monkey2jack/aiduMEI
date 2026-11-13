@@ -1,74 +1,45 @@
 {
- "schema": "regression.v3.result",
- "cases_version": "v3.0-public-synthetic",
+ "schema": "regression.v3.baseline",
+ "cases_version": "v3.0",
  "per_category": {
   "fact_recall": {
-   "pass": 50,
+   "pass": 43,
    "n": 51,
-   "score": 0.9804
+   "score": 0.8431
   },
   "update": {
-   "pass": 25,
+   "pass": 20,
    "n": 25,
-   "score": 1.0
+   "score": 0.8
   },
   "delete": {
-   "pass": 25,
-   "n": 25,
-   "score": 1.0
-  },
-  "temporal": {
    "pass": 24,
    "n": 25,
    "score": 0.96
   },
-  "abstain": {
-   "pass": 23,
+  "temporal": {
+   "pass": 19,
    "n": 25,
-   "score": 0.92
+   "score": 0.76
+  },
+  "abstain": {
+   "pass": 21,
+   "n": 25,
+   "score": 0.84
   },
   "cc_replay": {
-   "pass": 17,
+   "pass": 16,
    "n": 20,
-   "score": 0.85
+   "score": 0.8
   }
  },
  "total": {
-  "pass": 164,
+  "pass": 143,
   "n": 171,
-  "score": 0.9591
+  "score": 0.8363
  },
- "runtime_s": 16.88,
- "seed_s": 9.78,
  "mode": "local-inprocess(hash-embed, verdict_threshold=0.46)",
- "failed": [
-  {
-   "id": "fr-013",
-   "category": "fact_recall"
-  },
-  {
-   "id": "tm-001",
-   "category": "temporal"
-  },
-  {
-   "id": "ab-008",
-   "category": "abstain"
-  },
-  {
-   "id": "ab-015",
-   "category": "abstain"
-  },
-  {
-   "id": "cc-002",
-   "category": "cc_replay"
-  },
-  {
-   "id": "cc-012",
-   "category": "cc_replay"
-  },
-  {
-   "id": "cc-019",
-   "category": "cc_replay"
-  }
- ]
+ "recorded_at": "2026-10-28 CST",
+ "code_base": "f07/p1 (native kernel, HTTP in-process)",
+ "note": "f0.7 P2-1:生产内核 native 的独立基线;push_gate 与 mem0 基线各跑一遍,逐类不降"
 }

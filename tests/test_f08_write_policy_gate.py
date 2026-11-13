@@ -129,7 +129,8 @@ def test_p8_forget_rule_is_enforced(tmp_path, monkeypatch):
     monkeypatch.setenv("AIDUMEM_DATA_DIR", str(tmp_path))
     rid = wp.add_rule("u", "default", "旧门牌 三单元")
     d = wp.gate_decision("我以前住的旧门牌是七号三单元", "user", {}, user_id="u", bank_id="default")
-    assert d == {"action": "drop", "principle": "P8", "reason": "forget_rule", "rule": rid}
+    # f0.8+（外审 R3-04）：P8 拦下进墓碑（可恢复），不再直接丢弃
+    assert d == {"action": "tombstone", "principle": "P8", "reason": "forget_rule", "rule": rid}
     # another tenant's rule never applies
     assert wp.gate_decision("我以前住的旧门牌是七号三单元", "user", {}, user_id="v", bank_id="default") is None
     # only all of the rule's words together trigger it
@@ -138,10 +139,14 @@ def test_p8_forget_rule_is_enforced(tmp_path, monkeypatch):
         [{"role": "user", "content": "我以前住的旧门牌是七号三单元"}, {"role": "user", "content": "明天开会"}],
         {}, user_id="u", bank_id="default")
     assert kept == [{"role": "user", "content": "明天开会"}]
-    assert receipts == [{"action": "drop", "principle": "P8", "reason": "forget_rule", "rule": rid}]
+    assert len(receipts) == 1
+    rec = receipts[0]
+    assert {k: rec[k] for k in ("action", "principle", "reason", "rule")} == \
+        {"action": "tombstone", "principle": "P8", "reason": "forget_rule", "rule": rid}
+    assert rec["tombstone_id"] and rec["memory_id"] and rec["restorable_days"] == 7
     rows = wp.list_verdicts("u", "default")
     assert rows[0]["mode"] == "enforce" and rows[0]["blacklist_rule"] == rid
-    assert rows[0]["content_sha"] is None and rows[0]["length"] == 0      # forgotten: no hash, no text
+    assert rows[0]["content_sha"] is None and rows[0]["length"] == 0      # the verdict log keeps no hash or text
     monkeypatch.setenv("AIDUMEI_WRITE_POLICY_P8", "shadow")
     assert wp.gate_decision("我以前住的旧门牌是七号三单元", "user", {}, user_id="u", bank_id="default") is None
 

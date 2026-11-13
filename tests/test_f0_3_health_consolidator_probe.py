@@ -3,7 +3,7 @@
 * probes.consolidator is read from <DATA_DIR>/consolidator_last_run.json:
   mode, candidates, per-status counts, a mismatch warning when an apply run's
   candidates != deleted + already_gone, and a stale warning after 36h.
-* git_sha: AIDUMEI_BUILD_SHA, else `git rev-parse HEAD`, else "unknown"; resolved once.
+* git_sha: git HEAD (read at startup), else AIDUMEI_BUILD_SHA, else "unknown"; resolved once.
 * Neither may reach the anonymous public view -- not even indirectly by
   flipping its status/degraded fields.
 """
@@ -36,6 +36,7 @@ def _client():
 def data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("AIDUMEM_API_TOKEN", _TOKEN)
     monkeypatch.setenv("AIDUMEI_BUILD_SHA", _SHA)
+    monkeypatch.setattr(health_mod, "_git_head", lambda: "")   # not a git checkout → env fallback
     monkeypatch.setattr(utils, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(health_mod, "_GIT_SHA_CACHE", {})
     monkeypatch.setitem(health_mod._PUBLIC_CACHE, "full", None)
@@ -150,12 +151,14 @@ def test_git_sha_falls_back_to_git_then_unknown(monkeypatch):
 
     def no_git(*args, **kwargs):
         raise FileNotFoundError("git")
+    monkeypatch.setattr(health_mod, "_read_git_head", lambda root: "")
     monkeypatch.setattr(health_mod.subprocess, "run", no_git)
     assert health_mod._resolve_git_sha() == "unknown"
 
 
 def test_invalid_build_sha_env_is_ignored(monkeypatch):
     monkeypatch.setenv("AIDUMEI_BUILD_SHA", "not a sha; rm -rf /")
+    monkeypatch.setattr(health_mod, "_read_git_head", lambda root: "")
     monkeypatch.setattr(health_mod.subprocess, "run",
                         lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="abcdef1\n"))
     assert health_mod._resolve_git_sha() == "abcdef1"
@@ -164,6 +167,7 @@ def test_invalid_build_sha_env_is_ignored(monkeypatch):
 def test_git_sha_is_resolved_once(monkeypatch):
     monkeypatch.delenv("AIDUMEI_BUILD_SHA", raising=False)
     monkeypatch.setattr(health_mod, "_GIT_SHA_CACHE", {})
+    monkeypatch.setattr(health_mod, "_read_git_head", lambda root: "")
     calls = []
 
     def fake_run(*args, **kwargs):
@@ -172,3 +176,41 @@ def test_git_sha_is_resolved_once(monkeypatch):
     monkeypatch.setattr(health_mod.subprocess, "run", fake_run)
     assert health_mod._git_sha() == health_mod._git_sha() == _SHA
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------- f0.8+ C: git HEAD beats a stale env
+def test_git_head_wins_over_a_stale_env_value(monkeypatch, caplog):
+    monkeypatch.setenv("AIDUMEI_BUILD_SHA", "28e98ad7")
+    monkeypatch.setattr(health_mod, "_read_git_head", lambda root: "31584878" + "0" * 32)
+    caplog.set_level("WARNING")
+    assert health_mod._resolve_git_sha() == "31584878" + "0" * 32
+    assert "不一致" in caplog.text
+
+
+def test_read_git_head_handles_worktree_and_packed_refs(tmp_path):
+    sha1, sha2 = "a" * 40, "b" * 40
+    common = tmp_path / "repo.git"
+    (common / "worktrees" / "wt").mkdir(parents=True)
+    (common / "packed-refs").write_text(f"# pack-refs with: peeled\n{sha1} refs/heads/main\n")
+    wt_git = common / "worktrees" / "wt"
+    (wt_git / "HEAD").write_text("ref: refs/heads/main\n")
+    (wt_git / "commondir").write_text("../..\n")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".git").write_text(f"gitdir: {wt_git}\n")
+    assert health_mod._read_git_head(str(checkout)) == sha1
+    (common / "refs" / "heads").mkdir(parents=True)
+    (common / "refs" / "heads" / "main").write_text(sha2 + "\n")
+    assert health_mod._read_git_head(str(checkout)) == sha2
+    (wt_git / "HEAD").write_text(sha1 + "\n")          # detached
+    assert health_mod._read_git_head(str(checkout)) == sha1
+    assert health_mod._read_git_head(str(tmp_path / "nowhere")) == ""
+
+
+def test_read_git_head_matches_this_checkout():
+    real = subprocess.run(["git", "rev-parse", "HEAD"], cwd=health_mod._REPO_ROOT,
+                          capture_output=True, text=True).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", real):
+        assert health_mod._read_git_head(health_mod._REPO_ROOT) == ""
+        return
+    assert health_mod._read_git_head(health_mod._REPO_ROOT) == real

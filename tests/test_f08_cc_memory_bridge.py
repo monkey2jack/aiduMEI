@@ -21,7 +21,9 @@ def cc(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     for k in ("CLAUDE_CONFIG_DIR", "AIDUMEI_CC_MEMORY_DIR", "AIDUMEM_API_TOKEN", "AIDUMEM_USER_ID",
               "AIDUMEM_DEFAULT_USER_ID", "AIDUMEI_BANK_ID", "AIDUMEM_URL", "AIDUMEI_URL", "AIDUMEM_ENV_FILE",
-              "AIDUMEI_CC_BRIDGE_INGEST", "AIDUMEI_SECRET_GUARD", "AIDUMEI_CC_BRIDGE_MAX_CHARS"):
+              "AIDUMEI_CC_BRIDGE_INGEST", "AIDUMEI_SECRET_GUARD", "AIDUMEI_CC_BRIDGE_MAX_CHARS",
+              "AIDUMEI_HOOKS", "AIDUMEI_TEST_URL", "AIDUMEI_TEST_TOKEN", "AIDUMEI_CC_ALLOW_DIRS",
+              "AIDUMEI_CC_MEMORY_ROOTS", "AIDUMEM_HOME"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AIDUMEI_KEYS_DIR", str(tmp_path / "nokeys"))
     monkeypatch.setenv("AIDUMEM_LOG_DIR", str(tmp_path / "logs"))

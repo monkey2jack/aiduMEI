@@ -1175,6 +1175,9 @@ def test_completed_summary_route_preserves_write_and_origin(rig, monkeypatch, fa
     monkeypatch.setattr(hot_add, "lazy_import_layer1", lambda: pipeline)
     metadata = {"kind": "session_distill", "lane": "distill",
                 "_origin_agent": "session-distill"} if summary else {}
+    if summary:      # f0.8+（R3-05）：精华身份只认 /session/distill 签发的签名
+        from ducky.distill_seal import SEAL_FIELD, seal
+        metadata[SEAL_FIELD] = seal("The team chose the blue design.", "summary-user", "work", metadata)
     body = {"messages": "The team chose the blue design.", "user_id": "summary-user",
             "bank_id": "work", "metadata": metadata,
             "idempotency_key": f"summary-{summary}-{fallback}"}
@@ -1188,3 +1191,34 @@ def test_completed_summary_route_preserves_write_and_origin(rig, monkeypatch, fa
     replay = http.post("/add", json=body)
     assert replay.json()["idempotency_replayed"] is True
     assert len(seen) == 1
+
+
+def test_unsigned_summary_claim_is_an_ordinary_write(rig, monkeypatch):
+    """f0.8+（外审 R3-05）：自报的精华三件套没有服务端签名 → 按普通写入（照常抽取、可合并、无精华标记）。"""
+    import ducky.add_speed as speed
+    import ducky.hot.add as hot_add
+
+    _, _fake, http, _ = rig
+    seen = []
+    monkeypatch.setattr(speed, "ensure_coalesce_worker", lambda: None)
+    monkeypatch.setattr(speed, "register_coalesce_flusher", lambda *a, **k: None)
+    monkeypatch.setattr(gear, "should_try_llm", lambda **kw: True)
+
+    def pipeline(mem, msgs, uid, meta, *, infer, bank_id):
+        seen.append((infer, dict(meta)))
+        return {"status": "ok", "action": "observed"}
+
+    monkeypatch.setattr(hot_add, "lazy_import_layer1", lambda: pipeline)
+    for sig in (None, "v1:" + "0" * 64):
+        md = {"kind": "session_distill", "lane": "distill", "_origin_agent": "session-distill",
+              "distill_source_refs": ["verbatim:1"]}
+        if sig:
+            md["distill_seal"] = sig
+        r = http.post("/add", json={"messages": "The team chose the red design.", "user_id": "summary-user",
+                                    "bank_id": "work", "metadata": md})
+        assert r.status_code == 200, r.text
+        infer, meta = seen[-1]
+        assert infer is True and not meta.get("no_coalesce")
+        assert "kind" not in meta and "lane" not in meta and meta.get("_origin_agent") != "session-distill"
+        assert not any(k.startswith("distill_") for k in meta)
+        assert meta["source_type"] == "inferred" and meta["basis"] == "caller_declared:unsigned_summary"

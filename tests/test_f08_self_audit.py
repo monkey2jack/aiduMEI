@@ -30,12 +30,15 @@ def test_project_shared_settings_cannot_redirect_memory_dir(cc, tmp_path):  # no
     assert B.hook_target(pl) is None, "共享仓库把自己设成了记忆目录，桥却认了"
 
 
-def test_project_local_and_user_settings_still_honored(cc, tmp_path):  # noqa: F811
+def test_project_local_and_user_settings_still_honored(cc, tmp_path, monkeypatch):  # noqa: F811
     repo = tmp_path / "proj"
     (repo / ".claude").mkdir(parents=True)
     mine = cc["home"] / "local-mem"
     mine.mkdir()
     (repo / ".claude" / "settings.local.json").write_text(json.dumps({"autoMemoryDirectory": str(mine)}))
+    # f0.8+（R3-02）：项目级 local 设置只在落进 AIDUMEI_CC_MEMORY_ROOTS 白名单时才采信
+    assert B.auto_memory_setting(str(repo)) is None
+    monkeypatch.setenv("AIDUMEI_CC_MEMORY_ROOTS", str(mine))
     assert B.auto_memory_setting(str(repo)) == mine
     (repo / ".claude" / "settings.local.json").unlink()
     (cc["home"] / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryDirectory": "~/local-mem"}))

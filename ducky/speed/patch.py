@@ -34,7 +34,7 @@ def patch_llm_for_speed(mem_instance) -> None:
         if client is None:
             client = getattr(mem_instance, "client", None)
         if client is None or not hasattr(client, "chat"):
-            logger.warning("speed patch: no chat client found")
+            logger.debug("speed patch: no chat client found")
             return
 
         speed = load_speed_cfg()

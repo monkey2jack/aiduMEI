@@ -55,8 +55,8 @@ _env_candidates() {
     printf '%s\n' "${AIDUMEM_ENV_FILE:-}" \
                   "${AIDUMEM_HOME:+${AIDUMEM_HOME}/.env}" \
                   "${HOME:+${HOME}/.aidumem/.env}" \
-                  "${_hook_dir:+${_hook_dir}/../../.env}" \
-                  "./.env"
+                  "${_hook_dir:+${_hook_dir}/../../.env}"
+    # f0.8+（外审 R3-01）：不读 ./.env——钩子的 cwd 可能是克隆来的项目目录，能借它改身份、选别人的钥匙
 }
 
 _lookup_env_key() {
@@ -253,15 +253,42 @@ body = json.dumps({
                  "_origin_session_id": p.get("session_id", ""),
                  "_origin_agent": "aidumem-codex-ingest"},
 }, ensure_ascii=False).encode()
-headers = {"Content-Type": "application/json"}
+import uuid
+# One receipt per hook invocation, reused only for its own retry. Identical
+# words in later turns must still be stored as separate turns.
+headers = {"Content-Type": "application/json",
+           "Idempotency-Key": "host-ingest-" + uuid.uuid4().hex}
 if tok:
     headers["Authorization"] = "Bearer " + tok
-req = urllib.request.Request(url + "/add", data=body, headers=headers)
+# f0.8+ C: this add runs in the background (never blocks the host), so the old
+# 3 s budget only produced TimeoutError under server load. Budget comes from
+# AIDUMEI_INGEST_TIMEOUT (default 15 s, clamped 1..60); one retry on a timeout,
+# connection error or 5xx (both attempts reuse one idempotency key); a 4xx is final.
+# One log line per add that still failed, never per attempt.
+import time, urllib.error
 try:
-    urllib.request.urlopen(req, timeout=3)
-except Exception as exc:
+    tmo = float(os.environ.get("AIDUMEI_INGEST_TIMEOUT") or 15.0)
+except ValueError:
+    tmo = 15.0
+tmo = min(max(tmo, 1.0), 60.0)
+err = None
+for attempt in (1, 2):
+    req = urllib.request.Request(url + "/add", data=body, headers=headers)
+    try:
+        urllib.request.urlopen(req, timeout=tmo)
+        err = None
+        break
+    except urllib.error.HTTPError as exc:
+        err = "HTTP%d" % exc.code
+        if exc.code < 500:
+            break
+    except Exception as exc:
+        err = type(exc).__name__
+    if attempt == 1:
+        time.sleep(1.0)
+if err:
     import sys
-    sys.stderr.write("[aidumem-codex-ingest] add_failed err=%s\n" % type(exc).__name__)
+    sys.stderr.write("[aidumem-codex-ingest] add_failed err=%s attempts=%d timeout=%.0fs\n" % (err, attempt, tmo))
 ' >>"$_log" 2>&1 &
 disown 2>/dev/null || true
 
