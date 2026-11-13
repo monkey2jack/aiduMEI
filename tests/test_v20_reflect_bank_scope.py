@@ -252,7 +252,7 @@ def test_run_reflect_full_chain_scoped(monkeypatch):
         prompts.append(prompt)
         return json.dumps([{
             "type": "pattern", "content": "甲库素材蒸出的洞察",
-            "confidence": 0.8, "evidence": ["m1"],
+            "confidence": 0.8, "evidence": ["m1", "m1", "m999", "f1", "rr:a1"],
         }], ensure_ascii=False)
 
     monkeypatch.setattr(reflect, "call_llm", _fake_llm)
@@ -260,6 +260,11 @@ def test_run_reflect_full_chain_scoped(monkeypatch):
     res = reflect.run_reflect(memory=_FakeMem(), user_id="u1", source="test",
                               bank_id="bank_a")
     assert res["status"] == "ok" and res["saved"] == 1, res
+    fact_id = _rows("SELECT id FROM facts WHERE fact_key=?", ("rr:a1",))[0][0]
+    expected_refs = ["ma", f"fact:{fact_id}"]
+    assert res["insights"][0]["evidence"] == expected_refs
+    stored = _rows("SELECT evidence FROM reflections WHERE content=?", ("甲库素材蒸出的洞察",))
+    assert json.loads(stored[0][0]) == expected_refs
 
     # 提示词只许含甲库素材——乙库内容进了提示词，洞察就已经被污染
     assert len(prompts) == 1

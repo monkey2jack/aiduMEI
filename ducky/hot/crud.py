@@ -50,6 +50,25 @@ def _update_provenance() -> dict:
     return {"source_type": "direct", "basis": "edited_via_update:owner"}
 
 
+def _redaction_fields(redacted):
+    return {"redacted": redacted} if redacted else {}
+
+
+def _sanitize_update(content):
+    from ducky import write_policy as _wp
+    content, _redacted = _wp.redact_forbidden(content) if isinstance(content, str) else (content, [])
+    from ducky.scope_auth import sanitize_memory_or_raise
+    content = sanitize_memory_or_raise(content)
+    # f0.7.5（外审 qwen F-05 / 宿主自审 SEC-03）：与 /add 同一字节口径——边界记号中和
+    # + 原则 7 整段拒收（整段邮件 / 超长原文 / 只剩密钥），不再能借 update 绕过。
+    content = _update_hard_block(content)
+    _redacted = sorted(set(_redacted))
+    if _redacted:
+        logger.warning("🛡️ [WritePolicy] /update 改写前屏蔽 %d 处敏感片段: %s", len(_redacted),
+                       ",".join(_redacted))
+    return content, _redacted
+
+
 def _update_hard_block(content: str) -> str:
     """f0.7.5（外审 qwen F-05 / 宿主自审 SEC-03）：/update 与 /add 同一字节口径——边界记号中和
     + 原则 7 整段拒收（整段邮件 / 超长原文 / 只剩密钥），不再能借 update 绕过。"""
@@ -66,7 +85,7 @@ def _update_hard_block(content: str) -> str:
 
 def _gate_update(content: str, memory_id: str, user_id: str, bank_id: str) -> dict | None:
     """f0.8 ②：/update 的新正文过 /add 同一道拦截（write_policy.enforce_messages：P1 机器噪声 /
-    P8 忘记规则）。被拦时返回 gated 回执、原记忆不动（P1 进墓碑 7 天可恢复，P8 不留正文）；
+    P8 忘记规则）。被拦时返回 gated 回执、原记忆不动（P1 / P8 进墓碑 7 天可恢复）；
     没拦（或拦截自己出错 → fail-open）返回 None，照旧改写。"""
     from ducky import write_policy as _wp
     _kept, gated = _wp.enforce_messages(content, {"source": "update"}, user_id=user_id, bank_id=bank_id)
@@ -601,13 +620,12 @@ def register_crud_routes(app: FastAPI) -> None:
             from ducky.scope_auth import require_scope_access
             require_scope_access(user_id, req.caller_user_id,
                                  bank_id=scope.bank_id, action="write")
-            from ducky.scope_auth import sanitize_memory_or_raise
-            content = sanitize_memory_or_raise(content)
-            # f0.7.5（外审 qwen F-05 / 宿主自审 SEC-03）：与 /add 同一字节口径——边界记号中和
-            # + 原则 7 整段拒收（整段邮件 / 超长原文 / 只剩密钥），不再能借 update 绕过。
-            content = _update_hard_block(content)
+            # f0.8+（计划 ⑦）：原则 7 就地打码——密钥 / 证件片段换成 [redacted:…] 后照常改写（只剩密钥的
+            # 整段才 422），打掉了什么写进回执与向量 metadata，调用方看得见。打码在一切落库之前做。
+            content, _redacted = _sanitize_update(content)
             if req.memory_id.strip().lower().startswith("verbatim:"):
-                return _update_verbatim_handle(req.memory_id, user_id, scope.bank_id, content)
+                _vresp = _update_verbatim_handle(req.memory_id, user_id, scope.bank_id, content)
+                return {**_vresp, **_redaction_fields(_redacted)}
             # v20.4.0（P1-3）：归属先验，未验证不许动向量。
             _old = _verify_vector_ownership(mem, req.memory_id, user_id, scope.bank_id)
             _gated_resp = _gate_update(content, req.memory_id, user_id, scope.bank_id)   # 归属验过再拦
@@ -623,7 +641,9 @@ def register_crud_routes(app: FastAPI) -> None:
             # 不再具备「搬域」能力，盖写是幂等重申。）
             ensure_bank_registered(scope)
             from ducky.memory_kernel import scope_kwargs
-            mem.update(req.memory_id, data=content, metadata={"bank_id": scope.bank_id, **_update_provenance()},
+            _upd_md = {"bank_id": scope.bank_id, **_update_provenance()}
+            _upd_md.update(_redaction_fields(_redacted))
+            mem.update(req.memory_id, data=content, metadata=_upd_md,
                        **scope_kwargs(mem, user_id, scope.bank_id))
             _stale = replace_stale_copies(user_id, scope.bank_id, _old.get("memory"), content,
                                           memory_id=req.memory_id)
@@ -724,8 +744,10 @@ def register_crud_routes(app: FastAPI) -> None:
                 logger.warning(f"facts update on update 失败（已出声，不再静默）: {fte}")
                 facts_sync = "error"
 
-            return {"status": "partial" if _stale else "ok", "facts_sync": facts_sync,
-                    "pattern_sync": pattern_sync, "failed_layers": _stale}
+            _resp = {"status": "partial" if _stale else "ok", "facts_sync": facts_sync,
+                     "pattern_sync": pattern_sync, "failed_layers": _stale}
+            _resp.update(_redaction_fields(_redacted))
+            return _resp
         # P1-4（v19.4.1）：先放行 HTTPException —— 否则注入拦截的 400
         # 会被下面的 except Exception 吞掉再包成 500，调用方无法区分
         # 「内容被拒」与「服务端故障」（实机冒烟：注入拦截返回 500）。

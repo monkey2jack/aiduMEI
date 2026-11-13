@@ -214,7 +214,7 @@ def _rerank_openai_rerank(cfg: dict, query: str, documents: list, top_n: int) ->
             "documents": documents,
             "top_n": min(top_n, len(documents)),
         },
-        timeout=10,
+        timeout=cfg.get("_timeout", 10),
     )
     _rerank_http_error(r)
     results = r.json().get("results", [])
@@ -243,7 +243,7 @@ def _rerank_jina(cfg: dict, query: str, documents: list, top_n: int) -> list[dic
             "documents": documents,
             "top_n": min(top_n, len(documents)),
         },
-        timeout=10,
+        timeout=cfg.get("_timeout", 10),
     )
     _rerank_http_error(r)
     results = r.json().get("results", [])
@@ -271,7 +271,7 @@ def _rerank_cohere(cfg: dict, query: str, documents: list, top_n: int) -> list[d
             "top_n": min(top_n, len(documents)),
             "return_documents": False,
         },
-        timeout=10,
+        timeout=cfg.get("_timeout", 10),
     )
     _rerank_http_error(r)
     data = r.json()
@@ -300,7 +300,7 @@ def _rerank_openai_compatible(cfg: dict, query: str, documents: list, top_n: int
             "documents": documents,
             "top_n": min(top_n, len(documents)),
         },
-        timeout=10,
+        timeout=cfg.get("_timeout", 10),
     )
     _rerank_http_error(r)
     data = r.json()
@@ -395,12 +395,172 @@ def rerank_config_status() -> dict:
     return out
 
 
+# ── f0.8+ C：召回延迟治理（plan ⑨）────────────────────────────────────────
+# 生产 /search p50 4.3s / p95 7.2s，reranker 单次均值 2.2–2.5s。实测（bge-reranker-v2-m3
+# @ SiliconFlow）耗时主要随「文档条数 × 长度」走：30 条×3000 字 ≈1.85s，30×800 ≈0.95s，
+# 20×800 ≈0.7s，单次底噪 ≈0.6s。所以四件事：
+#   1. 送审前裁剪：每条截到 AIDUMEI_RERANK_DOC_CHARS（默认 800 字），条数封顶
+#      AIDUMEI_RERANK_MAX_DOCS（默认 24，调用方按原分数排好序再送）；
+#   2. 时间预算：/search 每请求设一个总预算（AIDUMEI_RERANK_BUDGET_MS，默认 1500），
+#      主排序与原文层排序共用；单次外呼超时 = min(剩余预算, AIDUMEI_RERANK_TIMEOUT_MS)。
+#      超时返回空 → 调用方保留未重排的结果，遥测 status=timeout、degraded=true；
+#   3. 熔断：连续 AIDUMEI_RERANK_BREAKER_FAILS 次超时/失败后，AIDUMEI_RERANK_BREAKER_COOLDOWN_S
+#      秒内直接跳过（status=circuit_open），冷却后放一次试探；
+#   4. 结果缓存：键 = provider+model+query+每条送审文本的哈希，内容寻址，写入后
+#      候选变了键就变，无需失效；TTL AIDUMEI_RERANK_CACHE_TTL_S（默认 300，0 关）。
+_RR_DEGRADED = ("timeout", "budget_exhausted", "circuit_open")
+_rr_cache_lock = threading.Lock()
+_rr_cache: "dict[str, tuple[float, list]]" = {}
+_RR_CACHE_MAX = 256
+_rr_breaker = {"fails": 0, "open_until": 0.0}
+_rr_breaker_lock = threading.Lock()
+
+
+def _rr_env(name: str, default: float, lo: float, hi: float) -> float:
+    from ducky.env_config import float_env
+    return float_env(name, default, minimum=lo, maximum=hi)
+
+
+def rerank_limits() -> dict:
+    """当前生效的裁剪 / 预算参数（每次读 env，便于热调与测试）。"""
+    return {
+        "doc_chars": int(_rr_env("AIDUMEI_RERANK_DOC_CHARS", 800, 0, 100000)),
+        "max_docs": int(_rr_env("AIDUMEI_RERANK_MAX_DOCS", 24, 0, 1000)),
+        "timeout_ms": _rr_env("AIDUMEI_RERANK_TIMEOUT_MS", 2500, 100, 60000),
+        "budget_ms": _rr_env("AIDUMEI_RERANK_BUDGET_MS", 1500, 0, 60000),
+        "cache_ttl_s": _rr_env("AIDUMEI_RERANK_CACHE_TTL_S", 300, 0, 86400),
+        "breaker_fails": int(_rr_env("AIDUMEI_RERANK_BREAKER_FAILS", 3, 0, 1000)),
+        "breaker_cooldown_s": _rr_env("AIDUMEI_RERANK_BREAKER_COOLDOWN_S", 30, 0, 3600),
+    }
+
+
+def start_rerank_budget(budget_ms: Optional[float] = None) -> None:
+    """路由层每请求调用一次：本请求所有 rerank 外呼共用的截止时间。0 = 不设预算。"""
+    ms = rerank_limits()["budget_ms"] if budget_ms is None else float(budget_ms)
+    _rerank_tls.deadline = (time.monotonic() + ms / 1000.0) if ms > 0 else None
+
+
+def clear_rerank_budget() -> None:
+    _rerank_tls.deadline = None
+
+
+def _rr_remaining_s() -> Optional[float]:
+    deadline = getattr(_rerank_tls, "deadline", None)
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def rerank_cache_clear() -> None:
+    with _rr_cache_lock:
+        _rr_cache.clear()
+    with _rr_breaker_lock:
+        _rr_breaker.update(fails=0, open_until=0.0)
+
+
+def _rr_cache_key(cfg: dict, query: str, docs: list, top_n: int) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    for part in (cfg.get("provider", ""), cfg.get("model", ""), cfg.get("base_url", ""), query, str(top_n)):
+        h.update(str(part).encode("utf-8", "replace") + b"\x00")
+    for d in docs:
+        h.update(hashlib.sha256(str(d).encode("utf-8", "replace")).digest())
+    return h.hexdigest()
+
+
+def _rr_cache_get(key: str, ttl: float) -> Optional[list]:
+    if ttl <= 0:
+        return None
+    with _rr_cache_lock:
+        hit = _rr_cache.get(key)
+        if hit is None:
+            return None
+        if time.monotonic() - hit[0] > ttl:
+            _rr_cache.pop(key, None)
+            return None
+        return [dict(x) for x in hit[1]]
+
+
+def _rr_cache_put(key: str, out: list, ttl: float) -> None:
+    if ttl <= 0 or not out:
+        return
+    with _rr_cache_lock:
+        if len(_rr_cache) >= _RR_CACHE_MAX:
+            for k in sorted(_rr_cache, key=lambda k: _rr_cache[k][0])[:_RR_CACHE_MAX // 4]:
+                _rr_cache.pop(k, None)
+        _rr_cache[key] = (time.monotonic(), [dict(x) for x in out])
+
+
+def _rr_breaker_open(limits: dict) -> bool:
+    if limits["breaker_fails"] <= 0:
+        return False
+    with _rr_breaker_lock:
+        until = _rr_breaker["open_until"]
+        if until and time.monotonic() < until:
+            return True
+        if until:
+            # 冷却结束：放这一次当试探（half-open）；再失败立即重新打开。
+            _rr_breaker["open_until"] = 0.0
+            _rr_breaker["fails"] = max(0, limits["breaker_fails"] - 1)
+        return False
+
+
+def _rr_breaker_record(ok: bool, limits: dict) -> None:
+    with _rr_breaker_lock:
+        if ok:
+            _rr_breaker.update(fails=0, open_until=0.0)
+            return
+        _rr_breaker["fails"] += 1
+        if limits["breaker_fails"] > 0 and _rr_breaker["fails"] >= limits["breaker_fails"]:
+            _rr_breaker["open_until"] = time.monotonic() + limits["breaker_cooldown_s"]
+            logger.warning("rerank 连续 %d 次超时/失败，熔断 %.0fs（期间返回未重排结果）",
+                           _rr_breaker["fails"], limits["breaker_cooldown_s"])
+
+
+_rr_pool = None
+_rr_pool_lock = threading.Lock()
+
+
+def _rr_call_bounded(handler, cfg: dict, query: str, docs: list, top: int, timeout_s: float) -> list:
+    """Wall-clock bound on one provider call.
+
+    The HTTP read/connect timeouts do not cover name resolution or a slow TLS
+    re-handshake after a dropped keep-alive connection (on the production host
+    one DNS lookup alone is ~1 s), so the call runs on a small worker pool and
+    the request thread waits at most ``timeout_s``.  A call that overruns keeps
+    running in the background until its own HTTP timeout; its result is dropped."""
+    global _rr_pool
+    if _rr_pool is None:
+        with _rr_pool_lock:
+            if _rr_pool is None:
+                from concurrent.futures import ThreadPoolExecutor
+                _rr_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rerank")
+    from concurrent.futures import TimeoutError as _FutTimeout
+    fut = _rr_pool.submit(handler, cfg, query, docs, top)
+    try:
+        return fut.result(timeout=timeout_s + 0.05)
+    except _FutTimeout:
+        fut.cancel()
+        raise TimeoutError(f"rerank exceeded {timeout_s * 1000:.0f}ms")
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    try:
+        import requests
+        if isinstance(exc, requests.exceptions.Timeout):
+            return True
+    except ImportError:
+        pass
+    return isinstance(exc, TimeoutError)
+
+
 def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     """
     调用配置好的 reranker 做重排序。返回 [{index, relevance_score}, ...] 按分数降序。
     失败返回空列表，不阻断检索主链路——但结局必须可观测：
     「未配置 / 调用失败 / 真空结果」三态记入线程本地遥测与 /usage 账本，
-    绝不折叠成同一个静默的 []。
+    绝不折叠成同一个静默的 []。f0.8+ C 再加三态：timeout / budget_exhausted /
+    circuit_open（均带 degraded=true，调用方保留未重排结果）。
+    只送前 max_docs 条（调用方须先按原分数排序），每条截到 doc_chars 字；
+    返回的 index 永远指向调用方传入的 documents。
     支持: OpenAI-compatible / Jina / Cohere
     """
     telem: dict = {"status": "not_configured", "provider": None, "latency_ms": 0.0}
@@ -433,22 +593,62 @@ def rerank(query: str, documents: list[str], top_n: int = 10) -> list[dict]:
     handler = RERANK_PROVIDERS.get(provider.lower(), _rerank_openai_compatible)
     telem["provider"] = provider
     telem["model"] = cfg.get("model", "")
+
+    limits = rerank_limits()
+    docs = [str(d if d is not None else "") for d in documents]
+    if limits["max_docs"] and len(docs) > limits["max_docs"]:
+        telem["docs_capped"] = len(docs) - limits["max_docs"]
+        docs = docs[:limits["max_docs"]]
+    if limits["doc_chars"]:
+        clipped = sum(1 for d in docs if len(d) > limits["doc_chars"])
+        if clipped:
+            telem["docs_clipped"] = clipped
+            docs = [d[:limits["doc_chars"]] for d in docs]
+    telem["sent"] = len(docs)
+    top = min(top_n, len(docs))
+
+    key = _rr_cache_key(cfg, query, docs, top)
+    cached = _rr_cache_get(key, limits["cache_ttl_s"])
+    if cached is not None:
+        telem.update(status="ok", cached=True, returned=len(cached))
+        return cached
+
+    if _rr_breaker_open(limits):
+        telem.update(status="circuit_open", degraded=True)
+        return []
+    remaining = _rr_remaining_s()
+    timeout_s = limits["timeout_ms"] / 1000.0
+    if remaining is not None:
+        if remaining < 0.15:
+            telem.update(status="budget_exhausted", degraded=True,
+                         budget_ms=limits["budget_ms"])
+            return []
+        timeout_s = min(timeout_s, remaining)
+    telem["timeout_ms"] = round(timeout_s * 1000)
+    call_cfg = dict(cfg, _timeout=(min(timeout_s, 3.05), timeout_s))
     t0 = time.time()
     try:
         if needs_base_url:
             from ducky.security.egress import guard_url
             guard_url(base_url, "rerank")  # f0.8：外呼前复检目的地址
-        out = handler(cfg, query, documents, top_n)
+        out = _rr_call_bounded(handler, call_cfg, query, docs, top, timeout_s)
         telem["latency_ms"] = round((time.time() - t0) * 1000, 1)
         telem["status"] = "ok" if out else "empty"
         telem["returned"] = len(out)
         _track_rerank_usage(provider=provider, latency_ms=telem["latency_ms"], failed=False)
+        _rr_breaker_record(True, limits)
+        _rr_cache_put(key, out, limits["cache_ttl_s"])
         return out
     except Exception as e:
         telem["latency_ms"] = round((time.time() - t0) * 1000, 1)
+        _track_rerank_usage(provider=provider, latency_ms=telem["latency_ms"], failed=True)
+        _rr_breaker_record(False, limits)
+        if _is_timeout(e):
+            telem.update(status="timeout", degraded=True, error="timeout")
+            logger.info("rerank (%s) 超时 %.0fms，本次返回未重排结果", provider, timeout_s * 1000)
+            return []
         telem["status"] = "error"
         telem["error"] = str(e)[:200]
-        _track_rerank_usage(provider=provider, latency_ms=telem["latency_ms"], failed=True)
         logger.warning(f"rerank ({provider}) 调用失败: {e}")
         return []
 
@@ -885,6 +1085,27 @@ def _warn_stored_endpoints(cfg: dict) -> None:
         logger.debug("stored endpoint audit skipped: %s", exc)
 
 
+def _guard_sdk_clients(mem) -> list[str]:
+    """f0.8+（外审 R3-07）：mem0 SDK 内部的 openai 客户端不经本仓外呼点。给它们底层的 httpx
+    客户端挂 request 钩子，每次外呼前同样 guard_url（含钉住解析）。挂不上的大声告警，不拒启动。"""
+    from ducky.security.egress import attach_httpx_guard
+    attached, missed = [], []
+    for name in ("llm", "embedding_model"):
+        part = getattr(mem, name, None)
+        if part is None:
+            continue
+        sdk = getattr(part, "client", None)
+        httpx_client = getattr(sdk, "_client", None)
+        if httpx_client is not None and attach_httpx_guard(httpx_client, f"mem0_{name}"):
+            attached.append(name)
+        else:
+            missed.append(name)
+    if missed:
+        logger.warning("⚠️ mem0 SDK 外呼没能挂上出站校验（%s）：这些请求只受启动时的存量配置校验保护",
+                       ", ".join(missed))
+    return attached
+
+
 def _get_mem0_memory():
     """延迟初始化 mem0 单例，绑定到 sys 命名空间防止跨模块双重导入。"""
     global m
@@ -906,6 +1127,7 @@ def _get_mem0_memory():
             # 启动时清理 Qdrant 锁（与生产环境对齐：先读配置再清理）
             _clear_qdrant_lock()
             m = Memory.from_config(cfg)
+            _guard_sdk_clients(m)
             _patch_state = _patch_usage_tracking(m)
             try:
                 from ducky.add_speed import patch_llm_for_speed

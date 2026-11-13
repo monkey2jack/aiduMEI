@@ -187,25 +187,99 @@ _GIT_SHA_CACHE: dict = {}
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _resolve_git_sha() -> str:
-    """AIDUMEI_BUILD_SHA（部署时写入）> `git rev-parse HEAD`（短超时）> "unknown"。"""
-    raw = (os.environ.get(_BUILD_SHA_ENV) or "").strip()
-    if raw:
-        if _SHA_RE.match(raw):
-            return raw.lower()
-        logger.warning("%s=%r 不是 7~64 位十六进制提交号，忽略它改用 git 解析", _BUILD_SHA_ENV, raw[:80])
+_BUILD_SHA_ENVS = (_BUILD_SHA_ENV,)   # 不新增 AIDUMEM_ 旧前缀变量（env_registry 冻结学说）
+
+
+def _read_git_head(root: str) -> str:
+    """Read HEAD straight from the repository files (no subprocess); "" when unknown.
+
+    Handles a normal checkout, a worktree/submodule (``.git`` file with
+    ``gitdir:``), a detached HEAD, loose refs and ``packed-refs``."""
+    try:
+        dot = os.path.join(root, ".git")
+        if os.path.isfile(dot):
+            with open(dot, encoding="utf-8") as f:
+                line = f.read().strip()
+            if not line.startswith("gitdir:"):
+                return ""
+            gitdir = line[len("gitdir:"):].strip()
+            if not os.path.isabs(gitdir):
+                gitdir = os.path.normpath(os.path.join(root, gitdir))
+        elif os.path.isdir(dot):
+            gitdir = dot
+        else:
+            return ""
+        with open(os.path.join(gitdir, "HEAD"), encoding="utf-8") as f:
+            head = f.read().strip()
+        if not head.startswith("ref:"):
+            return head.lower() if _SHA_RE.match(head) else ""
+        ref = head[len("ref:"):].strip()
+        common = gitdir
+        cd = os.path.join(gitdir, "commondir")
+        if os.path.isfile(cd):
+            with open(cd, encoding="utf-8") as f:
+                common = os.path.normpath(os.path.join(gitdir, f.read().strip()))
+        for base in (gitdir, common):
+            path = os.path.join(base, ref)
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8") as f:
+                    sha = f.read().strip()
+                return sha.lower() if _SHA_RE.match(sha) else ""
+        packed = os.path.join(common, "packed-refs")
+        if os.path.isfile(packed):
+            with open(packed, encoding="utf-8") as f:
+                for row in f:
+                    parts = row.strip().split(" ", 1)
+                    if len(parts) == 2 and parts[1] == ref and _SHA_RE.match(parts[0]):
+                        return parts[0].lower()
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        logger.debug("reading git HEAD failed: %s", exc)
+    return ""
+
+
+def _git_head() -> str:
+    sha = _read_git_head(_REPO_ROOT)
+    if sha:
+        return sha
     try:
         proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=_REPO_ROOT,
                               capture_output=True, text=True, timeout=2)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("git rev-parse 不可用: %s", exc)
-        return "unknown"
+        return ""
     sha = (proc.stdout or "").strip()
-    return sha.lower() if proc.returncode == 0 and _SHA_RE.match(sha) else "unknown"
+    return sha.lower() if proc.returncode == 0 and _SHA_RE.match(sha) else ""
+
+
+def _env_build_sha() -> str:
+    for name in _BUILD_SHA_ENVS:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        if _SHA_RE.match(raw):
+            return raw.lower()
+        logger.warning("%s=%r 不是 7~64 位十六进制提交号，忽略它", name, raw[:80])
+    return ""
+
+
+def _resolve_git_sha() -> str:
+    """git HEAD（启动时读一次）> AIDUMEI_BUILD_SHA > "unknown"。
+
+    f0.8+ C：此前 .env 手填的值优先，部署忘了改就一直报旧提交（实测报 28e98ad7，
+    实际 31584878）。现在以代码目录里真实的 HEAD 为准；只有不是 git 检出
+    （镜像/压缩包部署）时才用环境变量。两者都在且不一致时告警一次。"""
+    head = _git_head()
+    env = _env_build_sha()
+    if head:
+        if env and not (head.startswith(env) or env.startswith(head)):
+            logger.warning("build sha 环境变量（%s）与 git HEAD（%s）不一致，/health 以 git HEAD 为准",
+                           env[:12], head[:12])
+        return head
+    return env or "unknown"
 
 
 def _git_sha() -> str:
-    """进程内只解析一次（首个授权 /health 付最多 2 秒，之后 O(1)）。"""
+    """进程内只解析一次（启动时预热；之后 O(1)）。"""
     if "sha" not in _GIT_SHA_CACHE:
         _GIT_SHA_CACHE["sha"] = _resolve_git_sha()
     return _GIT_SHA_CACHE["sha"]

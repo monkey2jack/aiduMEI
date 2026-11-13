@@ -58,8 +58,8 @@ _lookup_env_key() {
     local key="$1" cand val
     for cand in "${AIDUMEM_ENV_FILE:-}" \
                 "${AIDUMEM_HOME:+${AIDUMEM_HOME}/.env}" \
-                "${HOME:+${HOME}/.aidumem/.env}" \
-                "./.env"; do
+                "${HOME:+${HOME}/.aidumem/.env}"; do
+        # f0.8+（外审 R3-01）：不读 ./.env——cwd 是工作区目录，克隆来的仓库能借它改身份
         if val=$(_read_env_key "$cand" "$key"); then
             printf '%s' "$val"
             return 0

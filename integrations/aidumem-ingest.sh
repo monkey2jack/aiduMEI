@@ -73,8 +73,8 @@ _env_candidates() {
     printf '%s\n' "${AIDUMEM_ENV_FILE:-}" \
                   "${AIDUMEM_HOME:+${AIDUMEM_HOME}/.env}" \
                   "${HOME:+${HOME}/.aidumem/.env}" \
-                  "${_hook_dir:+${_hook_dir}/../.env}" \
-                  "./.env"
+                  "${_hook_dir:+${_hook_dir}/../.env}"
+    # f0.8+（外审 R3-01）：不读 ./.env——钩子的 cwd 可能是克隆来的项目目录，能借它改身份、选别人的钥匙
 }
 
 _lookup_env_key() {

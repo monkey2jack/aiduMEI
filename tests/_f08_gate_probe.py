@@ -113,15 +113,26 @@ out["short_live"] = [live("gina", "好，那走吧"), live("gina", "改")]
 
 # 5) thinking text on the session-summary path: gated; the same text as a fallback summary is stored
 think = "We need to output one or two sentences summarizing the session in Chinese, under 80 characters."
-st, body = add("gina", [{"role": "assistant", "content": think}], SUMMARY_MD)
+from ducky.distill_seal import SEAL_FIELD, seal  # noqa: E402  f0.8+（R3-05）：精华身份要服务端签名
+st, body = add("gina", [{"role": "assistant", "content": think}],
+               {**SUMMARY_MD, SEAL_FIELD: seal(think, "gina", "default", SUMMARY_MD)})
 out["thinking"] = [st, body.get("action"), [g["principle"] for g in body.get("gated", [])], live("gina", "We need to")]
 
-# 6) P8: a forget rule drops the write and keeps no text anywhere (tombstones included)
+# 6) P8: a forget rule keeps the write out of every live layer; f0.8+（外审 R3-04）the text waits in a
+#    tombstone (restorable for 7 days, then erased) instead of being dropped unrecoverably
 fr = c.post("/api/forget", json={"user_id": "gina", "memory_ids": ["00000000-0000-0000-0000-000000000000"],
                                  "never_store": "青石巷 九号"}, headers=H("gina")).json()
 st, body = add("gina", "我的旧住址是青石巷九号二单元")
 out["p8"] = [fr.get("rule_id") is not None, st, body.get("action"),
-             [g["principle"] for g in body.get("gated", [])], residue("九号二单元", skip=())]
+             [g["principle"] for g in body.get("gated", [])], residue("九号二单元")]
+_g = (body.get("gated") or [{}])[0]
+_trow = q("facts.db", "SELECT reason, actor, content_snapshot FROM tombstones WHERE tombstone_id=?",
+          (_g.get("tombstone_id"),))
+out["p8_tomb"] = [_trow[0][0].startswith("write_policy:P8:forget_rule"), _trow[0][1],
+                  _trow[0][2] == "我的旧住址是青石巷九号二单元", _g.get("rule") == fr.get("rule_id")] if _trow else []
+_rr = c.post("/api/tombstone/restore", json={"tombstone_id": _g.get("tombstone_id"), "user_id": "gina"},
+             headers=H("gina")).json()
+out["p8_restore"] = [_rr.get("status"), live("gina", "九号二单元")]
 
 # 7) each enforced principle can be turned back to shadow by env
 os.environ["AIDUMEI_WRITE_POLICY_P1"] = "shadow"

@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 from typing import Any
 
@@ -235,6 +236,18 @@ def collect_session_memories(session_id: str, *, user_id: str = "",
     return rows if len(rows) >= len(raw_rows) else raw_rows
 
 
+def _distill_reasoning_effort() -> str | None:
+    """推理模型的思考力度（AIDUMEI_DISTILL_REASONING_EFFORT，默认 medium；off/空 = 不发送）。
+
+    f0.8+ C：生产 GPT-OSS-20B 在 200 token 预算下默认力度会把预算全花在思考上，
+    正文为空、网关再把思考抄进正文 —— 每一次精华都落成确定性降级。保留
+    可配置力度，默认 medium 优先保证摘要质量。"""
+    raw = os.environ.get("AIDUMEI_DISTILL_REASONING_EFFORT", "medium").strip().lower()
+    if raw in ("", "off", "none", "0", "false"):
+        return None
+    return raw if raw in ("minimal", "low", "medium", "high") else "medium"
+
+
 def _fallback_summary(rows: list[dict[str, Any]]) -> str:
     """LLM 不可用时的确定性降级。
 
@@ -302,13 +315,14 @@ def distill_session(session_id: str, *, user_id: str = "",
             "「通常」不要写成「总是」；记录里没说、是你推断的，写成「可能」并点出依据。\n\n"
             + fenced,
             system="你在为一个长期记忆系统提炼会话精华。只输出那一两句话本身。" + DATA_ONLY_RULE,
-            max_tokens=200, temperature=0.3, timeout=30)
+            max_tokens=200, temperature=0.3, timeout=30,
+            reasoning_effort=_distill_reasoning_effort())
         if out and out.strip():
-            # f0.8 ②：推理模型的思考过程不是精华。先剥掉 <think>/harmony 包装；剩下的仍像
-            # 英文思考（「We need to output…」）就整条不要，走下面的确定性降级。
-            from ducky.write_policy import looks_like_reasoning, strip_reasoning
-            cand = strip_reasoning(out)
-            why = looks_like_reasoning(cand) if cand else "reasoning_only"
+            # f0.8 ②：推理模型的思考过程不是精华。先剥掉 <think>/harmony 包装；
+            # f0.8+ C：再从思考后面取最终答案（JSON / "Final:" / 末段干净中文）；
+            # 一个都取不到才整条不要，走下面的确定性降级。思考文本从不入库。
+            from ducky.write_policy import extract_final_answer
+            cand, why = extract_final_answer(out)
             if why:
                 rejected_reason = why
                 logger.warning("会话精华 LLM 返回的是思考过程（%s），走确定性降级", why)
@@ -362,6 +376,12 @@ def distill_session(session_id: str, *, user_id: str = "",
         meta["distill_source_refs_truncated"] = True
     if rejected_reason:
         meta["distill_fallback_reason"] = f"llm_reasoning_output:{rejected_reason}"
+    # f0.8+（外审 R3-05）：服务端签名——/add 只认带对签名的精华身份，自报的 kind/lane 不算数
+    try:
+        from ducky.distill_seal import SEAL_FIELD, seal
+        meta[SEAL_FIELD] = seal(summary, uid, bid, meta)
+    except (OSError, ValueError, ImportError) as _seal_exc:   # unsigned → /add stores it as an ordinary write
+        logger.warning("会话精华签名失败（将按普通写入落库）: %s", type(_seal_exc).__name__)
 
     # f0.6++ WP9(用户级审计暗礁2):精华产出后顺手喂核心占位块——只覆写「尚未填写」,
     # 用户手填/auto-draft 已写一律跳过(护栏见 core_memory.autosink_from_distill)。

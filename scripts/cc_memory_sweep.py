@@ -160,7 +160,8 @@ def trim_index(idx: Path, root: Path, state: dict, ident: dict, *, cap: int, app
 
 
 def sweep_dir(root: Path, client, state: dict, *, apply: bool, trim: bool, days: int, cap: int,
-              stamp: str, now: float) -> list[dict]:
+              stamp: str, now: float, ingest: bool = True) -> list[dict]:
+    """ingest=False（f0.8+ P0-1：项目不在写入白名单 AIDUMEI_CC_ALLOW_DIRS 里）：只打码，不入库不裁剪。"""
     if root.is_symlink() or not root.is_dir():
         return [{"action": "skip", "reason": "not_a_dir", "dir": str(root)}]
     root = root.resolve()
@@ -170,6 +171,8 @@ def sweep_dir(root: Path, client, state: dict, *, apply: bool, trim: bool, days:
         text, kinds = B.redact_file(path, apply=apply)
         if kinds:
             acts.append({"action": "redacted" if apply else "would_redact", "file": rel, "kinds": kinds})
+        if not ingest:
+            continue
         res = B.ingest_file(path, root, text, client, state, apply=apply)
         if res.get("action") != "skip":
             acts.append(res)
@@ -178,7 +181,9 @@ def sweep_dir(root: Path, client, state: dict, *, apply: bool, trim: bool, days:
             if t:
                 acts.append(t)
     idx = root / B.INDEX_NAME
-    if trim and B.resolve_inside(idx, root) is not None:
+    if not ingest:
+        acts.append({"action": "skip", "reason": "dir_not_allowed", "dir": str(root)})
+    elif trim and B.resolve_inside(idx, root) is not None:
         t = trim_index(idx, root, state, client.ident, cap=cap, apply=apply, stamp=stamp)
         if t:
             acts.append(t)
@@ -207,8 +212,11 @@ def main(argv: list[str] | None = None, client=None) -> int:
     dirs = memory_dirs(a.dir)
     acts: list[dict] = []
     for d in dirs:
+        # P0-1：自动扫到的项目目录要对得上写入白名单（--dir 显式点名的照做）；AIDUMEI_HOOKS=off 全不入库
+        ok = not B.hooks_off() and (bool(a.dir) or d.parent.parent != B.claude_home() / "projects"
+                                    or B.project_slug_allowed(d.parent.name))
         acts += sweep_dir(d, client, state, apply=apply, trim=a.trim, days=max(0, a.days),
-                          cap=max(5, a.index_cap), stamp=stamp, now=now)
+                          cap=max(5, a.index_cap), stamp=stamp, now=now, ingest=ok)
     if apply:
         B.save_state(state)
     errors = [x for x in acts if x.get("action") == "error"]

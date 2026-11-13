@@ -203,6 +203,11 @@ _EXPECTED_SQL_INTERPOLATIONS = {
     ("ducky/memory_types.py", "table"),
     ("ducky/memory_types.py", "owner_sql"), ("ducky/memory_types.py", "placeholders"),
     ("ducky/recall_funnel.py", "placeholders"),
+    # f0.8+ 夜间归并：q/qc 只是 "?,?,…" 占位串，id 值全走 ? 参数
+    ("ducky/consolidate.py", "q"), ("ducky/consolidate.py", "qc"),
+    # f0.8+ scope migration: clause comes only from scope_clause/user_clause;
+    # aliases are validated and every user, bank, state and id stays bound.
+    ("ducky/consolidate.py", "clause"),
     ("ducky/reflect.py", "ph"),
     # v20.2.5（外审 F-03 真修）：refine 候选的 bank 收窄子句。
     # 来源核对：`_bank_clause()` 只返回两种字面量 —— "" 或 " AND bank_id=?"，
@@ -293,6 +298,9 @@ _SQL_KEYWORD_TABLES = {"ADD"}
 # 迁移逻辑留在各模块（幂等 ensure_*），这张表补的是「谁在改 schema」的
 # 全景账——新迁移点不登记即红。
 _MIGRATION_LEDGER = {
+    # f0.8+ 夜间归并（facts.db，CREATE IF NOT EXISTS，additive；只存 id/代码/计数，无正文）
+    ("ducky/consolidate.py", "CREATE", "consolidation_links"),
+    ("ducky/consolidate.py", "CREATE", "consolidation_runs"),
     # f0.7+「什么值得记」影子日志 write_policy.db(新库,全部 CREATE IF NOT EXISTS,additive;
     # verdicts 只存 id/哈希/标签,forget_rules 忘记规则,key_events 钥匙身份计数,meta 存 schema 版本)
     ("ducky/write_policy.py", "CREATE", "verdicts"), ("ducky/write_policy.py", "CREATE", "forget_rules"),
