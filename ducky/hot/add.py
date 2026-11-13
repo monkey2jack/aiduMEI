@@ -350,6 +350,18 @@ def _execute_batch(mem, uid, msgs, meta, job_ids, *, bank_id="default", infer=Tr
 def _run_batch(mem, uid, msgs, meta, jids, *, bank_id, infer):
     from ducky.add_speed import job_update
     try:
+        return _run_batch_inner(mem, uid, msgs, meta, jids, bank_id=bank_id, infer=infer, job_update=job_update)
+    finally:
+        # f0.8+ C：后台批次在 HTTP 响应之后才落库 —— 中间件那次作废早了，这里再作废一次。
+        try:
+            from ducky.search_cache import invalidate_user
+            invalidate_user(uid)
+        except (ImportError, OSError, ValueError, TypeError, RuntimeError):
+            pass
+
+
+def _run_batch_inner(mem, uid, msgs, meta, jids, *, bank_id, infer, job_update):
+    try:
         for jid in jids:
             job_update(jid, status="running")
         result = _run_pipeline(mem, uid, msgs, meta or {}, bank_id=bank_id,
@@ -540,6 +552,8 @@ def register_add_routes(app: FastAPI) -> None:
             # metadata 字符串值同样过原则 7（结案留账 #3）。
             # f0.7.6（外审 R2-09）：字符串形态的 JSON messages 先还原成结构再打码——
             # 按纯文本打码时 `\u0070assword` 这类 JSON 转义认不出，原文会进幂等载荷与变更日志。
+            # f0.8+（外审 R3-05）：精华签名按调用方交来的原文验（打码 / 清洗之前）
+            _seal_src = req.messages
             if isinstance(req.messages, str) and req.messages.strip().startswith(("[", "{")):
                 try:
                     _parsed = json.loads(req.messages)
@@ -687,6 +701,10 @@ def register_add_routes(app: FastAPI) -> None:
             from ducky.origin_context import safe_origin_id
             for _k in ("_origin_agent", "_origin_session_id"):
                 md[_k] = safe_origin_id(md.get(_k))
+            # f0.8+（外审 R3-05 / R3-08）：会话精华身份只认服务端签名；来源由谁断言由服务端按凭据记下
+            from ducky import distill_seal
+            distill_seal.settle(md, _seal_src, req.user_id, req.bank_id)
+            md["role_asserted_by"] = write_policy.caller_assertion()
 
             # Completed summaries must not be extracted a second time or
             # coalesced with other generations. This also covers older hooks.
@@ -860,7 +878,7 @@ def register_add_routes(app: FastAPI) -> None:
                 logger.warning("🛡️ [WritePolicy] 写入前屏蔽 %d 处敏感片段: %s", len(_redacted),
                                ",".join(sorted(set(_redacted))))
             # f0.8 ②：开了拦截的原则（P1 机器噪声两类、P8 忘记黑名单、精华里的思考过程）在一切落库
-            # 之前把那几条拿出去——P1/思考过程进墓碑 7 天可恢复，P8 不留任何正文。其余照常写。
+            # 之前把那几条拿出去——P1/P8/思考过程进墓碑 7 天可恢复（f0.8+ R3-04）。其余照常写。
             messages_json, _gated = write_policy.enforce_messages(
                 messages_json, md, user_id=req.user_id, bank_id=req.bank_id)
             if _gated:

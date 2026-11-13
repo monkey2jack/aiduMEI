@@ -23,7 +23,7 @@
 #   AIDUMEI_CC_SESSION_PREFIX  会话 id 前缀，默认 cc-
 #
 # 设计原则：
-#   - 绝不拖累宿主：沉淀异步后台发出，hook 立即返回；任何异常静默 exit 0
+#   - 绝不拖累宿主：读完 stdin 立即返回，解析与沉淀全在脱离宿主的后台进程里做；任何异常静默 exit 0
 #   - 安静≠失声：跳过与失败往 stderr 写一行结构化诊断（宿主不显示，
 #     但人工排查时可见）
 set -uo pipefail
@@ -50,8 +50,8 @@ _env_candidates() {
     printf '%s\n' "${AIDUMEM_ENV_FILE:-}" \
                   "${AIDUMEM_HOME:+${AIDUMEM_HOME}/.env}" \
                   "${HOME:+${HOME}/.aidumem/.env}" \
-                  "${_hook_dir:+${_hook_dir}/../../.env}" \
-                  "./.env"
+                  "${_hook_dir:+${_hook_dir}/../../.env}"
+    # f0.8+（外审 R3-01）：不读 ./.env——钩子的 cwd 是项目目录，克隆来的仓库能借它改身份、选别人的钥匙
 }
 
 _lookup_env_key() {
@@ -66,22 +66,58 @@ EOF
     return 1
 }
 
-if [ -z "${AIDUMEM_API_TOKEN:-}" ]; then
+# ── f0.8+ P0-1：总开关 / 测试隔离 / 写入白名单（与 cc_memory_bridge.py 同口径）──────
+#   AIDUMEI_HOOKS=off          全部钩子静默跳过
+#   AIDUMEI_TEST_URL=<url>     测试开关（只认进程环境变量）：只连这个隔离实例；token 只用
+#                              AIDUMEI_TEST_TOKEN，不读 .env 里的 token、不读钥匙文件；白名单不适用
+#   AIDUMEI_CC_ALLOW_DIRS=a:b  写入白名单（冒号分隔目录）：会话目录（payload cwd，缺省 $PWD）
+#                              不在其中时不写；读线只在身份显式配置时才读。未设 = 不限制（老行为）
+_hooks=$(printf '%s' "${AIDUMEI_HOOKS:-$(_lookup_env_key AIDUMEI_HOOKS)}" | tr 'A-Z' 'a-z')
+case "$_hooks" in off|0|false|no) exit 0 ;; esac
+_test_mode=""
+if [ -n "${AIDUMEI_TEST_URL:-}" ]; then
+    _test_mode=1
+    AIDUMEM_URL="${AIDUMEI_TEST_URL%/}"
+    AIDUMEM_API_TOKEN="${AIDUMEI_TEST_TOKEN:-}"
+fi
+
+# 0 = 会话目录可写（未设白名单 / 测试模式 / 在白名单某目录之下）
+_dir_allowed() {
+    [ -n "$_test_mode" ] && return 0
+    local raw="${AIDUMEI_CC_ALLOW_DIRS:-}" c a ra
+    [ -n "$raw" ] || raw=$(_lookup_env_key AIDUMEI_CC_ALLOW_DIRS) || return 0
+    c=$(cd -- "${1:-.}" 2>/dev/null && pwd -P) || return 1
+    while IFS= read -r a; do
+        case "$a" in "~/"*) a="${HOME:-/nonexistent}/${a#\~/}" ;; esac
+        case "$a" in /*) ;; *) continue ;; esac
+        ra=$(cd -- "$a" 2>/dev/null && pwd -P) || continue
+        [ "$ra" = "/" ] && continue
+        case "$c/" in "$ra"/*) return 0 ;; esac
+    done <<ALLOW_EOF
+$(printf '%s' "$raw" | tr ':' '\n')
+ALLOW_EOF
+    return 1
+}
+
+if [ -z "$_test_mode" ] && [ -z "${AIDUMEM_API_TOKEN:-}" ]; then
     AIDUMEM_API_TOKEN=$(_lookup_env_key AIDUMEM_API_TOKEN) || AIDUMEM_API_TOKEN=""
 fi
 _uid="${AIDUMEM_USER_ID:-${AIDUMEM_DEFAULT_USER_ID:-}}"
 if [ -z "$_uid" ]; then
     _uid=$(_lookup_env_key AIDUMEM_USER_ID) \
         || _uid=$(_lookup_env_key AIDUMEM_DEFAULT_USER_ID) \
-        || _uid="default"
+        || _uid=""
 fi
+# 身份显式（环境变量或用户级 .env 写明）才算数；兜底的 default 不算
+_uid_explicit=1
+[ -n "$_uid" ] || { _uid="default"; _uid_explicit=""; }
 # f0.7.3：一个 agent 一把钥匙。<钥匙目录>/<身份>.key 在就用它（只在运行时读文件，
 # 不进命令行、不进日志）；不在就沿用上面的 AIDUMEM_API_TOKEN。身份名只认安全字符，
 # 防「../」读到别的文件。钥匙目录：AIDUMEI_KEYS_DIR，默认 ~/.aidumei-keys。
 _kdir="${AIDUMEI_KEYS_DIR:-${HOME:+${HOME}/.aidumei-keys}}"
 case "$_uid" in
   ''|.*|*[!A-Za-z0-9._-]*) ;;
-  *) if [ -n "$_kdir" ] && [ -f "$_kdir/$_uid.key" ] && [ -r "$_kdir/$_uid.key" ]; then
+  *) if [ -z "$_test_mode" ] && [ -n "$_kdir" ] && [ -f "$_kdir/$_uid.key" ] && [ -r "$_kdir/$_uid.key" ]; then
        _k=$(head -n 1 "$_kdir/$_uid.key" 2>/dev/null | tr -d '\r\n\t ')
        [ -n "$_k" ] && AIDUMEM_API_TOKEN="$_k"
        unset _k
@@ -121,7 +157,47 @@ except Exception as e:
   exit $?
 fi
 
-RAW_INPUT=$(cat)
+# ── 日志（前台/后台共用）：诊断不许随 >/dev/null 扔掉（安静≠失声），粗粒度轮转 ──
+_log_dir="${AIDUMEM_LOG_DIR:-${HOME:+${HOME}/.aidumem/logs}}"
+_log_dir="${_log_dir:-/tmp}"
+mkdir -p "$_log_dir" 2>/dev/null || _log_dir="/tmp"
+_log="${_log_dir}/aidumem-cc-ingest.log"
+
+# ── f0.8+：Stop 钩子立即返回 ─────────────────────────────────────────
+# CC 2.1.322 对本钩子报 hook_cancelled：旧版在前台解析整份 transcript（可达几十 MB）再后台发送，
+# 宿主等不及就取消（写入其实照常完成，只是日志难看）。现在读完 stdin 就把整件事交给脱离宿主
+# 进程组的后台进程（有 setsid 就用），本进程马上 exit 0。后台进程重新解析身份（同一套规则），
+# 载荷经环境变量传入（零拼接）。
+if [ "${AIDUMEI_CC_HOOK_BG:-}" != "1" ]; then
+    RAW_INPUT=$(cat)
+    [ -n "$RAW_INPUT" ] || exit 0
+    if [ -f "$_log" ] && [ "$(wc -c <"$_log" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+        mv -f "$_log" "${_log}.1" 2>/dev/null || :
+    fi
+    if command -v setsid >/dev/null 2>&1; then
+        AIDUMEI_CC_HOOK_BG=1 AIDUMEI_HOOK_INPUT="$RAW_INPUT" \
+            setsid bash "${BASH_SOURCE[0]}" </dev/null >>"$_log" 2>&1 &
+    else
+        AIDUMEI_CC_HOOK_BG=1 AIDUMEI_HOOK_INPUT="$RAW_INPUT" \
+            nohup bash "${BASH_SOURCE[0]}" </dev/null >>"$_log" 2>&1 &
+    fi
+    disown 2>/dev/null || true
+    exit 0
+fi
+RAW_INPUT="${AIDUMEI_HOOK_INPUT:-}"
+unset AIDUMEI_HOOK_INPUT AIDUMEI_CC_HOOK_BG
+
+# ── P0-1：会话目录不在写入白名单里 → 不写 ─────────────────────────────
+_cwd=$(AIDUMEI_HOOK_INPUT="$RAW_INPUT" python3 -c '
+import json, os
+try:
+    print(str(json.loads(os.environ.get("AIDUMEI_HOOK_INPUT", "")).get("cwd") or ""))
+except Exception:
+    pass' 2>/dev/null)
+if ! _dir_allowed "${_cwd:-$PWD}"; then
+    _diag "[aidumem-cc-ingest] skip reason=dir_not_allowed"
+    exit 0
+fi
 
 # ── 摘最后一轮 Q&A + session_id（环境变量传递，零拼接）──────
 PARSED=$(AIDUMEI_HOOK_INPUT="$RAW_INPUT" AIDUMEI_HOOK_PREFIX="$SESSION_PREFIX" \
@@ -228,15 +304,7 @@ print(json.dumps({
 ' 2>/dev/null)
 [ -z "$PARSED" ] && exit 0
 
-# ── 异步沉淀（不阻塞宿主；metadata 口径与萃取线圈定字段一致）──
-# 诊断不许随 >/dev/null 扔掉（安静≠失声）：失败行落持久日志，粗粒度轮转。
-_log_dir="${AIDUMEM_LOG_DIR:-${HOME:+${HOME}/.aidumem/logs}}"
-_log_dir="${_log_dir:-/tmp}"
-mkdir -p "$_log_dir" 2>/dev/null || _log_dir="/tmp"
-_log="${_log_dir}/aidumem-cc-ingest.log"
-if [ -f "$_log" ] && [ "$(wc -c <"$_log" 2>/dev/null || echo 0)" -gt 2097152 ]; then
-    mv -f "$_log" "${_log}.1" 2>/dev/null || :
-fi
+# ── 沉淀（已在后台；metadata 口径与萃取线圈定字段一致）──
 AIDUMEI_HOOK_PARSED="$PARSED" AIDUMEI_HOOK_TOKEN="$AIDUMEM_API_TOKEN" \
 AIDUMEI_HOOK_URL="$AIDUMEM_URL" python3 -c '
 import json, os, urllib.request
@@ -259,15 +327,41 @@ body = json.dumps({
                  "_origin_session_id": p.get("session_id", ""),
                  "_origin_agent": "aidumem-cc-ingest"},
 }, ensure_ascii=False).encode()
-headers = {"Content-Type": "application/json"}
+import uuid
+# One receipt per hook invocation, reused only for its own retry. Identical
+# words in later turns must still be stored as separate turns.
+headers = {"Content-Type": "application/json",
+           "Idempotency-Key": "host-ingest-" + uuid.uuid4().hex}
 if tok:
     headers["Authorization"] = "Bearer " + tok
-req = urllib.request.Request(url + "/add", data=body, headers=headers)
+# f0.8+ C: this add runs in the background (never blocks the host), so the old
+# 3 s budget only produced TimeoutError under server load. Budget comes from
+# AIDUMEI_INGEST_TIMEOUT (default 15 s, clamped 1..60); one retry on a timeout,
+# connection error or 5xx (both attempts reuse one idempotency key); a 4xx is final.
+# One log line per add that still failed, never per attempt.
+import time, urllib.error
 try:
-    urllib.request.urlopen(req, timeout=3)
-except Exception as exc:
+    tmo = float(os.environ.get("AIDUMEI_INGEST_TIMEOUT") or 15.0)
+except ValueError:
+    tmo = 15.0
+tmo = min(max(tmo, 1.0), 60.0)
+err = None
+for attempt in (1, 2):
+    req = urllib.request.Request(url + "/add", data=body, headers=headers)
+    try:
+        urllib.request.urlopen(req, timeout=tmo)
+        err = None
+        break
+    except urllib.error.HTTPError as exc:
+        err = "HTTP%d" % exc.code
+        if exc.code < 500:
+            break
+    except Exception as exc:
+        err = type(exc).__name__
+    if attempt == 1:
+        time.sleep(1.0)
+if err:
     import sys
-    sys.stderr.write("[aidumem-cc-ingest] add_failed err=%s\n" % type(exc).__name__)
-' >>"$_log" 2>&1 &
-disown 2>/dev/null || true
+    sys.stderr.write("[aidumem-cc-ingest] add_failed err=%s attempts=%d timeout=%.0fs\n" % (err, attempt, tmo))
+'
 exit 0

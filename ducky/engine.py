@@ -375,6 +375,9 @@ class RecallEngine:
             _set_recall_telemetry(alias_resolved=True)
         candidates = _fetch_vector_candidates(mem, query, user_id, bank_id, cand_limit)
         candidates = _filter_time_window(candidates, before, after)
+        # f0.8+：夜间归并 mode=on 时，被取代的旧版本不进召回（原话仍在库里，可恢复）
+        from ducky.consolidate import drop_superseded
+        candidates = drop_superseded(candidates, user_id, bank_id, mem=mem)
 
         # 2. 统一打分、六型偏好加权、批量查询 Salience（0 N+1）、Rerank 重排序
         final = score_and_rank_candidates(

@@ -63,8 +63,8 @@ _env_candidates() {
     printf '%s\n' "${AIDUMEM_ENV_FILE:-}" \
                   "${AIDUMEM_HOME:+${AIDUMEM_HOME}/.env}" \
                   "${HOME:+${HOME}/.aidumem/.env}" \
-                  "${_hook_dir:+${_hook_dir}/../.env}" \
-                  "./.env"
+                  "${_hook_dir:+${_hook_dir}/../.env}"
+    # f0.8+（外审 R3-01）：不读 ./.env——钩子的 cwd 可能是克隆来的项目目录，能借它改身份、选别人的钥匙
 }
 
 _lookup_env_key() {
@@ -79,7 +79,15 @@ EOF
     return 1
 }
 
-if [ -z "${AIDUMEM_API_TOKEN:-}" ]; then
+# f0.8+ P0-1 测试开关：AIDUMEI_TEST_URL 设了就只连这个隔离实例，token 只用 AIDUMEI_TEST_TOKEN，
+# 不读 .env 里的 token、不读钥匙文件（生产凭据不出门）
+_test_mode=""
+if [ -n "${AIDUMEI_TEST_URL:-}" ]; then
+    _test_mode=1
+    export AIDUMEM_URL="${AIDUMEI_TEST_URL%/}"
+    AIDUMEM_API_TOKEN="${AIDUMEI_TEST_TOKEN:-}"
+fi
+if [ -z "$_test_mode" ] && [ -z "${AIDUMEM_API_TOKEN:-}" ]; then
     AIDUMEM_API_TOKEN=$(_lookup_env_key AIDUMEM_API_TOKEN) || AIDUMEM_API_TOKEN=""
 fi
 export AIDUMEM_API_TOKEN
@@ -97,7 +105,7 @@ export AIDUMEM_USER_ID="$_uid"
 _kdir="${AIDUMEI_KEYS_DIR:-${HOME:+${HOME}/.aidumei-keys}}"
 case "$_uid" in
   ''|.*|*[!A-Za-z0-9._-]*) ;;
-  *) if [ -n "$_kdir" ] && [ -f "$_kdir/$_uid.key" ] && [ -r "$_kdir/$_uid.key" ]; then
+  *) if [ -z "$_test_mode" ] && [ -n "$_kdir" ] && [ -f "$_kdir/$_uid.key" ] && [ -r "$_kdir/$_uid.key" ]; then
        _k=$(head -n 1 "$_kdir/$_uid.key" 2>/dev/null | tr -d '\r\n\t ')
        [ -n "$_k" ] && AIDUMEM_API_TOKEN="$_k"
        unset _k
