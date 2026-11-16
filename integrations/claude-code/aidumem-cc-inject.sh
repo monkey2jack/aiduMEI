@@ -242,7 +242,7 @@ bid = os.environ.get("AIDUMEI_HOOK_BID", "default")
 if not q or not url:
     sys.exit()
 body = json.dumps({"query": q, "user_id": uid, "caller_user_id": uid,
-                   "bank_id": bid, "limit": 3}).encode()
+                   "bank_id": bid, "limit": 6}).encode()
 headers = {"Content-Type": "application/json"}
 if tok:
     headers["Authorization"] = "Bearer " + tok
@@ -254,7 +254,7 @@ try:
         m = item.get("memory") if isinstance(item, dict) else str(item)
         # f0.7+ 原则 3：推断出来的（会话精华等）标明，别当成本人原话
         tag = "（推断）" if isinstance(item, dict) and item.get("inferred") else ""
-        print("· " + tag + " ".join(str(m or item).split())[:150])
+        print("· " + tag + " ".join(str(m or item).split())[:300])
     # f0.5（fork 审计 F06）：降级照实透出——灯坏了不能冒充「没有记忆」。
     # 服务端契约：recall_verdict=degraded 时 results 不完整，degraded 列表
     # 载明哪个组件出了问题。静默失败是本 hook 的纪律，但「静默」只许用于
