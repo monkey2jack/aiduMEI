@@ -1,0 +1,15 @@
+[Unit]
+Description=aiduMEI local embedding shim (bge-small-zh, loopback)
+After=network.target
+
+[Service]
+Type=simple
+User=dev
+WorkingDirectory=/srv/aiduMEI
+Environment=HOME=/data/home
+ExecStart=/srv/aiduMEI/.venv/bin/python /srv/aiduMEI/embed_shim.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
