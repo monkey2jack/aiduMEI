@@ -1,6 +1,9 @@
 [Unit]
 Description=aiduMEI local embedding shim (bge-small-zh, loopback)
 After=network.target
+# Stop a broken shim after five failures instead of hiding it in a restart loop.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

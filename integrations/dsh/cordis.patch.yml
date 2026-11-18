@@ -1,0 +1,14 @@
+- insert:
+    - id: aidumei-dsh
+      name: '@monkey2jack/aidumei-dsh'
+      config:
+        # The empty allowlist is fail-closed. Set explicit workspace roots in
+        # the profile patch before enabling automatic memory for real work.
+        allowedRoots: []
+        allowUnscoped: false
+        maxResults: 3
+        maxItemChars: 300
+        recallTimeoutMs: 3000
+        ingestTimeoutMs: 15000
+        idleDistillMs: 120000
+        spoolDir: ''

@@ -41,6 +41,9 @@ from ducky.utils import DATA_DIR, DEFAULT_USER_ID, LOG_DIR, api_auth_headers
 # v20 最核心的 (user_id, bank_id) 多域隔离，在 Claude Desktop / Cursor / Hermes 全走的
 # MCP 生态里根本传不进去，所有 Agent 被锁死在 default 域。REST 契约有它，MCP 契约没有。
 from ducky.bank_contract import DEFAULT_BANK_ID
+# Host-specific callers may set a scoped MCP default. Without it, every
+# existing host retains the historical default bank unchanged.
+DEFAULT_BANK_ID = os.environ.get("AIDUMEI_DEFAULT_BANK_ID", "").strip() or DEFAULT_BANK_ID
 # 🟡12：版本号统一从真相源导入，杜绝 mcp_server 自报 18.0.0 与 version.py 打架。
 from ducky.version import SERVICE_VERSION
 
