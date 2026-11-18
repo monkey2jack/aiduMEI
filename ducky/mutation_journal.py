@@ -140,6 +140,13 @@ def journal_identity_path(path=None):
 
 
 def _sync_directory(path):
+    # POSIX 的目录 fsync（打开目录本身再 fsync）在 Windows 上不可用：
+    # os.open() 打开目录直接 PermissionError（WinErr 13），与权限无关，
+    # 是 CreateFile 不接受目录句柄的平台语义。Windows 侧退化为不 fsync：
+    # NTFS 默认元数据落盘顺序已保证"先身份标记后库文件"的可见序，
+    # 本函数的全部意义（断电后证据可见序）在 NTFS 上由文件系统自身承担。
+    if os.name == 'nt':
+        return
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)
