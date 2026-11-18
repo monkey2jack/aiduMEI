@@ -6,14 +6,17 @@
 
 # aiduMEI · YouiSi — a long-term memory engine for AI agents
 
-aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI and Hermes: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
+aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI, Hermes and **DeepSeek Harness**: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
 
-> The current public release is **f0.8+** (package `0.8.1`, 2026-11-14). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
+> The current public release is **f0.8++: official DeepSeek Harness support** (package `0.8.3`, 2026-11-18). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
+>
+> f0.8++ = code **f0.8.3** (on top of f0.8+: **native DeepSeek Harness integration** — native plugin, stdio MCP, persistent outbox writes and idle distillation on Windows/Linux/macOS, verified end-to-end on a real Windows machine incl. fault drills; plus an 8.3 short-name allowlist fix and a Windows first-boot compatibility fix in the mutation journal). DSH users: see [integrations/dsh/README.md](integrations/dsh/README.md).
+>
+> f0.8+ = code **f0.8.1** (four-way integration, security fixes, retry idempotency, cache generations, ops hardening). Previous public release: [f0.8+](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B) (package `0.8.1`, 2026-11-14).
 >
 > f0.8 = code **f0.8.0** (on top of f0.7+++: security hardening, write policy enforcing what the shadow week proved, and the Claude Code auto-memory bridge). See the [CHANGELOG](CHANGELOG.md).
 >
-> Current code: **f0.8.2**, an internal candidate for the **f0.8++ preview** (package `0.8.2`), adds a [native DSH integration](integrations/dsh/README.md). The public Tag remains **f0.8+**. Consolidation defaults to off; the full 20-question real-data A/B evaluation remains incomplete.
-> f0.7+++ = code **f0.7.6** (the patch on top of f0.7++: fixes from the f0.7++ outside re-audit — principle 7 detection rewritten, role / JSON-string messages / top-level fields no longer bypass redaction, deleted text no longer lingers in WAL files, opinions counted per fact tenant). Previous public release: [f0.7+++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B%2B) (package `0.7.6`, 2026-11-06).
+> Consolidation defaults to off; the full 20-question real-data A/B evaluation remains incomplete.
 >
 > f0.7++ = code **f0.7.5** (the patch on top of f0.7+: second outside-audit P0 fixes — facts isolated per identity under key enforcement, write-policy principle 7 gaps closed, delete chain completed, write gate no longer bypassed by message shape). Previous public release: [f0.7++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B) (package `0.7.5`, 2026-11-04).
 >
@@ -87,6 +90,8 @@ python scripts/connect_host.py            # detect + wire + verify; --dry-run sh
 python scripts/e2e_smoke.py --json        # writes a nonce → recalls it from a new request → cleans up; PASS with 0 warnings
 curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.runtime_paths'
 ```
+
+**DeepSeek Harness users** skip `connect_host.py` and use the native DSH integration instead: `node integrations/dsh/manage.mjs install ...` (see [integrations/dsh/README.md](integrations/dsh/README.md), covering both the Windows desktop carrier and npm hosts).
 
 Three probes on `/health` first: `health_status` is `ok`, `degraded` explains every unavailable component, `probes.runtime_paths.data_dir_writable` is true. `/health` alone is not enough — it can be all green while the write line is not wired. After a few real turns, re-check with `python3 scripts/check_ingest_wiring.py --require-judgment` (credentials via environment or `.env`, never `--token`: command lines are visible to other local users through `ps`).
 
