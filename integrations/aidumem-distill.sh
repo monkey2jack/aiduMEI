@@ -283,10 +283,18 @@ if [ "${1:-}" = "--background-run" ]; then
     # 输出已改向持久日志，不会吵到宿主：这里一律开诊断，否则「安静」会把
     # 唯一的现场记录也关掉。
     export AIDUMEM_HOOK_QUIET=""
-    _lock="${TMPDIR:-/tmp}/aidumem-distill-$(printf '%s' "$_bg_session" | cksum | cut -d" " -f1).lock"
+    # Keep the lock beside the hook log when possible.  A shared /tmp may contain
+    # a stale root-owned lock from another service/user; treating that as a
+    # successful no-op would silently drop every session-end distill job.
+    _lock_root="${AIDUMEI_LOCK_DIR:-${AIDUMEM_LOG_DIR:-${TMPDIR:-/tmp}}}"
+    mkdir -p "$_lock_root" 2>/dev/null || _lock_root="${TMPDIR:-/tmp}"
+    _lock="${_lock_root}/aidumem-distill-$(printf '%s' "$_bg_session" | cksum | cut -d" " -f1).lock"
     if command -v flock >/dev/null 2>&1; then
-        exec 9>"$_lock" || exit 0
-        flock -n 9 || { _diag "[aidumem-distill] busy: 同一会话已有提炼在跑"; exit 0; }
+        if exec 9>"$_lock"; then
+            flock -n 9 || { _diag "[aidumem-distill] busy: 同一会话已有提炼在跑"; exit 0; }
+        else
+            _diag "[aidumem-distill] lock_unavailable: 不阻断本次提炼"
+        fi
     fi
     _distill_and_write "$_bg_session" "$_bg_force" 2>&1 | while IFS= read -r _line; do
         printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$_line"

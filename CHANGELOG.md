@@ -1,5 +1,20 @@
 # aiduMEI 版本演进史
 
+## v0.8.2 (f0.8++ 预览候选 · 2026-11-17)
+
+> **用例总数 4806 → 4818**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算）。
+
+- 新增独立 `integrations/dsh/`：`index.mjs`、`manage.mjs`、`cli.mjs`、`mcp-stdio.py` 与 `README.md` 适配 DeepSeek Harness 0.2.2-rc.3，提供首步召回、真实用户轮次写入、空闲会话萃取与 stdio MCP。
+- 写入使用持久 outbox、稳定幂等键和本地回执；网络故障可重试，永久拒绝保留为 held 任务供核查。
+- 默认工作区白名单为空；测试端点与生产凭据、身份及队列隔离。生产 MCP 凭据支持显式文件/环境/.env 兜底；全局关闭时不注册钩子或重放。
+- MCP bank 默认仅由 `AIDUMEI_DEFAULT_BANK_ID` 在 DSH stdio 进程中 opt-in；未设置时仍为历史 `default`，并以 CC 基线清单登记该 additive 改动。
+- 为 `deploy/aidumem-embed.service` 在 `[Unit]` 增加 systemd 重启限流，避免 embedding shim 崩溃循环长期伪装为 activating。
+- Claude Code、Codex 既有接入保持原有语义。归并实验仍默认关闭。`.env.example`、`ducky/env_registry.py`、`tests/test_f08pp_dsh_launcher.py`、`tests/test_v19_4_2_auth_coverage.py`、`integrations/dsh/test/`、`integrations/dsh/cc-baseline.json`、`mcp_server.py` 与 `README_EN.md` 同步覆盖隔离与兼容性。
+- 修正 `ducky/version.py` 中 `f0.8+` 谱系记录的品牌元数据，并使 README、CHANGELOG、`manifest.json` 与 `pyproject.toml` 对齐。
+- **共享真源可靠性修复（条目 8，CC/Codex/Hermes 共用）**：`integrations/aidumem-distill.sh` 后台锁从固定 `/tmp` 改为 `AIDUMEI_LOCK_DIR` → `AIDUMEM_LOG_DIR` → `TMPDIR` 依次回落；锁文件打不开（如共享 `/tmp` 里异主残留锁）不再 `|| exit 0` 静默丢弃提炼，改为记录 `lock_unavailable` 诊断后继续本次提炼。正常路径语义不变（同会话仍单实例、幂等键兜底）；该文件不在 CC 基线 13 文件保护集内，`integrations/claude-code/`、`integrations/codex/` 逐字节零改动。新变量已登记 `ducky/env_registry.py` 与 `.env.example`。修复动因：summer 全量回归 r9 中 root 残留锁令 runner 身份的既有测试 `test_distill_hook_does_both_steps_and_targets_the_vector_path` 静默失败（2026-11-17 定位）。
+- **DSH 工作区白名单 8.3 短文件名修复（2026-11-18 Windows 真机定位）**：`isAllowedWorkspace` 原先先用原始字符串做前缀预检，预检不过直接拒绝，导致配置里 8.3 短名根（Windows `%TEMP%` 展开的 `ADMINI~1` 形态，manage 安装链路实际写入）与宿主规范化后的长名 cwd（`Administrator` 形态）永远匹配不上，recall 在 Windows 真机整体静默失效（session 不 eligible，零 HTTP 请求）。修复：删除预检短路，一律先对 cwd 与所有 roots 做 `fs.realpath`（Windows 展开短名、解析 junction）后再比对；无 cwd 时的 `allowUnscoped` 语义不变，不可解析路径仍拒绝。新增回归测试锁定"短名根 + 长名 cwd 必须通过、不存在路径必须拒绝"。定位手段：cordis `EventsService` 原型埋点（listener 注册/调用/next 决策快照）+ `fetch` 埋点，真机一次复现（修复前 14176 端口零请求，修复后 core-memory/search/add/distill 全 200 且模型请求含 recall fence）。验证：Windows 真机 host-smoke PASS（5×3、recallSeen、MCP 回路、install/check/uninstall）+ 故障注入 PASS（断网续传/取消保序/丢ack不重放）+ 两端单测 9/9。
+- 本条描述候选代码；Windows 实机、三平台 CI 和生产验收结果另行登记，公开 Tag 仍为 f0.8+。
+
 ## v0.8.1 (f0.8+ · 2026-11-14 · 维护更新)
 
 > **用例总数 4535 → 4806**（行为 4174 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。

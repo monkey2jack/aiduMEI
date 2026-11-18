@@ -114,3 +114,7 @@ docs/README_draft.md
 local_embed_cache/
 *.mp3
 benchmarks/.scan_words
+
+# f08pp DSH 工作区产物：候选归档与本地运行时（不属于仓库源码）
+candidate-r*.tar.gz
+runtime-dsh-network/

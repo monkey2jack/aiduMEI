@@ -8,6 +8,19 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.8.2 (f0.8++ 预览候选 · 2026-11-17 · DeepSeek Harness Windows 适配)
+    用例总数 4806 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
+    1. 新增 integrations/dsh/index.mjs、manage.mjs、cli.mjs、mcp-stdio.py 与 README.md，适配 DSH 0.2.2-rc.3 的原生插件、stdio MCP、安装检查与卸载。
+    2. 加入 integrations/dsh/test/ 的实际 DSH 合约和宿主测试；写入采用持久 outbox、稳定幂等键、本地回执、重启恢复与 held 任务。
+    3. MCP 凭据隔离：测试 URL 只认测试 token；生产模式支持 AIDUMEI_API_TOKEN_FILE、环境变量与显式 .env 兜底，绝不从测试端点回退生产 token。
+    4. MCP bank 默认由 AIDUMEI_DEFAULT_BANK_ID 显式 opt-in；缺省仍用历史 default。mcp_server.py 的共享默认值变化列入 integrations/dsh/cc-baseline.json additive_sha256，CC 回归覆盖未 opt-in 负向对照。
+    5. deploy/aidumem-embed.service 在 [Unit] 增加 StartLimitIntervalSec / StartLimitBurst；tests/test_v19_4_2_auth_coverage.py 原有守卫验证段位。
+    6. ducky/env_registry.py、.env.example、tests/test_f08pp_dsh_launcher.py、README.md、README_EN.md 与 CHANGELOG.md 更新版本、配置、测试和 CC 兼容记录；公开 Tag 保持 f0.8+。
+    7. 修正 f0.8+ 谱系记录的品牌元数据，并使 README、CHANGELOG、manifest.json 与 pyproject.toml 对齐。
+    8. 共享真源可靠性修复：integrations/aidumem-distill.sh 后台锁目录按 AIDUMEI_LOCK_DIR → AIDUMEM_LOG_DIR → TMPDIR 回落；锁打不开不再静默丢弃提炼，记 lock_unavailable 后继续。CC 基线 13 文件与 codex 目录零改动；新变量已登记 env_registry 与 .env.example（对应 CHANGELOG v0.8.2 条目 8）。
+    9. DSH 工作区白名单 8.3 短文件名修复：isAllowedWorkspace 删除原始字符串前缀预检短路，一律 realpath（Windows 展开短名/解析 junction）后比对；修复 8.3 短名根（%TEMP% 的 ADMINI~1 形态）与长名 cwd 永不匹配导致 Windows 真机 recall 静默失效。allowUnscoped 与不可解析路径语义不变。Windows 真机 host-smoke + 故障注入 PASS，两端单测 9/9（2026-11-18 定位，对应 CHANGELOG v0.8.2）。
+    10. 本条描述候选代码；Windows 实机、三平台 CI 和生产验收结果另行登记，公开 Tag 仍为 f0.8+。
+
 v0.8.1 (f0.8+ · 2026-11-14 · 四路整合与交接加固)
     用例总数 4535 → 4806(本版 = 行为 4174 + 脚本/钩子 486 + 守卫 146)。
     1. 合并四路 f0.8+ 开发，归并实验默认 off；公开版本仍为 f0.8，本候选尚未部署或发布。
@@ -794,8 +807,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.8.1"
-FULL_VERSION = "f0.8.1"
+SERVICE_VERSION = "0.8.2"
+FULL_VERSION = "f0.8.2"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -846,7 +859,8 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("0.8.1", "f0.8+", "f0.8.1", "f0.8+：四路整合、安全修复、重试幂等、缓存世代与运维加固；归并默认关闭 · 2026-11-14"),
+    ("0.8.2", "", "f0.8.2", "f0.8++ 预览候选：独立 DSH 原生插件、持久写入队列与 stdio MCP；CC 接入语义保持不变，归并默认关闭 · 2026-11-17"),
+    ("0.8.1", "", "f0.8+", "f0.8+：四路整合、安全修复、重试幂等、缓存世代与运维加固；归并默认关闭 · 2026-11-14"),
     ("0.8.0", "", "f0.8", "公开 f0.8(2026-11-09 维护者授权翻牌,代码 f0.8.0):安全加固:出站地址校验(SSRF)、/health 完整视图只给控制台与主 token、MCP SSE 回环也要 token、开闭标记带 nonce、出处服务端裁定、列表钳制与读限流、自编辑/instinct 身份硬围栏、多消息逐条闸门、/forget 墓碑可恢复;写入策略按影子周结果开拦截(原则 1 机器噪声进墓碑、原则 8 忘记规则、会话精华不收思考过程,均可拨回影子);Claude Code 自带记忆桥(打码 + 导入 + 每日兜底);connect_host 认 CLAUDE_CONFIG_DIR/--project-dir、--claude-test 要真召回暗号;钩子脚本可执行位;探针认 AIDUMEM_ENV_FILE · 2026-11-09"),
     ("0.7.6", "", "f0.7+++", "公开 f0.7+++(2026-11-06 维护者授权翻牌,代码 f0.7.6):f0.7++ 外审复审修复:原则 7 识别重写(逐字 NFKC + 去 Cf/Mn + 同形字;键名按驼峰/下划线分词;是/为/is/改成等分隔;中文与带空格口令;占位符白名单只留真模板;助记词/私钥/Basic/Cookie/机器人令牌/短 PIN);role 白名单、JSON 字符串 messages 先解析再打码、变更日志落库前再打码、顶层 session/agent/event_at 校验;删除链补 memory_epistemic 与 evolve_episodes;各库 secure_delete + 删除后 WAL checkpoint;观点列表/聚合按事实租户计、不覆盖他人观点;evidence_ids 校验;登录体非对象 400 · 2026-11-06"),
     ("0.7.5", "", "f0.7++", "公开 f0.7++(2026-11-04 维护者授权翻牌,代码 f0.7.5):第二轮外审 P0 收口:钥匙强制下事实层按身份隔离、/opinions/set 核事实真实归属;原则 7 补零宽/全角/下划线键名/全大写与纯小写口令/JSON/metadata;/evolve/feedback 打码;非 ASCII 凭据不再 500;删除链补派生全文表 + 元守卫静态扫描;多模态消息与后台自动记忆走同一写入闸门 · 2026-11-04"),
