@@ -6,18 +6,17 @@
 
 # aiduMEI · 爱嘟优忆思——给 AI 智能体用的长期记忆引擎
 
-aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
+aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes、**DeepSeek Harness** 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
 
-> **当前公开版本 f0.8+。** 包版本 `0.8.1`，2026-11-14。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
+> **当前公开版本 f0.8++：正式适配 DeepSeek Harness。** 包版本 `0.8.3`，2026-11-18。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
+>
+> f0.8++ = 代码 **f0.8.3**（f0.8+ 之上：**新增 DeepSeek Harness 原生接入**——Windows/Linux/macOS 三平台原生插件、stdio MCP、持久 outbox 写入与空闲萃取，Windows 真机全链路验收 + 故障注入 PASS；另含 DSH 工作区白名单 8.3 短文件名修复与 mutation_journal Windows 首启动兼容修复）。DSH 用户接入指南见 [integrations/dsh/README.md](integrations/dsh/README.md)。
+>
+> f0.8+ = 代码 **f0.8.1**（四路整合、安全修复、重试幂等、缓存世代与运维加固）。上一个公开版本 [f0.8+](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B)（包 `0.8.1`，2026-11-14）。
 >
 > f0.8 = 代码 **f0.8.0**（f0.7+++ 之上：安全加固、写入策略按影子周结果开拦截、Claude Code 自带记忆桥）。内容见 [CHANGELOG](CHANGELOG.md)。
 >
-> 当前代码 **f0.8.2** 为 **f0.8++ 预览版**候选（包 `0.8.2`），尚未公开发布，新增 [DSH 原生接入](integrations/dsh/README.md)。公开 Tag 仍为 **f0.8+**；归并默认关闭，完整 20 题真实 A/B 尚未完成。
-> f0.7+++ = 代码 **f0.7.6**（f0.7++ 之上的补丁：f0.7++ 外审复审修复——原则 7 识别重写、role/JSON 字符串/顶层字段不再绕过、删除后 WAL 不留正文、观点按事实租户计）。上一个公开版本 [f0.7+++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B%2B)（包 `0.7.6`，2026-11-06）。
->
-> f0.7++ = 代码 **f0.7.5**（f0.7+ 之上的补丁：第二轮外审 P0 收口——钥匙强制下事实层按身份隔离、原则 7 补漏、删除真删、写入闸门不再被结构绕过）。上一个公开版本 [f0.7++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B)（包 `0.7.5`，2026-11-04）。
->
-> f0.7+ = 代码 **f0.7.4**（f0.7 之上的四个补丁合并公开：f0.7.1 审计修复 + f0.7.2「什么值得记」九条原则与每个 agent 一把钥匙 + f0.7.3 记忆隔离 + f0.7.4 过滤词按身份豁免与 salience 身份戳）。九条原则里原则 7（密钥/证件/签名/整段原文）直接生效，其余先影子模式，见 [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md)。上一个公开版本 [f0.7+](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B)（包 `0.7.4`，2026-11-02）。
+> 归并默认关闭，完整 20 题真实 A/B 尚未完成。
 
 ## 本版变化（f0.7）
 
@@ -87,6 +86,8 @@ python scripts/connect_host.py            # 识别 + 接入 + 当场验收；--d
 python scripts/e2e_smoke.py --json        # 写入唯一暗号 → 新请求召回 → 清理；status=PASS 且 0 warnings 才算通过
 curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/health | jq '.health_status, .degraded, .probes.runtime_paths'
 ```
+
+**DeepSeek Harness 用户**不走 `connect_host.py`，用 DSH 原生接入：`node integrations/dsh/manage.mjs install ...`（详见 [integrations/dsh/README.md](integrations/dsh/README.md)，含 Windows 桌面 carrier 与 npm 宿主两种接法）。
 
 `/health` 先看三个数：`health_status` 为 `ok`、`degraded` 解释了每个不可用组件、`probes.runtime_paths.data_dir_writable` 为 true。只看 `/health` 不够——它全绿时写线也可能没接上；真实用过几轮后可再跑 `python3 scripts/check_ingest_wiring.py --require-judgment` 复核（凭据走环境变量或 `.env`，别写成 `--token` 参数，命令行对本机其他用户 `ps` 可见）。
 
