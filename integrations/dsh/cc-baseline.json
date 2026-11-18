@@ -1,0 +1,22 @@
+{
+  "source_commit": "c19f0a191b9139a14f7027c9b0b97dd58e46622f",
+  "sha256": {
+    "integrations/claude-code/aidumem-cc-distill.sh": "d9ba3cbf3ee1e082888f867bac6a68481412ad6ac17c8877b0ce368a68e50da3",
+    "integrations/claude-code/aidumem-cc-ingest.sh": "aa79d27f1757e1ffd5b2fd691e7559924250fc1be5bb0a1c809db073f653bfc4",
+    "integrations/claude-code/aidumem-cc-inject.sh": "1d6d97604bf9b546a592112b1242f2e6e63d0ba9c18ac85ec5c7c32fbf5731f1",
+    "integrations/claude-code/aidumem-cc-memory-bridge.sh": "476f755f5f57ee95565755a71e44d75f90ebb20f972aa5f3a1b86a016f94a697",
+    "integrations/claude-code/cc_memory_bridge.py": "3fe8ecc1e08fd5c377bb005a6084ec872a417db5d1076e788510d93a42901929",
+    "integrations/codex/README.md": "64de09b810a5c5b515f0f30b9b97e4d208a025ac662ac451dfcf6554ce7b523f",
+    "integrations/codex/aidumem-codex-distill.sh": "2303ce3049f35332e284a56702d94dd58547c06822f774b47d9895a00632391a",
+    "integrations/codex/aidumem-codex-ingest.sh": "3901f39e97f61e9fb9556ab28a29fd324730e5ac0a7c198a576135fc7b1e6c13",
+    "integrations/codex/aidumem-codex-inject.sh": "c9860e34e7d1862fb23d5d3e25ef94124747da0d8050294e4236ebd9c2af9c91",
+    "integrations/codex/config.toml.snippet": "7395a50cacc097fbc777e291105ef8d7aa18d3cf9fd0f13a45ead11c1afde341",
+    "integrations/codex/hooks.json.snippet": "c2885dd3a6694e98e5d914fe242d5024124ab49a847007194ad33f64d5ee48ce",
+    "integrations/codex/instructions.snippet.md": "8ac12acde3ef3304eba0405e30641832f72fed41dd88223bc90db10b7778c7b5",
+    "mcp_server.py": "9ce8325f8ced78f719eb88fb65918d6ab5fad4c6793e80fe4c5d95d2a437828c",
+    "scripts/connect_host.py": "b020ca1f02f95fe8f55c922cd6e6cb1f8a2c7e474fc48efd25eebd6799f59bbd"
+  },
+  "additive_sha256": {
+    "mcp_server.py": "d6cd7e392412d26c517336272711a38d37b6b41b7cc93f5dbfb456701f458235"
+  }
+}

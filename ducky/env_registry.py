@@ -30,6 +30,8 @@ _PREFIX_RE = re.compile(r"^AIDUME[IM]_[A-Z0-9_]+$")
 KNOWN_ENV_VARS: frozenset[str] = frozenset((
     "AIDUMEI_ALLOW_IMPLICIT_CALLER",
     "AIDUMEI_BANK_ID",
+    "AIDUMEI_DEFAULT_BANK_ID",  # f0.8++: MCP process opt-in; unset keeps the historical default.
+    "AIDUMEI_LOCK_DIR",  # f0.8++: distill hook flock directory; unset falls back to log dir, then TMPDIR.
     # f0.3 (O-3)：维护 cron 的可选降权用户（scripts/update_crontab.sh，
     # root 安装时给写数据的任务加 runuser -u <user> --）
     "AIDUMEI_CRON_RUN_AS",

@@ -1,0 +1,35 @@
+{
+  "name": "@monkey2jack/aidumei-dsh",
+  "version": "0.8.2-preview.0",
+  "description": "aiduMEI memory bridge for DeepSeek Harness",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "cli.mjs",
+    "manage.mjs",
+    "mcp-stdio.py",
+    "cordis.patch.yml",
+    "README.md",
+    "test"
+  ],
+  "engines": {
+    "node": ">=24.9.0",
+    "dsh": "0.2.2-rc.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml",
+      "listedByDefault": false
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT"
+}
