@@ -1,6 +1,6 @@
 {
   "name": "@monkey2jack/aidumei-dsh",
-  "version": "0.8.2-preview.0",
+  "version": "0.8.3",
   "description": "aiduMEI memory bridge for DeepSeek Harness",
   "type": "module",
   "main": "./index.mjs",

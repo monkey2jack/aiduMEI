@@ -8,6 +8,20 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.8.3 (f0.8++ · 2026-11-18 · DeepSeek Harness 正式适配 · 公开翻牌)
+    用例总数 4806 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
+    1. **正式适配 DeepSeek Harness（DSH 0.2.2-rc.3）——aiduMEI 第四个一等宿主**：新增独立 integrations/dsh/（index.mjs 原生 Cordis 插件、manage.mjs 安装/检查/卸载、cli.mjs、mcp-stdio.py stdio MCP 与 README.md），Windows/Linux/macOS 三平台可用，提供首步召回、真实用户轮次写入、空闲会话萃取与 stdio MCP。
+    2. Windows 真机全链路验收：native DSH host-smoke PASS（5 会话 × 3 turn、recallSeen、MCP 回路、install/check/uninstall）+ 故障注入 PASS（断网续传 / 取消保序 / 丢 ack 不重放）；Windows 本地独立部署 aiduMEI + DSH 全流程实测，写入暗号 → 跨会话召回正确答案。
+    3. DSH 写入可靠性：持久 outbox、稳定幂等键和本地回执；网络故障可重试，永久拒绝保留为 held 任务供核查；进程死亡后重启恢复，死 owner 自动回收。
+    4. 默认工作区白名单为空；测试端点与生产凭据、身份及队列隔离。生产 MCP 凭据支持显式文件/环境/.env 兜底；全局关闭时不注册钩子或重放。
+    5. MCP bank 默认仅由 AIDUMEI_DEFAULT_BANK_ID 在 DSH stdio 进程中 opt-in；未设置时仍为历史 default，并以 CC 基线清单登记该 additive 改动。
+    6. DSH 工作区白名单 8.3 短文件名修复：isAllowedWorkspace 删除原始字符串前缀预检短路，一律先 fs.realpath（Windows 展开短名、解析 junction）后再比对；修复 %TEMP% 的 ADMINI~1 形态根与长名 cwd 永不匹配导致 Windows 真机 recall 静默失效。allowUnscoped 与不可解析路径语义不变。新增回归测试锁定"短名根 + 长名 cwd 必须通过、不存在路径必须拒绝"。
+    7. Windows 首启动兼容修复：ducky/mutation_journal.py 的 _sync_directory 在 Windows 上跳过 POSIX 目录 fsync（os.open 目录在 Windows 是 PermissionError，曾令 API 无法首次启动）；NTFS 元数据序由文件系统承担，与 wal_engine.py 既有先例同款。Windows 实机首启动 + 全链路写入/召回实测通过。
+    8. 为 deploy/aidumem-embed.service 在 [Unit] 增加 systemd 重启限流，避免 embedding shim 崩溃循环长期伪装为 activating。
+    9. 共享真源可靠性修复（CC/Codex/Hermes 共用）：integrations/aidumem-distill.sh 后台锁从固定 /tmp 改为 AIDUMEI_LOCK_DIR → AIDUMEM_LOG_DIR → TMPDIR 依次回落；锁文件打不开（如共享 /tmp 里异主残留锁）不再 || exit 0 静默丢弃提炼，改为记录 lock_unavailable 诊断后继续本次提炼。正常路径语义不变；该文件不在 CC 基线 13 文件保护集内，integrations/claude-code/、integrations/codex/ 逐字节零改动。新变量已登记 ducky/env_registry.py 与 .env.example。
+    10. Claude Code、Codex 既有接入保持原有语义。归并实验仍默认关闭。.env.example、ducky/env_registry.py、tests/test_f08pp_dsh_launcher.py、tests/test_v19_4_2_auth_coverage.py、integrations/dsh/test/、integrations/dsh/cc-baseline.json、mcp_server.py 与 README_EN.md 同步覆盖隔离与兼容性。
+    11. 版本三方对齐：SERVICE_VERSION 0.8.3（pyproject.toml / manifest.json / integrations/dsh/package.json 同步），FULL_VERSION f0.8.3，公开 Tag/Release 翻牌为 f0.8++（LINEAGE 0.8.2 行对外列记 f0.8++，f0.7+ 系先例）；README.md 与 README_EN.md 版本横幅突出 DeepSeek Harness 适配。
+
 v0.8.2 (f0.8++ 预览候选 · 2026-11-17 · DeepSeek Harness Windows 适配)
     用例总数 4806 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
     1. 新增 integrations/dsh/index.mjs、manage.mjs、cli.mjs、mcp-stdio.py 与 README.md，适配 DSH 0.2.2-rc.3 的原生插件、stdio MCP、安装检查与卸载。
@@ -19,7 +33,7 @@ v0.8.2 (f0.8++ 预览候选 · 2026-11-17 · DeepSeek Harness Windows 适配)
     7. 修正 f0.8+ 谱系记录的品牌元数据，并使 README、CHANGELOG、manifest.json 与 pyproject.toml 对齐。
     8. 共享真源可靠性修复：integrations/aidumem-distill.sh 后台锁目录按 AIDUMEI_LOCK_DIR → AIDUMEM_LOG_DIR → TMPDIR 回落；锁打不开不再静默丢弃提炼，记 lock_unavailable 后继续。CC 基线 13 文件与 codex 目录零改动；新变量已登记 env_registry 与 .env.example（对应 CHANGELOG v0.8.2 条目 8）。
     9. DSH 工作区白名单 8.3 短文件名修复：isAllowedWorkspace 删除原始字符串前缀预检短路，一律 realpath（Windows 展开短名/解析 junction）后比对；修复 8.3 短名根（%TEMP% 的 ADMINI~1 形态）与长名 cwd 永不匹配导致 Windows 真机 recall 静默失效。allowUnscoped 与不可解析路径语义不变。Windows 真机 host-smoke + 故障注入 PASS，两端单测 9/9（2026-11-18 定位，对应 CHANGELOG v0.8.2）。
-    10. 本条描述候选代码；Windows 实机、三平台 CI 和生产验收结果另行登记，公开 Tag 仍为 f0.8+。
+    10. 候选期条目；公开翻牌见 v0.8.3。
 
 v0.8.1 (f0.8+ · 2026-11-14 · 四路整合与交接加固)
     用例总数 4535 → 4806(本版 = 行为 4174 + 脚本/钩子 486 + 守卫 146)。
@@ -807,8 +821,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.8.2"
-FULL_VERSION = "f0.8.2"
+SERVICE_VERSION = "0.8.3"
+FULL_VERSION = "f0.8.3"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -845,7 +859,11 @@ FULL_VERSION = "f0.8.2"
 # 内部候选，PUBLIC_RELEASE_VERSION 不动（公开翻牌另行决定）。
 # f0.8（2026-11-09）：维护者授权公开翻牌——大仓 Tag/Release 升至 f0.8，PUBLIC_RELEASE_VERSION 同步；
 # LINEAGE 0.8.0 行对外列记 f0.8（f0.7+++ 先例），FULL_VERSION 保持 f0.8.0（/health 不变）。
-PUBLIC_RELEASE_VERSION = "f0.8+"
+# f0.8+（2026-11-14）：四路整合公开版（代码 f0.8.1），PUBLIC_RELEASE_VERSION 同步。
+# f0.8++（2026-11-18）：维护者授权公开翻牌——正式适配 DeepSeek Harness（第四个一等宿主）+ Windows 真机全链路验收
+# （代码 f0.8.3，含 0.8.2 候选期全部内容），大仓 Tag/Release 升至 f0.8++，PUBLIC_RELEASE_VERSION 同步；
+# LINEAGE 0.8.2 行对外列记 f0.8++（f0.7+ 系先例），FULL_VERSION 保持 f0.8.3（/health 不变）。
+PUBLIC_RELEASE_VERSION = "f0.8++"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -859,7 +877,8 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("0.8.2", "", "f0.8.2", "f0.8++ 预览候选：独立 DSH 原生插件、持久写入队列与 stdio MCP；CC 接入语义保持不变，归并默认关闭 · 2026-11-17"),
+    ("0.8.3", "", "f0.8++", "f0.8.3（公开 f0.8++，2026-11-18 维护者授权翻牌）：正式适配 DeepSeek Harness 0.2.2-rc.3（第四个一等宿主：原生插件+stdio MCP+持久 outbox 写入+空闲萃取），Windows 真机全链路验收+故障注入 PASS；8.3 短文件名白名单修复；mutation_journal Windows 目录 fsync 兼容 · 2026-11-18"),
+    ("0.8.2", "", "f0.8.2", "f0.8++ 候选：独立 DSH 原生插件、持久写入队列与 stdio MCP；CC 接入语义保持不变，归并默认关闭 · 2026-11-17"),
     ("0.8.1", "", "f0.8+", "f0.8+：四路整合、安全修复、重试幂等、缓存世代与运维加固；归并默认关闭 · 2026-11-14"),
     ("0.8.0", "", "f0.8", "公开 f0.8(2026-11-09 维护者授权翻牌,代码 f0.8.0):安全加固:出站地址校验(SSRF)、/health 完整视图只给控制台与主 token、MCP SSE 回环也要 token、开闭标记带 nonce、出处服务端裁定、列表钳制与读限流、自编辑/instinct 身份硬围栏、多消息逐条闸门、/forget 墓碑可恢复;写入策略按影子周结果开拦截(原则 1 机器噪声进墓碑、原则 8 忘记规则、会话精华不收思考过程,均可拨回影子);Claude Code 自带记忆桥(打码 + 导入 + 每日兜底);connect_host 认 CLAUDE_CONFIG_DIR/--project-dir、--claude-test 要真召回暗号;钩子脚本可执行位;探针认 AIDUMEM_ENV_FILE · 2026-11-09"),
     ("0.7.6", "", "f0.7+++", "公开 f0.7+++(2026-11-06 维护者授权翻牌,代码 f0.7.6):f0.7++ 外审复审修复:原则 7 识别重写(逐字 NFKC + 去 Cf/Mn + 同形字;键名按驼峰/下划线分词;是/为/is/改成等分隔;中文与带空格口令;占位符白名单只留真模板;助记词/私钥/Basic/Cookie/机器人令牌/短 PIN);role 白名单、JSON 字符串 messages 先解析再打码、变更日志落库前再打码、顶层 session/agent/event_at 校验;删除链补 memory_epistemic 与 evolve_episodes;各库 secure_delete + 删除后 WAL checkpoint;观点列表/聚合按事实租户计、不覆盖他人观点;evidence_ids 校验;登录体非对象 400 · 2026-11-06"),
