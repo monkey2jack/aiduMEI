@@ -14,7 +14,7 @@
 - **轻量纪律**：52KB 源码、零运行时依赖（plugin 在 OpenCode 内 bare import、service 由 OpenChamber 以精简环境拉起）。
 - CC/Codex/Hermes/DSH 既有接入保持原有语义（`integrations/claude-code/` 与杭州生产 md5 逐字节一致）；归并实验仍默认关闭。
 - 版本三方对齐：SERVICE_VERSION 0.9.0（pyproject.toml / manifest.json / integrations/openchamber/package.json 同步），FULL_VERSION f0.9.0，公开 Tag/Release 翻牌为 **f0.9**（LINEAGE 0.9.0 行对外列记 f0.9）。
-- `ducky/env_registry.py`、`integrations/openchamber/README.md`、`README.md` 与 `README_EN.md` 同步 OpenChamber 接入文档、版本横幅与兼容记录。
+- `ducky/env_registry.py`、`integrations/openchamber/README.md`、`README.md` 与 `README_EN.md` 同步 OpenChamber 接入文档、版本横幅与兼容记录；两份 README 的「本版变化」改为 f0.9（OpenChamber 三线说明 + 一条命令接入示例），「接入面」表补 DeepSeek Harness 与 OpenChamber 两行（含各自 manage.mjs 接法与批准入口），「接宿主并验证」补 OpenChamber 用户特例段（不走 `connect_host.py`）。
 
 ## v0.8.3 (f0.8++ · 2026-11-18 · 正式适配 DeepSeek Harness · 公开翻牌)
 
