@@ -20,7 +20,19 @@ aiduMEI is a **single-machine self-hosted** long-term memory service (Python / F
 >
 > f0.7+ = code **f0.7.4** (the four patches on top of f0.7, published together: the f0.7.1 audit fixes, the f0.7.2 "what is worth remembering" write policy and one key per agent, the f0.7.3 per-agent memory isolation, and the f0.7.4 per-identity drop-term exemption and salience identity stamps). Principle 7 of the write policy (secrets, IDs, signatures, whole raw copies) is enforced; the others run in shadow mode first — see [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md). Previous public release: [f0.7+](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B) (package `0.7.4`, 2026-11-02).
 
-## What changed in f0.7
+## What changed in f0.9
+
+f0.9 adds **native OpenChamber (OpenCode) integration** — the fifth first-class host for aiduMEI:
+
+- **All three lines covered**: an OpenCode plugin injects the recall fence before each model request (`session.hook("context")`, nonce-fenced like DSH); a sessionEvents service pairs each `turn-finished` with its user prompt and writes it to `/add` (idempotency key + local spool that survives outages); after 2 minutes of idle the service distils the session via `/session/distill`.
+- **One command to wire**: `node integrations/openchamber/manage.mjs install --token-file <token-file> ...`, then restart OpenChamber and approve the extension under `Settings → Extensions`. See [integrations/openchamber/README.md](integrations/openchamber/README.md).
+- **Lightweight as always**: the adapter is 52KB of dependency-free plain JS (the plugin is bare-imported inside OpenCode; the service is spawned by OpenChamber with a scrubbed environment).
+- **Verified on a real Windows machine**: OpenChamber 2.7.2 + OpenCode 2.3.0 installed end-to-end (store a code phrase → recall it in a new session → idle distillation, all PASS).
+
+<details>
+<summary>Older releases (f0.7 – f0.8++)</summary>
+
+### f0.7 foundation swap
 
 f0.7 swaps the foundation: the memory kernel moves from mem0 to the in-house **native single-SQLite kernel**, and mem0 is no longer a dependency.
 
@@ -31,6 +43,10 @@ f0.7 swaps the foundation: the memory kernel moves from mem0 to the in-house **n
 - **"Test connection" in settings**: one minimal real call each to LLM / Vision / Embedding / Reranker / decision model; new "use local vLLM" preset.
 - **Cleaner deletes**: deleting a memory also removes its raw-text rows, the facts derived from it and the session summaries sourced from the deleted raw text; sentences with relative dates no longer leave date facts behind; still restorable from tombstones.
 - **Smaller surface**: HTTP routes are now an allow-list and MCP tools went 41 → 6. No public benchmark ranks are claimed any more; quality is judged by a real-usage regression set.
+
+</details>
+
+The full version-by-version history is in the [CHANGELOG](CHANGELOG.md); the f0.8++ (DeepSeek Harness) and f0.9 (OpenChamber) user guides live in [integrations/dsh/README.md](integrations/dsh/README.md) and [integrations/openchamber/README.md](integrations/openchamber/README.md).
 
 ## Core strengths
 
@@ -90,6 +106,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 ```
 
 **DeepSeek Harness users** skip `connect_host.py` and use the native DSH integration instead: `node integrations/dsh/manage.mjs install ...` (see [integrations/dsh/README.md](integrations/dsh/README.md), covering both the Windows desktop carrier and npm hosts).
+
+**OpenChamber users** skip `connect_host.py` too and use the native OpenChamber integration: `node integrations/openchamber/manage.mjs install --token-file <token-file> --user <user> --bank <bank>` (see [integrations/openchamber/README.md](integrations/openchamber/README.md)). After installing, restart OpenChamber and approve the extension under Settings → Extensions; that wires all three lines — recall injection (OpenCode plugin `context` hook), turn ingestion (sessionEvents → `/add`) and idle distillation after 2 minutes.
 
 Three probes on `/health` first: `health_status` is `ok`, `degraded` explains every unavailable component, `probes.runtime_paths.data_dir_writable` is true. `/health` alone is not enough — it can be all green while the write line is not wired. After a few real turns, re-check with `python3 scripts/check_ingest_wiring.py --require-judgment` (credentials via environment or `.env`, never `--token`: command lines are visible to other local users through `ps`).
 
@@ -159,6 +177,8 @@ New variables always use the `AIDUMEI_` prefix; `AIDUMEM_` is the legacy prefix 
 | Claude Code | `connect_host.py` writes `~/.claude/settings.json`: `UserPromptSubmit` read / `Stop` write / `SessionEnd` distil (`integrations/claude-code/`) |
 | Codex CLI (≥ 0.163) | `connect_host.py` writes `~/.codex/hooks.json`, same three lines (`integrations/codex/`); non-managed hooks must be trusted once in Codex |
 | Hermes Agent | `connect_host.py` symlinks the plugin `integrations/hermes-plugin/aidumem` and sets `memory.provider aidumem` |
+| DeepSeek Harness | `node integrations/dsh/manage.mjs install ...`: native Cordis plugin (`agent/pre-step` recall) + outbox writes + idle distillation + stdio MCP (`integrations/dsh/`) |
+| OpenChamber (OpenCode) | `node integrations/openchamber/manage.mjs install ...`: OpenCode plugin (`context` hook recall injection) + sessionEvents service (ingestion + idle distillation); takes effect after approval under `Settings → Extensions` (`integrations/openchamber/`) |
 | Cursor and other hosts | Wire by hand per [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md) |
 | HTTP API | REST `:8767`: `/add` `/search` `/update` `/delete` `/session/distill` `/tombstones` `/graph/*` `/api/core-memory` and more; write endpoints take `caller_user_id` |
 | MCP | See next section |
