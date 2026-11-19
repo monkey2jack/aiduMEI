@@ -16,7 +16,19 @@ aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，M
 >
 > 归并默认关闭，完整 20 题真实 A/B 尚未完成。
 
-## 本版变化（f0.7）
+## 本版变化（f0.9）
+
+f0.9 新增 **OpenChamber（OpenCode）原生接入**——aiduMEI 的第五个一等宿主：
+
+- **三线齐全**：OpenCode plugin 在每轮模型请求前注入召回 fence（`session.hook("context")`，nonce 围栏与 DSH 同款）；sessionEvents service 把 `turn-finished` 配对用户提问后写入 `/add`（幂等键 + 本地 spool 断网续传）；会话空闲 2 分钟自动 `/session/distill` 提炼精华。
+- **一条命令接入**：`node integrations/openchamber/manage.mjs install --token-file <token文件> ...`，重启 OpenChamber 并在 `Settings → Extensions` 批准扩展即生效。详见 [integrations/openchamber/README.md](integrations/openchamber/README.md)。
+- **轻量如常**：适配器 52KB 纯 JS、零运行时依赖（plugin 在 OpenCode 内 bare import，service 由 OpenChamber 以精简环境拉起）。
+- **Windows 真机验收**：OpenChamber 2.7.2 + OpenCode 2.3.0 实装（写入暗号 → 跨会话召回 → 空闲萃取全链 PASS）。
+
+<details>
+<summary>历史版本变化（f0.7–f0.8++）</summary>
+
+### f0.7 底座更换
 
 f0.7 是一次底座更换：记忆内核从 mem0 换成自研的 **native 单库 SQLite 内核**，mem0 不再是依赖。
 
@@ -27,6 +39,10 @@ f0.7 是一次底座更换：记忆内核从 mem0 换成自研的 **native 单�
 - **设置页「测试连接」**：对 LLM / Vision / Embedding / Reranker / 决策模型逐个做一次最小真实调用；新增「用本地 vLLM」预设。
 - **删除更彻底**：删一条记忆时，它对应的原话行、由它派生的事实、以被删原话为来源的会话精华一并清理；带相对日期的句子删后不再残留日期事实；仍可从墓碑恢复。
 - **接口收敛**：HTTP 路由按白名单收窄，MCP 工具 41 → 6；不再宣称任何公开跑分名次，质量以真实使用回归集为准。
+
+</details>
+
+逐版本完整历史见 [CHANGELOG](CHANGELOG.md)；f0.8++（DeepSeek Harness 适配）与 f0.9（OpenChamber 适配）的用户接入指南分别在 [integrations/dsh/README.md](integrations/dsh/README.md) 与 [integrations/openchamber/README.md](integrations/openchamber/README.md)。
 
 ## 核心优势
 
@@ -86,6 +102,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 ```
 
 **DeepSeek Harness 用户**不走 `connect_host.py`，用 DSH 原生接入：`node integrations/dsh/manage.mjs install ...`（详见 [integrations/dsh/README.md](integrations/dsh/README.md)，含 Windows 桌面 carrier 与 npm 宿主两种接法）。
+
+**OpenChamber 用户**同样不走 `connect_host.py`，用 OpenChamber 原生接入：`node integrations/openchamber/manage.mjs install --token-file <token文件> --user <用户> --bank <库>`（详见 [integrations/openchamber/README.md](integrations/openchamber/README.md)）。装完重启 OpenChamber、在 Settings → Extensions 里批准扩展即接好三线：召回注入（OpenCode plugin `context` hook）、对话写入（sessionEvents → `/add`）、空闲 2 分钟自动萃取。
 
 `/health` 先看三个数：`health_status` 为 `ok`、`degraded` 解释了每个不可用组件、`probes.runtime_paths.data_dir_writable` 为 true。只看 `/health` 不够——它全绿时写线也可能没接上；真实用过几轮后可再跑 `python3 scripts/check_ingest_wiring.py --require-judgment` 复核（凭据走环境变量或 `.env`，别写成 `--token` 参数，命令行对本机其他用户 `ps` 可见）。
 
@@ -155,6 +173,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 | Claude Code | `connect_host.py` 写 `~/.claude/settings.json`：`UserPromptSubmit` 读线 / `Stop` 写线 / `SessionEnd` 萃取线（`integrations/claude-code/`） |
 | Codex CLI（≥ 0.163） | `connect_host.py` 写 `~/.codex/hooks.json`，三线同上（`integrations/codex/`）；非托管钩子需在 Codex 里信任一次 |
 | Hermes Agent | `connect_host.py` 软链插件 `integrations/hermes-plugin/aidumem` 并设 `memory.provider aidumem` |
+| DeepSeek Harness | `node integrations/dsh/manage.mjs install ...`：原生 Cordis 插件（`agent/pre-step` 召回）+ outbox 写入 + 空闲萃取 + stdio MCP（`integrations/dsh/`） |
+| OpenChamber（OpenCode） | `node integrations/openchamber/manage.mjs install ...`：OpenCode plugin（`context` hook 召回注入）+ sessionEvents service（写入 + 空闲萃取），`Settings → Extensions` 批准后生效（`integrations/openchamber/`） |
 | Cursor 等其他宿主 | 按 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md) 手工接 |
 | HTTP API | REST `:8767`：`/add` `/search` `/update` `/delete` `/session/distill` `/tombstones` `/graph/*` `/api/core-memory` 等；写接口带 `caller_user_id` |
 | MCP | 见下节 |
