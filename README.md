@@ -6,15 +6,13 @@
 
 # aiduMEI · 爱嘟优忆思——给 AI 智能体用的长期记忆引擎
 
-aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes、**DeepSeek Harness** 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
+aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes、**DeepSeek Harness**、**OpenChamber** 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
 
-> **当前公开版本 f0.8++：正式适配 DeepSeek Harness。** 包版本 `0.8.3`，2026-11-18。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
+> **当前公开版本 f0.9：正式适配 OpenChamber。** 包版本 `0.9.0`，2026-11-19。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
 >
-> f0.8++ = 代码 **f0.8.3**（f0.8+ 之上：**新增 DeepSeek Harness 原生接入**——Windows/Linux/macOS 三平台原生插件、stdio MCP、持久 outbox 写入与空闲萃取，Windows 真机全链路验收 + 故障注入 PASS；另含 DSH 工作区白名单 8.3 短文件名修复与 mutation_journal Windows 首启动兼容修复）。DSH 用户接入指南见 [integrations/dsh/README.md](integrations/dsh/README.md)。
+> f0.9 = 代码 **f0.9.0**（f0.8++ 之上：**新增 OpenChamber 原生接入**——OpenCode plugin 召回注入、sessionEvents service 写入、空闲萃取，Windows 真机验收）。OpenChamber 用户接入指南见 [integrations/openchamber/README.md](integrations/openchamber/README.md)。
 >
-> f0.8+ = 代码 **f0.8.1**（四路整合、安全修复、重试幂等、缓存世代与运维加固）。上一个公开版本 [f0.8+](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B)（包 `0.8.1`，2026-11-14）。
->
-> f0.8 = 代码 **f0.8.0**（f0.7+++ 之上：安全加固、写入策略按影子周结果开拦截、Claude Code 自带记忆桥）。内容见 [CHANGELOG](CHANGELOG.md)。
+> f0.8++ = 代码 **f0.8.3**（f0.8+ 之上：DeepSeek Harness 原生接入——Windows/Linux/macOS 三平台原生插件、stdio MCP、持久 outbox 写入与空闲萃取，Windows 真机全链路验收 + 故障注入 PASS；含 DSH 工作区白名单 8.3 短文件名修复与 mutation_journal Windows 首启动兼容修复）。DSH 用户接入指南见 [integrations/dsh/README.md](integrations/dsh/README.md)。上一个公开版本 [f0.8++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B)（包 `0.8.3`，2026-11-18）。
 >
 > 归并默认关闭，完整 20 题真实 A/B 尚未完成。
 

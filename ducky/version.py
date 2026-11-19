@@ -8,6 +8,20 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.9.0 (f0.9 · 2026-11-19 · OpenChamber 正式适配 · 公开翻牌)
+    用例总数 4818 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测；OpenChamber 适配器为纯 JS，15 项用例走 node --test：plugin 6 + service 5 + 体积守卫 4）。
+    1. 正式适配 OpenChamber（第五个一等宿主）：新增 integrations/openchamber/ 三件套——opencodePlugin（session.hook("context") 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows/Linux/macOS 三平台可用。
+    2. 写入线：sessionEvents（turn-finished/turn-failed, content:true）→ 本地 spool 持久化 → 补投 aiduMEI /add（幂等键）。service 环境隔离（OpenChamber 只传 PATH/HOME/temp/locale），配置经 ~/.aidumei-openchamber/config.json 共享。
+    3. prompt-pairing：OpenChamber 事件只带最终回复不带用户提问——plugin 在召回时把 prompt 记录到共享文件，service 配对后组合完整对话写入。
+    4. 注入线：session.hook("context") 首步召回注入，nonce fence 与 DSH 同款；turn 护栏防 agent loop 重复注入；3 秒超时 + 3 失败熔断。
+    5. 萃取线：service 空闲 2 分钟 → /session/distill（keepRunning 常驻）。
+    6. manage.mjs：install（API 健康预检 + plugin 落位 + config 写入）/ check（四查）/ uninstall（保留记忆数据与 spool）。
+    7. 轻量纪律：52KB 源码、零运行时依赖。
+    8. 验收：test-lab 全量 pytest 4787 passed / 0 failed；Windows 真机（windows-lab, OpenChamber 2.7.2 / OpenCode 2.3.0）写入暗号 → 跨会话召回；integrations/claude-code/ 与杭州生产 md5 逐字节一致。
+    9. CC/Codex/Hermes/DSH 既有接入保持原有语义；归并实验仍默认关闭。
+    10. 版本三方对齐：SERVICE_VERSION 0.9.0（pyproject.toml / manifest.json / integrations/openchamber/package.json 同步），FULL_VERSION f0.9.0，公开 Tag/Release 翻牌为 f0.9（LINEAGE 0.9.0 行对外列记 f0.9）。
+    11. ducky/env_registry.py、README.md、README_EN.md 与 CHANGELOG.md 同步 OpenChamber 接入文档与兼容记录。
+
 v0.8.3 (f0.8++ · 2026-11-18 · DeepSeek Harness 正式适配 · 公开翻牌)
     用例总数 4806 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
     1. **正式适配 DeepSeek Harness（DSH 0.2.2-rc.3）——aiduMEI 第四个一等宿主**：新增独立 integrations/dsh/（index.mjs 原生 Cordis 插件、manage.mjs 安装/检查/卸载、cli.mjs、mcp-stdio.py stdio MCP 与 README.md），Windows/Linux/macOS 三平台可用，提供首步召回、真实用户轮次写入、空闲会话萃取与 stdio MCP。
@@ -821,8 +835,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.8.3"
-FULL_VERSION = "f0.8.3"
+SERVICE_VERSION = "0.9.0"
+FULL_VERSION = "f0.9.0"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -863,7 +877,10 @@ FULL_VERSION = "f0.8.3"
 # f0.8++（2026-11-18）：维护者授权公开翻牌——正式适配 DeepSeek Harness（第四个一等宿主）+ Windows 真机全链路验收
 # （代码 f0.8.3，含 0.8.2 候选期全部内容），大仓 Tag/Release 升至 f0.8++，PUBLIC_RELEASE_VERSION 同步；
 # LINEAGE 0.8.2 行对外列记 f0.8++（f0.7+ 系先例），FULL_VERSION 保持 f0.8.3（/health 不变）。
-PUBLIC_RELEASE_VERSION = "f0.8++"
+# f0.9（2026-11-19）：维护者授权公开翻牌——正式适配 OpenChamber（第五个一等宿主：OpenCode plugin
+# 召回注入 + sessionEvents service 写入 + 空闲萃取），代码 f0.9.0；大仓 Tag/Release 升至 f0.9，
+# PUBLIC_RELEASE_VERSION 同步；LINEAGE 0.9.0 行对外列记 f0.9，FULL_VERSION 保持 f0.9.0（/health 不变）。
+PUBLIC_RELEASE_VERSION = "f0.9"
 
 # v20 deliberately has no current mythological codename.  Keep the symbols as
 # ``None`` for old integrations that import them, but all public/runtime
@@ -877,6 +894,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.9.0", "", "f0.9", "f0.9.0（公开 f0.9，2026-11-19 维护者授权翻牌）：正式适配 OpenChamber（第五个一等宿主：OpenCode plugin 召回注入 + sessionEvents service 写入 + 空闲萃取），Windows 真机验收（OpenChamber 2.7.2 / OpenCode 2.3.0）；轻量纪律 52KB 零运行时依赖 · 2026-11-19"),
     ("0.8.3", "", "f0.8++", "f0.8.3（公开 f0.8++，2026-11-18 维护者授权翻牌）：正式适配 DeepSeek Harness 0.2.2-rc.3（第四个一等宿主：原生插件+stdio MCP+持久 outbox 写入+空闲萃取），Windows 真机全链路验收+故障注入 PASS；8.3 短文件名白名单修复；mutation_journal Windows 目录 fsync 兼容 · 2026-11-18"),
     ("0.8.2", "", "f0.8.2", "f0.8++ 候选：独立 DSH 原生插件、持久写入队列与 stdio MCP；CC 接入语义保持不变，归并默认关闭 · 2026-11-17"),
     ("0.8.1", "", "f0.8+", "f0.8+：四路整合、安全修复、重试幂等、缓存世代与运维加固；归并默认关闭 · 2026-11-14"),

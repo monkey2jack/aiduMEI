@@ -1,5 +1,21 @@
 # aiduMEI 版本演进史
 
+## v0.9.0 (f0.9 · 2026-11-19 · 正式适配 OpenChamber · 公开翻牌)
+
+> **用例总数 4818 → 4818**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，15 项用例走 node --test）。全量回归 4787 passed / 31 skipped / 0 failed（2026-11-19，test-lab；lab-a r13 4804 passed 以 f0.8++ 基线为准）。
+
+- **本版头号变更：正式适配 OpenChamber（openchamber/openchamber，v2.6.1+），aiduMEI 的第五个一等宿主**。新增独立 `integrations/openchamber/` 三件套：opencodePlugin（`session.hook("context")` 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows / Linux / macOS 三平台可用。
+- **Windows 真机验收**：OpenChamber 2.7.2 + OpenCode 2.3.0（windows-lab 实装）——写入暗号 → 跨会话召回 → 空闲萃取全链 PASS；plugin 加载、service 拉起、召回 API 调用全部实测。
+- **写入线**：`sessionEvents`（turn-finished/turn-failed, `content: true`）→ 本地 spool 持久化 → 补投 aiduMEI `/add`（幂等键）。service 环境隔离（OpenChamber 只传 PATH/HOME/temp/locale），配置经 `~/.aidumei-openchamber/config.json` 共享。
+- **prompt-pairing**：OpenChamber 事件只带最终回复不带用户提问——plugin 在召回时把 prompt 记录到共享文件（`~/.aidumei-openchamber/prompts/`），service 配对后组合完整对话写入。
+- **注入线**：`session.hook("context")` 首步召回注入，nonce fence 与 DSH 同款；turn 护栏防 agent loop 重复注入；3 秒超时 + 3 失败熔断。
+- **萃取线**：service 空闲 2 分钟 → `/session/distill`（`keepRunning` 常驻）。
+- **manage.mjs**：install（API 健康预检 + plugin 落位 + config 写入）/ check（plugin+config+API+scope 四查）/ uninstall（保留记忆数据与 spool）。
+- **轻量纪律**：52KB 源码、零运行时依赖（plugin 在 OpenCode 内 bare import、service 由 OpenChamber 以精简环境拉起）。
+- CC/Codex/Hermes/DSH 既有接入保持原有语义（`integrations/claude-code/` 与杭州生产 md5 逐字节一致）；归并实验仍默认关闭。
+- 版本三方对齐：SERVICE_VERSION 0.9.0（pyproject.toml / manifest.json / integrations/openchamber/package.json 同步），FULL_VERSION f0.9.0，公开 Tag/Release 翻牌为 **f0.9**（LINEAGE 0.9.0 行对外列记 f0.9）。
+- `ducky/env_registry.py`、`integrations/openchamber/README.md`、`README.md` 与 `README_EN.md` 同步 OpenChamber 接入文档、版本横幅与兼容记录。
+
 ## v0.8.3 (f0.8++ · 2026-11-18 · 正式适配 DeepSeek Harness · 公开翻牌)
 
 > **用例总数 4806 → 4818**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算）。全量回归 4804 passed / 14 skipped / 0 failed（2026-11-18，summer）。
