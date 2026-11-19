@@ -11,6 +11,17 @@ workspace, v2.6.1+). Fourth first-class host after Claude Code, Codex, Hermes an
 | **Turn ingestion** | `contributes.service` + `contributes.sessionEvents` (turn-finished / turn-failed, `content: true`) | OpenChamber POSTs events to the local service; the service pairs the reply with the user prompt (recorded by the plugin), spools durably, and forwards to aiduMEI `/add` with an idempotency key. |
 | **Idle distillation** | service timer | 2 minutes after the last event → `POST /session/distill`. Best-effort. |
 
+### Prompt pairing (why the plugin writes prompt files)
+
+OpenChamber's `turn-finished` event carries only the **final assistant reply** —
+not the user prompt. The plugin (running inside OpenCode with full context) sees
+the user prompt at recall time and records it to
+`~/.aidumei-openchamber/prompts/<sessionId>.json`; the service reads and deletes
+that file when the matching `turn-finished` arrives. Both parts run as the same
+OS user (`HOME` is passed through to the service), so this file hand-off is the
+sanctioned channel. If the prompt file is missing (service restarted after the
+plugin already consumed it), the service stores the reply alone.
+
 Zero runtime dependencies: the plugin runs inside OpenCode (bare `import()`, no
 `node_modules`), the service is spawned by OpenChamber with a scrubbed
 environment (only PATH/HOME/temp/locale pass through).
