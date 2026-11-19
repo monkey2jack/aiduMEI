@@ -6,15 +6,13 @@
 
 # aiduMEI · YouiSi — a long-term memory engine for AI agents
 
-aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI, Hermes and **DeepSeek Harness**: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
+aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI, Hermes, **DeepSeek Harness** and **OpenChamber**: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
 
-> The current public release is **f0.8++: official DeepSeek Harness support** (package `0.8.3`, 2026-11-18). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
+> The current public release is **f0.9: official OpenChamber support** (package `0.9.0`, 2026-11-19). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
 >
-> f0.8++ = code **f0.8.3** (on top of f0.8+: **native DeepSeek Harness integration** — native plugin, stdio MCP, persistent outbox writes and idle distillation on Windows/Linux/macOS, verified end-to-end on a real Windows machine incl. fault drills; plus an 8.3 short-name allowlist fix and a Windows first-boot compatibility fix in the mutation journal). DSH users: see [integrations/dsh/README.md](integrations/dsh/README.md).
+> f0.9 = code **f0.9.0** (on top of f0.8++: **native OpenChamber integration** — OpenCode plugin recall injection, sessionEvents service ingestion, idle distillation; verified on Windows). OpenChamber users: see [integrations/openchamber/README.md](integrations/openchamber/README.md).
 >
-> f0.8+ = code **f0.8.1** (four-way integration, security fixes, retry idempotency, cache generations, ops hardening). Previous public release: [f0.8+](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B) (package `0.8.1`, 2026-11-14).
->
-> f0.8 = code **f0.8.0** (on top of f0.7+++: security hardening, write policy enforcing what the shadow week proved, and the Claude Code auto-memory bridge). See the [CHANGELOG](CHANGELOG.md).
+> f0.8++ = code **f0.8.3** (on top of f0.8+: native DeepSeek Harness integration — native plugin, stdio MCP, persistent outbox writes and idle distillation on Windows/Linux/macOS, verified end-to-end on a real Windows machine incl. fault drills; plus an 8.3 short-name allowlist fix and a Windows first-boot compatibility fix in the mutation journal). DSH users: see [integrations/dsh/README.md](integrations/dsh/README.md). Previous public release: [f0.8++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B) (package `0.8.3`, 2026-11-18).
 >
 > Consolidation defaults to off; the full 20-question real-data A/B evaluation remains incomplete.
 >
