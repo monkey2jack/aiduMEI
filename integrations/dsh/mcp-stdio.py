@@ -24,7 +24,9 @@ def _production_token(env: dict[str, str]) -> str:
         env.get("AIDUMEM_ENV_FILE", ""),
         str(Path(home) / ".env") if home else "",
         str(Path.home() / ".aidumem/.env"),
-        ".env",
+        # No "./.env": DSH starts MCP inside the user's workspace, and a cloned
+        # repository must not be able to supply the credential (same rule as
+        # the CC hooks, outside audit R3-01).
     )
     for candidate in candidates:
         if not candidate:

@@ -51,7 +51,8 @@ nonempty JSON/flow-style patch to a YAML block sequence before installation;
 the manager refuses to rewrite an unknown configuration format.
 
 `--check` verifies the fixed DSH version, managed configuration, bundle selection,
-token file, workspace existence and authenticated API health. It does not
+token file, workspace existence and authenticated API health, and reports the
+outbox (`pending`, `held`); any held job fails the check. It does not
 replace the actual session/MCP smoke test. Check Python dependencies separately:
 
 ```text
@@ -92,7 +93,7 @@ AIDUMEI_TEST_TOKEN_FILE=/absolute/path/to/test.token
 ```
 
 MCP uses stdio because this DSH host does not accept aiduMEI's SSE transport.
-Its launcher disables repository `.env` loading, host chat-database scanning
+Its launcher never reads a `.env` from the workspace it starts in, disables repository `.env` loading, host chat-database scanning
 and dangerous MCP tools. The configured user and bank are the scoped MCP
 defaults; tool calls may provide explicit values when intentionally accessing
 another scope. The optional server default-bank environment variable is set
@@ -122,7 +123,8 @@ POSIX directories/files use 0700/0600. `chmod` is not a Windows ACL guarantee.
   `local_persistence_failed`; reopening a session rescans its durable DSH log.
   Recovery of a session that never reopens is outside this preview's guarantee.
 - Receipts are retained without automatic pruning in this preview. Atomic
-  renames protect against partial JSON files, but no filesystem `fsync` guarantee
+  renames (retried for about five seconds when Windows reports a sharing
+  violation) protect against partial JSON files, but no filesystem `fsync` guarantee
   is made for power loss. Keep ordinary host and server backups.
 
 Uninstall with the same CLI, home and profile, after fully quitting its processes:

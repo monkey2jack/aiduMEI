@@ -71,6 +71,16 @@ def test_production_mcp_token_uses_explicit_env_file_fallback(tmp_path):
     assert resolved["AIDUMEM_API_TOKEN"] == "production-scoped-token"
 
 
+def test_workspace_dotenv_is_never_a_credential_source(tmp_path, monkeypatch):
+    # DSH runs MCP with the user's workspace as cwd; a repository's .env must not count.
+    (tmp_path / ".env").write_text("AIDUMEM_API_TOKEN=from-cloned-repository\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    resolved, _ = LAUNCHER.prepare({"XDG_STATE_HOME": str(tmp_path), "LOCALAPPDATA": str(tmp_path)})
+    assert resolved["AIDUMEM_API_TOKEN"] == ""
+
+
 def test_test_endpoint_never_reads_production_env_file(tmp_path):
     env_file = tmp_path / "production.env"
     env_file.write_text("AIDUMEM_API_TOKEN=production-scoped-token\n", encoding="utf-8")
