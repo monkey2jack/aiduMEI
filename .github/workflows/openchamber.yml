@@ -1,0 +1,32 @@
+name: OpenChamber adapter
+
+on:
+  pull_request:
+    paths: ['integrations/openchamber/**', '.github/workflows/openchamber.yml']
+  push:
+    branches: [main]
+    paths: ['integrations/openchamber/**', '.github/workflows/openchamber.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  adapter:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: integrations/openchamber
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: Plugin, service and installer tests (no live API)
+        run: node --test test/*.test.mjs
