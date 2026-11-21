@@ -14,7 +14,8 @@
  */
 
 import http from 'node:http'
-import { appendFile, mkdir, readFile, readdir, rename, rm } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
@@ -34,11 +35,21 @@ function textFromContent(content) {
     .trim()
 }
 
-function createHashAlgo(algo) {
-  // lazy require keeps the module import-free for host-side loading
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  return import('node:crypto').then(m => m.createHash(algo))
+function stableKey(...parts) {
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
 }
+
+class HttpError extends Error {
+  constructor(status) { super(`HTTP ${status}`); this.status = status }
+}
+
+// Permanent client errors are held for review instead of being retried forever.
+function isPermanent(error) {
+  const status = Number(error?.status)
+  return status >= 400 && status < 500 && ![408, 409, 429].includes(status)
+}
+
+const RETRY_DELAY_MS = 30000
 
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -75,9 +86,15 @@ async function main() {
   let cfg = {}
   try { cfg = JSON.parse(await readFile(configFile, 'utf8')) } catch {}
   const apiBase = (asString(cfg.apiBase).trim() || 'http://127.0.0.1:8767').replace(/\/+$/, '')
-  let apiToken = asString(cfg.apiToken).trim()
-  if (!apiToken && cfg.apiTokenFile) {
-    try { apiToken = (await readFile(asString(cfg.apiTokenFile), 'utf8')).trim() } catch {}
+  // The token file is authoritative and re-read per request so rotation needs no
+  // restart. An inline token is accepted only for configs written by older installers.
+  const apiTokenFile = asString(cfg.apiTokenFile).trim()
+  const inlineToken = asString(cfg.apiToken).trim()
+  async function currentToken() {
+    if (apiTokenFile) {
+      try { return (await readFile(apiTokenFile, 'utf8')).trim() } catch { return '' }
+    }
+    return inlineToken
   }
   const userId = asString(cfg.userId).trim() || 'default'
   const bankId = asString(cfg.bankId).trim() || 'default'
@@ -94,7 +111,7 @@ async function main() {
       await rm(file)
       return JSON.parse(raw)
     } catch (error) {
-      console.error('[aidumei-och] takePrompt failed:', error instanceof Error ? error.message : String(error), 'file:', path.join(promptsDir, `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`))
+      if (error?.code !== 'ENOENT') console.error('[aidumei-och] prompt_unavailable', error?.code || 'error')
       return null
     }
   }
@@ -108,15 +125,17 @@ async function main() {
   /** Spool a payload durably before forwarding. */
   async function spoolWrite(key, payload) {
     const file = path.join(pendingDir, `${key}.json`)
-    const tmp = `${file}.tmp-${process.pid}`
-    await appendFile(tmp, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 })
+    if (await readFile(file, 'utf8').then(() => true, () => false)) return file
+    const tmp = `${file}.tmp-${process.pid}-${randomUUID()}`
+    await writeFile(tmp, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 })
     await rename(tmp, file)
     return file
   }
 
   async function aidumeiFetch(pathName, { method = 'GET', body, idempotencyKey, timeoutMs = 30000 } = {}) {
     const headers = { Accept: 'application/json', 'Content-Type': 'application/json' }
-    if (apiToken) headers.Authorization = `Bearer ${apiToken}`
+    const token = await currentToken()
+    if (token) headers.Authorization = `Bearer ${token}`
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
@@ -131,7 +150,7 @@ async function main() {
       const text = await response.text()
       let parsed = {}
       if (text.trim()) { try { parsed = JSON.parse(text) } catch {} }
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) throw new HttpError(response.status)
       return parsed
     } finally {
       clearTimeout(timer)
@@ -142,20 +161,26 @@ async function main() {
   async function forwardTurn(file) {
     const raw = await readFile(file, 'utf8')
     const payload = JSON.parse(raw)
+    // A summary job carries the server-sealed metadata from /session/distill;
+    // /add only honours the summary identity when that seal is intact.
+    const isSummary = payload.kind === 'summary'
     const result = await aidumeiFetch('/add', {
       method: 'POST',
       body: {
-        messages: payload.messages,
+        messages: isSummary ? payload.summary : payload.messages,
         user_id: userId,
         caller_user_id: userId,
         bank_id: bankId,
         infer: false,
         async_mode: false,
         idempotency_key: payload.key,
-        metadata: { source: 'openchamber-ingest', session_id: payload.sessionId },
+        metadata: isSummary
+          ? { ...(payload.metadata || {}), session_id: `distill:${payload.sessionId}` }
+          : { source: 'openchamber-ingest', session_id: payload.sessionId },
       },
       idempotencyKey: payload.key,
     })
+    if (result?.status !== 'ok') throw new Error('invalid_add_acknowledgement')
     // Aided by the stable idempotency key: replays return the stored result.
     await rename(file, path.join(receiptsDir, `${payload.key}.json`))
     return result
@@ -163,15 +188,41 @@ async function main() {
 
   /** Drain pending spool on startup and after each new event. */
   let draining = Promise.resolve()
+  let retryTimer = null
   function drain() {
     draining = draining.then(async () => {
       let files
       try { files = (await readdir(pendingDir)).filter(f => f.endsWith('.json')).sort() } catch { return }
+      let retry = false
       for (const f of files) {
-        try { await forwardTurn(path.join(pendingDir, f)) } catch (error) { console.error('[aidumei-och] forward failed:', error?.message || error); /* leave in spool; retried on next drain */ }
+        const file = path.join(pendingDir, f)
+        try { await forwardTurn(file) } catch (error) {
+          if (isPermanent(error) || error instanceof SyntaxError || error?.message === 'invalid_add_acknowledgement') {
+            // Keep the exact payload for operator review; never drop it silently.
+            await rename(file, `${file}.held`).catch(() => {})
+            console.error('[aidumei-och] outbox_held', error?.status ? `status=${error.status}` : (error?.name || 'Error'))
+          } else {
+            retry = true
+            console.error('[aidumei-och] outbox_retry_scheduled', error?.status ? `status=${error.status}` : (error?.name || 'Error'))
+            break
+          }
+        }
+      }
+      if (retry && !retryTimer) {
+        retryTimer = setTimeout(() => { retryTimer = null; void drain() }, RETRY_DELAY_MS)
+        retryTimer.unref?.()
       }
     }).catch(() => {})
     return draining
+  }
+
+  async function hasPending(sessionId) {
+    let files
+    try { files = (await readdir(pendingDir)).filter(f => f.endsWith('.json') || f.endsWith('.json.held')) } catch { return false }
+    for (const f of files) {
+      try { if (JSON.parse(await readFile(path.join(pendingDir, f), 'utf8')).sessionId === sessionId) return true } catch {}
+    }
+    return false
   }
 
   // Idle distillation: 2 minutes after the latest event, POST /session/distill.
@@ -182,9 +233,24 @@ async function main() {
     distillTimers.set(sessionId, setTimeout(async () => {
       distillTimers.delete(sessionId)
       try {
+        // Summaries must see every committed turn: deliver the session's turns first.
+        await drain()
+        if (await hasPending(sessionId)) { scheduleDistill(sessionId, directory); return }
         const q = new URLSearchParams({ session_id: sessionId, user_id: userId, caller_user_id: userId, bank_id: bankId, force: 'false' })
-        await aidumeiFetch(`/session/distill?${q}`, { method: 'POST', body: {}, timeoutMs: 45000 })
-      } catch { /* distill is best-effort */ }
+        const result = await aidumeiFetch(`/session/distill?${q}`, { method: 'POST', body: {}, timeoutMs: 45000 })
+        // /session/distill only extracts; the caller must /add the summary
+        // (see ducky/routes_v8.py). Without this step the distill line writes nothing.
+        if (result?.status === 'ok' && typeof result.summary === 'string' && result.summary) {
+          const fingerprint = result.source_fingerprint || stableKey(sessionId, result.summary)
+          const key = `och-distill-${stableKey(userId, bankId, sessionId, fingerprint).slice(0, 64)}`
+          if (!await readFile(path.join(receiptsDir, `${key}.json`), 'utf8').then(() => true, () => false)) {
+            await spoolWrite(key, { kind: 'summary', key, sessionId, summary: result.summary, metadata: result.metadata || {} })
+            void drain()
+          }
+        }
+      } catch (error) {
+        console.error('[aidumei-och] distill_failed', error?.status ? `status=${error.status}` : (error?.name || 'Error'))
+      }
     }, idleDistillMs))
   }
 
@@ -217,12 +283,12 @@ async function main() {
           if (event.type === 'turn-finished' && content?.type === 'turn-finished') {
             const sessionId = event.session?.id || 'unknown'
             const prompt = await takePrompt(sessionId)
-            console.log('[aidumei-och] turn-finished:', sessionId, 'prompt-found:', Boolean(prompt), 'prompt-text:', asString(prompt?.text).slice(0, 50))
+            // Never log conversation text: service logs are not a memory store.
             const messages = []
             if (prompt?.text) messages.push({ role: 'user', content: prompt.text })
             if (content.reply) messages.push({ role: 'assistant', content: content.reply })
             if (messages.length < 2) { json(res, 200, { ok: true }); return }
-            const key = `och-${(event.id || `${sessionId}-${Date.now()}`).slice(0, 80)}`
+            const key = `och-${stableKey(userId, bankId, event.id).slice(0, 64)}`
             await spoolWrite(key, { key, sessionId, messages, endReason: 'completed' })
             void drain()
             scheduleDistill(sessionId, event.project?.directory)
@@ -243,7 +309,7 @@ async function main() {
   })
 
   server.listen(port, '127.0.0.1', () => {
-    console.log(`[aidumei-och] service listening on 127.0.0.1:${port}, api=${apiBase}, user=${userId}`)
+    console.log(`[aidumei-och] service listening on 127.0.0.1:${port}`)
   })
 
   // Drain anything left from a previous run.

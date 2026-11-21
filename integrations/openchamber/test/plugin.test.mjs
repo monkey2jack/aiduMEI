@@ -1,5 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// setup() writes ~/.aidumei-openchamber; never let a test touch the developer's real home.
+process.env.HOME = mkdtempSync(join(tmpdir(), 'aidumei-och-plugin-home-'))
+process.env.USERPROFILE = process.env.HOME
 
 // The plugin is loaded by OpenCode with a bare import() and no node_modules.
 // We import it directly (it has no dependencies) and drive setup() with a

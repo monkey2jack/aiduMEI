@@ -116,48 +116,57 @@ export const AIDUMEI_PLUGIN = {
     const stateDir = path.join(os.homedir(), '.aidumei-openchamber')
     await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
 
-    const apiBase = (asString(process.env.AIDUMEM_URL).trim() || asString(process.env.AIDUMEI_TEST_URL).trim() || AIDUMEI_DEFAULT_URL).replace(/\/+$/, '')
-    const testMode = Boolean(asString(process.env.AIDUMEI_TEST_URL).trim())
+    // Test mode is exclusive: an explicit AIDUMEI_TEST_URL selects only the test
+    // endpoint and only the test token. It never falls back to a production
+    // token, the shared production config or a production URL.
+    const testUrl = asString(process.env.AIDUMEI_TEST_URL).trim().replace(/\/+$/, '')
+    const testMode = Boolean(testUrl)
 
     // Read the shared config FIRST (written by manage.mjs install) — it is the
-    // authoritative source for scope AND token; env vars are a first-run
+    // authoritative source for endpoint and token path; env vars are a first-run
     // fallback (the managed OpenCode server env has neither).
     const configPath = path.join(stateDir, 'config.json')
     let existing = null
     try { existing = JSON.parse(await fs.readFile(configPath, 'utf8')) } catch {}
-    const cfgScope = existing || {}
+    const cfgScope = (!testMode && existing) || {}
     const envHasScope = Boolean(asString(process.env.AIDUMEM_USER_ID).trim() || process.env.AIDUMEI_BANK_ID)
 
-    // Token resolution: config file path (config.apiTokenFile) → config inline
-    // (config.apiToken) → env file path (AIDUMEI_API_TOKEN_FILE) → env inline
-    // (AIDUMEM_API_TOKEN / AIDUMEI_TEST_TOKEN).
     let token = ''
-    let tokenFileForService = asString(cfgScope.apiTokenFile).trim() || asString(process.env.AIDUMEI_API_TOKEN_FILE).trim()
-    if (tokenFileForService) {
-      try { token = (await fs.readFile(tokenFileForService, 'utf8')).trim() } catch {}
+    let tokenFileForService = ''
+    if (testMode) {
+      tokenFileForService = asString(process.env.AIDUMEI_TEST_TOKEN_FILE).trim()
+      if (tokenFileForService) {
+        try { token = (await fs.readFile(tokenFileForService, 'utf8')).trim() } catch {}
+      }
+      if (!token) token = asString(process.env.AIDUMEI_TEST_TOKEN).trim()
+    } else {
+      // Token resolution: config file path → env file path → legacy inline
+      // config token → env inline token. Token contents are never persisted.
+      tokenFileForService = asString(cfgScope.apiTokenFile).trim() || asString(process.env.AIDUMEI_API_TOKEN_FILE).trim()
+      if (tokenFileForService) {
+        try { token = (await fs.readFile(tokenFileForService, 'utf8')).trim() } catch {}
+      }
+      if (!token) token = asString(cfgScope.apiToken).trim()
+      if (!token) token = asString(process.env.AIDUMEM_API_TOKEN).trim()
     }
-    if (!token) token = asString(cfgScope.apiToken).trim()
-    if (!token && testMode) token = asString(process.env.AIDUMEI_TEST_TOKEN).trim()
-    if (!token) token = asString(process.env.AIDUMEM_API_TOKEN).trim()
-    const apiBaseFinal = asString(cfgScope.apiBase).trim() ? asString(cfgScope.apiBase).trim().replace(/\/+$/, '') : apiBase
+    const apiBaseFinal = testMode ? testUrl
+      : (asString(cfgScope.apiBase).trim() || asString(process.env.AIDUMEM_URL).trim() || AIDUMEI_DEFAULT_URL).replace(/\/+$/, '')
 
     const userId = asString(process.env.AIDUMEM_USER_ID).trim() || asString(cfgScope.userId).trim() || 'default'
     const bankId = asString(process.env.AIDUMEI_BANK_ID).trim() || asString(cfgScope.bankId).trim() || 'default'
     const recallTimeoutMs = DEFAULT_RECALL_TIMEOUT_MS
 
     // Write the service config ONLY when absent or when env explicitly carries
-    // scope overrides (manage.mjs install is the authoritative writer; the
-    // plugin must not clobber an existing config on every OpenCode start —
-    // OpenCode's env often lacks the scope vars, which would reset the
-    // configured scope to defaults).
-    if (!existing || envHasScope) {
+    // scope overrides (manage.mjs install is the authoritative writer). Only the
+    // token PATH is written; token contents never land in this file. Test mode
+    // never rewrites the production config.
+    if (!testMode && (!existing || envHasScope)) {
       const serviceConfig = {
         apiBase: apiBaseFinal,
-        apiToken: token || undefined,
         apiTokenFile: tokenFileForService || undefined,
         userId,
         bankId,
-        testMode,
+        testMode: false,
       }
       await fs.writeFile(configPath, JSON.stringify(serviceConfig), { encoding: 'utf8', mode: 0o600 })
     }
@@ -200,14 +209,17 @@ export const AIDUMEI_PLUGIN = {
           const text = asString(event?.prompt?.text).trim()
           if (!text) return
           const sid = event?.sessionID || event?.session?.id || 'unknown'
-          breakerFails = 0
-          breakerOpenUntil = 0
-          prefetched.set(sid, recall(text.slice(0, MAX_QUERY_CHARS)))
+          void recordPrompt(sid, text.slice(0, MAX_QUERY_CHARS))
+          // An open breaker must stay open: resetting it per prompt would hit a
+          // down API on every turn. It closes after its window or a success.
+          if (Date.now() < breakerOpenUntil) return
+          const pending = recall(text.slice(0, MAX_QUERY_CHARS))
+          pending.catch(() => {})
+          prefetched.set(sid, pending)
           if (prefetched.size > 64) {
             const first = prefetched.keys().next().value
             prefetched.delete(first)
           }
-          void recordPrompt(sid, text.slice(0, MAX_QUERY_CHARS))
         })
       } catch { /* prompt hook unavailable on this OpenCode build; context hook still works when awaited */ }
     }
@@ -235,6 +247,7 @@ export const AIDUMEI_PLUGIN = {
         prefetched.delete(sessionKey)
         const { core, search } = await recallPromise
         breakerFails = 0
+        breakerOpenUntil = 0
         const rows = Array.isArray(search) ? search : (search?.results || search?.memories || [])
         const text = formatRecall(rows, { core })
         injectedTurns.set(sessionKey, turnKey)
