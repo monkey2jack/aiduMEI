@@ -122,8 +122,8 @@ async function main() {
     await mkdir(stateDir, { recursive: true, mode: 0o700 })
     const serviceConfig = {
       apiBase,
+      // Only the token PATH is stored; the service and plugin read the file.
       apiTokenFile: tokenFile || undefined,
-      apiToken: token || undefined,
       userId,
       bankId,
       testMode: isTest,
@@ -158,7 +158,18 @@ async function main() {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 8000)
         const headers = {}
-        if (config.apiToken) headers.Authorization = `Bearer ${config.apiToken}`
+        let checkToken = ''
+        if (config.apiTokenFile) {
+          try { checkToken = (await readFile(config.apiTokenFile, 'utf8')).trim() } catch { checkToken = '' }
+          checks.tokenFile = Boolean(checkToken)
+          if (!checkToken) ok = false
+        } else {
+          checkToken = asString(config.apiToken).trim()
+        }
+        // A token copy inside config.json is a legacy layout: report it so it gets removed.
+        checks.inlineTokenAbsent = !config.apiToken
+        if (config.apiToken) ok = false
+        if (checkToken) headers.Authorization = `Bearer ${checkToken}`
         const response = await fetch(`${config.apiBase}/health`, { headers, signal: controller.signal })
         clearTimeout(timer)
         checks.apiHealth = response.ok ? 'ok' : `HTTP ${response.status}`
@@ -169,6 +180,13 @@ async function main() {
       }
       checks.scope = `${config.userId}/${config.bankId}`
       checks.testMode = config.testMode === true
+      // Held jobs are permanent failures waiting for review; they must not stay invisible.
+      const pendingDir = path.join(asString(config.spoolDir) || path.join(stateDir, 'spool'), 'pending')
+      let names = []
+      try { names = await readdir(pendingDir) } catch {}
+      checks.pending = names.filter(name => name.endsWith('.json')).length
+      checks.held = names.filter(name => name.endsWith('.held')).length
+      if (checks.held > 0) ok = false
     } else {
       checks.apiHealth = 'no-config'
       ok = false
