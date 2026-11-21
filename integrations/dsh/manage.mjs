@@ -48,6 +48,100 @@ async function atomic(file, text) {
 }
 const digest = text => createHash('sha256').update(text).digest('hex')
 
+async function checkInstallation(opts, { dir, patchFile, stateFile, env }) {
+  const checks = {}
+  const details = {}
+  const record = (name, ok, code, fix) => {
+    checks[name] = Boolean(ok)
+    details[name] = { ok: Boolean(ok), code, ...(!ok && fix ? { fix } : {}) }
+  }
+  let version = ''
+  try {
+    const invocation = await dshCommand({ cli: opts['dsh-cli'], env })
+    const child = spawn(invocation.command, [...invocation.args, '--version'], {
+      env: invocation.env, stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    let output = ''
+    child.stdout.on('data', b => { if (output.length < 4096) output += b })
+    const timer = setTimeout(() => child.kill(), 5000)
+    const code = await new Promise((resolve, reject) => {
+      child.on('error', reject)
+      child.on('close', resolve)
+    }).finally(() => clearTimeout(timer))
+    if (code === 0 && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(output.trim())) version = output.trim()
+    record('dsh', version === '0.2.2-rc.3', version ? 'version_checked' : 'cli_unavailable',
+      version ? 'Use the supported DSH 0.2.2-rc.3 host.' : 'Install DSH or provide --dsh-cli pointing to its executable.')
+  } catch {
+    record('dsh', false, 'cli_unavailable', 'Install DSH or provide --dsh-cli pointing to its executable.')
+  }
+  let state, patch = '', manifest
+  try {
+    state = JSON.parse(await readFile(stateFile, 'utf8'))
+    record('profile', Boolean(state && typeof state === 'object' && state.config), 'profile_read',
+      'Install the adapter into this profile before checking it.')
+  } catch (error) {
+    record('profile', false, error?.code === 'ENOENT' ? 'configuration_missing' : 'configuration_unreadable',
+      'Install the adapter into this profile; review its private backup if the configuration is damaged.')
+  }
+  try { patch = await readFile(patchFile, 'utf8') } catch {}
+  record('managed', state?.status === 'installed' && typeof state?.block === 'string' && patch.includes(state.block),
+    'managed_patch_checked', 'Restore or reinstall the managed patch after reviewing the profile backup.')
+  try { manifest = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8')) } catch {}
+  record('bundle', manifest?.dsh?.profile?.bundles?.includes(packageName) === true,
+    'bundle_checked', 'Install or enable the aiduMEI bundle in this DSH profile.')
+  let resolved, token = ''
+  if (checks.profile) {
+    try {
+      resolved = resolveOptions(state.config, env)
+      record('configuration', true, 'configuration_valid')
+    } catch {
+      record('configuration', false, 'configuration_invalid', 'Review the endpoint, identity and absolute workspace settings, then reinstall.')
+    }
+  } else record('configuration', false, 'configuration_missing', 'Install the adapter with explicit API, user, bank and workspace options.')
+  if (resolved) {
+    try { token = (await readFile(resolved.tokenFile, 'utf8')).trim() } catch {}
+    record('tokenFile', Boolean(token), 'token_file_checked', 'Provision a readable nonempty token file and reinstall with --token-file.')
+    let workspace = resolved.allowedRoots.length > 0
+    for (const root of resolved.allowedRoots) workspace &&= await exists(root)
+    record('workspace', workspace, 'workspace_checked', 'Configure at least one existing absolute allowed workspace.')
+  } else {
+    record('tokenFile', false, 'configuration_required', 'Fix the profile configuration before checking its token file.')
+    record('workspace', false, 'configuration_required', 'Fix the profile configuration before checking its workspace allowlist.')
+  }
+  if (resolved && token) {
+    try {
+      const response = await fetch(`${resolved.apiBase}/health`, {
+        headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(5000),
+      })
+      const health = await response.json()
+      record('api', response.ok && health.health_status === 'ok', 'api_health_checked',
+        'Check the API service, endpoint and token; inspect private server diagnostics if health is degraded.')
+    } catch {
+      record('api', false, 'api_unavailable', 'Check API connectivity and the configured endpoint; inspect private server diagnostics.')
+    }
+  } else record('api', false, 'token_and_configuration_required', 'Fix the profile and token file before checking API health.')
+  const outbox = { pending: 0, held: 0, observed: false }
+  if (resolved) {
+    try {
+      const names = await readdir(resolved.spoolDir)
+      outbox.pending = names.filter(name => /^(turn|summary|distill)-.*\.json$/.test(name)).length
+      outbox.held = names.filter(name => name.endsWith('.json.held')).length
+      outbox.observed = true
+      record('noHeldJobs', outbox.held === 0, 'outbox_checked', 'Archive and inspect held jobs, fix their rejection cause, then retry them; do not delete them to clear this check.')
+    } catch (error) {
+      outbox.observed = error?.code === 'ENOENT'
+      record('noHeldJobs', outbox.observed, outbox.observed ? 'outbox_not_created' : 'outbox_unreadable',
+        'Restore access to the profile outbox and inspect its pending and held jobs.')
+    }
+  } else record('noHeldJobs', false, 'configuration_required', 'Fix the profile configuration before checking its outbox.')
+  const ok = Object.values(checks).every(Boolean)
+  console.log(JSON.stringify({ ok, action: 'check', dshVersion: version || null,
+    testMode: resolved?.testMode ?? null, mcpConfigured: Boolean(state?.python), checks, details, outbox,
+    identityBinding: { status: 'unverified', code: 'server_binding_introspection_required',
+      fix: 'Provision an identity-bound agent key with enforcement enabled; API health alone cannot verify its binding.' } }))
+  if (!ok) process.exitCode = 1
+}
+
 async function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.action === '--help') { console.log(help); return }
@@ -56,6 +150,10 @@ async function main() {
   const patchFile = path.join(dir, 'cordis.patch.yml')
   const stateFile = path.join(dir, '.aidumei-preview.json')
   const env = { ...process.env, DSH_HOME: home }
+  if (opts.action === '--check') {
+    await checkInstallation(opts, { dir, patchFile, stateFile, env })
+    return
+  }
   const invocation = await dshCommand({ cli: opts['dsh-cli'], env })
   const logs = path.join(home, 'aidumei-install-logs', `${Date.now()}-${randomUUID()}`)
   let logIndex = 0
@@ -158,28 +256,6 @@ async function main() {
     console.log(JSON.stringify({ ok: true, action: 'uninstall', profile: opts.profile, backupRetained: true, outboxRetained: true }))
     return
   }
-  const resolved = resolveOptions(state.config, env)
-  const checks = { managed: state.status === 'installed' && patch.includes(state.block),
-    tokenFile: Boolean((await readFile(resolved.tokenFile, 'utf8')).trim()), workspace: true, api: false }
-  for (const root of resolved.allowedRoots) checks.workspace &&= await exists(root)
-  const token = (await readFile(resolved.tokenFile, 'utf8')).trim()
-  const response = await fetch(`${resolved.apiBase}/health`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(5000) })
-  const health = await response.json()
-  checks.api = response.ok && health.health_status === 'ok'
-  const manifest = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8'))
-  checks.bundle = manifest.dsh?.profile?.bundles?.includes(packageName) === true
-  // Held jobs are permanent rejections that block their session's summary.
-  // They wait for a human, so a green check must not hide them.
-  let spoolNames = []
-  try { spoolNames = await readdir(resolved.spoolDir) } catch {}
-  const outbox = {
-    pending: spoolNames.filter(name => /^(turn|summary|distill)-.*\.json$/.test(name)).length,
-    held: spoolNames.filter(name => name.endsWith('.json.held')).length,
-  }
-  checks.noHeldJobs = outbox.held === 0
-  const ok = Object.values(checks).every(Boolean)
-  console.log(JSON.stringify({ ok, action: 'check', dshVersion: version, testMode: resolved.testMode, mcpConfigured: Boolean(state.python), checks, outbox }))
-  if (!ok) process.exitCode = 1
 }
 
 main().catch(error => {

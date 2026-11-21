@@ -386,14 +386,14 @@ const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
 /**
  * Windows refuses to replace a file another handle (our own drain reading it,
  * an indexer or antivirus) has open: rename fails with EPERM/EACCES/EBUSY for a
- * few milliseconds. Retry with backoff (about 5 s in total) before giving up,
- * and never leave the temp file behind.
+ * few milliseconds. Retry with backoff (3270 ms of delay by default) before
+ * giving up. A failed rename always preserves its source: it can be the only
+ * durable copy of an unacknowledged turn or summary, not just a temporary file.
  */
 export async function renameWithRetry(from, to, { renameFn = rename, attempts = 10, baseDelayMs = 10 } = {}) {
   for (let attempt = 1; ; attempt += 1) {
     try { return await renameFn(from, to) } catch (error) {
       if (!RENAME_RETRY_CODES.has(error?.code) || attempt >= attempts) {
-        await rm(from, { force: true }).catch(() => {})
         throw error
       }
       await new Promise(resolve => setTimeout(resolve, Math.min(baseDelayMs * 2 ** (attempt - 1), 1000)))
@@ -401,11 +401,14 @@ export async function renameWithRetry(from, to, { renameFn = rename, attempts = 
   }
 }
 
-async function atomicJsonWrite(file, value) {
+async function atomicJsonWrite(file, value, renameOptions) {
   const temp = `${file}.tmp-${process.pid}-${randomUUID()}`
-  await writeFile(temp, JSON.stringify(value), { encoding: 'utf8', mode: 0o600 })
-  try { await chmod(temp, 0o600) } catch {}
-  await renameWithRetry(temp, file)
+  try {
+    await writeFile(temp, JSON.stringify(value), { encoding: 'utf8', mode: 0o600 })
+    try { await chmod(temp, 0o600) } catch {}
+    await renameWithRetry(temp, file, renameOptions)
+  }
+  finally { await rm(temp, { force: true }).catch(() => {}) }
 }
 
 async function fileExists(file) {
@@ -430,10 +433,11 @@ class Circuit {
 }
 
 class Outbox {
-  constructor(options, client, log) {
+  constructor(options, client, log, renameOptions) {
     this.options = options
     this.client = client
     this.log = log
+    this.renameOptions = renameOptions
     this.running = false
     this.retryTimer = null
     this.retryAt = 0
@@ -589,7 +593,7 @@ class Outbox {
 
   async hold(file, code) {
     await this.mutate(async () => {
-      try { await renameWithRetry(file, `${file}.held`) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+      try { await renameWithRetry(file, `${file}.held`, this.renameOptions) } catch (error) { if (error?.code !== 'ENOENT') throw error }
     })
     logLine(this.log, 'warn', 'outbox_held', code)
   }
@@ -864,6 +868,7 @@ export async function apply(ctx, config = {}) {
 
 
 export const __test = {
+  atomicJsonWrite,
   HttpError,
   MemoryClient,
   Outbox,

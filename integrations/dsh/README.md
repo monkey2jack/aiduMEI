@@ -52,8 +52,13 @@ the manager refuses to rewrite an unknown configuration format.
 
 `--check` verifies the fixed DSH version, managed configuration, bundle selection,
 token file, workspace existence and authenticated API health, and reports the
-outbox (`pending`, `held`); any held job fails the check. It does not
-replace the actual session/MCP smoke test. Check Python dependencies separately:
+outbox (`pending`, `held`); any held job fails the check. Missing DSH or profile
+configuration still produces individual `checks` and `details` entries with
+error codes and repair hints. An unreadable outbox fails the check instead of
+being reported as empty. `identityBinding.status: unverified` explicitly means
+that API health has not proved the token's scope: provision an identity-bound
+agent key and enable server enforcement. It does not replace the actual
+session/MCP smoke test. Check Python dependencies separately:
 
 ```text
 python integrations/dsh/mcp-stdio.py --check
@@ -80,6 +85,10 @@ each write. Distillation is scheduled after two idle minutes or session disposal
 it depends on the server's configured summarizer/fallback and may report a
 legitimate skipped result. Host flushing waits for local writes, not network
 delivery. Exit can therefore leave durable pending jobs for the next launch.
+On a Windows sharing violation the persistence checkpoint can additionally wait
+up to 3270 ms of retry backoff, plus filesystem time. The normal-path 50 ms
+performance target is not a bound for this failure case; the checkpoint waits
+to preserve the turn, and exhaustion is reported as `local_persistence_failed`.
 
 Set `AIDUMEI_HOOKS=off` (also `0` or `false`) before starting DSH to disable
 automatic hooks, recovery and MCP launch. No spool is created while disabled.
@@ -123,8 +132,9 @@ POSIX directories/files use 0700/0600. `chmod` is not a Windows ACL guarantee.
   `local_persistence_failed`; reopening a session rescans its durable DSH log.
   Recovery of a session that never reopens is outside this preview's guarantee.
 - Receipts are retained without automatic pruning in this preview. Atomic
-  renames (retried for about five seconds when Windows reports a sharing
-  violation) protect against partial JSON files, but no filesystem `fsync` guarantee
+  renames (retried with 3270 ms total backoff when Windows reports a sharing
+  violation) protect against partial JSON files. A failed rename preserves its
+  source job; only the atomic writer removes its own temporary file. No filesystem `fsync` guarantee
   is made for power loss. Keep ordinary host and server backups.
 
 Uninstall with the same CLI, home and profile, after fully quitting its processes:
