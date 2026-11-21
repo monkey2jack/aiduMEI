@@ -2,7 +2,7 @@
 // Profile changes are backed up first. Credentials are read from files only.
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { access, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, realpath, rename, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -168,8 +168,17 @@ async function main() {
   checks.api = response.ok && health.health_status === 'ok'
   const manifest = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8'))
   checks.bundle = manifest.dsh?.profile?.bundles?.includes(packageName) === true
+  // Held jobs are permanent rejections that block their session's summary.
+  // They wait for a human, so a green check must not hide them.
+  let spoolNames = []
+  try { spoolNames = await readdir(resolved.spoolDir) } catch {}
+  const outbox = {
+    pending: spoolNames.filter(name => /^(turn|summary|distill)-.*\.json$/.test(name)).length,
+    held: spoolNames.filter(name => name.endsWith('.json.held')).length,
+  }
+  checks.noHeldJobs = outbox.held === 0
   const ok = Object.values(checks).every(Boolean)
-  console.log(JSON.stringify({ ok, action: 'check', dshVersion: version, testMode: resolved.testMode, mcpConfigured: Boolean(state.python), checks }))
+  console.log(JSON.stringify({ ok, action: 'check', dshVersion: version, testMode: resolved.testMode, mcpConfigured: Boolean(state.python), checks, outbox }))
   if (!ok) process.exitCode = 1
 }
 
