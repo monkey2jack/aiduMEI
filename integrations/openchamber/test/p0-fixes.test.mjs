@@ -50,22 +50,34 @@ async function startService(t, apiBase, extra = {}) {
   await writeFile(tokenFile, 'file-token\n')
   await writeFile(path.join(stateDir, 'config.json'), JSON.stringify({
     apiBase, apiTokenFile: tokenFile, userId: 'och-p0', bankId: 'och-p0',
-    spoolDir: path.join(scratch, 'spool'), idleDistillMs: 200, ...extra,
+    spoolDir: path.join(scratch, 'spool'), idleDistillMs: 200, allowedRoots: [os.tmpdir()], ...extra,
   }))
   const port = await freePort()
   let output = ''
-  const svc = spawn(process.execPath, [path.join(here, '..', 'service', 'main.js')], {
+  const spawnService = () => spawn(process.execPath, [path.join(here, '..', 'service', 'main.js')], {
     env: { ...baseEnv, HOME: scratch, OPENCHAMBER_SERVICE_PORT: String(port), OPENCHAMBER_SERVICE_TOKEN: 'svc' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  svc.stdout.on('data', d => { output += d })
-  svc.stderr.on('data', d => { output += d })
-  t.after(async () => { svc.kill(); await rm(scratch, { recursive: true, force: true }) })
-  for (let i = 0; i < 40; i += 1) {
-    try { if ((await fetch(`http://127.0.0.1:${port}/health`, { headers: { Authorization: 'Bearer svc' } })).ok) break } catch {}
-    await new Promise(r => setTimeout(r, 100))
+  let svc
+  async function launch() {
+    svc = spawnService()
+    svc.stdout.on('data', d => { output += d })
+    svc.stderr.on('data', d => { output += d })
+    for (let i = 0; i < 40; i += 1) {
+      try { if ((await fetch(`http://127.0.0.1:${port}/health`, { headers: { Authorization: 'Bearer svc' } })).ok) return } catch {}
+      await new Promise(r => setTimeout(r, 100))
+    }
+    throw new Error(`service_start_failed: ${output}`)
   }
-  return { port, scratch, stateDir, logs: () => output }
+  async function stop() {
+    if (svc.exitCode !== null || svc.signalCode !== null) return
+    const stopped = new Promise(resolve => svc.once('exit', resolve))
+    svc.kill()
+    await stopped
+  }
+  t.after(async () => { await stop(); await rm(scratch, { recursive: true, force: true }) })
+  await launch()
+  return { port, scratch, stateDir, logs: () => output, stop, restart: async () => { await stop(); await launch() } }
 }
 
 async function turn(svc, sessionId, id, prompt, reply) {
@@ -76,7 +88,7 @@ async function turn(svc, sessionId, id, prompt, reply) {
     method: 'POST',
     headers: { Authorization: 'Bearer svc', 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      event: { id, type: 'turn-finished', session: { id: sessionId }, project: { directory: '/tmp' } },
+      event: { id, type: 'turn-finished', session: { id: sessionId }, project: { directory: os.tmpdir() } },
       content: { type: 'turn-finished', reply },
     }),
   })
@@ -104,7 +116,7 @@ test('idle distill writes the sealed summary back through /add', async t => {
   const summaryAdd = await waitFor(() => api.received.find(r => r.url === '/add' && r.body?.messages === '精华一句'))
   assert.ok(summaryAdd, `summary must be written: ${api.received.map(r => r.url).join(',')}`)
   assert.equal(summaryAdd.body.metadata._distill_seal, 'sig', 'server seal must travel unchanged')
-  assert.equal(summaryAdd.body.metadata.session_id, 'distill:ses-a')
+  assert.equal(summaryAdd.body.metadata.session_id, 'distill:och-ses-a')
   assert.equal(summaryAdd.auth, 'Bearer file-token', 'token is read from the token file')
   const turnIdx = api.received.findIndex(r => r.url === '/add' && Array.isArray(r.body?.messages))
   const distillIdx = api.received.findIndex(r => r.url.startsWith('/session/distill'))
@@ -150,4 +162,63 @@ test('installer stores the token path, never the token contents; check reports h
   const dirty = await run(['check', ...common])
   assert.equal(dirty.code, 1, 'held jobs must fail the check')
   assert.match(dirty.out, /"held":1/)
+})
+
+test('the service independently enforces an empty workspace allowlist', async t => {
+  const api = await fakeApi(t, () => [200, { status: 'ok' }])
+  const svc = await startService(t, api.base, { allowedRoots: [] })
+  const response = await turn(svc, 'denied-session', 'denied-event', 'private question', 'private answer')
+  assert.equal((await response.json()).skipped, 'workspace_or_child_session')
+  assert.equal(api.received.length, 0)
+  assert.equal((await readdir(path.join(svc.stateDir, 'prompts'))).length, 1, 'denied events must not consume files')
+})
+
+test('FIFO pairing preserves two prompts and event replay cannot consume the next one', async t => {
+  const api = await fakeApi(t, () => [200, { status: 'ok' }])
+  const svc = await startService(t, api.base, { idleDistillMs: 60000 })
+  const prompts = path.join(svc.stateDir, 'prompts')
+  const now = Date.now()
+  await writeFile(path.join(prompts, 'one.json'), JSON.stringify({ sessionId: 'fifo', turnId: 'message-1', text: 'first question', at: now - 20 }))
+  await writeFile(path.join(prompts, 'two.json'), JSON.stringify({ sessionId: 'fifo', turnId: 'message-2', text: 'second question', at: now - 10 }))
+  const finish = (id, reply) => fetch(`http://127.0.0.1:${svc.port}/session-events`, {
+    method: 'POST', headers: { Authorization: 'Bearer svc', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event: { id, at: Date.now(), type: 'turn-finished', session: { id: 'fifo' }, project: { directory: os.tmpdir() } }, content: { type: 'turn-finished', reply } }),
+  })
+  assert.equal((await finish('event-1', 'first answer')).status, 200)
+  assert.equal((await (await finish('event-1', 'first answer')).json()).replay, true)
+  assert.equal((await readdir(prompts)).length, 1)
+  assert.equal((await finish('event-2', 'second answer')).status, 200)
+  await waitFor(() => api.received.filter(entry => entry.url === '/add').length === 2)
+  const adds = api.received.filter(entry => entry.url === '/add')
+  assert.deepEqual(adds.map(entry => entry.body.messages.map(message => message.content)), [['first question', 'first answer'], ['second question', 'second answer']])
+  assert.ok(adds.every(entry => entry.body.metadata._origin_session_id === 'och-fifo'))
+})
+
+test('failed outbox persistence preserves the exact source prompt and reports failure', async t => {
+  const api = await fakeApi(t, () => [200, { status: 'ok' }])
+  const svc = await startService(t, api.base)
+  const pending = path.join(svc.scratch, 'spool', 'pending')
+  await rm(pending, { recursive: true })
+  await writeFile(pending, 'an occupied path')
+  const response = await turn(svc, 'persist-fail', 'event-fail', 'original question', 'answer')
+  assert.equal(response.status, 500)
+  const prompt = JSON.parse(await readFile(path.join(svc.stateDir, 'prompts', 'persist-fail.json'), 'utf8'))
+  assert.equal(prompt.text, 'original question')
+  assert.equal(api.received.length, 0)
+})
+
+test('idle distill plans survive a service restart before their deadline', async t => {
+  const api = await fakeApi(t, ({ url }) => url.startsWith('/session/distill')
+    ? [200, { status: 'ok', summary: 'recovered summary', source_fingerprint: 'recovered', metadata: { _distill_seal: 'sealed' } }]
+    : [200, { status: 'ok' }])
+  const svc = await startService(t, api.base, { idleDistillMs: 1000 })
+  await turn(svc, 'restart-session', 'restart-event', 'question', 'answer')
+  const plans = path.join(svc.scratch, 'spool', 'distill')
+  assert.equal((await readdir(plans)).length, 1)
+  await svc.restart()
+  const add = await waitFor(() => api.received.find(entry => entry.url === '/add' && entry.body.messages === 'recovered summary'))
+  assert.ok(add, 'the recovered plan must write the sealed summary')
+  assert.equal(add.body.metadata._distill_seal, 'sealed')
+  await waitFor(async () => (await readdir(plans)).length === 0)
+  assert.deepEqual(await readdir(plans), [])
 })

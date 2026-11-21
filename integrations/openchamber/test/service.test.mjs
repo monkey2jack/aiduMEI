@@ -29,7 +29,9 @@ async function startService(t, { events = [] } = {}) {
   const apiPort = api.address().port
 
   // Write the service config.
-  const config = { apiBase: `http://127.0.0.1:${apiPort}`, apiToken: 'test-token', userId: 'och-test', bankId: 'och-test', testMode: false, spoolDir, idleDistillMs: 300 }
+  const tokenFile = path.join(scratch, 'token')
+  await writeFile(tokenFile, 'test-token')
+  const config = { apiBase: `http://127.0.0.1:${apiPort}`, apiTokenFile: tokenFile, userId: 'och-test', bankId: 'och-test', testMode: false, spoolDir, idleDistillMs: 300, allowedRoots: [os.tmpdir()] }
   await writeFile(path.join(stateDir, 'config.json'), JSON.stringify(config))
 
   // Allocate a free port first, then spawn the service once with it.
@@ -84,7 +86,7 @@ test('turn-finished with prompt pairing drains spool to aiduMEI /add', async t =
   await mkdir(promptsDir, { recursive: true })
   await writeFile(path.join(promptsDir, `${sessionId}.json`), JSON.stringify({ sessionId, text: '蓝天橙猫 是什么', at: Date.now() }))
   const r = await postEvent(port, {
-    event: { id: 'evt-drain-1', type: 'turn-finished', at: Date.now(), session: { id: sessionId, parentId: null }, project: { directory: '/tmp' } },
+    event: { id: 'evt-drain-1', type: 'turn-finished', at: Date.now(), session: { id: sessionId, parentId: null }, project: { directory: os.tmpdir() } },
     content: { type: 'turn-finished', sessionTitle: 'test', reply: '蓝天橙猫 是答案。', replyTruncated: false },
   })
   assert.equal(r.status, 200)
@@ -105,7 +107,7 @@ test('turn-finished with prompt pairing drains spool to aiduMEI /add', async t =
 test('turn-failed does not forward to /add', async t => {
   const { port, received } = await startService(t)
   await postEvent(port, {
-    event: { id: 'evt-fail-1', type: 'turn-failed', at: Date.now(), session: { id: 'ses-fail', parentId: null }, project: { directory: '/tmp' } },
+    event: { id: 'evt-fail-1', type: 'turn-failed', at: Date.now(), session: { id: 'ses-fail', parentId: null }, project: { directory: os.tmpdir() } },
     content: { type: 'turn-failed', sessionTitle: null, error: { type: 'test', message: 'boom' } },
   })
   await new Promise(resolve => setTimeout(resolve, 800))
