@@ -27,6 +27,7 @@ import { access, mkdir, readFile, rm, stat, writeFile, readdir } from 'node:fs/p
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { canonicalDirectory, stateLocation } from './plugin/runtime.mjs'
 
 const FIXTURE_VERSION = '0.9.0'
 const OPENCODE_PLUGIN_DIR_NAME = 'aidumei-openchamber'
@@ -45,7 +46,8 @@ function parseArgs(argv) {
       if (next === undefined || next.startsWith('--')) {
         opts[key] = true
       } else {
-        opts[key] = next
+        if (key === 'allow-root') opts[key] = [...(opts[key] || []), next]
+        else opts[key] = next
         i += 1
       }
     }
@@ -68,7 +70,7 @@ async function main() {
 
   const packageDir = path.dirname(fileURLToPath(import.meta.url))
   const opencodeConfigDir = asString(opts['opencode-config-dir']) || path.join(os.homedir(), '.config', 'opencode')
-  const stateDir = asString(opts['state-dir']) || path.join(os.homedir(), '.aidumei-openchamber')
+  const { stateDir, testMode } = stateLocation({ ...process.env, AIDUMEI_STATE_DIR: asString(opts['state-dir']) || process.env.AIDUMEI_STATE_DIR, AIDUMEI_TEST_URL: asString(opts['test-url']) || process.env.AIDUMEI_TEST_URL }, opts.test ? ['--test'] : [])
   const pluginTarget = path.join(opencodeConfigDir, 'plugins', OPENCODE_PLUGIN_DIR_NAME)
   const configFile = path.join(stateDir, 'config.json')
 
@@ -80,6 +82,12 @@ async function main() {
     const tokenFile = isTest ? testTokenFile : asString(opts['token-file'])
     const userId = asString(opts.user) || 'default'
     const bankId = asString(opts.bank) || 'default'
+    const allowedRoots = []
+    for (const directory of opts['allow-root'] || []) {
+      const canonical = canonicalDirectory(directory)
+      if (!canonical) throw new Error('allow_root_missing_or_unreadable')
+      allowedRoots.push(canonical)
+    }
 
     if (!isTest && !tokenFile) {
       console.error('install requires --token-file for production (or --test-url/--test-token for tests)')
@@ -117,6 +125,7 @@ async function main() {
     await mkdir(path.dirname(pluginTarget), { recursive: true, mode: 0o700 })
     await mkdir(pluginTarget, { recursive: true, mode: 0o700 })
     await writeFile(path.join(pluginTarget, 'index.js'), await readFile(path.join(sourcePlugin, 'index.js'), 'utf8'))
+    await writeFile(path.join(pluginTarget, 'runtime.mjs'), await readFile(path.join(sourcePlugin, 'runtime.mjs'), 'utf8'))
 
     // Write the shared config for the service.
     await mkdir(stateDir, { recursive: true, mode: 0o700 })
@@ -127,6 +136,7 @@ async function main() {
       userId,
       bankId,
       testMode: isTest,
+      allowedRoots,
     }
     await writeFile(configFile, JSON.stringify(serviceConfig, null, 2), { encoding: 'utf8', mode: 0o600 })
 
@@ -180,6 +190,9 @@ async function main() {
       }
       checks.scope = `${config.userId}/${config.bankId}`
       checks.testMode = config.testMode === true
+      checks.stateRealmMatches = checks.testMode === testMode
+      checks.allowedRoots = Array.isArray(config.allowedRoots) ? config.allowedRoots.length : 0
+      if (!checks.stateRealmMatches) ok = false
       // Held jobs are permanent failures waiting for review; they must not stay invisible.
       const pendingDir = path.join(asString(config.spoolDir) || path.join(stateDir, 'spool'), 'pending')
       let names = []
@@ -191,7 +204,14 @@ async function main() {
       checks.apiHealth = 'no-config'
       ok = false
     }
-    console.log(JSON.stringify({ ok, action: 'check', checks }))
+    const fixes = []
+    if (!checks.pluginInstalled) fixes.push({ check: 'pluginInstalled', fix: 'Run install, then restart the pinned OpenCode host.' })
+    if (!checks.configValid) fixes.push({ check: 'configValid', fix: 'Install with an explicit endpoint, identity and token file.' })
+    if (!checks.inlineTokenAbsent && config) fixes.push({ check: 'inlineTokenAbsent', fix: 'Reinstall with --token-file; remove the legacy inline token.' })
+    if (checks.apiHealth !== 'ok') fixes.push({ check: 'apiHealth', fix: 'Check endpoint, token-file readability and API health.' })
+    if (checks.allowedRoots === 0) fixes.push({ check: 'allowedRoots', fix: 'Recall and ingestion are disabled; add --allow-root for each permitted workspace.' })
+    if (checks.held > 0) fixes.push({ check: 'held', fix: 'Review held jobs and the rejection code before replaying them.' })
+    console.log(JSON.stringify({ ok, action: 'check', checks, fixes }))
     process.exit(ok ? 0 : 1)
     return
   }
