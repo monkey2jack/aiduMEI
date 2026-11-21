@@ -381,11 +381,31 @@ function logLine(log, level, code, extra = '') {
   else console.warn(line)
 }
 
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+
+/**
+ * Windows refuses to replace a file another handle (our own drain reading it,
+ * an indexer or antivirus) has open: rename fails with EPERM/EACCES/EBUSY for a
+ * few milliseconds. Retry with backoff (about 5 s in total) before giving up,
+ * and never leave the temp file behind.
+ */
+export async function renameWithRetry(from, to, { renameFn = rename, attempts = 10, baseDelayMs = 10 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await renameFn(from, to) } catch (error) {
+      if (!RENAME_RETRY_CODES.has(error?.code) || attempt >= attempts) {
+        await rm(from, { force: true }).catch(() => {})
+        throw error
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.min(baseDelayMs * 2 ** (attempt - 1), 1000)))
+    }
+  }
+}
+
 async function atomicJsonWrite(file, value) {
   const temp = `${file}.tmp-${process.pid}-${randomUUID()}`
   await writeFile(temp, JSON.stringify(value), { encoding: 'utf8', mode: 0o600 })
   try { await chmod(temp, 0o600) } catch {}
-  await rename(temp, file)
+  await renameWithRetry(temp, file)
 }
 
 async function fileExists(file) {
@@ -569,7 +589,7 @@ class Outbox {
 
   async hold(file, code) {
     await this.mutate(async () => {
-      try { await rename(file, `${file}.held`) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+      try { await renameWithRetry(file, `${file}.held`) } catch (error) { if (error?.code !== 'ENOENT') throw error }
     })
     logLine(this.log, 'warn', 'outbox_held', code)
   }
