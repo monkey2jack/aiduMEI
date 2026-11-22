@@ -8,9 +8,9 @@
 
 aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI, Hermes, **DeepSeek Harness** and **OpenChamber**: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
 
-> The current public release is **f0.9: official OpenChamber support** (package `0.9.0`, 2026-11-19). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
+> The current public release is **f0.9+: recall quality convergence + counter-guard sync** (package `0.9.1`, 2026-11-22). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
 >
-> f0.9 = code **f0.9.0** (on top of f0.8++: **native OpenChamber integration** — OpenCode plugin recall injection, sessionEvents service ingestion, idle distillation; verified on Windows). OpenChamber users: see [integrations/openchamber/README.md](integrations/openchamber/README.md).
+> f0.9+ = code **f0.9.1** (on top of f0.9: **verbatim recall gating and rerank rejection convergence** — original-wording rows that failed rerank scoring are only recalled for explicit wording queries; new recall_policy provenance column; test corpus 4853 → 4855). OpenChamber users: see [integrations/openchamber/README.md](integrations/openchamber/README.md). Previous public release: [f0.9](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9) (package `0.9.0`, 2026-11-19).
 >
 > f0.8++ = code **f0.8.3** (on top of f0.8+: native DeepSeek Harness integration — native plugin, stdio MCP, persistent outbox writes and idle distillation on Windows/Linux/macOS, verified end-to-end on a real Windows machine incl. fault drills; plus an 8.3 short-name allowlist fix and a Windows first-boot compatibility fix in the mutation journal). DSH users: see [integrations/dsh/README.md](integrations/dsh/README.md). Previous public release: [f0.8++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B) (package `0.8.3`, 2026-11-18).
 >
@@ -19,6 +19,14 @@ aiduMEI is a **single-machine self-hosted** long-term memory service (Python / F
 > f0.7++ = code **f0.7.5** (the patch on top of f0.7+: second outside-audit P0 fixes — facts isolated per identity under key enforcement, write-policy principle 7 gaps closed, delete chain completed, write gate no longer bypassed by message shape). Previous public release: [f0.7++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B%2B) (package `0.7.5`, 2026-11-04).
 >
 > f0.7+ = code **f0.7.4** (the four patches on top of f0.7, published together: the f0.7.1 audit fixes, the f0.7.2 "what is worth remembering" write policy and one key per agent, the f0.7.3 per-agent memory isolation, and the f0.7.4 per-identity drop-term exemption and salience identity stamps). Principle 7 of the write policy (secrets, IDs, signatures, whole raw copies) is enforced; the others run in shadow mode first — see [docs/WRITE_POLICY.md](docs/WRITE_POLICY.md). Previous public release: [f0.7+](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.7%2B) (package `0.7.4`, 2026-11-02).
+
+## What changed in f0.9+
+
+f0.9+ is a recall-quality convergence release on top of f0.9:
+
+- **Verbatim recall gating**: original-wording recall rows that failed rerank scoring verification now participate only when the user explicitly asks about exact wording; otherwise they are dropped from results and counted in the gate stats.
+- **recall_policy provenance column**: the verbatim vault gains a `recall_policy` column recording why each original row was excluded from recall (including test provenance), so false positives can be audited.
+- **Test corpus 4853 → 4855**: two new cases (recall experience, rerank rejection); README/CHANGELOG/version counter guards synced in all four places.
 
 ## What changed in f0.9
 

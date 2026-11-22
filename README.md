@@ -8,13 +8,21 @@
 
 aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes、**DeepSeek Harness**、**OpenChamber** 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
 
-> **当前公开版本 f0.9：正式适配 OpenChamber。** 包版本 `0.9.0`，2026-11-19。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
+> **当前公开版本 f0.9+：召回体验收敛 + 计数守卫同步。** 包版本 `0.9.1`，2026-11-22。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
 >
-> f0.9 = 代码 **f0.9.0**（f0.8++ 之上：**新增 OpenChamber 原生接入**——OpenCode plugin 召回注入、sessionEvents service 写入、空闲萃取，Windows 真机验收）。OpenChamber 用户接入指南见 [integrations/openchamber/README.md](integrations/openchamber/README.md)。
+> f0.9+ = 代码 **f0.9.1**（f0.9 之上：**verbatim 召回门控与 rerank 拒判收敛**——未过 rerank 验证的原文行仅在显式问原文措辞时可用；新增 recall_policy 列与召回排除溯源；测试语料 4853 → 4855）。OpenChamber 用户接入指南见 [integrations/openchamber/README.md](integrations/openchamber/README.md)。上一个公开版本 [f0.9](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9)（包 `0.9.0`，2026-11-19）。
 >
 > f0.8++ = 代码 **f0.8.3**（f0.8+ 之上：DeepSeek Harness 原生接入——Windows/Linux/macOS 三平台原生插件、stdio MCP、持久 outbox 写入与空闲萃取，Windows 真机全链路验收 + 故障注入 PASS；含 DSH 工作区白名单 8.3 短文件名修复与 mutation_journal Windows 首启动兼容修复）。DSH 用户接入指南见 [integrations/dsh/README.md](integrations/dsh/README.md)。上一个公开版本 [f0.8++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B)（包 `0.8.3`，2026-11-18）。
 >
 > 归并默认关闭，完整 20 题真实 A/B 尚未完成。
+
+## 本版变化（f0.9+）
+
+f0.9+ 是 f0.9 之上的召回质量收敛版：
+
+- **verbatim 召回门控**：未经 rerank 评分验证的原文召回行，仅在用户显式询问原文措辞时参与召回；其余查询下从结果中剔除并计入 gate dropped 统计。
+- **recall_policy 溯源列**：verbatim vault 新增 `recall_policy` 列，记录每条原文的召回排除原因（含测试来源 provenance），排查误伤可回查。
+- **测试语料 4853 → 4855**：新增召回体验与 rerank 拒判两个用例；README/CHANGELOG/version 计数守卫四方同步。
 
 ## 本版变化（f0.9）
 

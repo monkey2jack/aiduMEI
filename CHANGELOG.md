@@ -1,5 +1,14 @@
 # aiduMEI 版本演进史
 
+## v0.9.1 (f0.9+ · 2026-11-22 · 召回体验收敛 · 公开翻牌)
+
+> **用例总数 4855**（行为 4223 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。
+
+- **verbatim 召回门控**：未经 rerank 评分验证的原文召回行，仅在用户显式询问原文措辞时可用；其余查询剔除并计入 gate dropped。f0.3 体验裁决的落地（CC 嘟嘟体验优先）。
+- **recall_policy 溯源列**：verbatim vault 新增 `recall_policy` 列（含 recall_excluded 原因与 test provenance），召回排除可审计、误伤可回查。
+- **测试语料 4853 → 4855**：新增 `tests/test_f0_3_recall_experience.py` 与 `tests/test_f0_3_rerank_rejection.py` 共 2 用例；README（中英）/CHANGELOG/version.py 计数守卫同步（无宿主套件口径 4843）。
+- 版本三方对齐：SERVICE_VERSION 0.9.1（pyproject.toml / manifest.json / integrations/openchamber/package.json 同步），FULL_VERSION f0.9.1，公开 Tag/Release 翻牌为 **f0.9+**。
+
 ## v0.9.0 (f0.9 · 2026-11-19 · 正式适配 OpenChamber · 公开翻牌)
 
 > **用例总数 4818 → 4855**（行为 4221 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。

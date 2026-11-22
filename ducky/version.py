@@ -835,8 +835,8 @@ from __future__ import annotations
 #   SERVICE_VERSION：数字版本，供 pyproject / manifest / 包管理（技术真相源）
 #   FULL_VERSION   ：对外品牌版本，供展示 / Tag / Release（对外真相源）
 # 两者一一对应，由 LINEAGE 第三列钉死，不许各走各的。
-SERVICE_VERSION = "0.9.0"
-FULL_VERSION = "f0.9.0"
+SERVICE_VERSION = "0.9.1"
+FULL_VERSION = "f0.9.1"
 # f0.6 是「七路外审整改一次到位 + 两项半落地」版。2026-10-22 经维护者
 # 授权推大仓、打公开 Tag/Release，版本身份由「内部候选」翻转为「公开
 # 正式版」，PUBLIC_RELEASE_VERSION 同步升至 f0.6（与 FULL_VERSION 一致）。
@@ -894,6 +894,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
+    ("0.9.1", "", "f0.9+", "f0.9.1（公开 f0.9+，2026-11-22 维护者授权翻牌）：召回体验收敛——verbatim 召回门控（未经 rerank 验证的原文行仅显式问原文措辞时可用）、recall_policy 溯源列（召回排除原因与 test provenance 可审计）、测试语料 4853 → 4855 与四方计数守卫同步 · 2026-11-22"),
     ("0.9.0", "", "f0.9", "f0.9.0（公开 f0.9，2026-11-19 维护者授权翻牌）：正式适配 OpenChamber（第五个一等宿主：OpenCode plugin 召回注入 + sessionEvents service 写入 + 空闲萃取），Windows 真机验收（OpenChamber 2.7.2 / OpenCode 2.3.0）；轻量纪律 52KB 零运行时依赖 · 2026-11-19"),
     ("0.8.3", "", "f0.8++", "f0.8.3（公开 f0.8++，2026-11-18 维护者授权翻牌）：正式适配 DeepSeek Harness 0.2.2-rc.3（第四个一等宿主：原生插件+stdio MCP+持久 outbox 写入+空闲萃取），Windows 真机全链路验收+故障注入 PASS；8.3 短文件名白名单修复；mutation_journal Windows 目录 fsync 兼容 · 2026-11-18"),
     ("0.8.2", "", "f0.8.2", "f0.8++ 候选：独立 DSH 原生插件、持久写入队列与 stdio MCP；CC 接入语义保持不变，归并默认关闭 · 2026-11-17"),
