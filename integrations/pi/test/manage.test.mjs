@@ -27,11 +27,11 @@ test("install, check and uninstall stay inside temporary Pi and state homes", as
   const piHome = path.join(root, "pi-home");
   const stateDir = path.join(root, "state");
   const workdir = path.join(root, "workspace");
-  const piBin = path.join(root, "pi-bin");
+  const piBin = path.join(root, process.platform === "win32" ? "pi-bin.cmd" : "pi-bin");
   const tokenFile = path.join(root, "token");
   await mkdir(workdir, { recursive: true });
-  await writeFile(piBin, "#!/bin/sh\necho 1.6.0\n");
-  await chmod(piBin, 0o700);
+  await writeFile(piBin, process.platform === "win32" ? "@echo off\r\necho 1.6.0\r\n" : "#!/bin/sh\necho 1.6.0\n");
+  if (process.platform !== "win32") await chmod(piBin, 0o700);
   await writeFile(tokenFile, "test-token", { mode: 0o600 });
   const server = createServer((_req, res) => {
     res.setHeader("Content-Type", "application/json");

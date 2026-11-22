@@ -45,7 +45,8 @@ async function atomic(file, text, mode = 0o600) {
 function validScope(value) { return /^[A-Za-z0-9._:-]{1,128}$/.test(value); }
 
 function checkPiBinary(piBin) {
-  const result = spawnSync(piBin, ["--version"], { encoding: "utf8", timeout: 8000 });
+  const result = spawnSync(piBin, ["--version"], { encoding: "utf8", timeout: 8000,
+    shell: process.platform === "win32" });
   const version = `${result.stdout || ""}${result.stderr || ""}`.trim().split(/\s+/).at(-1) || "";
   const match = version.match(/(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$/);
   if (result.status !== 0 || !match) return { ok: false, version: null };
