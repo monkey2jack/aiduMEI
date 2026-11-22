@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { gunzipSync } from "node:zlib";
 
 const run = promisify(execFile);
 const manage = fileURLToPath(new URL("../manage.mjs", import.meta.url));
@@ -57,6 +58,10 @@ test("install, check and uninstall stay inside temporary Pi and state homes", as
     const removed = await run(process.execPath, [manage, "uninstall", ...common, "--yes"], { env });
     const uninstallReport = JSON.parse(removed.stdout);
     assert.equal(uninstallReport.ok, true);
+    assert.equal(typeof uninstallReport.backup, "string");
+    const archive = gunzipSync(await readFile(uninstallReport.backup));
+    assert.match(archive.toString("latin1"), /config\.json/);
+    assert.match(archive.toString("latin1"), /extension\/index\.ts/);
     assert.equal(await exists(path.join(piHome, "extensions", "aidumei")), false);
     assert.equal(await exists(path.join(stateDir, "config.json")), false);
     assert.equal(await exists(path.join(stateDir, "outbox")), false);

@@ -5,6 +5,7 @@ import { access, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 
 const packageDir = path.dirname(fileURLToPath(import.meta.url));
 const help = `node integrations/pi/manage.mjs install|check|uninstall [options]
@@ -55,31 +56,44 @@ function checkPiBinary(piBin) {
   return { ok: major > 1 || major === 1 && minor >= 6, version };
 }
 
+function tarEntry(name, data) {
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 100, "utf8");
+  header.write("0000600\0", 100);
+  header.write("0000000\0", 108);
+  header.write("0000000\0", 116);
+  header.write(`${data.length.toString(8).padStart(11, "0")}\0`, 124);
+  header.write(`${Math.floor(Date.now() / 1000).toString(8).padStart(11, "0")}\0`, 136);
+  header.write("        ", 148);
+  header.write("0", 156);
+  header.write("ustar\0", 257);
+  header.write("00", 263);
+  const checksum = [...header].reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
+  const padding = Buffer.alloc((512 - data.length % 512) % 512);
+  return Buffer.concat([header, data, padding]);
+}
+
+async function writeBackupArchive(archive, entries) {
+  const end = Buffer.alloc(1024);
+  const content = Buffer.concat([...entries.map(entry => tarEntry(entry.name, entry.data)), end]);
+  await atomic(archive, gzipSync(content));
+}
+
 async function backup(piHome, stateDir) {
   const backupDir = path.join(stateDir, "backups");
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
   const archive = path.join(backupDir, `before-change-${Date.now()}-${randomUUID()}.tar.gz`);
-  const staging = path.join(stateDir, `.backup-${randomUUID()}`);
-  await mkdir(staging, { recursive: true, mode: 0o700 });
-  let count = 0;
-  for (const [source, name] of [[path.join(piHome, "extensions", "aidumei"), "extension"], [path.join(stateDir, "config.json"), "config.json"]]) {
-    if (await exists(source)) {
-      const target = path.join(staging, name);
-      if ((await stat(source)).isDirectory()) {
-        await mkdir(target, { recursive: true, mode: 0o700 });
-        for (const file of ["index.ts", "package.json", "manage.mjs"]) {
-          if (await exists(path.join(source, file))) await writeFile(path.join(target, file), await readFile(path.join(source, file)), { mode: 0o600 });
-        }
-      } else await writeFile(target, await readFile(source), { mode: 0o600 });
-      count += 1;
-    }
+  const entries = [];
+  const extension = path.join(piHome, "extensions", "aidumei");
+  for (const file of ["index.ts", "package.json", "manage.mjs"]) {
+    const source = path.join(extension, file);
+    if (await exists(source)) entries.push({ name: `extension/${file}`, data: await readFile(source) });
   }
-  if (count) {
-    const result = spawnSync("tar", ["-czf", archive, "-C", staging, "."], { timeout: 30000 });
-    if (result.status !== 0) throw new Error("backup_failed");
-  }
-  await rm(staging, { recursive: true, force: true });
-  return count ? archive : null;
+  const config = path.join(stateDir, "config.json");
+  if (await exists(config)) entries.push({ name: "config.json", data: await readFile(config) });
+  if (entries.length) await writeBackupArchive(archive, entries);
+  return entries.length ? archive : null;
 }
 
 async function readConfig(stateDir) {
