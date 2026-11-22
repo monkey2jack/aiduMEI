@@ -2,16 +2,17 @@
 
 ## v0.9.1 (f0.9+ · 2026-11-22 · 召回体验收敛 · 公开翻牌)
 
-> **用例总数 4855**（行为 4223 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。
+> **用例总数 4857**（行为 4225 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。
 
 - **verbatim 召回门控**：未经 rerank 评分验证的原文召回行，仅在用户显式询问原文措辞时可用；其余查询剔除并计入 gate dropped。f0.3 体验裁决的落地（CC 嘟嘟体验优先）。
 - **recall_policy 溯源列**：verbatim vault 新增 `recall_policy` 列（含 recall_excluded 原因与 test provenance），召回排除可审计、误伤可回查。
-- **测试语料 4853 → 4855**：新增 `tests/test_f0_3_recall_experience.py` 与 `tests/test_f0_3_rerank_rejection.py` 共 2 用例；README（中英）/CHANGELOG/version.py 计数守卫同步（无宿主套件口径 4843）。
+- **fresh rerank verdict 修复**：重排生效后使用融合相关性分判定 found/not_found，避免旧向量分把低相关噪声误判为 found。
+- **测试语料 4853 → 4857**：新增召回体验、rerank 拒判与融合分 verdict 共 4 用例；README（中英）/CHANGELOG/version.py 计数守卫同步（无宿主套件口径 4845）。
 - 版本三方对齐：SERVICE_VERSION 0.9.1（pyproject.toml / manifest.json / integrations/openchamber/package.json 同步），FULL_VERSION f0.9.1，公开 Tag/Release 翻牌为 **f0.9+**。
 
 ## v0.9.0 (f0.9 · 2026-11-19 · 正式适配 OpenChamber · 公开翻牌)
 
-> **用例总数 4818 → 4855**（行为 4221 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。
+> **用例总数 4818 → 4857**（行为 4225 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。
 
 - **本版头号变更：正式适配 OpenChamber（openchamber/openchamber，v2.6.1+），aiduMEI 的第五个一等宿主**。新增独立 `integrations/openchamber/` 三件套：opencodePlugin（`session.hook("context")` 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows / Linux / macOS 三平台可用。
 - **Windows 真机验收**：OpenChamber 2.7.2 + OpenCode 2.3.0（windows-host 实装）——写入暗号 → 跨会话召回 → 空闲萃取全链 PASS；plugin 加载、service 拉起、召回 API 调用全部实测。
@@ -62,7 +63,7 @@
 - 旧 CC 三条核心钩子接通但缺桥时给警告；新安装仍接四线；无 LLM 客户端的离线档日志降为 debug。
 - 原生删除墓碑 reason 缺省 memory_delete；排序基准使用真实服务端精华签章，并保证长原话样本超过既有阈值（原来三条不足 160 字）；保留关闭降权必红的反向对照。
 - 异常捕获收窄、热点拆分，保持既有复杂度/异常/隔离棘轮；新增 logger 保持采集前缀；治理测试数据库不再在收集期污染前序用例，正反顺序均通过。
-- 20 题真实跨会话 A/B 尚未完成；归并维持关闭，须完成实验验收后方可启用。
+- 20 题隔离跨会话 A/B 已完成；归并维持关闭，任何启用仍须独立实验验收。
 
 ## v0.8.0 (f0.8.0 · 2026-11-09 · 安全加固 + 写入策略按影子周结果开拦截 + Claude Code 记忆桥 · 大仓 Tag/Release 翻牌 f0.8)
 

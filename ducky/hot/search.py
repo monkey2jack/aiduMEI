@@ -222,6 +222,17 @@ def _final_recall_strength(results: list, main: dict, allow_rerank: bool) -> dic
     if strength["top_score"] is None:
         strength["top_score"] = main["top_score"]
         strength["weak"] = main["weak"]
+    if allow_rerank and "decision_score" not in strength:
+        fused = [float(row["_hybrid_score"]) for row in results
+                 if isinstance(row, dict)
+                 and isinstance(row.get("_hybrid_score"), (int, float))]
+        if fused:
+            # Once fresh rerank evidence has been applied, the old vector score
+            # no longer represents final relevance. In particular, unscored
+            # tail rows inherit the weakest rerank signal; letting their raw
+            # vector score decide the verdict turns rejected noise into found.
+            strength.update(decision_score=max(fused),
+                            decision_basis="fresh_rerank_fused")
     return strength
 
 

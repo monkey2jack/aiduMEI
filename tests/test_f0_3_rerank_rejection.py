@@ -103,6 +103,17 @@ def test_original_only_verdict_requires_fresh_verification():
     assert compute_recall_verdict([], 0.8, 0.46, verified_original=True)[0] == "not_found"
     assert compute_recall_verdict([], None, 0.46, vector_leg_failed=True, verified_original=True)[0] == "degraded"
 
+@pytest.mark.parametrize("fused,expected", [(0.25, "not_found"), (0.56, "found")])
+def test_fresh_rerank_verdict_uses_fused_score_not_stale_vector(fused, expected):
+    from ducky.hot.search import _final_recall_strength, compute_recall_verdict
+    rows = [{"score": 0.48, "_hybrid_score": fused}]
+    strength = _final_recall_strength(
+        rows, {"dropped": 0, "top_score": None, "weak": False}, True)
+    assert strength["decision_score"] == fused
+    assert strength["decision_basis"] == "fresh_rerank_fused"
+    assert compute_recall_verdict(
+        rows, strength["decision_score"], 0.46)[0] == expected
+
 
 def test_current_sdk_does_not_silently_ignore_candidate_budget():
     class CurrentSDK:
