@@ -83,6 +83,38 @@ def test_original_wording_query_keeps_original_quota():
     assert len(merged) == 3 and merged[-1]["id"] == "verbatim:1"
 
 
+def test_story_queries_keep_ranked_memories_ahead_of_raw_chatter():
+    main = [{"id": "story", "memory": "1995 和 2001 年的经历"}]
+    original = [{"id": "verbatim:1", "memory": "好，接上，点点滴滴"}]
+    merged = fuse_verbatim(main, original, limit=3,
+                           query="嘟嘟和大叔是怎么认识的 经历")
+    assert merged[0]["id"] == "story"
+    assert all(row["id"] != "verbatim:1" for row in merged[1:])
+
+
+def test_unscored_originals_are_excluded_from_normal_queries(monkeypatch):
+    import ducky.decision as decision
+    import ducky.mem0_runtime as runtime
+    from ducky.verbatim_relevance import rank_originals
+
+    monkeypatch.setattr(runtime, "last_rerank_telemetry", lambda: {"status": "ok"})
+    monkeypatch.setattr(runtime, "restore_rerank_telemetry", lambda _state: None)
+    monkeypatch.setattr(runtime, "rerank", lambda *_a, **_k: [
+        {"index": 0, "relevance_score": 0.9},
+    ])
+    monkeypatch.setattr(decision, "filter_evidence", lambda _q, rows, *_a: rows)
+    hits = [
+        {"id": "matched", "memory": "A relevant original"},
+        {"id": "unscored", "memory": "An unscored short utterance"},
+    ]
+
+    normal = rank_originals("story query", hits, "user", "default")
+    exact = rank_originals("story query 原话", hits, "user", "default")
+
+    assert [row["id"] for row in normal] == ["matched"]
+    assert {row["id"] for row in exact} == {"matched", "unscored"}
+
+
 @pytest.fixture
 def aliases(monkeypatch):
     conn = sqlite3.connect(":memory:")

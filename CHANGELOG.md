@@ -2,7 +2,7 @@
 
 ## v0.9.0 (f0.9 · 2026-11-19 · 正式适配 OpenChamber · 公开翻牌)
 
-> **用例总数 4818 → 4818**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，15 项用例走 node --test）。全量回归 4787 passed / 31 skipped / 0 failed（2026-11-19，lab-node；summer r13 4804 passed 以 f0.8++ 基线为准）。
+> **用例总数 4818 → 4855**（行为 4221 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。
 
 - **本版头号变更：正式适配 OpenChamber（openchamber/openchamber，v2.6.1+），aiduMEI 的第五个一等宿主**。新增独立 `integrations/openchamber/` 三件套：opencodePlugin（`session.hook("context")` 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows / Linux / macOS 三平台可用。
 - **Windows 真机验收**：OpenChamber 2.7.2 + OpenCode 2.3.0（windows-host 实装）——写入暗号 → 跨会话召回 → 空闲萃取全链 PASS；plugin 加载、service 拉起、召回 API 调用全部实测。

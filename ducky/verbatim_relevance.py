@@ -31,6 +31,7 @@ def merge_originals(main: list, hits: list, query: str, limit: int,
 
 def rank_originals(query: str, hits: list, user_id: str = "default", bank_id: str = "default", *, decision_query: str | None = None) -> list:
     from ducky.mem0_runtime import rerank, last_rerank_telemetry, restore_rerank_telemetry
+    from ducky.verbatim_vault import _wants_original_wording
     main = last_rerank_telemetry()
     rows = [dict(hit) for hit in hits]
     for row in rows:
@@ -45,8 +46,12 @@ def rank_originals(query: str, hits: list, user_id: str = "default", bank_id: st
             rows[index]["_rerank_score"] = score
             rows[index]["_rerank_original_verified"] = True
         rows, gate = filter_rerank_relevance(rows, scores)
+        if not _wants_original_wording(decision_query or query):
+            before_unscored_filter = len(rows)
+            rows = [row for row in rows if row.get("_rerank_original_verified") is True]
+            gate["dropped"] += before_unscored_filter - len(rows)
         telemetry.update(applied=bool(scores), relevance=gate)
-        # Unknown scores retain fallback ordering and are never interpreted as 0.
+        # Unscored originals remain available only for explicit wording requests.
         rows.sort(key=lambda row: row.get("_rerank_score", -1), reverse=True)
         from ducky.decision import filter_evidence
         return filter_evidence(decision_query or query, rows, user_id, bank_id)

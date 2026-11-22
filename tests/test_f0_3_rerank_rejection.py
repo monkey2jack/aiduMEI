@@ -86,9 +86,15 @@ def test_originals_fallback_does_not_reuse_old_evidence(monkeypatch, status):
         runtime.restore_rerank_telemetry({"status": status})
         return []
     monkeypatch.setattr(runtime, "rerank", rerank)
-    rows = rank_originals("different query", [{"memory": "quote", "_rerank_score": 0.99,
-                                               "_rerank_original_verified": True}])
-    assert rows == [{"memory": "quote"}]
+    stale = [{"memory": "quote", "_rerank_score": 0.99,
+              "_rerank_original_verified": True}]
+    # Stale scores are stripped, never re-verified: a normal query must not
+    # present unverified originals when rerank is unavailable (honest empty),
+    # while an explicit wording request still falls back to the stale row.
+    normal = rank_originals("different query", [dict(row) for row in stale])
+    exact = rank_originals("different query 原话", [dict(row) for row in stale])
+    assert normal == []
+    assert exact == [{"memory": "quote"}]
 
 
 def test_original_only_verdict_requires_fresh_verification():

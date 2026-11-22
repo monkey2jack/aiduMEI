@@ -40,6 +40,7 @@ ducky.verbatim_vault — 原文保真层 Verbatim Vault (v19.4.0 · 明镜工程
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -81,7 +82,8 @@ CREATE TABLE IF NOT EXISTS verbatim_turns (
     -- 「说过的话一字不丢」由 content 保证；「说过几次」由 occurrences 显式记录，
     -- 比堆重复行的信息量更大，也不会让表随重试无界膨胀。
     occurrences  INTEGER DEFAULT 1,
-    last_seen_at TEXT
+    last_seen_at TEXT,
+    recall_policy TEXT NOT NULL DEFAULT '{}'
 )
 """
 
@@ -165,6 +167,7 @@ def ensure_verbatim_schema() -> None:
                 ("occurrences", "INTEGER DEFAULT 1"),
                 ("last_seen_at", "TEXT"),
                 ("bank_id", "TEXT NOT NULL DEFAULT 'default'"),
+                ("recall_policy", "TEXT NOT NULL DEFAULT '{}'"),
             ):
                 if col not in existing_cols:
                     fconn.execute(f"ALTER TABLE verbatim_turns ADD COLUMN {col} {ddl}")
@@ -385,6 +388,11 @@ def store_verbatim(
         for role, content, ts in _iter_turns(messages_json):
             recorded_at = _normalize_ts(ts, fallback=_event_fallback)
             chash = _content_hash(content)
+            from ducky.write_policy import recall_exclusion_reason
+            reason = recall_exclusion_reason(content, md)
+            policy = {"recall_excluded": reason} if reason else {}
+            if reason == "test":
+                policy["provenance"] = "test"
             try:
                 existing = fconn.execute(
                     """SELECT id, occurrences FROM verbatim_turns
@@ -410,8 +418,8 @@ def store_verbatim(
                 cur = fconn.execute(
                     """INSERT INTO verbatim_turns
                        (user_id, bank_id, session_id, role, content, content_hash,
-                        recorded_at, occurrences, last_seen_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                        recorded_at, occurrences, last_seen_at, recall_policy)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                     (
                         scope.user_id,
                         scope.bank_id,
@@ -421,6 +429,7 @@ def store_verbatim(
                         chash,
                         recorded_at,
                         recorded_at,
+                        json.dumps(policy),
                     ),
                 )
                 if cur.rowcount and cur.rowcount > 0:
@@ -574,7 +583,7 @@ def verbatim_search(
             fconn = get_facts_conn()
             placeholders = ",".join("?" for _ in turn_ids)
             meta_rows = fconn.execute(
-                f"SELECT id, role, session_id, recorded_at, created_at, user_id, bank_id "
+                f"SELECT id, role, session_id, recorded_at, created_at, user_id, bank_id, recall_policy "
                 f"FROM verbatim_turns WHERE id IN ({placeholders}) AND user_id=? AND bank_id=?",
                 turn_ids + [scope.user_id, scope.bank_id],
             ).fetchall()
@@ -602,6 +611,7 @@ def verbatim_search(
                 "bank_id": r["bank_id"],
                 "role": meta.get("role", "user"),
                 "session_id": meta.get("session_id", ""),
+                "metadata": json.loads(meta.get("recall_policy") or "{}"),
                 "recorded_at": meta.get("recorded_at"),
                 # f0.1：入库时间随行。recorded_at 修好后承载的是**调用方给的
                 # 事件时间**（格式任意，如 LoCoMo 的 "1:56 pm on 8 May, 2023"），
@@ -625,12 +635,15 @@ def verbatim_search(
 # 融合 — 原文证据并入召回结果
 # ─────────────────────────────────────────────────────────────
 
-def _prefer_ranked_facts(query: str) -> bool:
+def _wants_original_wording(query: str) -> bool:
     import re
-    from ducky.scoring import is_fact_seeking_query
-    wants_original = re.search(
-        r"原话|原文|日记|对话|回忆|回顾|逐字|verbatim|diary|transcript", query, re.I)
-    return is_fact_seeking_query(query) and not wants_original
+    return bool(re.search(
+        r"原话|原文|逐字|一字不差|verbatim|exact wording|quote(?:d)?",
+        query or "", re.I))
+
+
+def _prefer_ranked_facts(query: str) -> bool:
+    return bool(query and not _wants_original_wording(query))
 
 
 def _limit_fused_results(results, fresh, limit, query):

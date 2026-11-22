@@ -225,8 +225,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **4818**（`pytest --collect-only` 实测，2026-11-17，f0.8.2 候选树）＝ **行为用例 4186 + 脚本/钩子行为 486 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
-| 独立开发机 | 4806 通过 · **12 跳过** —— f0.7 按收集数与缺席轴推导的验收目标（Python 3.12，仅缺 Hermes 宿主源码） |
+| 用例总数 | **4855**（`pytest --collect-only` 实测，f0.9+ 私有候选树）＝ **行为用例 4221 + 脚本/钩子行为 486 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
+| 独立开发机 | 4843 通过 · **12 跳过** —— 本候选总收集 4855 条；齐备除 Hermes 宿主源码外的测试轴时，12 条宿主用例跳过 |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，旧树）。f0.7 起全量套件同时测 mem0 旧内核，需加装 `requirements-mem0.txt`；只装 `requirements.txt` 的默认 native 路径改由从零安装验收与 CI 裸装冒烟覆盖（2026-10-29 实验机：安装、健康、写入、召回、删除、恢复通过） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（旧树 `de09794`，宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（旧树，工具、extras、宿主、模型缓存与公开 LoCoMo 数据集齐备） |
@@ -239,15 +239,15 @@ pytest tests/                                          # 全量回归
 python -m compileall ducky api_server.py mcp_server.py # 编译检查
 ```
 
-> **为什么要把 4806 和 1967 都写出来**：4806 是本树仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 4843 和 1967 都写出来**：4843 是本候选仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条跳过自己就能验**：十四条跳过轴全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：4806 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4818 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4806 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：4843 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4855 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4843 passed, 12 skipped
 > ```
 >
 > 「有宿主」那行要十四条轴同时齐备才拿得到。生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），旧树上实测跑出来是 1967 passed、26 skipped（2026-09-11，`de09794`）。

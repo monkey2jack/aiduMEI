@@ -9,7 +9,7 @@ v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 �
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
 v0.9.0 (f0.9 · 2026-11-19 · OpenChamber 正式适配 · 公开翻牌)
-    用例总数 4818 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测；OpenChamber 适配器为纯 JS，15 项用例走 node --test：plugin 6 + service 5 + 体积守卫 4）。
+    用例总数 4818 → 4855（本版 = 行为 4221 + 脚本/钩子 486 + 守卫 146，pytest 收集实测；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。
     1. 正式适配 OpenChamber（第五个一等宿主）：新增 integrations/openchamber/ 三件套——opencodePlugin（session.hook("context") 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows/Linux/macOS 三平台可用。
     2. 写入线：sessionEvents（turn-finished/turn-failed, content:true）→ 本地 spool 持久化 → 补投 aiduMEI /add（幂等键）。service 环境隔离（OpenChamber 只传 PATH/HOME/temp/locale），配置经 ~/.aidumei-openchamber/config.json 共享。
     3. prompt-pairing：OpenChamber 事件只带最终回复不带用户提问——plugin 在召回时把 prompt 记录到共享文件，service 配对后组合完整对话写入。
