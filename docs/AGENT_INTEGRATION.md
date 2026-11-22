@@ -2,6 +2,12 @@
 
 aiduMEI is the durable memory layer. The host's native memory remains the short-term conversation layer. Do not copy the same memory into both systems: the host handles current turns and working context; aiduMEI stores facts, raw records, core memory, traces, and long-term evolution.
 
+## Native Pi extension (f0.9+)
+
+Pi 1.6.0+ uses `integrations/pi/index.ts`, not `connect_host.py` or a Claude-style shell hook. Its event mapping is `before_agent_start` for nonce-fenced recall, `agent_settled` for durable turn ingestion, and `session_shutdown` for persisted distillation work. The outbox survives restarts, permanent rejections remain visible as `.held`, and a successful `/session/distill` is always followed by a separate `/add` for the summary.
+
+Install on the target host with `node integrations/pi/manage.mjs install --api <url> --user <user> --bank <bank> --token-file <token-file> --workdir <absolute-workspace>`. The manager writes only `~/.pi/agent/extensions/aidumei/` and `~/.aidumei-pi/config.json`; it never reads a project `.env`, never stores token contents in config, and defaults to no allowed workspaces. See [../integrations/pi/README.md](../integrations/pi/README.md) for isolated tests, checks and uninstall.
+
 ## One command: `scripts/connect_host.py` (f0.7)
 
 Do not hand-edit host config. Run `python scripts/connect_host.py` on the machine where the host runs. It detects Claude Code (`~/.claude/settings.json`), Codex CLI (`~/.codex/hooks.json`) and Hermes (plugin symlink + `memory.provider: aidumem`), backs up the host config, and idempotently wires all three lines (read `UserPromptSubmit`, write `Stop`, distill `SessionEnd`) with commands pointing at this repo's scripts — no copies, so an upgrade can never leave the host running stale hooks. Other hooks in the file are left untouched; `--uninstall` removes only aiduMEI's entries.

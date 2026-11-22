@@ -1,0 +1,22 @@
+{
+  "name": "@monkey2jack/aidumei-pi",
+  "version": "0.9.1",
+  "private": true,
+  "type": "module",
+  "description": "Native aiduMEI memory bridge for Pi coding agent",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "aidumei": {
+    "host": "pi",
+    "minimumPiVersion": "1.6.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

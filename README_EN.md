@@ -6,11 +6,11 @@
 
 # aiduMEI · YouiSi — a long-term memory engine for AI agents
 
-aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI, Hermes, **DeepSeek Harness** and **OpenChamber**: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
+aiduMEI is a **single-machine self-hosted** long-term memory service (Python / FastAPI, MIT licence). It runs on your own machine and hooks into AI hosts such as Claude Code, Codex CLI, Hermes, **DeepSeek Harness**, **OpenChamber** and **pi** through hooks or native extensions: before each turn it injects relevant memories into the model, after each turn it stores that turn, and when a session ends it distils one summary of "what this session was about". The host keeps short-term conversation state; aiduMEI keeps long-term memory. All data lives in a local data directory and can be backed up, deleted and restored.
 
-> The current public release is **f0.9+: recall quality convergence + counter-guard sync** (package `0.9.1`, 2026-11-22). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
+> The current public release is **f0.9+: official Pi support + recall quality convergence** (package `0.9.1`, 2026-11-22). [Download the Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9%2B). Version-by-version history is in the [CHANGELOG](CHANGELOG.md).
 >
-> f0.9+ = code **f0.9.1** (on top of f0.9: **verbatim recall gating and rerank rejection convergence** — original-wording rows that failed rerank scoring are only recalled for explicit wording queries; fresh-rerank verdicts use fused relevance so rejected noise is not mislabelled as found; new recall_policy provenance column; test corpus 4853 → 4857). OpenChamber users: see [integrations/openchamber/README.md](integrations/openchamber/README.md). Previous public release: [f0.9](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9) (package `0.9.0`, 2026-11-19).
+> f0.9+ = code **f0.9.1** (on top of f0.9: **native Pi integration + verbatim recall gating and rerank rejection convergence** — Pi covers recall injection, durable ingestion, session distillation and summary persistence; fresh-rerank verdicts use fused relevance; new recall_policy provenance column; test corpus 4820 → 4822). Pi users: see [integrations/pi/README.md](integrations/pi/README.md). Previous public release: [f0.9](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9) (package `0.9.0`, 2026-11-19).
 >
 > f0.8++ = code **f0.8.3** (on top of f0.8+: native DeepSeek Harness integration — native plugin, stdio MCP, persistent outbox writes and idle distillation on Windows/Linux/macOS, verified end-to-end on a real Windows machine incl. fault drills; plus an 8.3 short-name allowlist fix and a Windows first-boot compatibility fix in the mutation journal). DSH users: see [integrations/dsh/README.md](integrations/dsh/README.md). Previous public release: [f0.8++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B) (package `0.8.3`, 2026-11-18).
 >
@@ -22,12 +22,15 @@ aiduMEI is a **single-machine self-hosted** long-term memory service (Python / F
 
 ## What changed in f0.9+
 
-f0.9+ is a recall-quality convergence release on top of f0.9:
+f0.9+ is a host-expansion and recall-quality convergence release on top of f0.9:
+
+- **Official Pi support (sixth first-class host)**: a native `index.ts` covers `before_agent_start` recall, durable `agent_settled` ingestion, session distillation and summary persistence; two real Pi 1.6.0 sessions and 15 Node behavior tests pass.
+- **Upgrade first, migrate later**: `manage.mjs install/check/uninstall` is ready, but no project `.env` is read and the current global Pi configuration is not modified automatically.
 
 - **Verbatim recall gating**: original-wording recall rows that failed rerank scoring verification now participate only when the user explicitly asks about exact wording; otherwise they are dropped from results and counted in the gate stats.
 - **recall_policy provenance column**: the verbatim vault gains a `recall_policy` column recording why each original row was excluded from recall (including test provenance), so false positives can be audited.
 - **Fresh-rerank verdict fix**: after reranking, found/not_found uses fused relevance instead of allowing a stale vector score to label weak noise as found.
-- **Test corpus 4853 → 4857**: four cases covering recall experience, rerank rejection and fused-score verdicts; README/CHANGELOG/version counter guards synced in all four places.
+- **Test corpus 4820 → 4822**: four cases covering recall experience, rerank rejection and fused-score verdicts; README/CHANGELOG/version counter guards synced in all four places.
 
 ## What changed in f0.9
 
@@ -188,6 +191,7 @@ New variables always use the `AIDUMEI_` prefix; `AIDUMEM_` is the legacy prefix 
 | Hermes Agent | `connect_host.py` symlinks the plugin `integrations/hermes-plugin/aidumem` and sets `memory.provider aidumem` |
 | DeepSeek Harness | `node integrations/dsh/manage.mjs install ...`: native Cordis plugin (`agent/pre-step` recall) + outbox writes + idle distillation + stdio MCP (`integrations/dsh/`) |
 | OpenChamber (OpenCode) | `node integrations/openchamber/manage.mjs install ...`: OpenCode plugin (`context` hook recall injection) + sessionEvents service (ingestion + idle distillation); takes effect after approval under `Settings → Extensions` (`integrations/openchamber/`) |
+| Pi | `node integrations/pi/manage.mjs install ...`: native `before_agent_start` recall, durable `agent_settled` ingestion, session distillation and summary persistence (`integrations/pi/`) |
 | Cursor and other hosts | Wire by hand per [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md) |
 | HTTP API | REST `:8767`: `/add` `/search` `/update` `/delete` `/session/distill` `/tombstones` `/graph/*` `/api/core-memory` and more; write endpoints take `caller_user_id` |
 | MCP | See next section |
@@ -238,8 +242,8 @@ Auth: the HTTP (SSE) transport requires `AIDUMEM_API_TOKEN` on every bind, loopb
 
 | Dimension | Current |
 |------|------|
-| Total cases | **4857** (measured via `pytest --collect-only` on the private f0.9+ candidate) = **4225 behavior + 486 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
-| Clean dev machine | 4845 passed · **12 skipped** — candidate collection is 4857; the 12 Hermes host tests skip when every other test axis is installed |
+| Total cases | **4822** (measured via `pytest --collect-only` on the public f0.9+ candidate) = **4190 behavior + 486 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
+| Clean dev machine | 4810 passed · **12 skipped** — candidate collection is 4822; the 12 Hermes host tests skip when every other test axis is installed |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only (**measured 2026-09-09 on the production box**, clean venv, older tree). From f0.7 the full suite also tests the legacy mem0 kernel and needs `requirements-mem0.txt`; the default native path with only `requirements.txt` is covered by a from-scratch install acceptance and the CI bare-install smoke (2026-10-29 lab box: install, health, write, recall, delete, restore passed) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (older tree `de09794`, host source present, no `.env`, no ruff/mcp/fastembed) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (older tree; tools, extras, host, model cache and the public LoCoMo dataset present) |
@@ -252,15 +256,15 @@ pytest tests/                                          # full regression
 python -m compileall ducky api_server.py mcp_server.py # compile check
 ```
 
-> **Why report both 4845 and 1821**: the first is this candidate's expected pass count with only the 12 Hermes cases skipped, not a measured result; the second is the 2026-09-09 clean-venv measurement of the basic install path on an older tree. A number only means something with its environment, date and tree attached.
+> **Why report both 4810 and 1821**: the first is this candidate's expected pass count with only the 12 Hermes cases skipped, not a measured result; the second is the 2026-09-09 clean-venv measurement of the basic install path on an older tree. A number only means something with its environment, date and tree attached.
 
 > **You can verify those 12 skips yourself**: all fourteen skip axes are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 4845 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # target once the host and all other optional axes are present — with host: 4857 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4845 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 4810 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # target once the host and all other optional axes are present — with host: 4822 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4810 passed, 12 skipped
 > ```
 >
 > The "with host" line needs all fourteen axes at once. On the production box in an isolated sandbox (host source present, no `.env`), the bare command on an older tree actually prints 1967 passed, 26 skipped (2026-09-11, `de09794`).

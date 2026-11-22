@@ -8,6 +8,16 @@ ducky.version — aiduMEI 版本信息唯一真相源
 v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 行，
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
+v0.9.1 (f0.9+ · 2026-11-22 · 正式适配 pi + 召回体验收敛)
+    用例总数 4820 → 4822（本版 = 行为 4190 + 脚本/钩子 486 + 守卫 146；另有 15 项 pi Node 行为测试）。
+    1. 正式适配 pi（第六个一等宿主）：integrations/pi/ 原生 index.ts 覆盖召回、持久写入、萃取与摘要再落库；真实 pi 1.6.0 双会话验收与 15 项 Node 行为测试通过。
+    2. 持久 outbox、幂等回执、重试、held 留证、重启续传与工作区白名单；不读取项目 .env，不自动部署到当前 pi。
+    3. verbatim 召回门控：未经 rerank 验证的原文行仅显式问原文措辞时可用，其余查询剔除并计入 gate dropped。
+    4. recall_policy 溯源列：记录原文召回排除原因，误伤可回查。
+    5. fresh rerank verdict 使用 _hybrid_score 融合分，避免旧向量分误判 found。
+    6. 测试语料 4820 → 4822：召回体验、rerank 拒判与融合分 verdict 共 4 个新增用例，README/CHANGELOG/version 计数同步。
+    7. SERVICE_VERSION 0.9.1 / FULL_VERSION f0.9.1；公开 Tag 与 Release 只有 f0.9+，无额外后缀。
+
 v0.9.0 (f0.9 · 2026-11-19 · OpenChamber 正式适配 · 公开翻牌)
     用例总数 4818 → 4857（本版 = 行为 4225 + 脚本/钩子 486 + 守卫 146，pytest 收集实测；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。
     1. 正式适配 OpenChamber（第五个一等宿主）：新增 integrations/openchamber/ 三件套——opencodePlugin（session.hook("context") 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows/Linux/macOS 三平台可用。
@@ -894,7 +904,7 @@ ARCHITECTURE = "Production-Grade AI Wisdom & Long-Term Memory Engine with 3-Laye
 
 # 历史版本谱系（最新在前）
 LINEAGE = (
-    ("0.9.1", "", "f0.9+", "f0.9.1（公开 f0.9+，2026-11-22 维护者授权翻牌）：召回体验收敛——verbatim 召回门控（未经 rerank 验证的原文行仅显式问原文措辞时可用）、fresh rerank verdict 使用融合分、recall_policy 溯源列、测试语料 4853 → 4857 与四方计数守卫同步 · 2026-11-22"),
+    ("0.9.1", "", "f0.9+", "f0.9.1（公开 f0.9+，2026-11-22 维护者授权翻牌）：正式适配 pi（第六个一等宿主：召回注入、持久写入、萃取与摘要再落库）+ 召回体验收敛——verbatim 召回门控、fresh rerank verdict 使用融合分、recall_policy 溯源列、测试语料 4820 → 4822 与四方计数守卫同步 · 2026-11-22"),
     ("0.9.0", "", "f0.9", "f0.9.0（公开 f0.9，2026-11-19 维护者授权翻牌）：正式适配 OpenChamber（第五个一等宿主：OpenCode plugin 召回注入 + sessionEvents service 写入 + 空闲萃取），Windows 真机验收（OpenChamber 2.7.2 / OpenCode 2.3.0）；轻量纪律 52KB 零运行时依赖 · 2026-11-19"),
     ("0.8.3", "", "f0.8++", "f0.8.3（公开 f0.8++，2026-11-18 维护者授权翻牌）：正式适配 DeepSeek Harness 0.2.2-rc.3（第四个一等宿主：原生插件+stdio MCP+持久 outbox 写入+空闲萃取），Windows 真机全链路验收+故障注入 PASS；8.3 短文件名白名单修复；mutation_journal Windows 目录 fsync 兼容 · 2026-11-18"),
     ("0.8.2", "", "f0.8.2", "f0.8++ 候选：独立 DSH 原生插件、持久写入队列与 stdio MCP；CC 接入语义保持不变，归并默认关闭 · 2026-11-17"),

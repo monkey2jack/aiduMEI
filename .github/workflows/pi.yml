@@ -1,0 +1,33 @@
+name: Pi adapter
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'f09plus/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-pi:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: Native adapter behavior, persistence and manager isolation
+        run: node --test integrations/pi/test/*.test.mjs
+      - name: Manifest and syntax checks
+        run: |
+          node --check integrations/pi/index.ts
+          node --check integrations/pi/manage.mjs

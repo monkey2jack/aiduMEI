@@ -1,0 +1,83 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, readFile, readdir, rm, stat, writeFile, chmod } from "node:fs/promises";
+import { createServer } from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
+const manage = fileURLToPath(new URL("../manage.mjs", import.meta.url));
+const packageFile = fileURLToPath(new URL("../package.json", import.meta.url));
+
+async function exists(file) { try { await stat(file); return true; } catch { return false; } }
+
+test("package declares a native Pi extension with no runtime dependencies", async () => {
+  const manifest = JSON.parse(await readFile(packageFile, "utf8"));
+  assert.deepEqual(manifest.pi.extensions, ["./index.ts"]);
+  assert.equal(manifest.dependencies, undefined);
+  assert.equal(manifest.engines.node, ">=22.19.0");
+});
+
+test("install, check and uninstall stay inside temporary Pi and state homes", async () => {
+  const root = path.join(os.tmpdir(), `aidumei-pi-manage-${process.pid}-${Date.now()}`);
+  await mkdir(root, { recursive: true });
+  const piHome = path.join(root, "pi-home");
+  const stateDir = path.join(root, "state");
+  const workdir = path.join(root, "workspace");
+  const piBin = path.join(root, "pi-bin");
+  const tokenFile = path.join(root, "token");
+  await mkdir(workdir, { recursive: true });
+  await writeFile(piBin, "#!/bin/sh\necho 1.6.0\n");
+  await chmod(piBin, 0o700);
+  await writeFile(tokenFile, "test-token", { mode: 0o600 });
+  const server = createServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end('{"status":"ok","health_status":"ok"}');
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const env = { ...process.env, AIDUMEI_TEST_URL: `http://127.0.0.1:${server.address().port}`,
+    AIDUMEI_TEST_TOKEN_FILE: tokenFile };
+  const common = ["--pi-home", piHome, "--pi-bin", piBin, "--state-dir", stateDir];
+  try {
+    const installed = await run(process.execPath, [manage, "install", ...common,
+      "--user", "dudu", "--bank", "default", "--workdir", workdir], { env });
+    const installReport = JSON.parse(installed.stdout);
+    assert.equal(installReport.ok, true);
+    assert.equal(await exists(path.join(piHome, "extensions", "aidumei", "index.ts")), true);
+    const config = JSON.parse(await readFile(path.join(stateDir, "config.json"), "utf8"));
+    assert.equal(config.apiToken, undefined);
+    assert.equal(config.token, undefined);
+    const checked = await run(process.execPath, [manage, "check", ...common], { env });
+    const checkReport = JSON.parse(checked.stdout);
+    assert.equal(checkReport.ok, true);
+    assert.equal(checkReport.piVersion, "1.6.0");
+    const removed = await run(process.execPath, [manage, "uninstall", ...common, "--yes"], { env });
+    const uninstallReport = JSON.parse(removed.stdout);
+    assert.equal(uninstallReport.ok, true);
+    assert.equal(await exists(path.join(piHome, "extensions", "aidumei")), false);
+    assert.equal(await exists(path.join(stateDir, "config.json")), false);
+    assert.equal(await exists(path.join(stateDir, "outbox")), false);
+  } finally {
+    server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production install refuses missing scope and token without writing files", async () => {
+  const root = path.join(os.tmpdir(), `aidumei-pi-refuse-${process.pid}-${Date.now()}`);
+  await mkdir(root, { recursive: true });
+  const piHome = path.join(root, "pi-home");
+  const stateDir = path.join(root, "state");
+  try {
+    await assert.rejects(run(process.execPath, [manage, "install", "--pi-home", piHome, "--state-dir", stateDir], {
+      env: { ...process.env, AIDUMEI_TEST_URL: "", AIDUMEI_TEST_TOKEN_FILE: "" },
+    }));
+    assert.equal(await exists(piHome), false);
+    assert.equal(await exists(stateDir), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

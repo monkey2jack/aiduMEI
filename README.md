@@ -6,11 +6,11 @@
 
 # aiduMEI · 爱嘟优忆思——给 AI 智能体用的长期记忆引擎
 
-aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子接到 Claude Code、Codex CLI、Hermes、**DeepSeek Harness**、**OpenChamber** 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
+aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，MIT 许可）。它在你自己的机器上运行，通过钩子或原生扩展接到 Claude Code、Codex CLI、Hermes、**DeepSeek Harness**、**OpenChamber**、**pi** 等 AI 宿主：每轮对话前把相关记忆注入给模型，每轮对话后把这一轮存下来，会话结束时提炼一条「这一程」的精华。宿主管短期对话，aiduMEI 管长期记忆；数据全部落在本机数据目录，可备份、可删除、可恢复。
 
-> **当前公开版本 f0.9+：召回体验收敛 + 计数守卫同步。** 包版本 `0.9.1`，2026-11-22。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
+> **当前公开版本 f0.9+：正式适配 pi + 召回体验收敛。** 包版本 `0.9.1`，2026-11-22。[下载 Release](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9%2B)。逐版本历史见 [CHANGELOG](CHANGELOG.md)。
 >
-> f0.9+ = 代码 **f0.9.1**（f0.9 之上：**verbatim 召回门控与 rerank 拒判收敛**——未过 rerank 验证的原文行仅在显式问原文措辞时可用；fresh rerank verdict 改用融合分，避免噪声误判 found；新增 recall_policy 列与召回排除溯源；测试语料 4853 → 4857）。OpenChamber 用户接入指南见 [integrations/openchamber/README.md](integrations/openchamber/README.md)。上一个公开版本 [f0.9](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9)（包 `0.9.0`，2026-11-19）。
+> f0.9+ = 代码 **f0.9.1**（f0.9 之上：**新增 pi 原生扩展 + verbatim 召回门控与 rerank 拒判收敛**——pi 覆盖召回注入、持久写入、会话萃取与摘要落库；fresh rerank verdict 改用融合分；新增 recall_policy 列与召回排除溯源；测试语料 4820 → 4822）。pi 用户接入指南见 [integrations/pi/README.md](integrations/pi/README.md)。上一个公开版本 [f0.9](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.9)（包 `0.9.0`，2026-11-19）。
 >
 > f0.8++ = 代码 **f0.8.3**（f0.8+ 之上：DeepSeek Harness 原生接入——Windows/Linux/macOS 三平台原生插件、stdio MCP、持久 outbox 写入与空闲萃取，Windows 真机全链路验收 + 故障注入 PASS；含 DSH 工作区白名单 8.3 短文件名修复与 mutation_journal Windows 首启动兼容修复）。DSH 用户接入指南见 [integrations/dsh/README.md](integrations/dsh/README.md)。上一个公开版本 [f0.8++](https://github.com/monkey2jack/aiduMEI/releases/tag/f0.8%2B%2B)（包 `0.8.3`，2026-11-18）。
 >
@@ -18,12 +18,15 @@ aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，M
 
 ## 本版变化（f0.9+）
 
-f0.9+ 是 f0.9 之上的召回质量收敛版：
+f0.9+ 是 f0.9 之上的宿主扩展与召回质量收敛版：
+
+- **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；真实 pi 1.6.0 双会话验收与 15 项 Node 行为测试通过。
+- **现在只升级，不自动迁移宿主**：`manage.mjs install/check/uninstall` 已备好，不读取项目 `.env`，不自动写当前 pi 全局配置。
 
 - **verbatim 召回门控**：未经 rerank 评分验证的原文召回行，仅在用户显式询问原文措辞时参与召回；其余查询下从结果中剔除并计入 gate dropped 统计。
 - **recall_policy 溯源列**：verbatim vault 新增 `recall_policy` 列，记录每条原文的召回排除原因（含测试来源 provenance），排查误伤可回查。
 - **fresh rerank verdict 修复**：重排生效后使用融合相关性分判定 found/not_found，不再让旧向量分把低相关噪声误判为 found。
-- **测试语料 4853 → 4857**：新增召回体验、rerank 拒判及融合分 verdict 共 4 个用例；README/CHANGELOG/version 计数守卫四方同步。
+- **测试语料 4820 → 4822**：新增召回体验、rerank 拒判及融合分 verdict 共 4 个用例；README/CHANGELOG/version 计数守卫四方同步。
 
 ## 本版变化（f0.9）
 
@@ -184,6 +187,7 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 | Hermes Agent | `connect_host.py` 软链插件 `integrations/hermes-plugin/aidumem` 并设 `memory.provider aidumem` |
 | DeepSeek Harness | `node integrations/dsh/manage.mjs install ...`：原生 Cordis 插件（`agent/pre-step` 召回）+ outbox 写入 + 空闲萃取 + stdio MCP（`integrations/dsh/`） |
 | OpenChamber（OpenCode） | `node integrations/openchamber/manage.mjs install ...`：OpenCode plugin（`context` hook 召回注入）+ sessionEvents service（写入 + 空闲萃取），`Settings → Extensions` 批准后生效（`integrations/openchamber/`） |
+| pi | `node integrations/pi/manage.mjs install ...`：原生 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要落库（`integrations/pi/`） |
 | Cursor 等其他宿主 | 按 [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md) 手工接 |
 | HTTP API | REST `:8767`：`/add` `/search` `/update` `/delete` `/session/distill` `/tombstones` `/graph/*` `/api/core-memory` 等；写接口带 `caller_user_id` |
 | MCP | 见下节 |
@@ -234,8 +238,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **4857**（`pytest --collect-only` 实测，f0.9+ 私有候选树）＝ **行为用例 4225 + 脚本/钩子行为 486 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
-| 独立开发机 | 4845 通过 · **12 跳过** —— 本候选总收集 4857 条；齐备除 Hermes 宿主源码外的测试轴时，12 条宿主用例跳过 |
+| 用例总数 | **4822**（`pytest --collect-only` 实测，f0.9+ 公开候选树）＝ **行为用例 4190 + 脚本/钩子行为 486 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
+| 独立开发机 | 4810 通过 · **12 跳过** —— 本候选总收集 4822 条；齐备除 Hermes 宿主源码外的测试轴时，12 条宿主用例跳过 |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，旧树）。f0.7 起全量套件同时测 mem0 旧内核，需加装 `requirements-mem0.txt`；只装 `requirements.txt` 的默认 native 路径改由从零安装验收与 CI 裸装冒烟覆盖（2026-10-29 实验机：安装、健康、写入、召回、删除、恢复通过） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（旧树 `de09794`，宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（旧树，工具、extras、宿主、模型缓存与公开 LoCoMo 数据集齐备） |
@@ -248,15 +252,15 @@ pytest tests/                                          # 全量回归
 python -m compileall ducky api_server.py mcp_server.py # 编译检查
 ```
 
-> **为什么要把 4845 和 1967 都写出来**：4845 是本候选仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 4810 和 1967 都写出来**：4810 是本候选仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条跳过自己就能验**：十四条跳过轴全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：4845 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4857 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4845 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：4810 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4822 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4810 passed, 12 skipped
 > ```
 >
 > 「有宿主」那行要十四条轴同时齐备才拿得到。生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），旧树上实测跑出来是 1967 passed、26 skipped（2026-09-11，`de09794`）。
