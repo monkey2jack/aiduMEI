@@ -2,9 +2,9 @@
 
 ## v0.9.1 (f0.9+ · 2026-11-22 · 正式适配 pi + 召回体验收敛 · 公开翻牌)
 
-> **用例总数 4820 → 4822**（行为 4190 + 脚本/钩子 486 + 守卫 146）；OpenChamber 20 项、pi 15 项原生 Node 行为测试另计。公开 Tag 与 Release 统一且仅为 **f0.9+**。
+> **用例总数 4820 → 4822**（行为 4190 + 脚本/钩子 486 + 守卫 146）；OpenChamber 20 项、pi 17 项原生 Node 行为测试另计。公开 Tag 与 Release 统一且仅为 **f0.9+**。
 
-- **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；`manage.mjs` 提供 install/check/uninstall。真实 pi 1.6.0 双会话暗号写入与召回通过，最终 provider 请求含 nonce 围栏；15 项 Node 行为测试通过。
+- **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；`manage.mjs` 提供 install/check/uninstall。真实 pi 1.6.0 双会话暗号写入与召回通过，最终 provider 请求含 nonce 围栏；17 项 Node 行为测试通过。
 - **迁移边界**：只提供升级与工具，不自动部署到当前 pi、不读取项目 `.env`；工作区白名单、持久 outbox、幂等回执、故障重试、held 留证与重启续传齐备。
 - **verbatim 召回门控**：未经 rerank 评分验证的原文召回行，仅在用户显式询问原文措辞时可用；其余查询剔除并计入 gate dropped。f0.3 体验裁决的落地（CC 嘟嘟体验优先）。
 - **recall_policy 溯源列**：verbatim vault 新增 `recall_policy` 列（含 recall_excluded 原因与 test provenance），召回排除可审计、误伤可回查。

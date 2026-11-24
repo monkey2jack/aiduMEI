@@ -142,6 +142,49 @@ test("permanent rejection becomes held without deleting evidence", async () => {
   await cleanup(outbox, f.root);
 });
 
+test("a transient 409 is replayed before any held decision", async () => {
+  const f = await fixture();
+  let attempts = 0;
+  const client = { add: async () => { attempts += 1; if (attempts === 1) throw new HttpError(409); return { status: "ok", idempotency_replayed: true }; },
+    distill: async () => ({ status: "skipped", reason: "too_short" }) };
+  const outbox = new Outbox(options(f), client);
+  await outbox.init();
+  await outbox.enqueueTurn(payload(f));
+  await outbox.flush();
+  assert.equal((await readdir(outbox.options.spoolDir)).filter(name => name.endsWith(".held")).length, 0);
+  const retryFile = path.join(outbox.options.spoolDir, (await outbox.list("turn"))[0]);
+  const retryPayload = JSON.parse(await readFile(retryFile, "utf8"));
+  retryPayload.dueAt = 0;
+  await writeFile(retryFile, JSON.stringify(retryPayload));
+  outbox.kick();
+  await outbox.flush();
+  assert.equal(attempts, 2);
+  assert.equal((await outbox.list("turn")).length, 0);
+  await cleanup(outbox, f.root);
+});
+
+test("persistent 409 is held only after bounded replay attempts", async () => {
+  const f = await fixture();
+  let attempts = 0;
+  const client = { add: async () => { attempts += 1; throw new HttpError(409); },
+    distill: async () => ({ status: "skipped", reason: "too_short" }) };
+  const outbox = new Outbox(options(f), client);
+  await outbox.init();
+  await outbox.enqueueTurn(payload(f));
+  await outbox.flush();
+  for (let index = 0; index < 2; index += 1) {
+    const retryFile = path.join(outbox.options.spoolDir, (await outbox.list("turn"))[0]);
+    const retryPayload = JSON.parse(await readFile(retryFile, "utf8"));
+    retryPayload.dueAt = 0;
+    await writeFile(retryFile, JSON.stringify(retryPayload));
+    outbox.kick();
+    await outbox.flush();
+  }
+  assert.equal(attempts, 3);
+  assert.equal((await readdir(outbox.options.spoolDir)).filter(name => name.endsWith(".json.held")).length, 1);
+  await cleanup(outbox, f.root);
+});
+
 test("restart drains durable work and deduplicates acknowledged turns", async () => {
   const f = await fixture();
   let attempts = 0;

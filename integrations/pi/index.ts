@@ -487,12 +487,29 @@ export class Outbox {
           if (this.activeSessions.has(payload.sessionId) || await this.blocked(payload.sessionId)) continue;
           if (Number(payload.dueAt) > Date.now()) { nextDue = Math.min(nextDue, payload.dueAt); continue; }
           await this.processDistill(file, payload, raw);
-        } else if (kind === "summary") await this.processSummary(file, payload, raw);
-        else await this.processTurn(file, payload, raw);
+        } else {
+          if (Number(payload.dueAt || 0) > Date.now()) {
+            nextDue = Math.min(nextDue, Number(payload.dueAt));
+            continue;
+          }
+          if (kind === "summary") await this.processSummary(file, payload, raw);
+          else await this.processTurn(file, payload, raw);
+        }
         this.retryAt = 0;
       } catch (error) {
         if (error?.code === "ENOENT") continue;
         const status = Number(error?.status);
+        if (status === 409 && !error.pending && Number(payload.conflictAttempts || 0) < 2) {
+          const dueAt = Date.now() + RETRY_DELAY_MS;
+          await this.mutate(async () => {
+            if (await readFile(file, "utf8") === raw) {
+              await atomicJsonWrite(file, { ...payload,
+                conflictAttempts: Number(payload.conflictAttempts || 0) + 1, dueAt });
+            }
+          });
+          nextDue = Math.min(nextDue, dueAt);
+          continue;
+        }
         if (status === 409 && !error.pending || status >= 400 && status < 500 && ![408, 409, 429].includes(status)
           || /^invalid_.*(acknowledgement|response)$/.test(error?.message) || error?.message === "response_too_large") {
           await this.hold(file, status ? `status=${status}` : "invalid_response");

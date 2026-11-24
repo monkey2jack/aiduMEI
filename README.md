@@ -20,7 +20,7 @@ aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，M
 
 f0.9+ 是 f0.9 之上的宿主扩展与召回质量收敛版：
 
-- **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；真实 pi 1.6.0 双会话验收与 15 项 Node 行为测试通过。
+- **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；真实 pi 1.6.0 双会话验收与 17 项 Node 行为测试通过。
 - **现在只升级，不自动迁移宿主**：`manage.mjs install/check/uninstall` 已备好，不读取项目 `.env`，不自动写当前 pi 全局配置。
 
 - **verbatim 召回门控**：未经 rerank 评分验证的原文召回行，仅在用户显式询问原文措辞时参与召回；其余查询下从结果中剔除并计入 gate dropped 统计。

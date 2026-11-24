@@ -24,7 +24,7 @@ aiduMEI is a **single-machine self-hosted** long-term memory service (Python / F
 
 f0.9+ is a host-expansion and recall-quality convergence release on top of f0.9:
 
-- **Official Pi support (sixth first-class host)**: a native `index.ts` covers `before_agent_start` recall, durable `agent_settled` ingestion, session distillation and summary persistence; two real Pi 1.6.0 sessions and 15 Node behavior tests pass.
+- **Official Pi support (sixth first-class host)**: a native `index.ts` covers `before_agent_start` recall, durable `agent_settled` ingestion, session distillation and summary persistence; two real Pi 1.6.0 sessions and 17 Node behavior tests pass.
 - **Upgrade first, migrate later**: `manage.mjs install/check/uninstall` is ready, but no project `.env` is read and the current global Pi configuration is not modified automatically.
 
 - **Verbatim recall gating**: original-wording recall rows that failed rerank scoring verification now participate only when the user explicitly asks about exact wording; otherwise they are dropped from results and counted in the gate stats.
