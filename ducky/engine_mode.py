@@ -67,7 +67,7 @@ def mode_status() -> dict:
     try:
         from ducky.mem0_runtime import native_kernel_active
         native = bool(native_kernel_active())
-    except Exception:
+    except (ImportError, AttributeError, RuntimeError, ValueError):
         native = False
     local = local_leg_enabled()
     note = {
