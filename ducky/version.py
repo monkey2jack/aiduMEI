@@ -9,17 +9,18 @@ v20.4.1a 起不再双写（四方外审 Sonnet #4：version.py 曾长达 1693 �
 实际变成第二份变更日志，与 CHANGELOG 互为腐化源）。
 
 v0.9.1 (f0.9+ · 2026-11-22 · 正式适配 pi + 召回体验收敛)
-    用例总数 4820 → 4822（本版 = 行为 4190 + 脚本/钩子 486 + 守卫 146；另有 17 项 pi Node 行为测试）。
+    用例总数 4820 → 4831（本版 = 行为 4199 + 脚本/钩子 486 + 守卫 146；另有 23 项 pi Node 行为测试）。
     1. 正式适配 pi（第六个一等宿主）：integrations/pi/ 原生 index.ts 覆盖召回、持久写入、萃取与摘要再落库；真实 pi 1.6.0 双会话验收与 17 项 Node 行为测试通过。
     2. 持久 outbox、幂等回执、重试、held 留证、重启续传与工作区白名单；不读取项目 .env，不自动部署到当前 pi。
     3. verbatim 召回门控：未经 rerank 验证的原文行仅显式问原文措辞时可用，其余查询剔除并计入 gate dropped。
     4. recall_policy 溯源列：记录原文召回排除原因，误伤可回查。
     5. fresh rerank verdict 使用 _hybrid_score 融合分，避免旧向量分误判 found。
     6. 测试语料 4820 → 4822：召回体验、rerank 拒判与融合分 verdict 共 4 个新增用例，README/CHANGELOG/version 计数同步。
-    7. SERVICE_VERSION 0.9.1 / FULL_VERSION f0.9.1；公开 Tag 与 Release 只有 f0.9+，无额外后缀。
+    7. pi 完全适配（同版补丁）：memory_search/memory_remember 工具与可选 memory_forget；萃取节流按 retry_after_sec 重排；check 报告滞留旧任务；LLM 主备模型链；health 如实报告 native 无本地备胎索引。
+    8. SERVICE_VERSION 0.9.1 / FULL_VERSION f0.9.1；公开 Tag 与 Release 只有 f0.9+，无额外后缀。
 
 v0.9.0 (f0.9 · 2026-11-19 · OpenChamber 正式适配 · 公开翻牌)
-    用例总数 4818 → 4857（本版 = 行为 4225 + 脚本/钩子 486 + 守卫 146，pytest 收集实测；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。
+    用例总数 4819 → 4857（本版 = 行为 4225 + 脚本/钩子 486 + 守卫 146，pytest 收集实测；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。
     1. 正式适配 OpenChamber（第五个一等宿主）：新增 integrations/openchamber/ 三件套——opencodePlugin（session.hook("context") 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows/Linux/macOS 三平台可用。
     2. 写入线：sessionEvents（turn-finished/turn-failed, content:true）→ 本地 spool 持久化 → 补投 aiduMEI /add（幂等键）。service 环境隔离（OpenChamber 只传 PATH/HOME/temp/locale），配置经 ~/.aidumei-openchamber/config.json 共享。
     3. prompt-pairing：OpenChamber 事件只带最终回复不带用户提问——plugin 在召回时把 prompt 记录到共享文件，service 配对后组合完整对话写入。
@@ -33,7 +34,7 @@ v0.9.0 (f0.9 · 2026-11-19 · OpenChamber 正式适配 · 公开翻牌)
     11. ducky/env_registry.py、README.md、README_EN.md 与 CHANGELOG.md 同步 OpenChamber 接入文档与兼容记录。
 
 v0.8.3 (f0.8++ · 2026-11-18 · DeepSeek Harness 正式适配 · 公开翻牌)
-    用例总数 4806 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
+    用例总数 4806 → 4819（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
     1. **正式适配 DeepSeek Harness（DSH 0.2.2-rc.3）——aiduMEI 第四个一等宿主**：新增独立 integrations/dsh/（index.mjs 原生 Cordis 插件、manage.mjs 安装/检查/卸载、cli.mjs、mcp-stdio.py stdio MCP 与 README.md），Windows/Linux/macOS 三平台可用，提供首步召回、真实用户轮次写入、空闲会话萃取与 stdio MCP。
     2. Windows 真机全链路验收：native DSH host-smoke PASS（5 会话 × 3 turn、recallSeen、MCP 回路、install/check/uninstall）+ 故障注入 PASS（断网续传 / 取消保序 / 丢 ack 不重放）；Windows 本地独立部署 aiduMEI + DSH 全流程实测，写入暗号 → 跨会话召回正确答案。
     3. DSH 写入可靠性：持久 outbox、稳定幂等键和本地回执；网络故障可重试，永久拒绝保留为 held 任务供核查；进程死亡后重启恢复，死 owner 自动回收。
@@ -47,7 +48,7 @@ v0.8.3 (f0.8++ · 2026-11-18 · DeepSeek Harness 正式适配 · 公开翻牌)
     11. 版本三方对齐：SERVICE_VERSION 0.8.3（pyproject.toml / manifest.json / integrations/dsh/package.json 同步），FULL_VERSION f0.8.3，公开 Tag/Release 翻牌为 f0.8++（LINEAGE 0.8.2 行对外列记 f0.8++，f0.7+ 系先例）；README.md 与 README_EN.md 版本横幅突出 DeepSeek Harness 适配。
 
 v0.8.2 (f0.8++ 预览候选 · 2026-11-17 · DeepSeek Harness Windows 适配)
-    用例总数 4806 → 4818（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
+    用例总数 4806 → 4819（本版 = 行为 4186 + 脚本/钩子 486 + 守卫 146，pytest 收集实测）。
     1. 新增 integrations/dsh/index.mjs、manage.mjs、cli.mjs、mcp-stdio.py 与 README.md，适配 DSH 0.2.2-rc.3 的原生插件、stdio MCP、安装检查与卸载。
     2. 加入 integrations/dsh/test/ 的实际 DSH 合约和宿主测试；写入采用持久 outbox、稳定幂等键、本地回执、重启恢复与 held 任务。
     3. MCP 凭据隔离：测试 URL 只认测试 token；生产模式支持 AIDUMEI_API_TOKEN_FILE、环境变量与显式 .env 兜底，绝不从测试端点回退生产 token。

@@ -2,7 +2,7 @@
 
 ## v0.9.1 (f0.9+ · 2026-11-22 · 正式适配 pi + 召回体验收敛 · 公开翻牌)
 
-> **用例总数 4820 → 4822**（行为 4190 + 脚本/钩子 486 + 守卫 146）；OpenChamber 20 项、pi 17 项原生 Node 行为测试另计。公开 Tag 与 Release 统一且仅为 **f0.9+**。
+> **用例总数 4820 → 4831**（行为 4199 + 脚本/钩子 486 + 守卫 146）；OpenChamber 20 项、pi 23 项原生 Node 行为测试另计。公开 Tag 与 Release 统一且仅为 **f0.9+**。
 
 - **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；`manage.mjs` 提供 install/check/uninstall。真实 pi 1.6.0 双会话暗号写入与召回通过，最终 provider 请求含 nonce 围栏；17 项 Node 行为测试通过。
 - **迁移边界**：只提供升级与工具，不自动部署到当前 pi、不读取项目 `.env`；工作区白名单、持久 outbox、幂等回执、故障重试、held 留证与重启续传齐备。
@@ -10,11 +10,12 @@
 - **recall_policy 溯源列**：verbatim vault 新增 `recall_policy` 列（含 recall_excluded 原因与 test provenance），召回排除可审计、误伤可回查。
 - **fresh rerank verdict 修复**：重排生效后使用融合相关性分判定 found/not_found，避免旧向量分把低相关噪声误判为 found。
 - **测试语料 4820 → 4822**：新增召回体验、rerank 拒判与融合分 verdict 共 4 用例；README（中英）/CHANGELOG/version.py 计数守卫同步（无宿主套件口径 4810）。
+- **pi 完全适配（同版补丁，不升版本号）**：pi 插件新增 `memory_search` / `memory_remember` 工具与可选 `memory_forget`（墓碑可恢复、单进程上限 20），工具只用插件绑定的身份，模型看不到钥匙，并在系统提示中禁止 curl API；萃取节流按服务端 `retry_after_sec` 一次性重排、最多 6 次，不再每分钟轮询；`manage.mjs check` 报告被替换状态目录中滞留的任务；LLM 主备模型链（`llm.config.fallbacks`）主模型无内容或异常时依次降级，并发闸门超时不换模型；`/health` 的 `engine_mode_policy` 如实报告 native 内核无本地备胎索引。新增 8 个 Python 用例、6 项 Node 用例。
 - 版本三方对齐：SERVICE_VERSION 0.9.1（pyproject.toml / manifest.json / integrations/openchamber/package.json 同步），FULL_VERSION f0.9.1，公开 Tag/Release 翻牌为 **f0.9+**。
 
 ## v0.9.0 (f0.9 · 2026-11-19 · 正式适配 OpenChamber · 公开翻牌)
 
-> **用例总数 4818 → 4857**（行为 4225 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。
+> **用例总数 4819 → 4857**（行为 4225 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。
 
 - **本版头号变更：正式适配 OpenChamber（openchamber/openchamber，v2.6.1+），aiduMEI 的第五个一等宿主**。新增独立 `integrations/openchamber/` 三件套：opencodePlugin（`session.hook("context")` 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows / Linux / macOS 三平台可用。
 - **Windows 真机验收**：OpenChamber 2.7.2 + OpenCode 2.3.0（windows-host 实装）——写入暗号 → 跨会话召回 → 空闲萃取全链 PASS；plugin 加载、service 拉起、召回 API 调用全部实测。
@@ -30,7 +31,7 @@
 
 ## v0.8.3 (f0.8++ · 2026-11-18 · 正式适配 DeepSeek Harness · 公开翻牌)
 
-> **用例总数 4806 → 4818**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算）。全量回归 4804 passed / 14 skipped / 0 failed（2026-11-18，summer）。
+> **用例总数 4806 → 4819**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算）。全量回归 4804 passed / 14 skipped / 0 failed（2026-11-18，summer）。
 
 - **本版头号变更：正式适配 DeepSeek Harness（DSH 0.2.2-rc.3），aiduMEI 的第四个一等宿主**（继 Claude Code、Codex、Hermes 之后）。新增独立 `integrations/dsh/`：`index.mjs`（原生 Cordis 插件）、`manage.mjs`（安装/检查/卸载）、`cli.mjs`、`mcp-stdio.py`（stdio MCP）与 `README.md`，Windows / Linux / macOS 三平台可用，提供首步召回、真实用户轮次写入、空闲会话萃取与 stdio MCP。
 - **Windows 真机全链路验收**：native DSH host-smoke PASS（5 会话 × 3 turn、recallSeen、MCP 回路、install/check/uninstall）+ 故障注入 PASS（断网续传 / 取消保序 / 丢 ack 不重放）。Windows 本地独立部署 aiduMEI + DSH 全流程实测：写入暗号 → 跨会话召回正确答案。

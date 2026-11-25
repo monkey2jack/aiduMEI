@@ -24,7 +24,8 @@ aiduMEI is a **single-machine self-hosted** long-term memory service (Python / F
 
 f0.9+ is a host-expansion and recall-quality convergence release on top of f0.9:
 
-- **Official Pi support (sixth first-class host)**: a native `index.ts` covers `before_agent_start` recall, durable `agent_settled` ingestion, session distillation and summary persistence; two real Pi 1.6.0 sessions and 17 Node behavior tests pass.
+- **Official Pi support (sixth first-class host)**: a native `index.ts` covers `before_agent_start` recall, durable `agent_settled` ingestion, session distillation and summary persistence; two real Pi 1.6.0 sessions and 23 Node behavior tests pass.
+- **Full Pi adaptation (same-version patch)**: `memory_search` / `memory_remember` tools plus opt-in `memory_forget`, with the token never exposed to the model; throttled distillation reschedules from the server's `retry_after_sec` instead of polling; `check` reports jobs stranded in replaced state directories; an LLM primary/fallback model chain; `/health` now states that the native kernel has no local fallback index.
 - **Upgrade first, migrate later**: `manage.mjs install/check/uninstall` is ready, but no project `.env` is read and the current global Pi configuration is not modified automatically.
 
 - **Verbatim recall gating**: original-wording recall rows that failed rerank scoring verification now participate only when the user explicitly asks about exact wording; otherwise they are dropped from results and counted in the gate stats.
@@ -242,8 +243,8 @@ Auth: the HTTP (SSE) transport requires `AIDUMEM_API_TOKEN` on every bind, loopb
 
 | Dimension | Current |
 |------|------|
-| Total cases | **4822** (measured via `pytest --collect-only` on the public f0.9+ candidate) = **4190 behavior + 486 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
-| Clean dev machine | 4810 passed · **12 skipped** — candidate collection is 4822; the 12 Hermes host tests skip when every other test axis is installed |
+| Total cases | **4831** (measured via `pytest --collect-only` on the public f0.9+ candidate) = **4190 behavior + 486 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
+| Clean dev machine | 4819 passed · **12 skipped** — candidate collection is 4831; the 12 Hermes host tests skip when every other test axis is installed |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only (**measured 2026-09-09 on the production box**, clean venv, older tree). From f0.7 the full suite also tests the legacy mem0 kernel and needs `requirements-mem0.txt`; the default native path with only `requirements.txt` is covered by a from-scratch install acceptance and the CI bare-install smoke (2026-10-29 lab box: install, health, write, recall, delete, restore passed) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (older tree `de09794`, host source present, no `.env`, no ruff/mcp/fastembed) |
 | All axes present | 1844 passed · **1 skipped** — **measured 2026-09-09 on the production host** (older tree; tools, extras, host, model cache and the public LoCoMo dataset present) |
@@ -256,15 +257,15 @@ pytest tests/                                          # full regression
 python -m compileall ducky api_server.py mcp_server.py # compile check
 ```
 
-> **Why report both 4810 and 1821**: the first is this candidate's expected pass count with only the 12 Hermes cases skipped, not a measured result; the second is the 2026-09-09 clean-venv measurement of the basic install path on an older tree. A number only means something with its environment, date and tree attached.
+> **Why report both 4819 and 1821**: the first is this candidate's expected pass count with only the 12 Hermes cases skipped, not a measured result; the second is the 2026-09-09 clean-venv measurement of the basic install path on an older tree. A number only means something with its environment, date and tree attached.
 
 > **You can verify those 12 skips yourself**: all fourteen skip axes are registered in [docs/TESTING.md](docs/TESTING.md); `HERMES_SRC` is tri-state and reproducible in both directions:
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # no host: 4810 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # target once the host and all other optional axes are present — with host: 4822 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4810 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # no host: 4819 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # target once the host and all other optional axes are present — with host: 4831 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # forced off: 4819 passed, 12 skipped
 > ```
 >
 > The "with host" line needs all fourteen axes at once. On the production box in an isolated sandbox (host source present, no `.env`), the bare command on an older tree actually prints 1967 passed, 26 skipped (2026-09-11, `de09794`).

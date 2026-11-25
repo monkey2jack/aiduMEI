@@ -14,6 +14,20 @@
 
 写入带 `source=pi-ingest` / `pi-distill`、pi 会话 ID 与消息 entry ID。重复启动、重试和 `/reload` 由持久回执幂等去重；网络故障保留原件重试，永久拒绝转为 `.held`，不删唯一证据。
 
+萃取被服务端节流（`throttled`）时，按响应里的 `retry_after_sec` 一次性重排（最短 60 秒、最长 6 小时），同一任务最多重排 6 次；新一轮对话不会打断已给出的节流窗口，不再每分钟轮询。
+
+## 主动记忆工具
+
+除了三条自动链路，扩展还给模型注册记忆工具，全部只作用于配置里的用户与记忆库，钥匙由扩展从 token 文件读取，**模型看不到钥匙**：
+
+| 工具 | 作用 |
+|---|---|
+| `memory_search` | 主动查记忆，返回带 id 的结果（nonce 数据围栏） |
+| `memory_remember` | 写一条长期记忆，`source=pi-tool` |
+| `memory_forget` | 按 id 遗忘一条（墓碑，可由运维恢复）；默认不注册，安装时加 `--allow-forget` 才开启；每个 pi 进程最多 20 次 |
+
+工具自带提示词约束：想不起来先 `memory_search`；长期信息用 `memory_remember`，不写本地记忆文件；**不得读取 token/.env 或用 curl 调 aiduMEI API**。工具同样受工作区白名单约束。
+
 ## 现在先升级，暂不部署
 
 本次发布只提供仓库内扩展与工具，不会自动写入 `~/.pi/agent/extensions`，也不会迁移任何现有宿主。以后把嘟嘟迁到 pi 时，在目标机器执行下面的安装即可。
@@ -28,8 +42,11 @@ node integrations/pi/manage.mjs install \
   --user dudu \
   --bank default \
   --token-file /绝对路径/aidumei-token \
-  --workdir /绝对路径/工作目录
+  --workdir /绝对路径/工作目录 \
+  [--allow-forget]
 ```
+
+建议 token 文件放一把**只绑定该用户的 agent key**（`python scripts/agent_keys.py create --agent pi-dudu --callers dudu --out 文件`，服务端开 `AIDUMEI_AGENT_KEY_ENFORCE=1`），不要放主钥匙。
 
 多个工作目录重复传 `--workdir`。安装器只写这两个位置：
 
@@ -45,7 +62,7 @@ node integrations/pi/manage.mjs check
 node integrations/pi/manage.mjs uninstall --yes
 ```
 
-`check` 检查 pi 版本、扩展文件、配置、token 文件、API 健康、工作区和 held 任务。pi 内也可执行 `/aidumei-check`，只显示脱敏状态。
+`check` 检查 pi 版本、扩展文件、配置、token 文件、API 健康、工作区和 held 任务；同目录下其他 `.aidumei-pi*` 状态目录里滞留的任务也会报出（`noLegacyJobs`），避免换状态目录后旧任务无人处理。pi 内也可执行 `/aidumei-check`，只显示脱敏状态。
 
 卸载保留 aiduMEI 记忆、outbox 和回执，便于重装后续传；不会删除服务端数据。
 

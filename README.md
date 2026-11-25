@@ -20,7 +20,8 @@ aiduMEI 是一个**单机自托管**的长期记忆服务（Python / FastAPI，M
 
 f0.9+ 是 f0.9 之上的宿主扩展与召回质量收敛版：
 
-- **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；真实 pi 1.6.0 双会话验收与 17 项 Node 行为测试通过。
+- **正式适配 pi（第六个一等宿主）**：原生 `index.ts` 覆盖 `before_agent_start` 召回、`agent_settled` 持久写入、会话萃取与摘要再落库；真实 pi 1.6.0 双会话验收与 23 项 Node 行为测试通过。
+- **pi 完全适配（同版补丁）**：新增 `memory_search` / `memory_remember` 工具与可选 `memory_forget`，模型不接触钥匙；萃取节流按服务端 `retry_after_sec` 重排不再轮询；`check` 报告旧状态目录滞留任务；LLM 主备模型链；`/health` 如实报告 native 内核无本地备胎索引。
 - **现在只升级，不自动迁移宿主**：`manage.mjs install/check/uninstall` 已备好，不读取项目 `.env`，不自动写当前 pi 全局配置。
 
 - **verbatim 召回门控**：未经 rerank 评分验证的原文召回行，仅在用户显式询问原文措辞时参与召回；其余查询下从结果中剔除并计入 gate dropped 统计。
@@ -238,8 +239,8 @@ curl -s -H "Authorization: Bearer $AIDUMEM_API_TOKEN" http://127.0.0.1:8767/heal
 
 | 维度 | 现状 |
 |------|------|
-| 用例总数 | **4822**（`pytest --collect-only` 实测，f0.9+ 公开候选树）＝ **行为用例 4190 + 脚本/钩子行为 486 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
-| 独立开发机 | 4810 通过 · **12 跳过** —— 本候选总收集 4822 条；齐备除 Hermes 宿主源码外的测试轴时，12 条宿主用例跳过 |
+| 用例总数 | **4831**（`pytest --collect-only` 实测，f0.9+ 公开候选树）＝ **行为用例 4199 + 脚本/钩子行为 486 + 守卫用例 146**；三桶口径见 `scripts/count_test_kinds.py`，可一键复算 |
+| 独立开发机 | 4819 通过 · **12 跳过** —— 本候选总收集 4831 条；齐备除 Hermes 宿主源码外的测试轴时，12 条宿主用例跳过 |
 | 基础安装路径 | 1821 通过 · **25 跳过** —— 只装 `requirements.txt` + `requirements-dev.txt`（**2026-09-09 生产机干净 venv 实测**，旧树）。f0.7 起全量套件同时测 mem0 旧内核，需加装 `requirements-mem0.txt`；只装 `requirements.txt` 的默认 native 路径改由从零安装验收与 CI 裸装冒烟覆盖（2026-10-29 实验机：安装、健康、写入、召回、删除、恢复通过） |
 | 生产机沙箱 | 1967 通过 · **26 跳过** —— **2026-09-11 生产机实测**（旧树 `de09794`，宿主源码在场、不带 `.env`、无 ruff/mcp/fastembed） |
 | 全轴齐备 | 1844 通过 · **1 跳过** —— **2026-09-09 生产机实测**（旧树，工具、extras、宿主、模型缓存与公开 LoCoMo 数据集齐备） |
@@ -252,15 +253,15 @@ pytest tests/                                          # 全量回归
 python -m compileall ducky api_server.py mcp_server.py # 编译检查
 ```
 
-> **为什么要把 4810 和 1967 都写出来**：4810 是本候选仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
+> **为什么要把 4819 和 1967 都写出来**：4819 是本候选仅缺 Hermes 宿主 ×12 时的预期通过数，不是实测成绩；1967 是生产机独立沙箱 2026-09-11 在旧树上的实测——两者跳过轴不同，数字必须与环境、日期和测试树一起读。
 
 > **这 12 条跳过自己就能验**：十四条跳过轴全部登记在册（[docs/TESTING.md](docs/TESTING.md)），`HERMES_SRC` 三态可控、两个方向都能复现：
 >
 > ```bash
 > pip install "mcp==1.30.0" ruff nltk regex numpy fastembed && python scripts/fetch_local_embed_model.py
-> pytest tests/ -q -rs | tail -1                                 # 无宿主：4810 passed, 12 skipped
-> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4822 passed
-> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4810 passed, 12 skipped
+> pytest tests/ -q -rs | tail -1                                 # 无宿主：4819 passed, 12 skipped
+> HERMES_SRC=/path/to/hermes-agent pytest tests/ -q | tail -1    # 补齐宿主及其余可选轴后目标——有宿主：4831 passed
+> HERMES_SRC=none pytest tests/ -q -rs | tail -1                 # 装了宿主也强制关掉，照旧 4819 passed, 12 skipped
 > ```
 >
 > 「有宿主」那行要十四条轴同时齐备才拿得到。生产机独立沙箱裸跑（宿主源码在场、不带 `.env`），旧树上实测跑出来是 1967 passed、26 skipped（2026-09-11，`de09794`）。
