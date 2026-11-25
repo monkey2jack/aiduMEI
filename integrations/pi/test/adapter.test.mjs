@@ -364,7 +364,7 @@ test("memory tools act only on the configured scope and never expose the token",
     const search = seen.find(item => item.url === "/search");
     assert.equal(search.body.user_id, "default");
     assert.equal(search.body.caller_user_id, "default");
-    assert.equal(search.body.session_id, "pi-s1");
+    assert.equal(search.body.session_id, undefined);
     const add = seen.find(item => item.url === "/add");
     assert.equal(add.body.metadata.source, "pi-tool");
     assert.equal(add.auth, "Bearer test-token");

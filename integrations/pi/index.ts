@@ -784,9 +784,11 @@ export default async function aidumeiPi(pi) {
         additionalProperties: false,
       },
       async execute(_id, params, signal, _onUpdate, ctx) {
-        const sessionId = await toolScope(ctx);
+        await toolScope(ctx);
+        // Explicit lookups carry no session id: the server's same-session echo
+        // filter is for automatic recall, not for "what did I just store".
         const result = await client.search(asString(params.query).trim().slice(0, MAX_QUERY_CHARS),
-          sessionId || undefined, signal, asPositiveInt(params.limit, 8, 20));
+          undefined, signal, asPositiveInt(params.limit, 8, 20));
         const rows = result?.results || result?.memories || [];
         return toolText(formatToolResults(rows, options), { count: Array.isArray(rows) ? rows.length : 0 });
       },
