@@ -256,6 +256,12 @@ def get_llm_config() -> dict:
             llm_cfg = raw.get("llm", {}).get("config", {}) or {}
             cfg["model"] = llm_cfg.get("model", "")
             cfg["base_url"] = llm_cfg.get("openai_base_url", "")
+            # f0·fallback（2026-11-24）：主备链 —— llm.config.fallbacks 列表，
+            # 主模型无内容/异常时依次降级（f0 → f0.a）。仅 call_llm 直连线消费，
+            # 其余调用方读 cfg["model"] 等旧键不受影响。
+            raw_fbs = llm_cfg.get("fallbacks", [])
+            cfg["fallbacks"] = [fb.strip() for fb in raw_fbs
+                                if isinstance(fb, str) and fb.strip()] if isinstance(raw_fbs, list) else []
 
             api_key = llm_cfg.get("api_key", "")
             # v20.4.0-alpha（P1-7）：env 覆盖与 mem0_runtime 同权同优先级 ——
@@ -504,34 +510,62 @@ def call_llm(
     else:
         endpoint = f"{base}/chat/completions"
 
-    # f0.3：每一次真实外呼都先占进程级空位（与 mem0 抽取通道共用一个闸门），
-    # 结局记进小时账本。上面几个早退（本地档阻断 / 未配置）是配置选择，不是降级，不记账。
+    # f0·fallback（2026-11-24）：主备模型链。主模型打不出内容（HTTP 失败/空响应/
+    # 网络异常）时依次换备胎重试；备胎与主模型同 endpoint 同 key，只是模型名不同。
+    # 闸门超时（LLMConcurrencyTimeout）不触发 fallback —— 那是本进程并发槽的事，
+    # 换模型解决不了，按原契约走 gate_timeout。
+    models_chain = [cfg["model"]]
+    for fb in (cfg.get("fallbacks") or []):
+        if fb and fb != cfg["model"] and fb not in models_chain:
+            models_chain.append(fb)
+
+    def _attempt(model: str, budget: int):
+        with llm_slot("call_llm"):
+            return _post_completion(
+                endpoint, cfg["api_key"], model, messages,
+                budget, temperature, timeout, reasoning_effort=reasoning_effort)
+
     outcome = "failed"
     try:
-        with llm_slot("call_llm"):
-            content, reasoning_truncated = _post_completion(
-                endpoint, cfg["api_key"], cfg["model"], messages,
-                max_tokens, temperature, timeout, reasoning_effort=reasoning_effort)
-        if content:
-            outcome = "ok"
-            return content
-        if reasoning_truncated:
-            retry_budget = min(max_tokens * 4, 4096)
-            logger.info("LLM 推理截断（思考耗尽预算），放大预算重试: %d → %d",
-                        max_tokens, retry_budget)
-            with llm_slot("call_llm"):
-                content, _ = _post_completion(
-                    endpoint, cfg["api_key"], cfg["model"], messages,
-                    retry_budget, temperature, timeout, reasoning_effort=reasoning_effort)
+        for idx, model in enumerate(models_chain):
+            try:
+                content, reasoning_truncated = _attempt(model, max_tokens)
+            except LLMConcurrencyTimeout:
+                raise
+            except Exception as e:
+                logger.warning("LLM 直接调用异常（%s）: %s", model, e)
+                content, reasoning_truncated = None, False
             if content:
                 outcome = "ok"
+                if idx:
+                    logger.warning("LLM fallback 生效: %s → %s（备胎 %d）",
+                                   models_chain[0], model, idx)
                 return content
+            if reasoning_truncated:
+                # 🔴-B 根治（v19.4.0）：上游推理模型思考耗尽预算 → content 空 +
+                # finish_reason=length。检测到该形态自动放大预算重试一次。
+                retry_budget = min(max_tokens * 4, 4096)
+                logger.info("LLM 推理截断（思考耗尽预算），放大预算重试: %d → %d",
+                            max_tokens, retry_budget)
+                try:
+                    content, _ = _attempt(model, retry_budget)
+                except LLMConcurrencyTimeout:
+                    raise
+                except Exception as e:
+                    logger.warning("LLM 直接调用异常（%s 放大重试）: %s", model, e)
+                    content = None
+                if content:
+                    outcome = "ok"
+                    if idx:
+                        logger.warning("LLM fallback 生效: %s → %s（备胎 %d）",
+                                       models_chain[0], model, idx)
+                    return content
+            if idx == 0 and len(models_chain) > 1:
+                logger.warning("LLM 主模型 %s 未产出内容，降级尝试备胎: %s",
+                               model, models_chain[1:])
         return None
     except LLMConcurrencyTimeout:
         outcome = "gate_timeout"   # 闸门已打过 warning；契约不变：失败回 None
-        return None
-    except Exception as e:
-        logger.warning(f"LLM 直接调用异常: {e}")
         return None
     finally:
         record_llm_outcome(outcome, origin="call_llm")

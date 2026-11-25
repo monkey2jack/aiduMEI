@@ -290,6 +290,10 @@ def distill_session(session_id: str, *, user_id: str = "",
                     "session_id": session_id, "source_count": len(rows),
                     "unseen_sources": unseen, "min_new_sources": MIN_NEW_SOURCES,
                     "previous_age_sec": None if age == float("inf") else round(age),
+                    # Hosts reschedule from this instead of polling: a throttled
+                    # session becomes due once the interval has elapsed.
+                    "retry_after_sec": (None if unseen == 0 else
+                                        max(1, int(MIN_INTERVAL_SEC - min(age, MIN_INTERVAL_SEC) + 0.999))),
                     "forced": bool(force)}
         # Summarise the new segment, padded with the latest already-covered
         # turns only as far as MIN_MEMORIES needs (context, not a re-summary).

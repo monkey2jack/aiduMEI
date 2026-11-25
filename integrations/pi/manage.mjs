@@ -16,6 +16,7 @@ const help = `node integrations/pi/manage.mjs install|check|uninstall [options]
   --user ID --bank ID  Explicit memory scope (required for production install)
   --token-file PATH    Token file; never put a token on the command line
   --workdir PATH       Repeat for each allowed absolute workspace (required)
+  --allow-forget       Register the memory_forget tool (tombstoned, restorable)
   --yes                Confirm uninstall
 Test isolation: AIDUMEI_TEST_URL and AIDUMEI_TEST_TOKEN_FILE; use temporary --pi-home/--state-dir.`;
 
@@ -27,6 +28,7 @@ function parse(argv) {
   for (let index = 0; index < rest.length; index += 1) {
     const raw = rest[index];
     if (raw === "--yes") { opts.yes = true; continue; }
+    if (raw === "--allow-forget") { opts.allowForget = true; continue; }
     const key = raw.replace(/^--/, "");
     if (!raw.startsWith("--") || !keys.has(key) || !rest[index + 1] || rest[index + 1].startsWith("--")) {
       throw new Error("invalid_argument");
@@ -144,6 +146,20 @@ async function check(opts, piHome, stateDir) {
     }
   }
   record("noHeldJobs", outbox.held === 0, "outbox_checked");
+  // A state directory that was renamed or replaced can strand held jobs that
+  // no running adapter will ever look at again; surface them.
+  outbox.legacyHeld = 0;
+  const parent = path.dirname(stateDir);
+  for (const name of await readdir(parent).catch(() => [])) {
+    if (!name.startsWith(".aidumei-pi") || path.join(parent, name) === path.resolve(stateDir)) continue;
+    const root = path.join(parent, name, "outbox");
+    for (const scope of await readdir(root).catch(() => [])) {
+      for (const job of await readdir(path.join(root, scope)).catch(() => [])) {
+        if (job.endsWith(".json.held") || /^(turn|summary|distill)-.*\.json$/.test(job)) outbox.legacyHeld += 1;
+      }
+    }
+  }
+  record("noLegacyJobs", outbox.legacyHeld === 0, "legacy_state_checked");
   const ok = Object.values(checks).every(check => check.ok);
   console.log(JSON.stringify({ ok, action: "check", piVersion: pi.version, checks, outbox }));
   if (!ok) process.exitCode = 1;
@@ -195,7 +211,7 @@ async function main() {
   }
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
   await atomic(path.join(stateDir, "config.json"), JSON.stringify({
-    apiBase, userId, bankId, tokenFile, allowedRoots, testMode,
+    apiBase, userId, bankId, tokenFile, allowedRoots, testMode, ...(opts.allowForget ? { allowForget: true } : {}),
   }, null, 2));
   console.log(JSON.stringify({ ok: true, action: "install", piVersion: pi.version, extensionTarget: target,
     configFile: path.join(stateDir, "config.json"), backup: archive,

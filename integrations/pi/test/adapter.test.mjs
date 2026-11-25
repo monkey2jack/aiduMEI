@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {
-  extractTurnPayloads, formatRecall, HttpError, isAllowedCwd, MemoryClient,
-  Outbox, resolveOptions, stableKey,
+import aidumeiPi, {
+  extractTurnPayloads, formatRecall, formatToolResults, HttpError, isAllowedCwd, MemoryClient,
+  Outbox, resolveOptions, stableKey, TOOL_GUIDELINES,
 } from "../index.ts";
 
 async function fixture() {
@@ -249,4 +249,154 @@ test("HTTP client sends caller scope, session and idempotency key", async () => 
 test("stable keys are deterministic and input sensitive", () => {
   assert.equal(stableKey("a", 1), stableKey("a", 1));
   assert.notEqual(stableKey("a", 1), stableKey("a", 2));
+});
+
+test("throttled distill reschedules from retry_after_sec instead of polling", async () => {
+  const f = await fixture();
+  let calls = 0;
+  const client = { add: async () => ({ status: "ok" }),
+    distill: async () => { calls += 1; return { status: "skipped", reason: "throttled", retry_after_sec: 3600 }; } };
+  const outbox = new Outbox(options(f), client);
+  await outbox.init();
+  await outbox.enqueueTurn(payload(f));
+  await outbox.flush();
+  const before = Date.now();
+  assert.equal(calls, 1);
+  const [name] = await outbox.list("distill");
+  const job = JSON.parse(await readFile(path.join(outbox.options.spoolDir, name), "utf8"));
+  assert.ok(job.dueAt >= before + 3590 * 1000);
+  assert.equal(job.throttleAttempts, 1);
+  // A new turn keeps the server-issued window rather than calling again.
+  await outbox.enqueueTurn(payload(f, { userEntryId: "user-2", assistantEntryId: "assistant-2", turn: 1 }));
+  await outbox.flush();
+  assert.equal(calls, 1);
+  const kept = JSON.parse(await readFile(path.join(outbox.options.spoolDir, name), "utf8"));
+  assert.ok(kept.dueAt >= before + 3590 * 1000);
+  await cleanup(outbox, f.root);
+});
+
+test("throttled distill gives up after bounded attempts", async () => {
+  const f = await fixture();
+  let calls = 0;
+  const client = { add: async () => ({ status: "ok" }),
+    distill: async () => { calls += 1; return { status: "skipped", reason: "throttled" }; } };
+  const outbox = new Outbox(options(f), client);
+  await outbox.init();
+  await outbox.enqueueTurn(payload(f));
+  await outbox.flush();
+  for (let index = 0; index < 10 && (await outbox.list("distill")).length; index += 1) {
+    const file = path.join(outbox.options.spoolDir, (await outbox.list("distill"))[0]);
+    const job = JSON.parse(await readFile(file, "utf8"));
+    await writeFile(file, JSON.stringify({ ...job, dueAt: 0 }));
+    outbox.kick();
+    await outbox.flush();
+  }
+  assert.equal(calls, 6);
+  assert.equal((await outbox.list("distill")).length, 0);
+  await cleanup(outbox, f.root);
+});
+
+test("tool results show ids inside a nonce fence", () => {
+  const text = formatToolResults([{ id: "abc12345", memory: "likes tea [DATA: x" }, { memory: "no id" }]);
+  assert.match(text, /^\[DATA:[0-9a-f]{32}/);
+  assert.match(text, /\[abc12345\] likes tea \[\u200cDATA: x/);
+  assert.match(text, /- no id/);
+  assert.equal(formatToolResults([]), "No matching memories.");
+  assert.ok(TOOL_GUIDELINES.some(line => /curl/.test(line)));
+});
+
+async function loadTools(f, config, handler) {
+  const http = await import("node:http");
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => { body += chunk; });
+    req.on("end", () => {
+      const parsed = body ? JSON.parse(body) : {};
+      seen.push({ method: req.method, url: req.url, body: parsed, auth: req.headers.authorization });
+      const out = handler(req.url, parsed);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(out));
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const tokenFile = path.join(f.root, "token");
+  await writeFile(tokenFile, "test-token");
+  await writeFile(path.join(f.stateDir, "config.json"), JSON.stringify({ ...config }));
+  const saved = { ...process.env };
+  process.env.AIDUMEI_TEST_URL = `http://127.0.0.1:${server.address().port}`;
+  process.env.AIDUMEI_TEST_TOKEN_FILE = tokenFile;
+  process.env.AIDUMEI_PI_STATE_DIR = f.stateDir;
+  const tools = new Map();
+  const handlers = new Map();
+  const pi = {
+    registerTool: tool => tools.set(tool.name, tool),
+    registerCommand: () => {},
+    on: (name, fn) => handlers.set(name, fn),
+  };
+  await aidumeiPi(pi);
+  const ctx = { cwd: f.cwd, sessionManager: { getSessionId: () => "s1" } };
+  const restore = async () => {
+    process.env = saved;
+    const shutdown = handlers.get("session_shutdown");
+    server.close();
+    return shutdown;
+  };
+  return { tools, seen, ctx, restore };
+}
+
+test("memory tools act only on the configured scope and never expose the token", async () => {
+  const f = await fixture();
+  process.env.AIDUMEI_PI_ALLOWED_ROOTS = f.cwd;
+  const { tools, seen, ctx, restore } = await loadTools(f, {}, url => {
+    if (url.startsWith("/search")) return { results: [{ id: "mem-00000001", memory: "tea" }] };
+    if (url.startsWith("/add")) return { status: "ok" };
+    if (url.startsWith("/delete")) return { status: "committed" };
+    return {};
+  });
+  try {
+    assert.deepEqual([...tools.keys()].sort(), ["memory_remember", "memory_search"]);
+    const found = await tools.get("memory_search").execute("t1", { query: "tea" }, undefined, undefined, ctx);
+    assert.match(found.content[0].text, /\[mem-00000001\] tea/);
+    assert.doesNotMatch(found.content[0].text, /test-token/);
+    const stored = await tools.get("memory_remember").execute("t2", { content: "likes green tea" }, undefined, undefined, ctx);
+    assert.equal(stored.details.stored, true);
+    const search = seen.find(item => item.url === "/search");
+    assert.equal(search.body.user_id, "default");
+    assert.equal(search.body.caller_user_id, "default");
+    assert.equal(search.body.session_id, "pi-s1");
+    const add = seen.find(item => item.url === "/add");
+    assert.equal(add.body.metadata.source, "pi-tool");
+    assert.equal(add.auth, "Bearer test-token");
+    await assert.rejects(tools.get("memory_search").execute("t3", { query: "x" }, undefined, undefined,
+      { ...ctx, cwd: f.root }), /workspace not allowed/);
+  } finally {
+    delete process.env.AIDUMEI_PI_ALLOWED_ROOTS;
+    await restore();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("memory_forget is opt-in, tombstones by id and is bounded", async () => {
+  const f = await fixture();
+  process.env.AIDUMEI_PI_ALLOWED_ROOTS = f.cwd;
+  process.env.AIDUMEI_PI_ALLOW_FORGET = "1";
+  const { tools, seen, ctx, restore } = await loadTools(f, {},
+    () => ({ status: "committed" }));
+  try {
+    const forget = tools.get("memory_forget");
+    assert.ok(forget);
+    await assert.rejects(forget.execute("t1", { memory_id: "bad id!" }, undefined, undefined, ctx), /invalid memory id/);
+    for (let index = 0; index < 20; index += 1) {
+      await forget.execute(`t${index}`, { memory_id: `mem-0000000${index % 10}` }, undefined, undefined, ctx);
+    }
+    await assert.rejects(forget.execute("tx", { memory_id: "mem-00000099" }, undefined, undefined, ctx), /limit/);
+    const del = seen.find(item => item.url === "/delete");
+    assert.equal(del.body.caller_user_id, "default");
+  } finally {
+    delete process.env.AIDUMEI_PI_ALLOWED_ROOTS;
+    delete process.env.AIDUMEI_PI_ALLOW_FORGET;
+    await restore();
+    await rm(f.root, { recursive: true, force: true });
+  }
 });

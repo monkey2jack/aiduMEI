@@ -64,15 +64,28 @@ def local_leg_enabled() -> bool:
 def mode_status() -> dict:
     """/health 探针：档位与两条腿的开关，运维面一眼可见。"""
     m = configured_mode()
+    try:
+        from ducky.mem0_runtime import native_kernel_active
+        native = bool(native_kernel_active())
+    except Exception:
+        native = False
+    local = local_leg_enabled()
+    note = {
+        "auto": "自动挡：云腿为主，断供自动切本地备胎",
+        "cloud": "云端档：只用云腿，本地模型不加载（省内存，断供无备胎）",
+        "local": "本地档：只用本地腿，零 token 零外部网络",
+    }[m]
+    if native and local:
+        # native 内核不建本地备胎索引（dual_index._local_off）：配置写着本地腿，
+        # 实际断供时只退全文检索。如实报告，别让「双引擎」停留在配置层面。
+        note = "native 内核：无本地备胎向量索引，云嵌入不可用时退全文检索（FTS）"
     return {
         "configured": m,
         "cloud_leg": cloud_leg_enabled(),
-        "local_leg": local_leg_enabled(),
-        "note": {
-            "auto": "自动挡：云腿为主，断供自动切本地备胎",
-            "cloud": "云端档：只用云腿，本地模型不加载（省内存，断供无备胎）",
-            "local": "本地档：只用本地腿，零 token 零外部网络",
-        }[m],
+        "local_leg": local,
+        "kernel": "native" if native else "mem0",
+        "local_fallback_index": bool(local and not native),
+        "note": note,
     }
 
 

@@ -86,3 +86,25 @@ test("production install refuses missing scope and token without writing files",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("check reports jobs stranded in a replaced state directory", async () => {
+  const root = path.join(os.tmpdir(), `aidumei-pi-legacy-${process.pid}-${Date.now()}`);
+  const stateDir = path.join(root, ".aidumei-pi-current");
+  const legacy = path.join(root, ".aidumei-pi", "outbox", "scope");
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(legacy, { recursive: true });
+    await writeFile(path.join(legacy, "distill-abc.json.held"), "{}");
+    let output = "";
+    try {
+      const result = await run(process.execPath, [manage, "check", "--pi-home", path.join(root, "pi-home"),
+        "--state-dir", stateDir, "--pi-bin", path.join(root, "missing-pi")], { env: { ...process.env } });
+      output = result.stdout;
+    } catch (error) { output = error.stdout; }
+    const report = JSON.parse(output);
+    assert.equal(report.outbox.legacyHeld, 1);
+    assert.equal(report.checks.noLegacyJobs.ok, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
