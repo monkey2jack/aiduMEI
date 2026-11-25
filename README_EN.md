@@ -243,7 +243,7 @@ Auth: the HTTP (SSE) transport requires `AIDUMEM_API_TOKEN` on every bind, loopb
 
 | Dimension | Current |
 |------|------|
-| Total cases | **4831** (measured via `pytest --collect-only` on the public f0.9+ candidate) = **4190 behavior + 486 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
+| Total cases | **4831** (measured via `pytest --collect-only` on the public f0.9+ candidate) = **4199 behavior + 486 script/hook + 146 guard**; the split is recomputable with `scripts/count_test_kinds.py` |
 | Clean dev machine | 4819 passed · **12 skipped** — candidate collection is 4831; the 12 Hermes host tests skip when every other test axis is installed |
 | Basic install path | 1821 passed · **25 skipped** — requirements files only (**measured 2026-09-09 on the production box**, clean venv, older tree). From f0.7 the full suite also tests the legacy mem0 kernel and needs `requirements-mem0.txt`; the default native path with only `requirements.txt` is covered by a from-scratch install acceptance and the CI bare-install smoke (2026-10-29 lab box: install, health, write, recall, delete, restore passed) |
 | Sandbox on the production box | 1967 passed · **26 skipped** — **measured 2026-09-11** (older tree `de09794`, host source present, no `.env`, no ruff/mcp/fastembed) |

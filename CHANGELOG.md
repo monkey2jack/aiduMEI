@@ -15,7 +15,7 @@
 
 ## v0.9.0 (f0.9 · 2026-11-19 · 正式适配 OpenChamber · 公开翻牌)
 
-> **用例总数 4819 → 4857**（行为 4225 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。
+> **用例总数 4818 → 4857**（行为 4225 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算；OpenChamber 适配器为纯 JS，20 项用例走 node --test）。f0.9+ 私有候选正在按审计计划收口，发布前以候选全量结果为准。
 
 - **本版头号变更：正式适配 OpenChamber（openchamber/openchamber，v2.6.1+），aiduMEI 的第五个一等宿主**。新增独立 `integrations/openchamber/` 三件套：opencodePlugin（`session.hook("context")` 召回注入）、service（sessionEvents 写入 + 空闲萃取）、manage.mjs（install/check/uninstall）。Windows / Linux / macOS 三平台可用。
 - **Windows 真机验收**：OpenChamber 2.7.2 + OpenCode 2.3.0（windows-host 实装）——写入暗号 → 跨会话召回 → 空闲萃取全链 PASS；plugin 加载、service 拉起、召回 API 调用全部实测。
@@ -31,7 +31,7 @@
 
 ## v0.8.3 (f0.8++ · 2026-11-18 · 正式适配 DeepSeek Harness · 公开翻牌)
 
-> **用例总数 4806 → 4819**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算）。全量回归 4804 passed / 14 skipped / 0 failed（2026-11-18，summer）。
+> **用例总数 4806 → 4818**（行为 4186 + 脚本/钩子 486 + 守卫 146，pytest --collect-only 实测，scripts/count_test_kinds.py 可复算）。全量回归 4804 passed / 14 skipped / 0 failed（2026-11-18，summer）。
 
 - **本版头号变更：正式适配 DeepSeek Harness（DSH 0.2.2-rc.3），aiduMEI 的第四个一等宿主**（继 Claude Code、Codex、Hermes 之后）。新增独立 `integrations/dsh/`：`index.mjs`（原生 Cordis 插件）、`manage.mjs`（安装/检查/卸载）、`cli.mjs`、`mcp-stdio.py`（stdio MCP）与 `README.md`，Windows / Linux / macOS 三平台可用，提供首步召回、真实用户轮次写入、空闲会话萃取与 stdio MCP。
 - **Windows 真机全链路验收**：native DSH host-smoke PASS（5 会话 × 3 turn、recallSeen、MCP 回路、install/check/uninstall）+ 故障注入 PASS（断网续传 / 取消保序 / 丢 ack 不重放）。Windows 本地独立部署 aiduMEI + DSH 全流程实测：写入暗号 → 跨会话召回正确答案。
