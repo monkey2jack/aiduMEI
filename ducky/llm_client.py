@@ -458,6 +458,34 @@ def _post_completion(endpoint: str, api_key: str, model: str, messages: list,
     return None, False
 
 
+def _models_chain(cfg: dict) -> list:
+    """主模型在前，去重、去空的备胎随后（llm.config.fallbacks）。"""
+    chain = [cfg["model"]]
+    for fb in (cfg.get("fallbacks") or []):
+        if fb and fb not in chain:
+            chain.append(fb)
+    return chain
+
+
+def _complete_with_model(endpoint: str, api_key: str, model: str, messages: list,
+                         max_tokens: int, temperature: float, timeout: int,
+                         reasoning_effort: Optional[str]) -> Optional[str]:
+    """单个模型的一次外呼；推理截断时放大预算重试一次（🔴-B 根治，v19.4.0）。"""
+    with llm_slot("call_llm"):
+        content, truncated = _post_completion(
+            endpoint, api_key, model, messages,
+            max_tokens, temperature, timeout, reasoning_effort=reasoning_effort)
+    if content or not truncated:
+        return content
+    retry_budget = min(max_tokens * 4, 4096)
+    logger.info("LLM 推理截断（思考耗尽预算），放大预算重试: %d → %d", max_tokens, retry_budget)
+    with llm_slot("call_llm"):
+        content, _ = _post_completion(
+            endpoint, api_key, model, messages,
+            retry_budget, temperature, timeout, reasoning_effort=reasoning_effort)
+    return content
+
+
 def call_llm(
     prompt: str,
     *,
@@ -514,55 +542,25 @@ def call_llm(
     # 网络异常）时依次换备胎重试；备胎与主模型同 endpoint 同 key，只是模型名不同。
     # 闸门超时（LLMConcurrencyTimeout）不触发 fallback —— 那是本进程并发槽的事，
     # 换模型解决不了，按原契约走 gate_timeout。
-    models_chain = [cfg["model"]]
-    for fb in (cfg.get("fallbacks") or []):
-        if fb and fb != cfg["model"] and fb not in models_chain:
-            models_chain.append(fb)
-
-    def _attempt(model: str, budget: int):
-        with llm_slot("call_llm"):
-            return _post_completion(
-                endpoint, cfg["api_key"], model, messages,
-                budget, temperature, timeout, reasoning_effort=reasoning_effort)
-
+    chain = _models_chain(cfg)
     outcome = "failed"
     try:
-        for idx, model in enumerate(models_chain):
+        for idx, model in enumerate(chain):
             try:
-                content, reasoning_truncated = _attempt(model, max_tokens)
+                content = _complete_with_model(endpoint, cfg["api_key"], model, messages,
+                                               max_tokens, temperature, timeout, reasoning_effort)
             except LLMConcurrencyTimeout:
                 raise
             except Exception as e:
                 logger.warning("LLM 直接调用异常（%s）: %s", model, e)
-                content, reasoning_truncated = None, False
+                content = None
             if content:
                 outcome = "ok"
                 if idx:
-                    logger.warning("LLM fallback 生效: %s → %s（备胎 %d）",
-                                   models_chain[0], model, idx)
+                    logger.warning("LLM fallback 生效: %s → %s（备胎 %d）", chain[0], model, idx)
                 return content
-            if reasoning_truncated:
-                # 🔴-B 根治（v19.4.0）：上游推理模型思考耗尽预算 → content 空 +
-                # finish_reason=length。检测到该形态自动放大预算重试一次。
-                retry_budget = min(max_tokens * 4, 4096)
-                logger.info("LLM 推理截断（思考耗尽预算），放大预算重试: %d → %d",
-                            max_tokens, retry_budget)
-                try:
-                    content, _ = _attempt(model, retry_budget)
-                except LLMConcurrencyTimeout:
-                    raise
-                except Exception as e:
-                    logger.warning("LLM 直接调用异常（%s 放大重试）: %s", model, e)
-                    content = None
-                if content:
-                    outcome = "ok"
-                    if idx:
-                        logger.warning("LLM fallback 生效: %s → %s（备胎 %d）",
-                                       models_chain[0], model, idx)
-                    return content
-            if idx == 0 and len(models_chain) > 1:
-                logger.warning("LLM 主模型 %s 未产出内容，降级尝试备胎: %s",
-                               model, models_chain[1:])
+            if idx == 0 and len(chain) > 1:
+                logger.warning("LLM 主模型 %s 未产出内容，降级尝试备胎: %s", model, chain[1:])
         return None
     except LLMConcurrencyTimeout:
         outcome = "gate_timeout"   # 闸门已打过 warning；契约不变：失败回 None
